@@ -1,0 +1,4 @@
+* text=auto
+# hook 入口必须保持 LF，否则 Git Bash 执行会因 \r 报错
+*.sh text eol=lf
+.githooks/* text eol=lf

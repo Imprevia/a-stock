@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 工具缓存
+.codegraph/
+midscene_run/
+apps/*/dist/
+mobile-dashboard*.png
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+
+.idea
+.opencode
+.omo
+.codex
+node_modules
