@@ -45,7 +45,7 @@ class MarketEnvironmentService:
         for spec in INDEX_SPECS:
             try:
                 expected_price = quotes.get(spec.code, {}).get("price")
-                result = self.provider.fetch(spec, expected_price=expected_price)
+                result = self.provider.fetch(spec, expected_price=expected_price, quote=quotes.get(spec.code, {}))
                 results.append((spec, result, None))
             except Exception as exc:
                 results.append((spec, None, str(exc)))

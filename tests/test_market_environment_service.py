@@ -38,7 +38,7 @@ class FakeProvider:
             for spec in specs
         }
 
-    def fetch(self, spec, limit=160, expected_price=None):
+    def fetch(self, spec, limit=160, expected_price=None, quote=None):
         self.fetch_calls += 1
         if spec.code in self.failing:
             raise RuntimeError("fixture source unavailable")

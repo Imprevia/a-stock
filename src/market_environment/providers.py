@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import requests
@@ -51,7 +51,13 @@ class MarketDataProvider:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
 
-    def fetch(self, spec: IndexSpec, limit: int = 160, expected_price: float | None = None) -> ProviderResult:
+    def fetch(
+        self,
+        spec: IndexSpec,
+        limit: int = 160,
+        expected_price: float | None = None,
+        quote: dict[str, Any] | None = None,
+    ) -> ProviderResult:
         errors: list[str] = []
         try:
             bars = self._fetch_mootdx(spec, limit)
@@ -74,6 +80,32 @@ class MarketDataProvider:
         except Exception as exc:
             logger.warning("Baidu kline failed for %s: %s", spec.code, exc)
             errors.append(f"百度 K 线: {exc}")
+
+        try:
+            bars = self._fetch_sina_kline(spec, limit, quote or {})
+            if len(bars) >= 60 and self._price_matches(bars, expected_price):
+                return ProviderResult(
+                    bars=bars,
+                    source="sina-kline",
+                    warning="通达信和百度不可用，已降级到新浪指数 K 线；成交额按腾讯实时成交额校准估算",
+                )
+            errors.append("新浪指数 K 线数据不足")
+        except Exception as exc:
+            logger.warning("Sina kline failed for %s: %s", spec.code, exc)
+            errors.append(f"新浪 K 线: {exc}")
+
+        try:
+            bars = self._fetch_eastmoney_kline(spec, limit)
+            if len(bars) >= 60 and self._price_matches(bars, expected_price):
+                return ProviderResult(
+                    bars=bars,
+                    source="eastmoney-kline",
+                    warning="通达信和百度不可用，已降级到东方财富历史 K 线",
+                )
+            errors.append("东方财富历史 K 线数据不足")
+        except Exception as exc:
+            logger.warning("Eastmoney kline failed for %s: %s", spec.code, exc)
+            errors.append(f"东方财富 K 线: {exc}")
 
         try:
             bars = self._fetch_tencent_kline(spec, limit)
@@ -114,6 +146,7 @@ class MarketDataProvider:
                 "last_close": last_close,
                 "change_pct": self._number(values, 32),
                 "amount": amount_wan * 10000,
+                "volume": self._number(values, 36),
                 "is_stale": bool(amount_wan == 0 and price == last_close and price > 0),
             }
         return result
@@ -157,6 +190,7 @@ class MarketDataProvider:
             "group": "quotation_kline_ab",
             "finClientType": "pc",
             "code": spec.digits,
+            "market": "sh" if spec.code.startswith("sh") else "sz",
             "ktype": "1",
         }
         response = self.session.get(url, params=params, timeout=self.timeout)
@@ -184,6 +218,100 @@ class MarketDataProvider:
                     amount=float(values[positions["amount"]]),
                 )
             )
+        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
+
+    def _fetch_eastmoney_kline(self, spec: IndexSpec, limit: int) -> list[Bar]:
+        """Fetch index K-lines with an explicit Eastmoney market secid.
+
+        Unlike the six-digit Baidu/mootdx routes, ``1.000001`` and
+        ``1.000905`` are unambiguous Shanghai index identifiers and include
+        historical turnover amounts needed for volume-price analysis.
+        """
+        market = "1" if spec.code.startswith("sh") else "0"
+        secid = f"{market}.{spec.digits}"
+        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        params = {
+            "secid": secid,
+            "klt": "101",
+            "fqt": "1",
+            "beg": "19900101",
+            "end": (date.today() + timedelta(days=1)).strftime("%Y%m%d"),
+            "lmt": str(max(limit, 160)),
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
+        response = self.session.get(url, params=params, timeout=self.timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("rc") not in (0, None):
+            raise RuntimeError(f"返回错误码 {payload.get('rc')}")
+        rows = payload.get("data", {}).get("klines", [])
+        result: list[Bar] = []
+        for row in rows:
+            values = str(row).split(",")
+            if len(values) < 7:
+                continue
+            parsed_date = self._parse_date(values[0])
+            if parsed_date is None:
+                continue
+            try:
+                result.append(
+                    Bar(
+                        date=parsed_date,
+                        open=float(values[1]),
+                        close=float(values[2]),
+                        high=float(values[3]),
+                        low=float(values[4]),
+                        amount=float(values[6]),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
+
+    def _fetch_sina_kline(self, spec: IndexSpec, limit: int, quote: dict[str, Any]) -> list[Bar]:
+        """Fetch index history from Sina and calibrate turnover units.
+
+        Sina exposes index volume in a different unit from currency. The latest
+        Tencent real-time amount and same-day Sina volume provide a scale factor,
+        so historical amounts remain comparable without presenting raw volume
+        as currency.
+        """
+        url = f"https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_{spec.code}_klines=/CN_MarketData.getKLineData"
+        params = {"symbol": spec.code, "scale": "240", "ma": "no", "datalen": str(max(limit, 160))}
+        response = self.session.get(url, params=params, timeout=self.timeout)
+        response.raise_for_status()
+        text = response.text
+        start, end = text.find("["), text.rfind("]")
+        if start < 0 or end <= start:
+            raise RuntimeError("新浪响应不含 K 线数组")
+        rows = json.loads(text[start : end + 1])
+        if not rows:
+            return []
+        latest_volume = float(rows[-1].get("volume") or 0)
+        quote_amount = float(quote.get("amount") or 0)
+        if latest_volume <= 0 or quote_amount <= 0:
+            raise RuntimeError("缺少腾讯实时成交额或新浪最新成交量，无法校准新浪成交量")
+        scale = quote_amount / latest_volume
+        result: list[Bar] = []
+        for row in rows:
+            parsed_date = self._parse_date(row.get("day"))
+            if parsed_date is None:
+                continue
+            try:
+                volume = float(row.get("volume") or 0)
+                result.append(
+                    Bar(
+                        date=parsed_date,
+                        open=float(row["open"]),
+                        close=float(row["close"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        amount=volume * scale,
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
         return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
 
     def _fetch_tencent_kline(self, spec: IndexSpec, limit: int) -> list[Bar]:
