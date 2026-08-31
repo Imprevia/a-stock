@@ -11,12 +11,12 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**PRD**
+- 当前阶段：**完成**
 - 阶段序列：PRD → 架构 → 计划 → 阶段执行 → 验证 → 回写
 
 ## Status（状态）
 
-`in-progress` · 待启动 PRD 讨论（负责人：仓库所有者 + agent）
+`completed` · 产品角色、流程、数据边界与首期交付已在交易规则工程化规格中定义。
 
 ## 事实源
 
@@ -26,10 +26,10 @@
 
 ## 阶段任务
 
-- [ ] 与所有者确认产品定位与目标用户
-- [ ] 写 `docs/product-specs/index.md` + 首个 feature spec（模板：目标 / 角色 / 范围 / 流程 / 验收）
-- [ ] 更新 `docs/architecture.md` 的系统角色与数据源章节
-- [ ] 回写本计划状态
+- [x] 根据用户批准的实施计划确认产品定位与目标用户
+- [x] 写 `docs/product-specs/index.md` + `trading-rule-engineering.md`
+- [x] 更新 `docs/architecture.md` 的系统角色与数据源章节
+- [x] 回写本计划状态
 
 ## Acceptance（验收）
 
@@ -39,12 +39,13 @@
 
 ## Completion Evidence（完成证据）
 
-- （待填：spec 文件链接 + 架构文档 diff 摘要）
+- `docs/product-specs/trading-rule-engineering.md` 定义盘后研究者、规则维护者、策略开发者和审核者。
+- `docs/architecture.md` 已加入规则注册、快照、执行、证据、回测和 CI 数据流。
 
 ## Remaining Gaps（剩余缺口）
 
-- 项目范围、数据源、系统角色全部未定义（本计划要解决的缺口本体）
+- 真实扩展数据源和历史校准属于后续实现缺口，不再是产品范围未定义。
 
 ## Next Step（下一步）
 
-与仓库所有者确认产品定位（一个问题即可启动：a-stock 首先为谁解决什么问题）。
+按 `docs/product-specs/trading-rule-engineering.md` 和已归档规则工程计划继续迭代真实 provider。
