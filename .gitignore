@@ -20,3 +20,4 @@ Thumbs.db
 .omo
 .codex
 node_modules
+.artifacts/

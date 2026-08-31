@@ -2,7 +2,7 @@
 
 ## 仓库目的
 
-a-stock：A 股分析与研究工作区。业务范围尚未定义（见 `docs/exec-plans/active/define-scope.md`），当前仓库处于 harness 骨架阶段。
+a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/trading-rule-engineering.md`。
 
 ## 顶层目录地图
 
@@ -17,6 +17,11 @@ a-stock：A 股分析与研究工作区。业务范围尚未定义（见 `docs/e
 | `.githooks/` | git hook 薄入口 | 只做转发，规则不写在这里 |
 | `.codegraph/` | 代码索引缓存（已 gitignore） | 不手工编辑 |
 | `搭建交易系统/` | 交易系统知识库；按 `01`—`11` 章节目录归档，章节总览使用 `0-主题.md`，正文直接位于对应目录 | 维护章节目录内的 Markdown；新增章节时同步更新本表 |
+| `搭建交易系统-量化版/` | 原交易系统知识库的一对一量化重写；统一规则 ID、数据口径、公式、阈值状态、评分和否决条件 | 与原目录保持相对路径一致；规则变化同步量化版索引和状态文档 |
+| `trading-rules/` | YAML 机器规则事实源、schema 和 327 条规则覆盖清单 | 规则变化必须同步量化文档、测试和证据引用 |
+| `src/trading_system/` | 规则加载、标准快照、确定性执行、证据、回测和 CLI | 修改契约时同步产品规格、架构和 runbook |
+| `evidence/` | 可入库的验证清单和月度 SHA-256 摘要 | 不提交大体积输入快照和 trace |
+| `.github/workflows/` | 离线 PR 门禁和盘后证据运行 | PR workflow 禁止依赖外部行情网络 |
 | `src/market_environment/` | 市场环境分析 API、行情适配、指标计算和响应模型 | 修改数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 单页分析看板 | 修改页面结构、接口字段或运行命令时同步 `docs/runbooks.md`；构建验证必需 |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
@@ -27,8 +32,10 @@ a-stock：A 股分析与研究工作区。业务范围尚未定义（见 `docs/e
 - 文档契约检查：`scripts/check-docs-contract.py`
 - hook 安装：`scripts/install-hooks.py`
 - 业务代码：`src/market_environment/` 与 `apps/market-environment-dashboard/`；边界、数据流和降级策略见 `docs/architecture.md`。
-- 交易系统知识库：`搭建交易系统/01-如何判断市场环境/` 至 `搭建交易系统/11-量化交易环境下的应对/`；每章目录包含 `0-主题.md` 总览和按 `01.`、`02.` 编号的正文。
-- 交易系统目录索引：`docs/trading-system-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
+- 交易系统原始知识库：`搭建交易系统/01-如何判断市场环境/` 至 `搭建交易系统/11-量化交易环境下的应对/`；每章目录包含 `0-主题.md` 总览和按 `01.`、`02.` 编号的正文。
+- 交易系统量化说明层：`搭建交易系统-量化版/`；与原版保持一对一路径，解释规则口径并引用稳定规则 ID。
+- 交易系统机器规则库：`trading-rules/`；YAML 是执行事实源，`coverage.yaml` 覆盖全部文档规则 ID。
+- 交易系统目录索引：`docs/trading-system-directory.md` 与 `docs/trading-system-quantified-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
 
 ## 安全修改区
 
@@ -48,6 +55,8 @@ a-stock：A 股分析与研究工作区。业务范围尚未定义（见 `docs/e
 | 代码区 | 必需文档更新 | 门禁级别 |
 |--------|-------------|----------|
 | `src/**`（未来） | `docs/architecture.md` | fail |
+| `src/trading_system/**` / `trading-rules/**` | `docs/product-specs/trading-rule-engineering.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
+| `.github/workflows/**` | `docs/runbooks.md`, active plan | fail |
 | `apps/**` | `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `docs/product-specs/**` 引用的代码路径 | 对应 spec | fail |
 | `scripts/**` | `docs/runbooks.md` | warn |
@@ -56,5 +65,6 @@ a-stock：A 股分析与研究工作区。业务范围尚未定义（见 `docs/e
 ## 文档映射规则
 
 - 新增顶层目录 → 更新本文件目录地图
+- 交易系统原版或量化版增删、重命名 → 同步两个目录索引并检查一对一映射
 - 新增 gate / 检查 → 更新 `AGENTS.md` 硬规则 + `docs/runbooks.md`
 - 教训类内容 → `docs/lessons-learned.md`（发生 → 为何重要 → 仓库改了什么）

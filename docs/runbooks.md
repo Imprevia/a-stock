@@ -5,6 +5,7 @@
 - Python 3.11+（建议使用仓库 `.venv`）
 - Node.js 18+ 与 npm
 - git
+- 可选：GitHub Actions（仓库 CI）
 - 可访问通达信 TCP 和腾讯/百度 HTTPS 行情接口的网络
 
 安装依赖：
@@ -49,6 +50,25 @@ python scripts/check-docs-contract.py --mode=full
 python scripts/install-hooks.py
 ```
 
+交易规则平台离线命令：
+
+```bash
+python -m src.trading_system.cli rules validate
+python -m src.trading_system.cli rules coverage
+python -m src.trading_system.cli docs sync-check
+python -m src.trading_system.cli evaluate --rule-set market-environment --snapshot tests/fixtures/trading-system/market-environment-complete.json --output .artifacts/evidence
+python -m src.trading_system.cli evidence verify .artifacts/evidence
+```
+
+创建快照与回测：
+
+```bash
+python -m src.trading_system.cli snapshot create --as-of 2026-08-31 --output .artifacts/snapshot.json
+python -m src.trading_system.cli backtest --rule-set market-environment --snapshots .artifacts/history --output .artifacts/backtest.json
+```
+
+PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部网络。盘后 workflow 可访问真实数据；任何 provider 失败必须写入 snapshot 的质量状态，并上传 `degraded` 或 `insufficient` 证据，不能用 0 填充缺失数据。
+
 ## 验证矩阵
 
 | 检查 | 命令 / 方法 | 证据位置 | 必需 |
@@ -59,6 +79,10 @@ python scripts/install-hooks.py
 | Backend tests | `.venv` Python 下运行 `python -m pytest tests -q` | 终端输出 / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Browser QA | 启动前后端后检查桌面与移动宽度 | 截图 / plan | 是 |
+| Rule registry | `python -m src.trading_system.cli rules validate` | 终端输出 / PR workflow | 是 |
+| Rule coverage | `python -m src.trading_system.cli rules coverage` | `trading-rules/coverage.yaml` / PR workflow | 是 |
+| Deterministic replay | 固定 fixture 执行两次并比较 canonical result | pytest / golden fixture | 是 |
+| Evidence verification | `python -m src.trading_system.cli evidence verify <bundle>` | manifest / CI Artifact | 是 |
 
 ## 常见调试路径
 
@@ -68,6 +92,9 @@ python scripts/install-hooks.py
 - **指数价格异常**：检查实时腾讯报价是否可用。沪市歧义代码没有实时交叉校验时，mootdx/百度结果会被拒绝，避免错误股票数据进入页面。
 - **hook 报 `\r` 相关错误**：`.githooks/*` 行尾被改为 CRLF，恢复 LF（`.gitattributes` 已强制 `eol=lf`，重新 checkout 即可）。
 - **gate 误报需要紧急绕过**：优先修文档；确需绕过用 commit message 标记（`[skip-plan]` / `[no-docs]` + 理由）或环境变量（见 `AGENTS.md` 逃生口）。
+- **规则加载失败**：先运行 `rules validate`；重复 ID、未知字段、未知 evaluator、阈值无来源或非法生命周期都会在执行前失败。
+- **盘后证据显示 degraded/insufficient**：检查 manifest 的 provider 状态和 warnings。东方财富 403 不应循环重试；切换到降级源或等待下一次运行。
+- **证据校验失败**：不要手改证据文件。重新从原 snapshot、规则版本和 Git SHA 执行；manifest 中任一 SHA-256 不一致都视为证据失效。
 
 ## 运维控制
 

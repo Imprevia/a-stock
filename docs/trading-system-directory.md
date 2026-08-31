@@ -2,6 +2,8 @@
 
 本索引对应 `搭建交易系统/` 的实际文件树。章节总览使用 `0-主题.md`，章节正文直接放在对应章节目录中，并按 `01.`、`02.` 的两位数字顺序编号。
 
+对应的量化规则重写版位于 `搭建交易系统-量化版/`，完整清单和维护规则见 [`trading-system-quantified-directory.md`](trading-system-quantified-directory.md)。原目录保留观点来源，量化版不反向覆盖原文。
+
 ## 目录树
 
 ```text

@@ -1,0 +1,52 @@
+name: Trading Rules After Market Evidence
+
+on:
+  schedule:
+    - cron: "30 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: Trading date in YYYY-MM-DD; defaults to the current UTC date
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate-after-market:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Resolve trading date
+        id: trading-date
+        shell: bash
+        run: |
+          requested='${{ inputs.as_of }}'
+          if [ -n "$requested" ]; then
+            echo "value=$requested" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create real-data snapshot
+        run: python -m src.trading_system.cli snapshot create --as-of "${{ steps.trading-date.outputs.value }}" --output .artifacts/snapshot.json
+      - name: Evaluate chapter 01 and create evidence
+        run: python -m src.trading_system.cli evaluate --rule-set market-environment --snapshot .artifacts/snapshot.json --output .artifacts/evidence
+      - name: Verify evidence
+        run: python -m src.trading_system.cli evidence verify .artifacts/evidence
+      - name: Upload evidence for ok, degraded, or insufficient runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-rule-evidence-${{ steps.trading-date.outputs.value }}
+          path: .artifacts/
+          if-no-files-found: error
+          retention-days: 90

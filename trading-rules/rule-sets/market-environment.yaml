@@ -1,0 +1,1489 @@
+ruleSet: market-environment
+version: 1
+rules:
+- ruleId: QTS-01-00-01
+  version: 1
+  title: 价格量能组
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-01-01
+    - QTS-01-01-02
+    - QTS-01-01-03
+    - QTS-01-01-04
+    - QTS-01-01-05
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/0-如何判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-00-02
+  version: 1
+  title: 市场宽度组
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-02-01
+    - QTS-01-02-02
+    - QTS-01-02-03
+    - QTS-01-02-04
+    - QTS-01-02-05
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.25
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/0-如何判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-00-03
+  version: 1
+  title: 短线生态组
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-03-01
+    - QTS-01-03-02
+    - QTS-01-03-03
+    - QTS-01-03-04
+    - QTS-01-03-05
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/0-如何判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-00-04
+  version: 1
+  title: 亏钱效应组
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-04-01
+    - QTS-01-04-02
+    - QTS-01-04-03
+    - QTS-01-04-04
+    invert: true
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes:
+  - input: risk.all_tiers_deteriorating
+    operator: truthy
+    value: true
+    reason: 高、中、低位样本同时恶化
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/0-如何判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-00-05
+  version: 1
+  title: 资金方向组
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-05-01
+    - QTS-01-05-02
+    - QTS-01-05-03
+    - QTS-01-05-04
+    - QTS-01-05-05
+    - QTS-01-06-01
+    - QTS-01-06-02
+    - QTS-01-06-03
+    - QTS-01-06-04
+    - QTS-01-06-05
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/0-如何判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-01
+  version: 1
+  title: 均线多头比例
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.bullish_ratio
+  windows:
+  - 20
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: empirical-initial
+    bands: &id001
+    - lte: 0.2
+      score: 0
+    - lte: 0.4
+      score: 25
+    - lte: 0.6
+      score: 50
+    - lte: 0.8
+      score: 75
+    - gt: 0.8
+      score: 100
+  scoring:
+    weight: 0.25
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-02
+  version: 1
+  title: 20日均线斜率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.ma20_slope_percentile
+  windows:
+  - 5
+  - 20
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: empirical-initial
+    bands: &id002
+    - lte: 0.2
+      score: 0
+    - lte: 0.4
+      score: 25
+    - lte: 0.6
+      score: 50
+    - lte: 0.8
+      score: 75
+    - gt: 0.8
+      score: 100
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-03
+  version: 1
+  title: 60日区间位置
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.range_position_60
+  windows:
+  - 60
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: fixed
+    bands: *id001
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-04
+  version: 1
+  title: 成交额比值
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - market.turnover_ratio_20
+  windows:
+  - 20
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 0.8
+      score: 25
+    - lte: 1.0
+      score: 50
+    - lte: 1.2
+      score: 75
+    - gt: 1.2
+      score: 100
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-05
+  version: 1
+  title: 量价推进效率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.volume_price_efficiency_percentile
+  windows:
+  - 20
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes:
+  - input: risk.volume_breakdown_unrecovered
+    operator: truthy
+    value: true
+    reason: 放量跌破 MA20 且次日未收回
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-02-01
+  version: 1
+  title: 上涨占比
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - breadth.advance_ratio_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  evidenceRefs: []
+- ruleId: QTS-01-02-02
+  version: 1
+  title: 涨跌家数差率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - breadth.advance_decline_spread_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  evidenceRefs: []
+- ruleId: QTS-01-02-03
+  version: 1
+  title: 涨跌幅中位数
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - breadth.median_return_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  evidenceRefs: []
+- ruleId: QTS-01-02-04
+  version: 1
+  title: 广度5日动量
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - breadth.momentum_percentile
+  windows:
+  - 6
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  evidenceRefs: []
+- ruleId: QTS-01-02-05
+  version: 1
+  title: 指数广度一致性
+  status: defined
+  scope: market
+  evaluator: metric.boolean
+  inputs:
+  - breadth.index_consistent
+  windows:
+  - 1
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - equals: false
+      score: 0
+    - equals: true
+      score: 100
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/02.上涨家数、下跌家数和涨跌幅中位数.md
+  evidenceRefs: []
+- ruleId: QTS-01-03-01
+  version: 1
+  title: 涨停家数
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - limits.limit_up_count_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  evidenceRefs: []
+- ruleId: QTS-01-03-02
+  version: 1
+  title: 跌停家数反向分
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - limits.limit_down_count_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  thresholds:
+    provenance: empirical-initial
+    bands: &id003
+    - lte: 0.2
+      score: 100
+    - lte: 0.4
+      score: 75
+    - lte: 0.6
+      score: 50
+    - lte: 0.8
+      score: 25
+    - gt: 0.8
+      score: 0
+  scoring:
+    weight: 0.25
+    direction: negative
+  vetoes:
+  - input: risk.limit_down_extreme_two_days
+    operator: truthy
+    value: true
+    reason: 跌停家数高于 P80 且连续两日
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  evidenceRefs: []
+- ruleId: QTS-01-03-03
+  version: 1
+  title: 炸板率反向分
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - limits.failed_limit_up_ratio_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id003
+  scoring:
+    weight: 0.2
+    direction: negative
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  evidenceRefs: []
+- ruleId: QTS-01-03-04
+  version: 1
+  title: 连板晋级率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - limits.promotion_ratio_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.25
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  evidenceRefs: []
+- ruleId: QTS-01-03-05
+  version: 1
+  title: 最高连板高度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - limits.max_streak_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md
+  evidenceRefs: []
+- ruleId: QTS-01-04-01
+  version: 1
+  title: 高位亏钱风险
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - risk.high_tier_loss_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.4
+    direction: positive
+  vetoes:
+  - input: risk.high_tier_batch_limit_down
+    operator: truthy
+    value: true
+    reason: 高位核心批量跌停
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  evidenceRefs: []
+- ruleId: QTS-01-04-02
+  version: 1
+  title: 中位亏钱风险
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - risk.middle_tier_loss_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.35
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  evidenceRefs: []
+- ruleId: QTS-01-04-03
+  version: 1
+  title: 低位反馈风险
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - risk.low_tier_feedback_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  evidenceRefs: []
+- ruleId: QTS-01-04-04
+  version: 1
+  title: 失败样本修复率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - risk.failure_repair_ratio_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id003
+  scoring:
+    weight: 0.1
+    direction: negative
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/04.高位股、中位股和低位股的亏钱效应.md
+  evidenceRefs: []
+- ruleId: QTS-01-05-01
+  version: 1
+  title: 板块相对强度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - sector.relative_strength_percentile
+  windows:
+  - 5
+  - 20
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.25
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  evidenceRefs: []
+- ruleId: QTS-01-05-02
+  version: 1
+  title: 成交持续性
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - sector.top_turnover_days
+  windows:
+  - 5
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - equals: 0
+      score: 0
+    - equals: 1
+      score: 25
+    - equals: 2
+      score: 50
+    - equals: 3
+      score: 75
+    - gte: 4
+      score: 100
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  evidenceRefs: []
+- ruleId: QTS-01-05-03
+  version: 1
+  title: 板块宽度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - sector.above_ma20_ratio_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  evidenceRefs: []
+- ruleId: QTS-01-05-04
+  version: 1
+  title: 分歧承接
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - sector.disagreement_recovery_percentile
+  windows:
+  - 20
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  evidenceRefs: []
+- ruleId: QTS-01-05-05
+  version: 1
+  title: 前五板块成交集中度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - sector.top5_turnover_concentration_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes:
+  - input: risk.sector_crowding_without_breadth
+    operator: truthy
+    value: true
+    reason: 成交集中但板块宽度不足，标记抱团风险
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+  evidenceRefs: []
+- ruleId: QTS-01-06-01
+  version: 1
+  title: 方向聚集度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - active.direction_cluster_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.25
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  evidenceRefs: []
+- ruleId: QTS-01-06-02
+  version: 1
+  title: 个股成交放大
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - active.turnover_expansion_percentile
+  windows:
+  - 20
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  evidenceRefs: []
+- ruleId: QTS-01-06-03
+  version: 1
+  title: 超额收益
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - active.excess_return_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  evidenceRefs: []
+- ruleId: QTS-01-06-04
+  version: 1
+  title: 收盘位置
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - active.close_position
+  windows:
+  - 1
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  thresholds:
+    provenance: fixed
+    bands: *id001
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  evidenceRefs: []
+- ruleId: QTS-01-06-05
+  version: 1
+  title: 板块同步率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - active.sector_sync_percentile
+  windows:
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes:
+  - input: risk.active_stall_breakdown
+    operator: truthy
+    value: true
+    reason: 容量股巨量滞涨且次日跌破
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/06.大成交额个股中是否出现主动进攻方向.md
+  evidenceRefs: []
+- ruleId: QTS-01-07-01
+  version: 1
+  title: 来源可靠性
+  status: defined
+  scope: event
+  evaluator: metric.band
+  inputs:
+  - event.source_reliability
+  windows:
+  - 0
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - equals: 0
+      score: 0
+    - equals: 1
+      score: 25
+    - equals: 2
+      score: 50
+    - equals: 3
+      score: 75
+    - gte: 4
+      score: 100
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  evidenceRefs: []
+- ruleId: QTS-01-07-02
+  version: 1
+  title: 信息新鲜度
+  status: defined
+  scope: event
+  evaluator: metric.band
+  inputs:
+  - event.age_hours
+  windows:
+  - 0
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 24
+      score: 100
+    - lte: 72
+      score: 75
+    - lte: 120
+      score: 50
+    - lte: 480
+      score: 25
+    - gt: 480
+      score: 0
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  evidenceRefs: []
+- ruleId: QTS-01-07-03
+  version: 1
+  title: 价格成交确认
+  status: defined
+  scope: event
+  evaluator: metric.band
+  inputs:
+  - event.price_turnover_confirmation
+  windows:
+  - 5
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  evidenceRefs: []
+- ruleId: QTS-01-07-04
+  version: 1
+  title: 板块扩散确认
+  status: defined
+  scope: event
+  evaluator: metric.band
+  inputs:
+  - event.sector_diffusion_confirmation
+  windows:
+  - 5
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.15
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  evidenceRefs: []
+- ruleId: QTS-01-07-05
+  version: 1
+  title: 次日承接
+  status: defined
+  scope: event
+  evaluator: metric.band
+  inputs:
+  - event.next_day_acceptance_percentile
+  windows:
+  - 1
+  - 250
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  thresholds:
+    provenance: empirical-initial
+    bands: *id002
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes:
+  - input: event.source_reliability
+    operator: eq
+    value: 0
+    reason: 来源可靠性为 0，事件方向不得加分
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/07.公告、政策、外围和突发事件.md
+  evidenceRefs: []
+- ruleId: QTS-01-08-01
+  version: 1
+  title: 环境总分
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-00-01
+    - QTS-01-00-02
+    - QTS-01-00-03
+    - QTS-01-00-04
+    - QTS-01-00-05
+    memberWeights:
+      QTS-01-00-01: 0.3
+      QTS-01-00-02: 0.25
+      QTS-01-00-03: 0.2
+      QTS-01-00-04: 0.15
+      QTS-01-00-05: 0.1
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.7
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/08.如何归类市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-08-02
+  version: 1
+  title: 证据一致率
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - environment.evidence_consistency_count
+  windows:
+  - 1
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/08.如何归类市场环境.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - equals: 0
+      score: 0
+    - equals: 1
+      score: 25
+    - equals: 2
+      score: 75
+    - gte: 3
+      score: 100
+  scoring:
+    weight: 0.2
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/08.如何归类市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-08-03
+  version: 1
+  title: 持续确认
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - environment.classification_streak
+  windows:
+  - 3
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/08.如何归类市场环境.md
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 0
+      score: 0
+    - equals: 1
+      score: 25
+    - equals: 2
+      score: 75
+    - gte: 3
+      score: 100
+  scoring:
+    weight: 0.1
+    direction: positive
+  vetoes:
+  - input: risk.systemic
+    operator: truthy
+    value: true
+    reason: 系统性风险否决环境分类
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/08.如何归类市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-09-01
+  version: 1
+  title: 价格量能证据链
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-00-01
+    - QTS-01-00-02
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.35
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/09.如何综合判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-09-02
+  version: 1
+  title: 情绪风险证据链
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-00-03
+    - QTS-01-00-04
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.35
+    direction: positive
+  vetoes:
+  - input: risk.emotion_chain
+    operator: truthy
+    value: true
+    reason: 情绪风险链触发否决
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/09.如何综合判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-09-03
+  version: 1
+  title: 资金选择证据链
+  status: defined
+  scope: market
+  evaluator: aggregate.rules
+  inputs: []
+  windows:
+  - 1
+  parameters:
+    members:
+    - QTS-01-00-05
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 20
+      score: 0
+    - lte: 40
+      score: 25
+    - lte: 60
+      score: 50
+    - lte: 80
+      score: 75
+    - gt: 80
+      score: 100
+  scoring:
+    weight: 0.3
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/09.如何综合判断市场环境.md
+  evidenceRefs: []
+- ruleId: QTS-01-09-04
+  version: 1
+  title: 结论完整率
+  status: defined
+  scope: review
+  evaluator: metric.band
+  inputs:
+  - review.completeness_ratio
+  windows:
+  - 1
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/09.如何综合判断市场环境.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - lt: 0.5
+      score: 0
+    - lt: 0.7
+      score: 25
+    - lt: 0.9
+      score: 50
+    - lt: 1.0
+      score: 75
+    - gte: 1.0
+      score: 100
+  scoring:
+    weight: 0.0
+    direction: positive
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/09.如何综合判断市场环境.md
+  evidenceRefs: []

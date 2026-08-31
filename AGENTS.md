@@ -15,9 +15,11 @@
 
 ### 交易系统知识库目录
 
-`搭建交易系统/` 的完整目录和文件清单以 [`docs/trading-system-directory.md`](docs/trading-system-directory.md) 为准。当前结构为：根目录保留 `00-搭建交易系统.md` 作为总入口；其余内容按 `01`—`11` 章节分别放入唯一的 `章节号-主题/` 目录。每章总览命名为 `0-主题.md`，正文直接放在章节目录内，使用 `01.`、`02.` 等两位数字编号。
+`搭建交易系统/` 的完整目录和文件清单以 [`docs/trading-system-directory.md`](docs/trading-system-directory.md) 为准；一对一量化重写版 `搭建交易系统-量化版/` 以 [`docs/trading-system-quantified-directory.md`](docs/trading-system-quantified-directory.md) 为准。两个目录都保留 `00-搭建交易系统.md` 总入口，并按 `01`—`11` 章节归档；每章总览命名为 `0-主题.md`，正文使用 `01.`、`02.` 等两位数字编号。
 
-整理或新增交易系统文档时，先更新目录索引，再在对应章节目录中操作；禁止重新建立按飞书下载批次拆分的同主题子目录，也不要把章节正文散落到 `搭建交易系统/` 根目录。
+原版负责观点来源，量化版负责数据口径、公式、阈值、评分、否决和校准状态。整理、新增、删除或重命名交易系统文档时，先更新对应目录索引并保持两个目录相对路径一致；禁止重新建立按飞书下载批次拆分的同主题子目录，也不要把章节正文散落到两个知识库根目录。量化版已有规则 ID 不得因文字调整而重排。
+
+`搭建交易系统-量化版/` 是人读说明层；`trading-rules/` 是机器执行事实源。规则变更必须同步 YAML、量化文档、覆盖清单、测试和证据引用。PR 规则验证只能使用固定快照离线运行；真实数据获取只允许在盘后或显式本地命令中执行，数据源失败必须输出 `degraded` 或 `insufficient`。
 
 ## 硬规则（gate 强制，非建议）
 
@@ -61,4 +63,5 @@
 
 - 市场环境分析 API：`src/market_environment/`；负责五大指数行情适配、指标计算、数据质量和 FastAPI 契约。
 - 市场环境分析网页：`apps/market-environment-dashboard/`；Vue 3 + Vite + TypeScript + ECharts 单页看板，开发时通过 Vite 将 `/api` 代理到 8000 端口。
+- 交易规则平台：`src/trading_system/` + `trading-rules/`；负责规则 schema、快照、确定性 evaluator、证据、回测和 CI 契约。
 - 修改上述代码时必须同步 `docs/architecture.md`、`docs/runbooks.md` 和 active plan；市场广度数据（上涨/下跌家数及涨跌幅中位数）暂不属于当前范围。

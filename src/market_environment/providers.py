@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from src.trading_system.data.providers import EastmoneyClient
+
 from .calculations import Bar
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ class MarketDataProvider:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+        self.eastmoney = EastmoneyClient(timeout=timeout, session=self.session)
 
     def fetch(
         self,
@@ -240,9 +243,7 @@ class MarketDataProvider:
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
-        response = self.session.get(url, params=params, timeout=self.timeout)
-        response.raise_for_status()
-        payload = response.json()
+        payload = self.eastmoney.get_json(url, params)
         if payload.get("rc") not in (0, None):
             raise RuntimeError(f"返回错误码 {payload.get('rc')}")
         rows = payload.get("data", {}).get("klines", [])

@@ -1,0 +1,8 @@
+schemaVersion: 1
+ruleSets:
+  market-environment:
+    version: 1
+    lifecycle: defined
+    latestEvidence: null
+    validationEvidence: []
+    note: "首期规则均未完成历史回测，不得标记为 validated。"

@@ -1,6 +1,6 @@
 # a-stock
 
-A 股分析与研究工作区。当前已包含市场环境分析看板，后续继续扩展研究模块。
+A 股分析与交易规则工程工作区。当前包含市场环境分析看板，以及可重复执行、可追溯、可接入 CI 的规则平台。
 
 ## 这个仓库怎么运作
 
@@ -30,6 +30,17 @@ npm run dev --prefix apps/market-environment-dashboard
 ```
 
 打开 `http://localhost:5173` 查看上证、深证、创业板、沪深 300 和中证 500 的趋势、区间位置与成交额分析。市场广度指标暂未接入。
+
+## 交易规则平台
+
+```bash
+python -m src.trading_system.cli rules validate
+python -m src.trading_system.cli rules coverage
+python -m src.trading_system.cli evaluate --rule-set market-environment --snapshot tests/fixtures/trading-system/market-environment-complete.json --output .artifacts/evidence
+python -m src.trading_system.cli evidence verify .artifacts/evidence
+```
+
+`trading-rules/` 是机器执行事实源，`搭建交易系统-量化版/` 是人读说明层。首期实现市场环境第 01 章 46 条规则；经验阈值不代表已经验证的收益优势。
 
 ## 下一步去哪
 
