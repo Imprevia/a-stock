@@ -83,3 +83,79 @@ def test_sina_index_kline_calibrates_historical_amount(monkeypatch):
     assert len(bars) == 2
     assert bars[-1].amount == 2000
     assert captured["symbol"] == "sh000001"
+
+
+def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(monkeypatch):
+    provider = MarketDataProvider()
+
+    def fake_get_json(url, params):
+        if "push2ex" in url:
+            endpoint = url.rsplit("/", 1)[-1]
+            pools = {
+                "getTopicZTPool": [{"c": "000001", "lbc": 3}],
+                "getTopicZBPool": [{"c": "000002"}, {"c": "000003"}],
+                "getTopicDTPool": [{"c": "000004"}],
+            }
+            return {"data": {"pool": pools[endpoint]}}
+        if params["fs"] == "m:90+t:2":
+            return {
+                "data": {
+                    "diff": [
+                        {
+                            "f12": "BK001",
+                            "f14": "电子",
+                            "f3": 2.5,
+                            "f6": 1000,
+                            "f62": 300,
+                            "f184": 3.0,
+                            "f104": 20,
+                            "f105": 5,
+                            "f140": "样本股",
+                        }
+                    ]
+                }
+            }
+        return {
+            "data": {
+                "diff": [
+                    {"f12": "000001", "f14": "甲", "f3": 2, "f6": 400, "f2": 11, "f15": 12, "f16": 10, "f100": "电子"},
+                    {"f12": "000002", "f14": "乙", "f3": -1, "f6": 300, "f2": 9, "f15": 10, "f16": 8, "f100": "电子"},
+                    {"f12": "000003", "f14": "丙", "f3": 0, "f6": 200, "f2": 8, "f15": 9, "f16": 7, "f100": "电子"},
+                    {"f12": "000004", "f14": "丁", "f3": 3, "f6": 100, "f2": 7, "f15": 7, "f16": 7, "f100": "医药"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert payload["breadth"]["advanceCount"] == 2
+    assert payload["breadth"]["declineCount"] == 1
+    assert payload["breadth"]["flatCount"] == 1
+    assert payload["breadth"]["medianReturn"] == 1.0
+    assert payload["limits"]["failedLimitUpRatio"] == 0.6667
+    assert payload["limits"]["maxStreak"] == 3
+    assert payload["activeDirection"]["state"] == "candidate"
+    assert payload["activeDirection"]["topStocks"][-1]["closePosition"] is None
+    assert "percentile" not in json.dumps(payload, ensure_ascii=False).lower()
+
+
+def test_chapter01_limit_provider_distinguishes_failure_from_explicit_empty_pool(monkeypatch):
+    provider = MarketDataProvider()
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", lambda url, params: {"data": {"pool": []}})
+    empty = provider._fetch_limit_evidence(date(2026, 8, 28))
+    assert empty["limitUpCount"] == 0
+    assert empty["limitDownCount"] == 0
+    assert empty["failedLimitUpRatio"] is None
+    assert empty["maxStreak"] is None
+
+    def fail(url, params):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fail)
+    failed = provider._fetch_limit_evidence(date(2026, 8, 28))
+    assert failed["limitUpCount"] is None
+    assert failed["limitDownCount"] is None
+    assert failed["failedLimitUpCount"] is None
+    assert failed["quality"]["status"] == "failed"

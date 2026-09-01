@@ -88,9 +88,174 @@ class MarketEnvironmentService:
             "indices": analyses,
             "summary": {"synchronization": sync, "dominantTrend": dominant, "warnings": warnings},
         }
+        payload["chapter01"] = self._chapter01(
+            effective_date,
+            allow_current_snapshot=as_of == date.today(),
+            analyses=analyses,
+            synchronization=sync,
+            dominant_trend=dominant,
+        )
+        if payload["chapter01"]["status"] != "ok":
+            warnings.append("第 01 章扩展证据未完整覆盖，结论保持低置信度或数据不足")
         with self._lock:
             self._cache[cache_key] = (now, payload)
         return payload
+
+    def _chapter01(
+        self,
+        as_of: date,
+        *,
+        allow_current_snapshot: bool,
+        analyses: list[dict],
+        synchronization: str,
+        dominant_trend: str,
+    ) -> dict:
+        fetch = getattr(self.provider, "fetch_chapter01", None)
+        if fetch is None:
+            provider_data = self._missing_chapter_provider_data(as_of, "provider 未实现第 01 章扩展接口")
+        else:
+            try:
+                provider_data = fetch(as_of, allow_current_snapshot=allow_current_snapshot)
+            except Exception as exc:
+                provider_data = self._missing_chapter_provider_data(as_of, f"第 01 章扩展接口失败：{exc}")
+
+        breadth = provider_data["breadth"]
+        limits = provider_data["limits"]
+        sectors = provider_data["sectors"]
+        active_direction = provider_data["activeDirection"]
+        events = {
+            "state": "unverified",
+            "items": [],
+            "quality": self._quality(
+                "traceable-events",
+                "not-connected",
+                "missing",
+                0,
+                as_of,
+                ["未提供带来源、发布时间、有效期和失效条件的结构化事件输入"],
+            ),
+        }
+        documents = self._chapter_documents(breadth, limits, sectors, active_direction)
+        qualities = [breadth["quality"], limits["quality"], sectors["quality"], active_direction["quality"], events["quality"]]
+        status_weight = {"ok": 1.0, "fallback": 0.75, "partial": 0.5, "missing": 0.0, "failed": 0.0}
+        coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 6.0, 4)
+        status = "partial" if coverage >= 0.5 else "insufficient"
+
+        evidence = [f"指数：{synchronization}，主导趋势 {dominant_trend}，有效指数 {len(analyses)} 个"]
+        if breadth.get("validCount") is not None:
+            evidence.append(
+                f"广度：涨 {breadth['advanceCount']} / 跌 {breadth['declineCount']} / 平 {breadth['flatCount']}，中位涨跌幅 {breadth['medianReturn']:.2f}%"
+            )
+        if limits.get("limitUpCount") is not None:
+            evidence.append(
+                f"涨跌停：涨停 {limits['limitUpCount']}，跌停 {limits['limitDownCount']}，炸板 {limits['failedLimitUpCount']}"
+            )
+        if sectors.get("rows"):
+            names = "、".join(item.get("name") or "未知" for item in sectors["rows"][:3])
+            evidence.append(f"行业当日排名：{names}")
+        if active_direction.get("summary"):
+            evidence.append(f"容量方向：{active_direction['summary']}")
+
+        risks = [
+            "高位股、中位股和低位股亏钱效应尚未接入",
+            "事件、政策和突发信息未提供可追溯结构化输入",
+            "滚动分位和历史阈值尚未校准，不输出验证分数",
+        ]
+        confidence = "low" if coverage >= 0.5 else "insufficient"
+        return {
+            "status": status,
+            "coverage": coverage,
+            "documents": documents,
+            "breadth": breadth,
+            "limits": limits,
+            "sectors": sectors,
+            "activeDirection": active_direction,
+            "events": events,
+            "assessment": {
+                "state": "证据不完整" if confidence == "low" else "insufficient",
+                "confidence": confidence,
+                "evidence": evidence,
+                "risks": risks,
+                "nextConfirmation": "补齐分层亏钱效应、主线连续性和可追溯事件后再确认环境分类",
+                "invalidation": "任一证据日期不一致、provider 失败或风险证据显著恶化时，不使用候选判断",
+            },
+        }
+
+    @classmethod
+    def _missing_chapter_provider_data(cls, as_of: date, warning: str) -> dict:
+        quality = cls._quality("chapter-01-extended", "none", "failed", 0, as_of, [warning])
+        return {
+            "breadth": {
+                "advanceCount": None,
+                "declineCount": None,
+                "flatCount": None,
+                "validCount": None,
+                "advanceRatio": None,
+                "medianReturn": None,
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "market-breadth"},
+            },
+            "limits": {
+                "limitUpCount": None,
+                "limitDownCount": None,
+                "failedLimitUpCount": None,
+                "failedLimitUpRatio": None,
+                "maxStreak": None,
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "limit-pools"},
+            },
+            "sectors": {
+                "rows": [],
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "industry-ranking"},
+            },
+            "activeDirection": {
+                "state": "insufficient",
+                "summary": None,
+                "topStocks": [],
+                "quality": {**quality, "dataset": "active-direction"},
+            },
+        }
+
+    @staticmethod
+    def _quality(dataset: str, provider: str, status: str, observations: int, as_of: date, warnings: list[str]) -> dict:
+        return {
+            "dataset": dataset,
+            "source": provider,
+            "provider": provider,
+            "status": status,
+            "observations": observations,
+            "asOf": as_of.isoformat(),
+            "warning": "；".join(warnings) if warnings else None,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _chapter_documents(breadth: dict, limits: dict, sectors: dict, active_direction: dict) -> list[dict]:
+        def evidence_status(quality: dict) -> str:
+            return "partial" if quality["status"] in {"ok", "fallback", "partial"} else "insufficient"
+
+        definitions = (
+            ("01", "指数、趋势位置和成交额", "partial"),
+            ("02", "上涨家数、下跌家数和涨跌幅中位数", evidence_status(breadth["quality"])),
+            ("03", "涨停、跌停、炸板和连板晋级", evidence_status(limits["quality"])),
+            ("04", "高位股、中位股和低位股的亏钱效应", "insufficient"),
+            ("05", "主线持续性和成交额集中度", evidence_status(sectors["quality"])),
+            ("06", "大成交额个股中是否出现主动进攻方向", evidence_status(active_direction["quality"])),
+            ("07", "公告、政策、外围和突发事件", "unverified"),
+            ("08", "如何归类市场环境", "insufficient"),
+            ("09", "如何综合判断市场环境", "insufficient"),
+        )
+        return [
+            {
+                "id": doc_id,
+                "title": title,
+                "document": f"01-如何判断市场环境/{doc_id}.{title}.md",
+                "status": status,
+                "ruleVersion": "0.1",
+            }
+            for doc_id, title, status in definitions
+        ]
 
     @staticmethod
     def _analyse(spec, bars: list[Bar], result: ProviderResult, quote: dict) -> dict:

@@ -64,4 +64,4 @@
 - 市场环境分析 API：`src/market_environment/`；负责五大指数行情适配、指标计算、数据质量和 FastAPI 契约。
 - 市场环境分析网页：`apps/market-environment-dashboard/`；Vue 3 + Vite + TypeScript + ECharts 单页看板，开发时通过 Vite 将 `/api` 代理到 8000 端口。
 - 交易规则平台：`src/trading_system/` + `trading-rules/`；负责规则 schema、快照、确定性 evaluator、证据、回测和 CI 契约。
-- 修改上述代码时必须同步 `docs/architecture.md`、`docs/runbooks.md` 和 active plan；市场广度数据（上涨/下跌家数及涨跌幅中位数）暂不属于当前范围。
+- 修改上述代码时必须同步 `docs/architecture.md`、`docs/runbooks.md` 和 active plan；第 01 章看板已覆盖指数、市场广度、涨跌停生态、行业与容量方向，未接入的数据必须保持 `null` / `insufficient`。

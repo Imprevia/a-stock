@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
+from statistics import median
 from typing import Any
 
 import requests
@@ -153,6 +155,311 @@ class MarketDataProvider:
                 "is_stale": bool(amount_wan == 0 and price == last_close and price > 0),
             }
         return result
+
+    def fetch_chapter01(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
+        """Fetch additive Chapter 01 evidence without time-shifting snapshots.
+
+        Eastmoney's stock and industry ranking endpoints expose only the latest
+        market snapshot, so they are deliberately skipped for historical
+        requests. The limit pools accept a trading date and remain available.
+        """
+        if allow_current_snapshot:
+            try:
+                stocks = self._fetch_eastmoney_stock_snapshot()
+                breadth = self._build_breadth(stocks, as_of)
+                active_direction = self._build_active_direction(stocks, as_of)
+            except Exception as exc:
+                warning = f"东方财富全 A 当前快照不可用：{exc}"
+                breadth = self._missing_breadth(as_of, warning, status="failed")
+                active_direction = self._missing_active_direction(as_of, warning, status="failed")
+            try:
+                sectors = self._build_sectors(self._fetch_eastmoney_industries(), as_of)
+            except Exception as exc:
+                sectors = self._missing_sectors(as_of, f"东方财富行业排名不可用：{exc}", status="failed")
+        else:
+            warning = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
+            breadth = self._missing_breadth(as_of, warning)
+            active_direction = self._missing_active_direction(as_of, warning)
+            sectors = self._missing_sectors(as_of, warning)
+
+        return {
+            "breadth": breadth,
+            "limits": self._fetch_limit_evidence(as_of),
+            "sectors": sectors,
+            "activeDirection": active_direction,
+        }
+
+    def _fetch_eastmoney_stock_snapshot(self) -> list[dict[str, Any]]:
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1",
+            "pz": "6000",
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f6",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+            "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
+        }
+        payload = self.eastmoney.get_json(url, params)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("全 A 快照响应缺少 data")
+        rows = data.get("diff")
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError("全 A 快照未返回有效股票")
+        return rows
+
+    def _fetch_eastmoney_industries(self) -> list[dict[str, Any]]:
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": "1",
+            "pz": "100",
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": "m:90+t:2",
+            "fields": "f3,f6,f12,f14,f62,f104,f105,f140,f184",
+        }
+        payload = self.eastmoney.get_json(url, params)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("行业排名响应缺少 data")
+        rows = data.get("diff")
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError("行业排名未返回有效板块")
+        return rows
+
+    def _fetch_limit_pool(self, endpoint: str, sort: str, as_of: date) -> list[dict[str, Any]]:
+        url = f"https://push2ex.eastmoney.com/{endpoint}"
+        params = {
+            "ut": "7eea3edcaed734bea9cbfc24409ed989",
+            "dpt": "wz.ztzt",
+            "Pageindex": "0",
+            "pagesize": "10000",
+            "sort": sort,
+            "date": as_of.strftime("%Y%m%d"),
+        }
+        payload = self.eastmoney.get_json(url, params)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("响应没有该交易日的数据")
+        rows = data.get("pool")
+        if not isinstance(rows, list):
+            raise RuntimeError("响应缺少 pool")
+        return rows
+
+    def _fetch_limit_evidence(self, as_of: date) -> dict[str, Any]:
+        definitions = {
+            "limit_up": ("getTopicZTPool", "fbt:asc"),
+            "failed_limit_up": ("getTopicZBPool", "fbt:asc"),
+            "limit_down": ("getTopicDTPool", "fund:asc"),
+        }
+        pools: dict[str, list[dict[str, Any]] | None] = {}
+        warnings: list[str] = []
+        for key, (endpoint, sort) in definitions.items():
+            try:
+                pools[key] = self._fetch_limit_pool(endpoint, sort, as_of)
+            except Exception as exc:
+                pools[key] = None
+                warnings.append(f"{key}: {exc}")
+
+        limit_up_count = len(pools["limit_up"]) if pools["limit_up"] is not None else None
+        failed_count = len(pools["failed_limit_up"]) if pools["failed_limit_up"] is not None else None
+        limit_down_count = len(pools["limit_down"]) if pools["limit_down"] is not None else None
+        failed_ratio = None
+        if limit_up_count is not None and failed_count is not None and limit_up_count + failed_count > 0:
+            failed_ratio = failed_count / (limit_up_count + failed_count)
+        streaks = [
+            value
+            for item in pools["limit_up"] or []
+            if (value := self._optional_int(item.get("lbc"))) is not None
+        ]
+        max_streak = max(streaks) if streaks else None
+        observed = sum(len(rows) for rows in pools.values() if rows is not None)
+        if len(warnings) == len(definitions):
+            status, state = "failed", "insufficient"
+        elif warnings:
+            status, state = "partial", "partial"
+        elif limit_up_count == failed_count == limit_down_count == 0:
+            status, state = "ok", "无触板样本"
+        else:
+            status, state = "ok", "已观测"
+        return {
+            "limitUpCount": limit_up_count,
+            "limitDownCount": limit_down_count,
+            "failedLimitUpCount": failed_count,
+            "failedLimitUpRatio": round(failed_ratio, 4) if failed_ratio is not None else None,
+            "maxStreak": max_streak,
+            "state": state,
+            "quality": self._quality("limit-pools", "eastmoney-push2ex", status, observed, as_of, warnings),
+        }
+
+    def _build_breadth(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+        returns = [value for row in rows if (value := self._optional_float(row.get("f3"))) is not None]
+        if not returns:
+            return self._missing_breadth(as_of, "全 A 快照缺少有效涨跌幅", status="failed")
+        advance_count = sum(value > 0 for value in returns)
+        decline_count = sum(value < 0 for value in returns)
+        flat_count = len(returns) - advance_count - decline_count
+        middle = median(returns)
+        advance_ratio = advance_count / len(returns)
+        if advance_ratio > 0.5 and middle > 0:
+            state = "多数上涨"
+        elif advance_ratio < 0.5 and middle < 0:
+            state = "多数下跌"
+        else:
+            state = "涨跌分化"
+        warnings = ["当前快照按可返回涨跌幅的股票计数，板块/ST/上市时长分层尚未接入"]
+        return {
+            "advanceCount": advance_count,
+            "declineCount": decline_count,
+            "flatCount": flat_count,
+            "validCount": len(returns),
+            "advanceRatio": round(advance_ratio, 4),
+            "medianReturn": round(float(middle), 4),
+            "state": state,
+            "quality": self._quality("market-breadth", "eastmoney-clist", "partial", len(returns), as_of, warnings),
+        }
+
+    def _build_sectors(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+        result = []
+        for rank, item in enumerate(rows[:10], start=1):
+            result.append(
+                {
+                    "rank": rank,
+                    "code": self._optional_text(item.get("f12")),
+                    "name": self._optional_text(item.get("f14")),
+                    "changePct": self._optional_float(item.get("f3")),
+                    "amount": self._optional_float(item.get("f6")),
+                    "mainNet": self._optional_float(item.get("f62")),
+                    "mainNetPct": self._optional_float(item.get("f184")),
+                    "upCount": self._optional_int(item.get("f104")),
+                    "downCount": self._optional_int(item.get("f105")),
+                    "leader": self._optional_text(item.get("f140")),
+                }
+            )
+        warnings = ["仅反映当日行业排名和资金流，5日持续性、板块宽度与分歧承接尚未接入"]
+        return {
+            "rows": result,
+            "state": "当日排名已观测",
+            "quality": self._quality("industry-ranking", "eastmoney-clist", "partial", len(rows), as_of, warnings),
+        }
+
+    def _build_active_direction(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+        ranked = sorted(
+            (row for row in rows if self._optional_float(row.get("f6")) is not None),
+            key=lambda row: self._optional_float(row.get("f6")) or 0,
+            reverse=True,
+        )
+        top30 = ranked[:30]
+        industries = Counter(
+            industry for row in top30 if (industry := self._optional_text(row.get("f100"))) is not None
+        )
+        cluster_name, cluster_count = industries.most_common(1)[0] if industries else (None, 0)
+        if cluster_name and cluster_count >= 3:
+            state = "candidate"
+            summary = f"成交额前30中 {cluster_name} 有 {cluster_count} 只，形成方向聚集线索，尚未完成连续性确认"
+        else:
+            state = "unverified"
+            summary = "成交额前30未形成至少3只同一行业的聚集线索"
+        stocks = []
+        for row in top30[:10]:
+            close = self._optional_float(row.get("f2"))
+            high = self._optional_float(row.get("f15"))
+            low = self._optional_float(row.get("f16"))
+            close_position = None
+            if close is not None and high is not None and low is not None and high > low:
+                close_position = max(0.0, min(1.0, (close - low) / (high - low)))
+            stocks.append(
+                {
+                    "code": self._optional_text(row.get("f12")),
+                    "name": self._optional_text(row.get("f14")),
+                    "industry": self._optional_text(row.get("f100")),
+                    "changePct": self._optional_float(row.get("f3")),
+                    "amount": self._optional_float(row.get("f6")),
+                    "closePosition": round(close_position, 4) if close_position is not None else None,
+                }
+            )
+        warnings = ["仅有当日成交额、涨跌幅和收盘位置；20日成交放大、超额收益与连续2日确认尚未接入"]
+        return {
+            "state": state,
+            "summary": summary,
+            "topStocks": stocks,
+            "quality": self._quality("active-direction", "eastmoney-clist", "partial", len(top30), as_of, warnings),
+        }
+
+    @classmethod
+    def _missing_breadth(cls, cls_as_of: date, warning: str, status: str = "missing") -> dict[str, Any]:
+        return {
+            "advanceCount": None,
+            "declineCount": None,
+            "flatCount": None,
+            "validCount": None,
+            "advanceRatio": None,
+            "medianReturn": None,
+            "state": "insufficient",
+            "quality": cls._quality("market-breadth", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+        }
+
+    @classmethod
+    def _missing_sectors(cls, cls_as_of: date, warning: str, status: str = "missing") -> dict[str, Any]:
+        return {
+            "rows": [],
+            "state": "insufficient",
+            "quality": cls._quality("industry-ranking", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+        }
+
+    @classmethod
+    def _missing_active_direction(cls, cls_as_of: date, warning: str, status: str = "missing") -> dict[str, Any]:
+        return {
+            "state": "insufficient",
+            "summary": None,
+            "topStocks": [],
+            "quality": cls._quality("active-direction", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+        }
+
+    @staticmethod
+    def _quality(
+        dataset: str,
+        provider: str,
+        status: str,
+        observations: int,
+        as_of: date,
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "dataset": dataset,
+            "source": provider,
+            "provider": provider,
+            "status": status,
+            "observations": observations,
+            "asOf": as_of.isoformat(),
+            "warning": "；".join(warnings) if warnings else None,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value in (None, "", "-"):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _optional_int(cls, value: Any) -> int | None:
+        number = cls._optional_float(value)
+        return int(number) if number is not None else None
+
+    @staticmethod
+    def _optional_text(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text if text and text != "-" else None
 
     def _fetch_mootdx(self, spec: IndexSpec, limit: int) -> list[Bar]:
         from mootdx.quotes import Quotes

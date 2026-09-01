@@ -46,4 +46,123 @@ export interface MarketEnvironmentResponse {
     dominantTrend: string
     warnings: string[]
   }
+  chapter01?: Chapter01Analysis
+}
+
+export interface DataSetQuality {
+  dataset?: string
+  source: string
+  provider?: string
+  status: 'ok' | 'fallback' | 'missing' | 'failed' | string
+  warning?: string | null
+  warnings?: string[]
+  observations?: number
+  asOf?: string
+}
+
+export interface ChapterDocument {
+  id: string
+  title: string
+  document?: string
+  status?: string
+  ruleVersion?: string
+}
+
+export interface BreadthAnalysis {
+  advanceCount: number | null
+  declineCount: number | null
+  flatCount: number | null
+  validCount: number | null
+  advanceRatio: number | null
+  medianReturn: number | null
+  state: string
+  quality: DataSetQuality
+}
+
+export interface LimitAnalysis {
+  limitUpCount: number | null
+  limitDownCount: number | null
+  failedLimitUpCount: number | null
+  failedLimitUpRatio: number | null
+  promotionRatio?: number | null
+  maxStreak: number | null
+  state: string
+  quality: DataSetQuality
+}
+
+export interface SectorRow {
+  rank?: number
+  code?: string | null
+  name: string | null
+  changePct?: number | null
+  amount?: number | null
+  upCount?: number | null
+  downCount?: number | null
+  leader?: string | null
+  mainNet?: number | null
+  mainNetPct?: number | null
+}
+
+export interface SectorAnalysis {
+  state: string
+  rows: SectorRow[]
+  quality: DataSetQuality
+}
+
+export interface ActiveStock {
+  code: string | null
+  name: string | null
+  changePct?: number | null
+  amount?: number | null
+  industry?: string | null
+  closePosition?: number | null
+}
+
+export interface ActiveDirectionAnalysis {
+  state: string
+  summary?: string | null
+  topStocks: ActiveStock[]
+  quality: DataSetQuality
+}
+
+export interface EventAnalysis {
+  state: string
+  items?: Array<{
+    title: string
+    source?: string
+    publishedAt?: string
+    url?: string
+    verified?: boolean
+  }>
+  quality: DataSetQuality
+}
+
+export interface ChapterAssessment {
+  state: string
+  score?: number | null
+  confidence: string
+  evidence: string[]
+  risks: string[]
+  nextConfirmation?: string | null
+  invalidation?: string | null
+}
+
+export interface Chapter01Analysis {
+  status: 'ok' | 'degraded' | 'insufficient' | string
+  coverage: number
+  documents?: ChapterDocument[]
+  breadth?: BreadthAnalysis
+  limits?: LimitAnalysis
+  tierRisk?: {
+    state: string
+    high?: number | null
+    middle?: number | null
+    low?: number | null
+    repairRatio?: number | null
+    quality: DataSetQuality
+  }
+  sectors?: SectorAnalysis
+  activeDirection?: ActiveDirectionAnalysis
+  events?: EventAnalysis
+  assessment: ChapterAssessment
 }

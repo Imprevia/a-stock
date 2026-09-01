@@ -4,6 +4,7 @@ import pytest
 
 from src.market_environment.calculations import Bar
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
+from src.market_environment.schemas import MarketEnvironmentResponse
 from src.market_environment.service import MarketEnvironmentService
 
 
@@ -79,3 +80,14 @@ def test_service_raises_when_all_indices_fail() -> None:
     provider = FakeProvider(failing={spec.code for spec in INDEX_SPECS})
     with pytest.raises(RuntimeError, match="全部指数数据源不可用"):
         MarketEnvironmentService(provider=provider).get(date(2026, 8, 28))
+
+
+def test_service_adds_null_safe_chapter01_contract_when_extended_provider_is_missing() -> None:
+    payload = MarketEnvironmentService(provider=FakeProvider()).get(date(2026, 8, 28))
+
+    assert len(payload["chapter01"]["documents"]) == 9
+    assert payload["chapter01"]["breadth"]["advanceCount"] is None
+    assert payload["chapter01"]["limits"]["limitUpCount"] is None
+    assert payload["chapter01"]["events"]["state"] == "unverified"
+    assert payload["chapter01"]["assessment"]["confidence"] == "insufficient"
+    MarketEnvironmentResponse.model_validate(payload)

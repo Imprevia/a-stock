@@ -2,7 +2,7 @@
 
 ## 仓库目的
 
-a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/trading-rule-engineering.md`。
+a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/market-environment-dashboard.md` 与 `docs/product-specs/trading-rule-engineering.md`。
 
 ## 顶层目录地图
 
@@ -23,7 +23,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `evidence/` | 可入库的验证清单和月度 SHA-256 摘要 | 不提交大体积输入快照和 trace |
 | `.github/workflows/` | 离线 PR 门禁和盘后证据运行 | PR workflow 禁止依赖外部行情网络 |
 | `src/market_environment/` | 市场环境分析 API、行情适配、指标计算和响应模型 | 修改数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
-| `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 单页分析看板 | 修改页面结构、接口字段或运行命令时同步 `docs/runbooks.md`；构建验证必需 |
+| `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 
