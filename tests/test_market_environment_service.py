@@ -61,6 +61,29 @@ def test_service_falls_back_to_last_trading_day_and_caches() -> None:
     assert provider.fetch_calls == len(INDEX_SPECS)
 
 
+def test_service_history_exposes_real_ohlc() -> None:
+    payload = MarketEnvironmentService(provider=FakeProvider()).get(date(2026, 8, 28))
+    history = payload["indices"][0]["history"]
+
+    assert len(history) == 60
+    assert history[-1]["open"] == history[-1]["close"] - 2
+    assert history[-1]["high"] == history[-1]["close"] + 5
+    assert history[-1]["low"] == history[-1]["close"] - 5
+    MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_service_exposes_index_combination_and_market_overview() -> None:
+    payload = MarketEnvironmentService(provider=FakeProvider()).get(date(2026, 8, 28))
+
+    combination = payload["indices"][0]["combination"]
+    assert set(combination) == {"key", "state", "matched", "tone", "evidence", "tradingMode"}
+    assert combination["evidence"]
+    overview = payload["chapter01"]["combinationOverview"]
+    assert set(overview) == {"strength", "stage", "capitalAcceptance", "tradingMode", "confidence", "evidence"}
+    assert overview["evidence"]
+    MarketEnvironmentResponse.model_validate(payload)
+
+
 def test_service_keeps_partial_success_and_warning() -> None:
     failed = {INDEX_SPECS[0].code}
     payload = MarketEnvironmentService(provider=FakeProvider(failing=failed)).get(date(2026, 8, 28))

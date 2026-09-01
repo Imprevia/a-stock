@@ -22,12 +22,24 @@ class DataQuality(BaseModel):
 
 class HistoryPoint(BaseModel):
     date: str
+    open: float
     close: float
+    low: float
+    high: float
     ma5: float | None
     ma10: float | None
     ma20: float | None
     ma60: float | None
     amount: float
+
+
+class IndexCombination(BaseModel):
+    key: str
+    state: str | None
+    matched: bool
+    tone: str
+    evidence: list[str]
+    tradingMode: str
 
 
 class IndexAnalysis(BaseModel):
@@ -45,7 +57,8 @@ class IndexAnalysis(BaseModel):
     amountRatio5: float | None
     amountRatio20: float | None
     trendState: str
-    volumePriceState: str
+    volumePriceState: str | None
+    combination: IndexCombination
     history: list[HistoryPoint]
     dataQuality: DataQuality
 
@@ -146,6 +159,15 @@ class ChapterAssessment(BaseModel):
     invalidation: str
 
 
+class CombinationOverview(BaseModel):
+    strength: str
+    stage: str
+    capitalAcceptance: str
+    tradingMode: str
+    confidence: str
+    evidence: list[str]
+
+
 class Chapter01Evidence(BaseModel):
     status: str
     coverage: float
@@ -155,6 +177,7 @@ class Chapter01Evidence(BaseModel):
     sectors: SectorEvidence
     activeDirection: ActiveDirectionEvidence
     events: EventEvidence
+    combinationOverview: CombinationOverview
     assessment: ChapterAssessment
 
 

@@ -20,6 +20,15 @@ const documents = [
   { id: '09', title: '如何综合判断市场环境', objective: '形成环境类别、证据链、置信度、风险和次日验证条件。', rules: 'QTS-01-09-01 ~ 04', icon: Scale },
 ]
 
+const combinationDefinitions = [
+  { key: 'bottom_repair', condition: '低位、重回短期均线、温和放量', state: '底部修复或启动尝试' },
+  { key: 'uptrend', condition: '均线多头、位置抬升、量能稳定', state: '上升趋势或主升阶段' },
+  { key: 'breakout', condition: '区间高位、放量突破、收盘较强', state: '趋势加速或突破确认' },
+  { key: 'high_divergence', condition: '区间高位、巨量滞涨、冲高回落', state: '高位分歧或派发风险' },
+  { key: 'rotation', condition: '均线缠绕、量能忽高忽低', state: '震荡轮动' },
+  { key: 'trend_damage', condition: '跌破关键均线、放量下跌', state: '趋势破坏或退潮' },
+]
+
 const data = ref<MarketEnvironmentResponse | null>(null)
 const selectedCode = ref('sh000001')
 const selectedDocumentId = ref('01')
@@ -35,10 +44,12 @@ let requestSequence = 0
 
 const selectedDocument = computed(() => documents.find((item) => item.id === selectedDocumentId.value) ?? documents[0])
 const selectedIndex = computed<IndexAnalysis | null>(() => data.value?.indices.find((item) => item.code === selectedCode.value) ?? data.value?.indices[0] ?? null)
+const selectedCombination = computed(() => selectedIndex.value?.combination ?? null)
 const chapter = computed(() => data.value?.chapter01)
 const breadth = computed(() => chapter.value?.breadth)
 const limits = computed(() => chapter.value?.limits)
 const assessment = computed(() => chapter.value?.assessment)
+const combinationOverview = computed(() => chapter.value?.combinationOverview)
 const generatedAt = computed(() => data.value?.generatedAt ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(data.value.generatedAt)) : '')
 const breadthBar = computed(() => {
   const item = breadth.value
@@ -53,6 +64,7 @@ const breadthBar = computed(() => {
 const changeTone = (value: number) => value > 0 ? 'positive' : value < 0 ? 'negative' : 'flat'
 const formatPct = (value: number | null | undefined) => value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
 const formatRatio = (value: number | null | undefined) => value == null ? '--' : `${value.toFixed(2)}x`
+const formatVolumePrice = (ratio: number | null | undefined, state: string | null | undefined) => [formatRatio(ratio), state].filter(Boolean).join(' ')
 const formatCount = (value: number | null | undefined) => value == null ? '--' : value.toLocaleString('zh-CN')
 const formatAmount = (value: number | null | undefined) => value == null ? '--' : Math.abs(value) >= 100000000 ? `${(value / 100000000).toFixed(1)} 亿` : `${(value / 10000).toFixed(0)} 万`
 const formatPosition = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
@@ -61,6 +73,32 @@ const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fa
 const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
 const confidenceLabel = (value?: string) => ({ high: '高', medium: '中', low: '低', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
 const environmentLabel = (value?: string) => ({ trend: '趋势', rotation: '轮动', retreat: '退潮', mixed: '混合', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
+
+interface ChartTooltipItem {
+  axisValueLabel?: string
+  data?: number[] | null
+  marker?: string
+  seriesName?: string
+  value?: number | number[] | null
+}
+
+function formatPriceTooltip(params: unknown) {
+  const items = Array.isArray(params) ? params as ChartTooltipItem[] : []
+  const candle = items.find((item) => item.seriesName === 'K线')
+  const rawValues = Array.isArray(candle?.data) ? candle.data : Array.isArray(candle?.value) ? candle.value : []
+  const values = rawValues.length === 5 ? rawValues.slice(1) : rawValues
+  const [open, close, low, high] = values.map((value) => Number(value))
+  const lines = [`<strong>${items[0]?.axisValueLabel ?? ''}</strong>`]
+  if (values.length === 4) {
+    lines.push(`${candle?.marker ?? ''}开 ${open.toFixed(2)}　高 ${high.toFixed(2)}`)
+    lines.push(`收 ${close.toFixed(2)}　低 ${low.toFixed(2)}`)
+  }
+  for (const item of items.filter((entry) => entry.seriesName?.startsWith('MA'))) {
+    const value = typeof item.value === 'number' ? item.value : null
+    if (value != null) lines.push(`${item.marker ?? ''}${item.seriesName}　${value.toFixed(2)}`)
+  }
+  return lines.join('<br/>')
+}
 
 async function loadData() {
   const requestId = ++requestSequence
@@ -95,22 +133,22 @@ function renderChart() {
   const dates = history.map((item) => item.date.slice(5))
   chart.setOption({
     animation: false,
-    grid: { top: 20, right: 18, bottom: 34, left: 48 }, tooltip: { trigger: 'axis', confine: true },
-    legend: { top: 0, right: 0, itemWidth: 12, itemHeight: 2, textStyle: { color: '#68727e', fontSize: 11 } },
-    xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { color: '#8a939e', fontSize: 10 }, axisLine: { lineStyle: { color: '#dfe4e8' } } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#8a939e', fontSize: 10 }, splitLine: { lineStyle: { color: '#edf0f2' } } },
+    grid: { top: 28, right: 18, bottom: 42, left: 62 }, tooltip: { trigger: 'axis', confine: true, textStyle: { fontSize: 14 }, formatter: formatPriceTooltip },
+    legend: { top: 0, right: 0, itemWidth: 14, itemHeight: 8, textStyle: { color: '#68727e', fontSize: 14 } },
+    xAxis: { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#8a939e', fontSize: 14 }, axisLine: { lineStyle: { color: '#dfe4e8' } } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#8a939e', fontSize: 14 }, splitLine: { lineStyle: { color: '#edf0f2' } } },
     series: [
-      { name: '收盘', type: 'line', data: history.map((item) => item.close), showSymbol: false, lineStyle: { width: 2.5, color: '#176b87' } },
-      { name: 'MA5', type: 'line', data: history.map((item) => item.ma5), showSymbol: false, lineStyle: { width: 1.2, color: '#c45b55' } },
-      { name: 'MA10', type: 'line', data: history.map((item) => item.ma10), showSymbol: false, lineStyle: { width: 1.2, color: '#7263a7' } },
-      { name: 'MA20', type: 'line', data: history.map((item) => item.ma20), showSymbol: false, lineStyle: { width: 1.5, color: '#d18a35' } },
-      { name: 'MA60', type: 'line', data: history.map((item) => item.ma60), showSymbol: false, lineStyle: { width: 1.5, color: '#87929d' } },
+      { name: 'K线', type: 'candlestick', data: history.map((item) => [item.open, item.close, item.low, item.high]), itemStyle: { color: '#c65050', color0: '#26815f', borderColor: '#c65050', borderColor0: '#26815f' } },
+      { name: 'MA5', type: 'line', data: history.map((item) => item.ma5), showSymbol: false, connectNulls: false, lineStyle: { width: 1.2, color: '#c45b55' }, z: 3 },
+      { name: 'MA10', type: 'line', data: history.map((item) => item.ma10), showSymbol: false, connectNulls: false, lineStyle: { width: 1.2, color: '#7263a7' }, z: 3 },
+      { name: 'MA20', type: 'line', data: history.map((item) => item.ma20), showSymbol: false, connectNulls: false, lineStyle: { width: 1.5, color: '#d18a35' }, z: 3 },
+      { name: 'MA60', type: 'line', data: history.map((item) => item.ma60), showSymbol: false, connectNulls: false, lineStyle: { width: 1.5, color: '#87929d' }, z: 3 },
     ],
   })
   volumeChart.setOption({
-    animation: false, grid: { top: 8, right: 18, bottom: 24, left: 48 }, tooltip: { trigger: 'axis', confine: true },
+    animation: false, grid: { top: 8, right: 18, bottom: 8, left: 62 }, tooltip: { trigger: 'axis', confine: true, textStyle: { fontSize: 14 } },
     xAxis: { type: 'category', data: dates, axisLabel: { show: false }, axisLine: { lineStyle: { color: '#edf0f2' } } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#a0a8b0', fontSize: 9, formatter: (value: number) => `${(value / 100000000).toFixed(0)}亿` }, splitLine: { lineStyle: { color: '#f3f5f6' } } },
+    yAxis: { type: 'value', scale: true, splitNumber: 3, axisLabel: { color: '#a0a8b0', fontSize: 14, hideOverlap: true, formatter: (value: number) => `${(value / 100000000).toFixed(0)}亿` }, splitLine: { lineStyle: { color: '#f3f5f6' } } },
     series: [{ name: '成交额', type: 'bar', data: history.map((item) => item.amount || null), barMaxWidth: 12, itemStyle: { color: '#b9d2d4' } }],
   })
 }
@@ -167,9 +205,29 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
           <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span>更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
 
           <template v-if="selectedDocumentId === '01'">
-            <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ index.volumePriceState }}</span></div></button></section>
-            <section class="workspace-grid"><article class="panel chart-panel"><div class="panel-heading"><div><span class="panel-kicker">价格结构</span><h2>{{ selectedIndex?.name }} · 60 日走势</h2></div><span class="selected-hint"><TrendingUp v-if="selectedIndex && selectedIndex.changePct >= 0" :size="15" /><TrendingDown v-else :size="15" />{{ selectedIndex?.trendState }}</span></div><div ref="chartElement" class="price-chart" /><div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div><div ref="volumeChartElement" class="volume-chart" /><div class="chart-footnote"><span>历史收盘与 MA5 / MA10 / MA20 / MA60</span><span>来源：{{ selectedIndex?.dataQuality.source }}</span></div></article><article class="panel detail-panel"><div class="panel-heading"><div><span class="panel-kicker">当前结构</span><h2>趋势与量能</h2></div></div><div v-if="selectedIndex" class="metric-stack"><div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div><div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div><div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div><div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div></div></article></section>
-            <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">横向比较</span><h2>五大指数指标表</h2></div></div><div class="table-scroll"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>收盘价</th><th>MA20 / MA60</th><th>20日位置</th><th>60日位置</th><th>成交额</th><th>5日 / 20日</th><th>量价状态</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td><td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td><td>{{ index.close.toFixed(2) }}</td><td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td><td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td><td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td><td>{{ formatAmount(index.amount) }}</td><td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td><td><span class="state-chip">{{ index.volumePriceState }}</span></td></tr></tbody></table></div></section>
+            <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></button></section>
+            <section class="workspace-grid"><article class="panel chart-panel"><div class="panel-heading"><div><span class="panel-kicker">价格结构</span><h2>{{ selectedIndex?.name }} · 60 日走势</h2></div><span class="selected-hint"><TrendingUp v-if="selectedIndex && selectedIndex.changePct >= 0" :size="15" /><TrendingDown v-else :size="15" />{{ selectedIndex?.trendState }}</span></div><div ref="chartElement" class="price-chart" /><div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div><div ref="volumeChartElement" class="volume-chart" /><div class="chart-footnote"><span>日 K 线与 MA5 / MA10 / MA20 / MA60</span><span>来源：{{ selectedIndex?.dataQuality.source }}</span></div></article><article class="panel detail-panel"><div class="panel-heading"><div><span class="panel-kicker">当前结构</span><h2>趋势与量能</h2></div></div><div v-if="selectedIndex" class="metric-stack"><div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div><div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div><div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div><div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div></div></article></section>
+            <section class="combination-grid">
+              <article class="panel combination-panel">
+                <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 当前指数</span><h2>{{ selectedIndex?.name }} · 指数、位置与成交额组合</h2></div><span class="quality-badge" :class="selectedCombination?.matched ? 'ok' : 'missing'">{{ selectedCombination?.matched ? '明确命中' : '未分类' }}</span></div>
+                <div v-if="selectedCombination" class="combination-state" :class="selectedCombination.tone"><span>当前组合</span><strong>{{ selectedCombination.state || '未命中明确组合' }}</strong><p>交易模式：{{ selectedCombination.tradingMode }}</p></div>
+                <ul v-if="selectedCombination" class="combination-evidence"><li v-for="item in selectedCombination.evidence" :key="item">{{ item }}</li></ul>
+              </article>
+              <article class="panel combination-overview-panel">
+                <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 四项输出</span><h2>市场组合结论</h2></div><span class="quality-badge" :class="combinationOverview?.confidence === 'medium' ? 'fallback' : 'missing'">置信度 {{ confidenceLabel(combinationOverview?.confidence) }}</span></div>
+                <div class="combination-output-list">
+                  <div><span>市场是否真强</span><strong>{{ combinationOverview?.strength || '数据不足' }}</strong></div>
+                  <div><span>市场所处阶段</span><strong>{{ combinationOverview?.stage || '数据不足' }}</strong></div>
+                  <div><span>资金是否认可</span><strong>{{ combinationOverview?.capitalAcceptance || '数据不足' }}</strong></div>
+                  <div><span>交易模式</span><strong>{{ combinationOverview?.tradingMode || '数据不足' }}</strong></div>
+                </div>
+              </article>
+            </section>
+            <section class="panel combination-rules-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 规则对照</span><h2>六类典型组合</h2></div><span class="selected-hint">经验阈值 · 待回测</span></div>
+              <div class="combination-rule-list"><div v-for="item in combinationDefinitions" :key="item.key" :class="{ active: selectedCombination?.key === item.key }"><span>{{ item.condition }}</span><strong>{{ item.state }}</strong></div></div>
+            </section>
+            <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">横向比较</span><h2>五大指数指标表</h2></div></div><div class="table-scroll"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>收盘价</th><th>MA20 / MA60</th><th>20日位置</th><th>60日位置</th><th>成交额</th><th>5日 / 20日</th><th>量价状态</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td><td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td><td>{{ index.close.toFixed(2) }}</td><td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td><td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td><td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td><td>{{ formatAmount(index.amount) }}</td><td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td><td><span v-if="index.volumePriceState" class="state-chip">{{ index.volumePriceState }}</span><span v-else>--</span></td></tr></tbody></table></div></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '02'">

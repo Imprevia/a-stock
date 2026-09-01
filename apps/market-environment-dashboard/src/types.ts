@@ -1,11 +1,23 @@
 export interface HistoryPoint {
   date: string
+  open: number
   close: number
+  low: number
+  high: number
   ma5: number | null
   ma10: number | null
   ma20: number | null
   ma60: number | null
   amount: number
+}
+
+export interface IndexCombination {
+  key: string
+  state: string | null
+  matched: boolean
+  tone: string
+  evidence: string[]
+  tradingMode: string
 }
 
 export interface IndexAnalysis {
@@ -28,7 +40,8 @@ export interface IndexAnalysis {
   amountRatio5: number | null
   amountRatio20: number | null
   trendState: string
-  volumePriceState: string
+  volumePriceState: string | null
+  combination: IndexCombination
   history: HistoryPoint[]
   dataQuality: {
     source: string
@@ -147,6 +160,15 @@ export interface ChapterAssessment {
   invalidation?: string | null
 }
 
+export interface CombinationOverview {
+  strength: string
+  stage: string
+  capitalAcceptance: string
+  tradingMode: string
+  confidence: string
+  evidence: string[]
+}
+
 export interface Chapter01Analysis {
   status: 'ok' | 'degraded' | 'insufficient' | string
   coverage: number
@@ -164,5 +186,6 @@ export interface Chapter01Analysis {
   sectors?: SectorAnalysis
   activeDirection?: ActiveDirectionAnalysis
   events?: EventAnalysis
+  combinationOverview: CombinationOverview
   assessment: ChapterAssessment
 }

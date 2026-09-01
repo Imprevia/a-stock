@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .calculations import (
     Bar,
     amount_ratio,
+    classify_index_combination,
     classify_trend,
     classify_volume_price,
     moving_average,
@@ -140,6 +141,7 @@ class MarketEnvironmentService:
         status_weight = {"ok": 1.0, "fallback": 0.75, "partial": 0.5, "missing": 0.0, "failed": 0.0}
         coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 6.0, 4)
         status = "partial" if coverage >= 0.5 else "insufficient"
+        combination_overview = self._combination_overview(analyses, synchronization, breadth)
 
         evidence = [f"指数：{synchronization}，主导趋势 {dominant_trend}，有效指数 {len(analyses)} 个"]
         if breadth.get("validCount") is not None:
@@ -171,6 +173,7 @@ class MarketEnvironmentService:
             "sectors": sectors,
             "activeDirection": active_direction,
             "events": events,
+            "combinationOverview": combination_overview,
             "assessment": {
                 "state": "证据不完整" if confidence == "low" else "insufficient",
                 "confidence": confidence,
@@ -258,10 +261,84 @@ class MarketEnvironmentService:
         ]
 
     @staticmethod
+    def _combination_overview(analyses: list[dict], synchronization: str, breadth: dict) -> dict:
+        breadth_available = breadth.get("advanceRatio") is not None and breadth.get("medianReturn") is not None
+        if synchronization == "同步上涨":
+            if breadth_available and breadth["advanceRatio"] >= 0.55 and breadth["medianReturn"] > 0:
+                strength = "指数与多数个股同步偏强"
+            elif breadth_available:
+                strength = "指数偏强但市场广度未确认"
+            else:
+                strength = "指数同步上涨，等待市场广度确认"
+        elif synchronization == "普遍走弱":
+            if breadth_available and breadth["advanceRatio"] <= 0.45 and breadth["medianReturn"] < 0:
+                strength = "指数与多数个股同步偏弱"
+            else:
+                strength = "指数普遍走弱，市场广度待确认"
+        else:
+            strength = "指数分化，未形成真实强弱共振"
+
+        matched = [item["combination"] for item in analyses if item["combination"]["matched"]]
+        stage_counts = Counter(item["key"] for item in matched)
+        stage_key, stage_count = stage_counts.most_common(1)[0] if stage_counts else (None, 0)
+        stage_match = next((item for item in matched if item["key"] == stage_key), None)
+        if stage_match and stage_count >= 3:
+            stage = stage_match["state"]
+        elif matched:
+            stage = "组合分化"
+        else:
+            stage = "未形成明确组合"
+
+        volume_states = [item["volumePriceState"] for item in analyses if item.get("volumePriceState") not in {None, "数据不足"}]
+        volume_counts = Counter(volume_states)
+        volume_state, volume_count = volume_counts.most_common(1)[0] if volume_counts else (None, 0)
+        capital_map = {
+            "上涨放量": "资金认可价格推进",
+            "上涨缩量": "上涨但增量资金不足",
+            "放量滞涨": "成交活跃但价格推进不足",
+            "下跌缩量": "抛压或承接仍待确认",
+            "放量下跌": "资金主动撤退风险",
+            "量价平稳": "量价整体平稳",
+        }
+        capital_acceptance = capital_map.get(volume_state, "量价信号分化或未分类") if volume_count >= 3 else "量价信号分化或未分类"
+
+        if synchronization == "普遍走弱" or stage == "趋势破坏或退潮":
+            trading_mode = "风险控制"
+        elif stage == "高位分歧或派发风险":
+            trading_mode = "降低追高，等待承接"
+        elif stage == "趋势加速或突破确认":
+            trading_mode = "趋势跟随，防止追高"
+        elif stage == "上升趋势或主升阶段":
+            trading_mode = "顺势跟踪"
+        elif stage == "底部修复或启动尝试":
+            trading_mode = "观察修复确认"
+        elif stage == "震荡轮动":
+            trading_mode = "轮动应对"
+        else:
+            trading_mode = "保持观察"
+
+        confidence = "medium" if breadth_available and stage_count >= 3 else "low"
+        evidence = [f"五大指数同步性：{synchronization}", f"明确组合覆盖：{len(matched)} / {len(analyses)}"]
+        if breadth_available:
+            evidence.append(f"市场广度：上涨占比 {breadth['advanceRatio']:.0%}，中位涨跌幅 {breadth['medianReturn']:.2f}%")
+        else:
+            evidence.append("市场广度缺失，市场是否真强仍待确认")
+        evidence.append(f"一致量价状态：{volume_state or '无'}（{volume_count} / {len(analyses)}）")
+        return {
+            "strength": strength,
+            "stage": stage,
+            "capitalAcceptance": capital_acceptance,
+            "tradingMode": trading_mode,
+            "confidence": confidence,
+            "evidence": evidence,
+        }
+
+    @staticmethod
     def _analyse(spec, bars: list[Bar], result: ProviderResult, quote: dict) -> dict:
         ma = {f"ma{window}": moving_average(bars, window) for window in (5, 10, 20, 60)}
         ratio5 = amount_ratio(bars, 5)
         ratio20 = amount_ratio(bars, 20)
+        combination = classify_index_combination(bars, ratio5)
         close = bars[-1].close
         change_pct = quote.get("change_pct")
         if change_pct is None or quote.get("is_stale"):
@@ -284,7 +361,10 @@ class MarketEnvironmentService:
             history.append(
                 {
                     "date": bars[index].date.isoformat(),
+                    "open": bars[index].open,
                     "close": bars[index].close,
+                    "low": bars[index].low,
+                    "high": bars[index].high,
                     "ma5": moving_average(sample, 5),
                     "ma10": moving_average(sample, 10),
                     "ma20": moving_average(sample, 20),
@@ -308,6 +388,7 @@ class MarketEnvironmentService:
             "amountRatio20": round(ratio20, 2) if ratio20 is not None else None,
             "trendState": classify_trend(bars, ratio20),
             "volumePriceState": classify_volume_price(bars, ratio5),
+            "combination": combination,
             "history": history,
             "dataQuality": {"source": result.source, "isStale": bool(quote.get("is_stale")), "warning": warning},
         }
