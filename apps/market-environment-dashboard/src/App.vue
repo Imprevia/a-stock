@@ -6,7 +6,14 @@ import {
   Database, FileCheck2, Gauge, LineChart, Menu, RefreshCw, Rows3, Scale,
   ShieldAlert, Target, TrendingDown, TrendingUp, X,
 } from 'lucide-vue-next'
-import type { DataSetQuality, IndexAnalysis, MarketEnvironmentResponse } from './types'
+import type {
+  Chapter01Analysis,
+  Chapter01Section,
+  Chapter01SectionResponse,
+  DataSetQuality,
+  IndexAnalysis,
+  MarketEnvironmentResponse,
+} from './types'
 
 const documents = [
   { id: '01', title: '指数、趋势位置和成交额', objective: '量化指数方向、均线结构、区间位置和量价推进。', rules: 'QTS-01-01-01 ~ 05', icon: LineChart },
@@ -41,12 +48,26 @@ const formatLocalDate = (value: Date) => {
 const selectedDate = ref(formatLocalDate(new Date()))
 const loading = ref(false)
 const error = ref('')
+const loadedSections = ref<Chapter01Section[]>([])
+const sectionLoading = ref(false)
+const sectionError = ref('')
 const sidebarOpen = ref(false)
 const chartElement = ref<HTMLElement | null>(null)
 const volumeChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 let volumeChart: echarts.ECharts | null = null
 let requestSequence = 0
+let sectionRequestSequence = 0
+let dataRequestDate = ''
+
+const documentSections: Partial<Record<string, Chapter01Section>> = {
+  '02': 'breadth',
+  '03': 'limits',
+  '05': 'sectors',
+  '06': 'activeDirection',
+  '08': 'summary',
+  '09': 'summary',
+}
 
 const selectedDocument = computed(() => documents.find((item) => item.id === selectedDocumentId.value) ?? documents[0])
 const selectedIndex = computed<IndexAnalysis | null>(() => data.value?.indices.find((item) => item.code === selectedCode.value) ?? data.value?.indices[0] ?? null)
@@ -56,15 +77,24 @@ const breadth = computed(() => chapter.value?.breadth)
 const limits = computed(() => chapter.value?.limits)
 const assessment = computed(() => chapter.value?.assessment)
 const combinationOverview = computed(() => chapter.value?.combinationOverview)
+const activeSection = computed(() => documentSections[selectedDocumentId.value] ?? null)
 const generatedAt = computed(() => data.value?.generatedAt ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(data.value.generatedAt)) : '')
 const breadthBar = computed(() => {
   const item = breadth.value
-  if (!item?.validCount) return null
+  if (!item?.validCount || item.advanceCount == null || item.flatCount == null || item.declineCount == null) return null
   return {
-    advance: ((item.advanceCount ?? 0) / item.validCount) * 100,
-    flat: ((item.flatCount ?? 0) / item.validCount) * 100,
-    decline: ((item.declineCount ?? 0) / item.validCount) * 100,
+    advance: (item.advanceCount / item.validCount) * 100,
+    flat: (item.flatCount / item.validCount) * 100,
+    decline: (item.declineCount / item.validCount) * 100,
   }
+})
+const sectionWarning = computed(() => {
+  const section = activeSection.value
+  if (!section || !loadedSections.value.includes(section)) return ''
+  if (section === 'breadth' && breadthBar.value) return breadth.value?.quality.warning ?? ''
+  if (section === 'sectors' && chapter.value?.sectors?.rows?.length) return chapter.value.sectors.quality.warning ?? ''
+  if (section === 'activeDirection' && chapter.value?.activeDirection?.topStocks?.length) return chapter.value.activeDirection.quality.warning ?? ''
+  return ''
 })
 
 const changeTone = (value: number) => value > 0 ? 'positive' : value < 0 ? 'negative' : 'flat'
@@ -75,7 +105,7 @@ const formatCount = (value: number | null | undefined) => value == null ? '--' :
 const formatAmount = (value: number | null | undefined) => value == null ? '--' : Math.abs(value) >= 100000000 ? `${(value / 100000000).toFixed(1)} 亿` : `${(value / 10000).toFixed(0)} 万`
 const formatPosition = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
 const formatCoverage = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
-const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级', missing: '未接入', failed: '失败' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
+const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级', partial: '部分覆盖', missing: '未接入', failed: '失败' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
 const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
 const confidenceLabel = (value?: string) => ({ high: '高', medium: '中', low: '低', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
 const environmentLabel = (value?: string) => ({ trend: '趋势', rotation: '轮动', retreat: '退潮', mixed: '混合', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
@@ -108,10 +138,16 @@ function formatPriceTooltip(params: unknown) {
 
 async function loadData() {
   const requestId = ++requestSequence
+  const requestedDate = selectedDate.value
+  ++sectionRequestSequence
+  loadedSections.value = []
+  sectionLoading.value = false
+  sectionError.value = ''
   loading.value = true
   error.value = ''
+  let shouldLoadSection = false
   try {
-    const response = await fetch(`/api/market-environment?as_of=${selectedDate.value}`)
+    const response = await fetch(`/api/market-environment/core?as_of=${requestedDate}`)
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       throw new Error(body.detail || `请求失败（${response.status}）`)
@@ -119,6 +155,8 @@ async function loadData() {
     const nextData = await response.json() as MarketEnvironmentResponse
     if (requestId !== requestSequence) return
     data.value = nextData
+    dataRequestDate = requestedDate
+    shouldLoadSection = true
     if (!data.value.indices.some((item) => item.code === selectedCode.value)) selectedCode.value = data.value.indices[0]?.code ?? ''
   } catch (cause) {
     if (requestId !== requestSequence) return
@@ -128,6 +166,66 @@ async function loadData() {
     loading.value = false
     await nextTick()
     renderChart()
+  }
+  if (shouldLoadSection) void loadCurrentSection()
+}
+
+function mergeChapterSection(current: Chapter01Analysis | undefined, incoming: Chapter01Analysis, section: Chapter01Section) {
+  if (section === 'summary') return { ...incoming }
+  const merged = current ? { ...current } : { ...incoming }
+  merged.status = incoming.status
+  merged.coverage = incoming.coverage
+  if (incoming.documents) merged.documents = incoming.documents
+  if (incoming.breadth?.quality.status !== 'missing') merged.breadth = incoming.breadth
+  if (incoming.limits?.quality.status !== 'missing') merged.limits = incoming.limits
+  if (incoming.sectors?.quality.status !== 'missing') merged.sectors = incoming.sectors
+  if (incoming.activeDirection?.quality.status !== 'missing') merged.activeDirection = incoming.activeDirection
+  merged.combinationOverview = incoming.combinationOverview
+  merged.assessment = incoming.assessment
+  return merged
+}
+
+function completedChapterSections(chapter: Chapter01Analysis, requested: Chapter01Section) {
+  const completed: Chapter01Section[] = [requested]
+  if (chapter.breadth?.quality.status !== 'missing') completed.push('breadth')
+  if (chapter.limits?.quality.status !== 'missing') completed.push('limits')
+  if (chapter.sectors?.quality.status !== 'missing') completed.push('sectors')
+  if (chapter.activeDirection?.quality.status !== 'missing') completed.push('activeDirection')
+  if (requested === 'summary') completed.push('summary')
+  return completed
+}
+
+async function loadCurrentSection(force = false) {
+  const section = activeSection.value
+  const requestedDate = dataRequestDate
+  const requestId = ++sectionRequestSequence
+  sectionLoading.value = false
+  sectionError.value = ''
+  if (!section || loading.value || !data.value || !requestedDate || selectedDate.value !== requestedDate) return
+  if (!force && loadedSections.value.includes(section)) return
+
+  sectionLoading.value = true
+  try {
+    const response = await fetch(`/api/market-environment/chapter-01?as_of=${requestedDate}&section=${section}`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      throw new Error(body.detail || `请求失败（${response.status}）`)
+    }
+    const nextData = await response.json() as Chapter01SectionResponse
+    if (requestId !== sectionRequestSequence || requestedDate !== dataRequestDate || !data.value) return
+    if (nextData.asOf !== data.value.asOf) throw new Error('章节数据日期与核心数据不一致')
+    data.value = {
+      ...data.value,
+      generatedAt: nextData.generatedAt,
+      chapter01: mergeChapterSection(data.value.chapter01, nextData.chapter01, section),
+    }
+    const completedSections = completedChapterSections(nextData.chapter01, section)
+    loadedSections.value = [...new Set([...loadedSections.value, ...completedSections])]
+  } catch (cause) {
+    if (requestId !== sectionRequestSequence || requestedDate !== dataRequestDate) return
+    sectionError.value = cause instanceof Error ? cause.message : '章节证据加载失败，请稍后重试'
+  } finally {
+    if (requestId === sectionRequestSequence) sectionLoading.value = false
   }
 }
 
@@ -178,6 +276,7 @@ watch(selectedDocumentId, async (documentId) => {
   if (documentId !== '01') disposeCharts()
   await nextTick()
   renderChart()
+  void loadCurrentSection()
 })
 onMounted(() => {
   const match = window.location.hash.match(/document-(0[1-9])$/)
@@ -210,7 +309,10 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
         <template v-else-if="data">
           <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span>更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
 
-          <template v-if="selectedDocumentId === '01'">
+          <section v-if="activeSection && sectionLoading" class="state-panel"><div class="loader" /><span>正在读取本节证据…</span></section>
+          <section v-else-if="activeSection && sectionError" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
+
+          <template v-else-if="selectedDocumentId === '01'">
             <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></button></section>
             <section class="workspace-grid"><article class="panel chart-panel"><div class="panel-heading"><div><span class="panel-kicker">价格结构</span><h2>{{ selectedIndex?.name }} · 60 日走势</h2></div><span class="selected-hint"><TrendingUp v-if="selectedIndex && selectedIndex.changePct >= 0" :size="15" /><TrendingDown v-else :size="15" />{{ selectedIndex?.trendState }}</span></div><div ref="chartElement" class="price-chart" /><div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div><div ref="volumeChartElement" class="volume-chart" /><div class="chart-footnote"><span>日 K 线与 MA5 / MA10 / MA20 / MA60</span><span>来源：{{ selectedIndex?.dataQuality.source }}</span></div></article><article class="panel detail-panel"><div class="panel-heading"><div><span class="panel-kicker">当前结构</span><h2>趋势与量能</h2></div></div><div v-if="selectedIndex" class="metric-stack"><div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div><div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div><div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div><div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div></div></article></section>
             <section class="combination-grid">
@@ -271,6 +373,7 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
             <section class="synthesis-grid"><article class="conclusion-block"><span class="panel-kicker">唯一结论</span><div class="conclusion-state"><strong>{{ environmentLabel(assessment?.state) }}</strong><em>{{ assessment?.score == null ? '分数不足' : `${assessment.score.toFixed(1)} 分` }}</em></div><p>置信度 {{ confidenceLabel(assessment?.confidence) }}，覆盖率 {{ formatCoverage(chapter?.coverage) }}。经验阈值仍处于待回测状态。</p></article><article class="panel synthesis-panel"><div class="panel-heading"><div><span class="panel-kicker">证据链</span><h2>支持当前判断</h2></div></div><ul v-if="assessment?.evidence?.length"><li v-for="item in assessment.evidence" :key="item">{{ item }}</li></ul><div v-else class="empty-inline">暂无完整证据链</div></article><article class="panel synthesis-panel risk"><div class="panel-heading"><div><span class="panel-kicker">风险否决</span><h2>不可忽略的风险</h2></div></div><ul v-if="assessment?.risks?.length"><li v-for="item in assessment.risks" :key="item">{{ item }}</li></ul><div v-else class="empty-inline">当前未返回已触发的风险否决</div></article><article class="panel verification-panel"><div><span>次日确认</span><strong>{{ assessment?.nextConfirmation || '数据不足，等待新增证据' }}</strong></div><div><span>失效条件</span><strong>{{ assessment?.invalidation || '尚未形成可追溯失效条件' }}</strong></div></article></section>
           </template>
 
+          <section v-if="sectionWarning" class="warning-band"><AlertTriangle :size="17" /><div><strong>本节证据边界</strong><span>{{ sectionWarning }}</span></div></section>
           <section v-if="data.summary.warnings.length" class="warning-band"><AlertTriangle :size="17" /><div><strong>数据质量提醒</strong><span>{{ data.summary.warnings.join('；') }}</span></div></section>
         </template>
       </div>

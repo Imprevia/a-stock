@@ -170,6 +170,15 @@ class MarketDataProvider:
         market snapshot, so they are deliberately skipped for historical
         requests. The limit pools accept a trading date and remain available.
         """
+        stock_evidence = self.fetch_chapter01_stock(as_of, allow_current_snapshot=allow_current_snapshot)
+        return {
+            **stock_evidence,
+            "limits": self.fetch_chapter01_limits(as_of),
+            "sectors": self.fetch_chapter01_sectors(as_of, allow_current_snapshot=allow_current_snapshot),
+        }
+
+    def fetch_chapter01_stock(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
+        """Fetch the shared stock snapshot used by breadth and active direction."""
         if allow_current_snapshot:
             stocks: list[dict[str, Any]] | None = None
             stock_warning: str | None = None
@@ -192,22 +201,27 @@ class MarketDataProvider:
                     stock_warning or "东方财富全 A 当前快照不可用",
                     status="failed",
                 )
-            try:
-                sectors = self._build_sectors(self._fetch_eastmoney_industries(), as_of)
-            except Exception as exc:
-                sectors = self._missing_sectors(as_of, f"东方财富行业排名不可用：{exc}", status="failed")
         else:
             warning = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
             breadth = self._missing_breadth(as_of, warning)
             active_direction = self._missing_active_direction(as_of, warning)
-            sectors = self._missing_sectors(as_of, warning)
 
         return {
             "breadth": breadth,
-            "limits": self._fetch_limit_evidence(as_of),
-            "sectors": sectors,
             "activeDirection": active_direction,
         }
+
+    def fetch_chapter01_limits(self, as_of: date) -> dict[str, Any]:
+        return self._fetch_limit_evidence(as_of)
+
+    def fetch_chapter01_sectors(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
+        if not allow_current_snapshot:
+            warning = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
+            return self._missing_sectors(as_of, warning)
+        try:
+            return self._build_sectors(self._fetch_eastmoney_industries(), as_of)
+        except Exception as exc:
+            return self._missing_sectors(as_of, f"东方财富行业排名不可用：{exc}", status="failed")
 
     def _fetch_eastmoney_stock_snapshot(self) -> list[dict[str, Any]]:
         params = {

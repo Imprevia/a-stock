@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from collections import Counter
+from collections.abc import Callable
 from datetime import date, datetime
-from threading import Condition, Lock
+from threading import Lock
 from time import monotonic
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .calculations import (
@@ -22,6 +23,7 @@ from .calculations import (
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 
 MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
+CHAPTER_SECTIONS = frozenset({"breadth", "limits", "sectors", "activeDirection", "summary"})
 
 
 def market_today() -> date:
@@ -29,38 +31,67 @@ def market_today() -> date:
 
 
 class MarketEnvironmentService:
-    def __init__(self, provider: MarketDataProvider | None = None, ttl_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        provider: MarketDataProvider | None = None,
+        ttl_seconds: int = 30,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self.provider = provider or MarketDataProvider()
         self.ttl_seconds = ttl_seconds
-        self._cache: dict[str, tuple[float, dict]] = {}
-        self._core_cache: dict[str, tuple[float, dict]] = {}
-        self._chapter_cache: dict[str, tuple[float, dict]] = {}
+        self._clock = clock
+        self._core_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._chapter_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         self._lock = Lock()
-        self._condition = Condition(self._lock)
-        self._inflight: set[tuple[str, str]] = set()
+        self._core_load_lock = Lock()
+        self._chapter_load_lock = Lock()
 
     def get(self, as_of: date) -> dict:
-        cache_key = as_of.isoformat()
-        return self._load_cached(self._cache, "aggregate", cache_key, lambda: self._build_aggregate(as_of))
-
-    def _build_aggregate(self, as_of: date) -> dict:
-        core = self.get_core(as_of)
-        chapter_response = self.get_chapter01(as_of)
-        warnings = list(core["summary"]["warnings"])
-        if chapter_response["chapter01"]["status"] != "ok":
-            warnings.append("第 01 章扩展证据未完整覆盖，结论保持低置信度或数据不足")
-        return {
-            **core,
-            "generatedAt": chapter_response["generatedAt"],
-            "summary": {**core["summary"], "warnings": warnings},
-            "chapter01": chapter_response["chapter01"],
-        }
+        """Return the legacy complete aggregate response."""
+        core = self._get_core(as_of)
+        provider_data = self._chapter_provider_data(core, "summary")
+        chapter = self._build_chapter01(core, provider_data)
+        payload = self._core_payload(core)
+        payload["chapter01"] = chapter
+        if chapter["status"] != "ok":
+            payload["summary"]["warnings"].append("第 01 章扩展证据未完整覆盖，结论保持低置信度或数据不足")
+        return payload
 
     def get_core(self, as_of: date) -> dict:
-        cache_key = as_of.isoformat()
-        return self._load_cached(self._core_cache, "core", cache_key, lambda: self._build_core(as_of))
+        """Return index data without calling Chapter 01 providers."""
+        core = self._get_core(as_of)
+        provider_data = self._missing_chapter_provider_data(
+            core["effectiveDate"],
+            "该章节数据尚未按需加载",
+            status="missing",
+        )
+        payload = self._core_payload(core)
+        payload["chapter01"] = self._build_chapter01(core, provider_data)
+        return payload
 
-    def _build_core(self, as_of: date) -> dict:
+    def get_chapter01(self, as_of: date, section: str) -> dict:
+        if section not in CHAPTER_SECTIONS:
+            raise ValueError(f"未知第 01 章 section：{section}")
+        core = self._get_core(as_of)
+        provider_data = self._chapter_provider_data(core, section)
+        return {
+            "asOf": core["asOf"],
+            "generatedAt": core["generatedAt"],
+            "chapter01": self._build_chapter01(core, provider_data),
+        }
+
+    def _get_core(self, as_of: date) -> dict[str, Any]:
+        cache_key = as_of.isoformat()
+        cached = self._cache_get(self._core_cache, cache_key)
+        if cached is not None:
+            return cached
+        with self._core_load_lock:
+            cached = self._cache_get(self._core_cache, cache_key)
+            if cached is not None:
+                return cached
+            return self._fetch_core(as_of, cache_key)
+
+    def _fetch_core(self, as_of: date, cache_key: str) -> dict[str, Any]:
         warnings: list[str] = []
         try:
             quotes = self.provider.fetch_quotes(INDEX_SPECS)
@@ -109,84 +140,129 @@ class MarketEnvironmentService:
         trends = Counter(item["trendState"] for item in analyses)
         sync = self._synchronization(analyses)
         dominant = trends.most_common(1)[0][0] if trends else "数据不足"
-        return {
+        core = {
             "asOf": effective_date.isoformat(),
             "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
             "indices": analyses,
             "summary": {"synchronization": sync, "dominantTrend": dominant, "warnings": warnings},
+            "requestedAsOf": as_of,
+            "effectiveDate": effective_date,
         }
+        self._cache_set(self._core_cache, cache_key, core)
+        return core
 
-    def get_chapter01(self, as_of: date) -> dict:
-        cache_key = as_of.isoformat()
-        return self._load_cached(self._chapter_cache, "chapter01", cache_key, lambda: self._build_chapter01(as_of))
-
-    def _build_chapter01(self, as_of: date) -> dict:
-        core = self.get_core(as_of)
-        chapter = self._chapter01(
-            date.fromisoformat(core["asOf"]),
-            allow_current_snapshot=as_of == market_today(),
-            analyses=core["indices"],
-            synchronization=core["summary"]["synchronization"],
-            dominant_trend=core["summary"]["dominantTrend"],
-        )
+    def _core_payload(self, core: dict[str, Any]) -> dict[str, Any]:
         return {
             "asOf": core["asOf"],
-            "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
-            "chapter01": chapter,
+            "generatedAt": core["generatedAt"],
+            "indices": core["indices"],
+            "summary": {
+                "synchronization": core["summary"]["synchronization"],
+                "dominantTrend": core["summary"]["dominantTrend"],
+                "warnings": list(core["summary"]["warnings"]),
+            },
         }
 
-    def _load_cached(
-        self,
-        cache: dict[str, tuple[float, dict]],
-        scope: str,
-        cache_key: str,
-        loader: Callable[[], dict],
-    ) -> dict:
-        token = (scope, cache_key)
-        with self._condition:
-            while True:
-                cached = cache.get(cache_key)
-                if cached and monotonic() - cached[0] < self.ttl_seconds:
-                    return cached[1]
-                if token not in self._inflight:
-                    self._inflight.add(token)
-                    break
-                self._condition.wait()
+    def _chapter_provider_data(self, core: dict[str, Any], section: str) -> dict[str, Any]:
+        as_of = core["effectiveDate"]
+        provider_data = self._missing_chapter_provider_data(
+            as_of,
+            "该章节数据尚未按需加载",
+            status="missing",
+        )
+        requested_groups = {
+            "breadth": ("stock",),
+            "activeDirection": ("stock",),
+            "limits": ("limits",),
+            "sectors": ("sectors",),
+            "summary": ("stock", "limits", "sectors"),
+        }[section]
+        loaded = {group: self._load_chapter_group(core, group) for group in requested_groups}
+        for group in ("stock", "limits", "sectors"):
+            cached = loaded.get(group) or self._cache_get(
+                self._chapter_cache,
+                (core["requestedAsOf"].isoformat(), group),
+            )
+            if cached is not None:
+                provider_data.update(cached)
+        return provider_data
 
+    def _load_chapter_group(self, core: dict[str, Any], group: str) -> dict[str, Any]:
+        cache_key = (core["requestedAsOf"].isoformat(), group)
+        cached = self._cache_get(self._chapter_cache, cache_key)
+        if cached is not None:
+            return cached
+        with self._chapter_load_lock:
+            cached = self._cache_get(self._chapter_cache, cache_key)
+            if cached is not None:
+                return cached
+            return self._fetch_chapter_group(core, group, cache_key)
+
+    def _fetch_chapter_group(
+        self,
+        core: dict[str, Any],
+        group: str,
+        cache_key: tuple[str, str],
+    ) -> dict[str, Any]:
+        as_of = core["effectiveDate"]
+        allow_current_snapshot = core["requestedAsOf"] == market_today()
         try:
-            payload = loader()
-        except Exception:
-            with self._condition:
-                self._inflight.remove(token)
-                self._condition.notify_all()
-            raise
+            if group == "stock" and callable(fetch := getattr(self.provider, "fetch_chapter01_stock", None)):
+                value = fetch(as_of, allow_current_snapshot=allow_current_snapshot)
+            elif group == "limits" and callable(fetch := getattr(self.provider, "fetch_chapter01_limits", None)):
+                value = {"limits": fetch(as_of)}
+            elif group == "sectors" and callable(fetch := getattr(self.provider, "fetch_chapter01_sectors", None)):
+                value = {"sectors": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
+            else:
+                legacy = self._load_legacy_chapter(core)
+                keys = {"stock": ("breadth", "activeDirection"), "limits": ("limits",), "sectors": ("sectors",)}[group]
+                value = {key: legacy[key] for key in keys}
+        except Exception as exc:
+            missing = self._missing_chapter_provider_data(as_of, f"第 01 章 {group} 数据获取失败：{exc}")
+            keys = {"stock": ("breadth", "activeDirection"), "limits": ("limits",), "sectors": ("sectors",)}[group]
+            value = {key: missing[key] for key in keys}
 
-        with self._condition:
-            cache[cache_key] = (monotonic(), payload)
-            if scope == "core":
-                self._chapter_cache.pop(cache_key, None)
-                self._cache.pop(cache_key, None)
-            self._inflight.remove(token)
-            self._condition.notify_all()
-        return payload
+        self._cache_set(self._chapter_cache, cache_key, value)
+        return value
 
-    def _chapter01(
-        self,
-        as_of: date,
-        *,
-        allow_current_snapshot: bool,
-        analyses: list[dict],
-        synchronization: str,
-        dominant_trend: str,
-    ) -> dict:
+    def _load_legacy_chapter(self, core: dict[str, Any]) -> dict[str, Any]:
+        cache_key = (core["requestedAsOf"].isoformat(), "legacy")
+        cached = self._cache_get(self._chapter_cache, cache_key)
+        if cached is not None:
+            return cached
+        as_of = core["effectiveDate"]
         fetch = getattr(self.provider, "fetch_chapter01", None)
         if fetch is None:
-            provider_data = self._missing_chapter_provider_data(as_of, "provider 未实现第 01 章扩展接口")
+            value = self._missing_chapter_provider_data(as_of, "provider 未实现第 01 章扩展接口")
         else:
             try:
-                provider_data = fetch(as_of, allow_current_snapshot=allow_current_snapshot)
+                value = fetch(as_of, allow_current_snapshot=core["requestedAsOf"] == market_today())
             except Exception as exc:
-                provider_data = self._missing_chapter_provider_data(as_of, f"第 01 章扩展接口失败：{exc}")
+                value = self._missing_chapter_provider_data(as_of, f"第 01 章扩展接口失败：{exc}")
+        self._cache_set(self._chapter_cache, cache_key, value)
+        return value
+
+    def _cache_get(self, cache: dict, key: object) -> Any | None:
+        now = self._clock()
+        with self._lock:
+            cached = cache.get(key)
+            if cached is None:
+                return None
+            if now - cached[0] < self.ttl_seconds:
+                return cached[1]
+            cache.pop(key, None)
+        return None
+
+    def _cache_set(self, cache: dict, key: object, value: Any) -> None:
+        completed_at = self._clock()
+        with self._lock:
+            cache[key] = (completed_at, value)
+
+    def _build_chapter01(self, core: dict[str, Any], provider_data: dict[str, Any]) -> dict:
+        as_of = core["effectiveDate"]
+        analyses = core["indices"]
+        synchronization = core["summary"]["synchronization"]
+        dominant_trend = core["summary"]["dominantTrend"]
 
         breadth = provider_data["breadth"]
         limits = provider_data["limits"]
@@ -253,8 +329,8 @@ class MarketEnvironmentService:
         }
 
     @classmethod
-    def _missing_chapter_provider_data(cls, as_of: date, warning: str) -> dict:
-        quality = cls._quality("chapter-01-extended", "none", "failed", 0, as_of, [warning])
+    def _missing_chapter_provider_data(cls, as_of: date, warning: str, status: str = "failed") -> dict:
+        quality = cls._quality("chapter-01-extended", "none", status, 0, as_of, [warning])
         return {
             "breadth": {
                 "advanceCount": None,

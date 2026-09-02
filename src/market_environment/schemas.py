@@ -181,21 +181,18 @@ class Chapter01Evidence(BaseModel):
     assessment: ChapterAssessment
 
 
-class MarketEnvironmentCoreResponse(BaseModel):
+class MarketEnvironmentResponse(BaseModel):
     asOf: str
     generatedAt: str
     indices: list[IndexAnalysis]
     summary: Summary
+    chapter01: Chapter01Evidence | None = None
 
 
 class Chapter01Response(BaseModel):
     asOf: str
     generatedAt: str
     chapter01: Chapter01Evidence
-
-
-class MarketEnvironmentResponse(MarketEnvironmentCoreResponse):
-    chapter01: Chapter01Evidence | None = None
 
 
 def schema_extra(value: Any) -> Any:
