@@ -2,13 +2,13 @@
 
 ## 主计划
 
-- 当前无 active exec plan。
+- `merge-market-loading-branches.md`
 
 ## 活动计划
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
-| - | - | - | - |
+| `merge-market-loading-branches.md` | Codex | 进行中 | 2026-09-02 |
 
 ## 说明
 
