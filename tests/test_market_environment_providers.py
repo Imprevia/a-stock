@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 import json
 
+import pytest
+
 from src.market_environment.providers import INDEX_SPECS, MarketDataProvider
 
 
@@ -164,6 +166,52 @@ def test_chapter01_provider_accepts_keyed_stock_snapshot(monkeypatch):
     assert payload["breadth"]["advanceCount"] == 1
     assert payload["breadth"]["declineCount"] == 1
     assert payload["breadth"]["medianReturn"] == 0.0
+
+
+def test_stock_snapshot_rejects_partial_market_response(monkeypatch):
+    provider = MarketDataProvider()
+    monkeypatch.setattr(
+        provider.eastmoney,
+        "get_json",
+        lambda url, params: {"data": {"total": 3, "diff": [{"f3": 1}, {"f3": -1}]}},
+    )
+
+    with pytest.raises(RuntimeError, match="仅返回 2 / 3 行"):
+        provider._fetch_eastmoney_stock_snapshot()
+
+
+def test_chapter01_breadth_falls_back_to_sorted_delay_pages(monkeypatch):
+    provider = MarketDataProvider()
+    provider._BREADTH_PAGE_SIZE = 3
+    sorted_returns = [3.0, 2.0, 1.0, None, 0.0, 0.0, -1.0, -2.0, -3.0]
+
+    def fake_get_json(url, params):
+        if "push2ex" in url:
+            return {"data": {"pool": []}}
+        if url == provider._BREADTH_FALLBACK_URL:
+            page = int(params["pn"])
+            start = (page - 1) * provider._BREADTH_PAGE_SIZE
+            values = sorted_returns[start : start + provider._BREADTH_PAGE_SIZE]
+            return {
+                "data": {
+                    "total": len(sorted_returns),
+                    "diff": [{"f3": "-" if value is None else value} for value in values],
+                }
+            }
+        if params.get("fs") == "m:90+t:2":
+            raise RuntimeError("industry unavailable")
+        raise RuntimeError("primary stock snapshot blocked")
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert payload["breadth"]["advanceCount"] == 3
+    assert payload["breadth"]["declineCount"] == 3
+    assert payload["breadth"]["flatCount"] == 2
+    assert payload["breadth"]["validCount"] == 8
+    assert payload["breadth"]["medianReturn"] == 0.0
+    assert payload["breadth"]["quality"]["status"] == "fallback"
+    assert payload["breadth"]["quality"]["source"] == "eastmoney-clist-delay"
 
 
 def test_chapter01_limit_provider_distinguishes_failure_from_explicit_empty_pool(monkeypatch):

@@ -43,9 +43,9 @@ curl "http://127.0.0.1:8000/api/health"
 curl "http://127.0.0.1:8000/api/market-environment?as_of=2026-08-28"
 ```
 
-`chapter01` 是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
+`chapter01` 是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
-看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`，否则中国时区午夜至 08:00 期间会请求前一日并使当前广度数据（上涨家数、下跌家数和涨跌幅中位数）显示为缺失。东方财富 `data.diff` 若为键值对象会先转为行列表；无效行会被丢弃，不能用 0 填充。
+看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`；API 的默认日期与未来日期校验使用 `Asia/Shanghai`。东方财富 `data.diff` 若为键值对象会先转为行列表；无效行会被丢弃，不能用 0 填充。主 `push2` 全 A 快照必须满足返回行数不小于 `data.total`，否则视为不完整并触发市场广度降级；降级成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。若主域和延迟域均失败，保留 `null` 并在 `quality.warnings` 记录两段错误。
 
 指数 `history` 契约中的每个点应包含 `date`、`open`、`close`、`low`、`high`、`ma5`、`ma10`、`ma20`、`ma60` 和 `amount`。浏览器 QA 必须确认 60 日图存在非空 K 线实体、红涨绿跌、均线叠加和 OHLC tooltip；禁止用收盘价复制生成开高低。
 
