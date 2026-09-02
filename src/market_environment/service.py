@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import copy
+import logging
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from threading import Lock
-from time import monotonic
+from time import monotonic, perf_counter, sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,9 +24,19 @@ from .calculations import (
     range_position,
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
+from .refresh import SnapshotRefresher
+from .snapshot_store import SnapshotStore, cache_state, persistent_cache_enabled
 
 MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 CHAPTER_SECTIONS = frozenset({"breadth", "limits", "sectors", "activeDirection", "summary"})
+SNAPSHOT_GROUPS = frozenset({"breadth", "activeDirection"})
+CHAPTER_GROUP_KEYS = {
+    "breadth": ("breadth",),
+    "activeDirection": ("activeDirection",),
+    "limits": ("limits",),
+    "sectors": ("sectors",),
+}
+logger = logging.getLogger(__name__)
 
 
 def market_today() -> date:
@@ -36,10 +49,26 @@ class MarketEnvironmentService:
         provider: MarketDataProvider | None = None,
         ttl_seconds: int = 30,
         clock: Callable[[], float] = monotonic,
+        snapshot_store: SnapshotStore | None = None,
+        persistent_cache: bool | None = None,
+        snapshot_ttl_seconds: int = 30,
+        now: Callable[[], datetime] | None = None,
+        cold_wait_seconds: float = 30.0,
     ) -> None:
+        provider_was_injected = provider is not None
         self.provider = provider or MarketDataProvider()
         self.ttl_seconds = ttl_seconds
         self._clock = clock
+        self._now = now or (lambda: datetime.now(MARKET_TIME_ZONE))
+        if persistent_cache is None:
+            persistent_cache = snapshot_store is not None or (
+                not provider_was_injected and persistent_cache_enabled()
+            )
+        self.persistent_cache = persistent_cache
+        self.snapshot_store = snapshot_store or (SnapshotStore() if persistent_cache else None)
+        self.snapshot_ttl_seconds = snapshot_ttl_seconds
+        self.cold_wait_seconds = cold_wait_seconds
+        self._refresh_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-snapshot")
         self._core_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._chapter_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         self._lock = Lock()
@@ -171,23 +200,30 @@ class MarketEnvironmentService:
             status="missing",
         )
         requested_groups = {
-            "breadth": ("stock",),
-            "activeDirection": ("stock",),
+            "breadth": ("breadth",),
+            "activeDirection": ("activeDirection",),
             "limits": ("limits",),
             "sectors": ("sectors",),
-            "summary": ("stock", "limits", "sectors"),
+            "summary": ("breadth", "activeDirection", "limits", "sectors"),
         }[section]
         loaded = {group: self._load_chapter_group(core, group) for group in requested_groups}
-        for group in ("stock", "limits", "sectors"):
-            cached = loaded.get(group) or self._cache_get(
-                self._chapter_cache,
-                (core["requestedAsOf"].isoformat(), group),
-            )
+        for group in CHAPTER_GROUP_KEYS:
+            cached = loaded.get(group)
+            if cached is None and (group not in SNAPSHOT_GROUPS or not self.persistent_cache):
+                cached = self._cache_get(
+                    self._chapter_cache,
+                    (core["requestedAsOf"].isoformat(), group),
+                )
+            if cached is None and group in SNAPSHOT_GROUPS and self.persistent_cache:
+                cached = self._read_snapshot_group(core, group, refresh_stale=False)
             if cached is not None:
                 provider_data.update(cached)
         return provider_data
 
     def _load_chapter_group(self, core: dict[str, Any], group: str) -> dict[str, Any]:
+        if group in SNAPSHOT_GROUPS and self.persistent_cache:
+            with self._chapter_load_lock:
+                return self._read_snapshot_group(core, group, refresh_stale=True)
         cache_key = (core["requestedAsOf"].isoformat(), group)
         cached = self._cache_get(self._chapter_cache, cache_key)
         if cached is not None:
@@ -207,23 +243,132 @@ class MarketEnvironmentService:
         as_of = core["effectiveDate"]
         allow_current_snapshot = core["requestedAsOf"] == market_today()
         try:
-            if group == "stock" and callable(fetch := getattr(self.provider, "fetch_chapter01_stock", None)):
-                value = fetch(as_of, allow_current_snapshot=allow_current_snapshot)
+            if group == "breadth" and callable(fetch := getattr(self.provider, "fetch_chapter01_breadth", None)):
+                value = {"breadth": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
+            elif group == "activeDirection" and callable(
+                fetch := getattr(self.provider, "fetch_chapter01_active_direction", None)
+            ):
+                value = {"activeDirection": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
+            elif group in SNAPSHOT_GROUPS and callable(fetch := getattr(self.provider, "fetch_chapter01_stock", None)):
+                stock_value = fetch(as_of, allow_current_snapshot=allow_current_snapshot)
+                value = {key: stock_value[key] for key in CHAPTER_GROUP_KEYS[group]}
             elif group == "limits" and callable(fetch := getattr(self.provider, "fetch_chapter01_limits", None)):
                 value = {"limits": fetch(as_of)}
             elif group == "sectors" and callable(fetch := getattr(self.provider, "fetch_chapter01_sectors", None)):
                 value = {"sectors": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
             else:
                 legacy = self._load_legacy_chapter(core)
-                keys = {"stock": ("breadth", "activeDirection"), "limits": ("limits",), "sectors": ("sectors",)}[group]
+                keys = CHAPTER_GROUP_KEYS[group]
                 value = {key: legacy[key] for key in keys}
         except Exception as exc:
             missing = self._missing_chapter_provider_data(as_of, f"第 01 章 {group} 数据获取失败：{exc}")
-            keys = {"stock": ("breadth", "activeDirection"), "limits": ("limits",), "sectors": ("sectors",)}[group]
+            keys = CHAPTER_GROUP_KEYS[group]
             value = {key: missing[key] for key in keys}
 
         self._cache_set(self._chapter_cache, cache_key, value)
         return value
+
+    def _read_snapshot_group(
+        self,
+        core: dict[str, Any],
+        group: str,
+        *,
+        refresh_stale: bool,
+    ) -> dict[str, Any] | None:
+        if self.snapshot_store is None:
+            return None
+        as_of = core["effectiveDate"]
+        lookup_started = perf_counter()
+        record = self.snapshot_store.get(group, as_of)
+        state = cache_state(
+            record,
+            now=self._market_now(),
+            soft_ttl_seconds=self.snapshot_ttl_seconds,
+        )
+        lookup_ms = round((perf_counter() - lookup_started) * 1000, 3)
+        logger.info(
+            "market snapshot cache lookup",
+            extra={
+                "event": "market_snapshot_cache_lookup",
+                "dataset": group,
+                "snapshot_as_of": as_of.isoformat(),
+                "cache_state": state,
+                "lookup_ms": lookup_ms,
+            },
+        )
+        if record is not None:
+            refreshing = self.snapshot_store.has_active_lease(group, as_of)
+            if state == "stale" and refresh_stale and self._allows_current_snapshot(core) and not refreshing:
+                self._refresh_executor.submit(self._refresh_snapshot_dataset, group, as_of)
+                refreshing = True
+            return {group: self._snapshot_payload(record, state, refreshing=refreshing)}
+
+        if not refresh_stale:
+            return None
+        if not self._allows_current_snapshot(core):
+            return self._missing_snapshot_group(as_of, group, "该交易日没有持久化快照，且历史请求不使用当前数据回填")
+
+        result = self._refresh_snapshot_dataset(group, as_of)
+        record = self.snapshot_store.get(group, as_of)
+        if record is None and result["datasets"][0]["cacheResult"] == "busy":
+            deadline = monotonic() + self.cold_wait_seconds
+            while record is None and monotonic() < deadline:
+                sleep(0.05)
+                record = self.snapshot_store.get(group, as_of)
+        if record is None:
+            warning = result["datasets"][0].get("warning") or "快照刷新未生成可用结果"
+            return self._missing_snapshot_group(as_of, group, warning)
+        return {group: self._snapshot_payload(record, cache_state(record, now=self._market_now(), soft_ttl_seconds=self.snapshot_ttl_seconds), refreshing=False)}
+
+    def _refresh_snapshot_dataset(self, group: str, as_of: date) -> dict[str, Any]:
+        if self.snapshot_store is None:
+            raise RuntimeError("persistent snapshot store is disabled")
+        refresher = SnapshotRefresher(
+            self.provider,
+            self.snapshot_store,
+            now=self._now,
+            lease_seconds=max(120.0, self.cold_wait_seconds),
+        )
+        return refresher.refresh(as_of, [group], force=True)
+
+    def _snapshot_payload(self, record, state: str, *, refreshing: bool) -> dict[str, Any]:
+        payload = copy.deepcopy(record.payload)
+        quality = payload.get("quality")
+        if isinstance(quality, dict):
+            quality["cacheState"] = state
+            quality["snapshotFetchedAt"] = record.fetched_at.isoformat()
+            quality["refreshing"] = refreshing
+            quality["refreshWarning"] = record.refresh_warning
+            if state == "stale":
+                stale_warning = "持久化快照已过 freshness 窗口，正在使用同交易日旧值"
+                warnings = list(quality.get("warnings") or [])
+                if stale_warning not in warnings:
+                    warnings.append(stale_warning)
+                quality["warnings"] = warnings
+                quality["warning"] = "；".join(warnings) if warnings else stale_warning
+        return payload
+
+    def _missing_snapshot_group(self, as_of: date, group: str, warning: str) -> dict[str, Any]:
+        missing = self._missing_chapter_provider_data(as_of, warning, status="missing")
+        payload = missing[group]
+        payload["quality"].update(
+            {
+                "cacheState": "missing",
+                "snapshotFetchedAt": None,
+                "refreshing": self.snapshot_store.has_active_lease(group, as_of) if self.snapshot_store else False,
+                "refreshWarning": warning,
+            }
+        )
+        return {group: payload}
+
+    def _market_now(self) -> datetime:
+        value = self._now()
+        if value.tzinfo is None:
+            return value.replace(tzinfo=MARKET_TIME_ZONE)
+        return value.astimezone(MARKET_TIME_ZONE)
+
+    def _allows_current_snapshot(self, core: dict[str, Any]) -> bool:
+        return core["requestedAsOf"] == self._market_now().date()
 
     def _load_legacy_chapter(self, core: dict[str, Any]) -> dict[str, Any]:
         cache_key = (core["requestedAsOf"].isoformat(), "legacy")

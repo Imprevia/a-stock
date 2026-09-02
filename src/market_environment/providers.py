@@ -56,6 +56,8 @@ class MarketDataProvider:
     _BREADTH_FALLBACK_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
     _STOCK_UNIVERSE_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
     _BREADTH_PAGE_SIZE = 100
+    _ACTIVE_DIRECTION_PAGE_SIZE = 100
+    _ACTIVE_DIRECTION_MIN_ROWS = 30
 
     def __init__(self, timeout: float = 8.0) -> None:
         self.timeout = timeout
@@ -170,46 +172,52 @@ class MarketDataProvider:
         market snapshot, so they are deliberately skipped for historical
         requests. The limit pools accept a trading date and remain available.
         """
-        stock_evidence = self.fetch_chapter01_stock(as_of, allow_current_snapshot=allow_current_snapshot)
         return {
-            **stock_evidence,
+            "breadth": self.fetch_chapter01_breadth(as_of, allow_current_snapshot=allow_current_snapshot),
+            "activeDirection": self.fetch_chapter01_active_direction(
+                as_of,
+                allow_current_snapshot=allow_current_snapshot,
+            ),
             "limits": self.fetch_chapter01_limits(as_of),
             "sectors": self.fetch_chapter01_sectors(as_of, allow_current_snapshot=allow_current_snapshot),
         }
 
     def fetch_chapter01_stock(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
-        """Fetch the shared stock snapshot used by breadth and active direction."""
-        if allow_current_snapshot:
-            stocks: list[dict[str, Any]] | None = None
-            stock_warning: str | None = None
-            try:
-                stocks = self._fetch_eastmoney_stock_snapshot()
-            except Exception as exc:
-                stock_warning = f"东方财富全 A 当前快照不可用：{exc}"
-
-            if stocks is not None:
-                breadth = self._build_breadth(stocks, as_of)
-                active_direction = self._build_active_direction(stocks, as_of)
-            else:
-                try:
-                    breadth = self._fetch_eastmoney_breadth_fallback(as_of, stock_warning or "主快照不可用")
-                except Exception as exc:
-                    warning = f"{stock_warning or '东方财富全 A 当前快照不可用'}；市场广度降级失败：{exc}"
-                    breadth = self._missing_breadth(as_of, warning, status="failed")
-                active_direction = self._missing_active_direction(
-                    as_of,
-                    stock_warning or "东方财富全 A 当前快照不可用",
-                    status="failed",
-                )
-        else:
-            warning = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
-            breadth = self._missing_breadth(as_of, warning)
-            active_direction = self._missing_active_direction(as_of, warning)
-
+        """Compatibility wrapper for callers that still request both stock datasets."""
         return {
-            "breadth": breadth,
-            "activeDirection": active_direction,
+            "breadth": self.fetch_chapter01_breadth(as_of, allow_current_snapshot=allow_current_snapshot),
+            "activeDirection": self.fetch_chapter01_active_direction(
+                as_of,
+                allow_current_snapshot=allow_current_snapshot,
+            ),
         }
+
+    def fetch_chapter01_breadth(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
+        if not allow_current_snapshot:
+            return self._missing_breadth(as_of, "该数据源仅提供最新市场快照，历史日期不使用当前数据回填")
+        try:
+            return self._fetch_eastmoney_breadth_fallback(
+                as_of,
+                "市场广度直接使用涨跌幅排序分页统计，未请求名义全 A 主快照",
+            )
+        except Exception as exc:
+            return self._missing_breadth(as_of, f"东方财富市场广度不可用：{exc}", status="failed")
+
+    def fetch_chapter01_active_direction(
+        self,
+        as_of: date,
+        *,
+        allow_current_snapshot: bool,
+    ) -> dict[str, Any]:
+        if not allow_current_snapshot:
+            return self._missing_active_direction(
+                as_of,
+                "该数据源仅提供最新市场快照，历史日期不使用当前数据回填",
+            )
+        try:
+            return self._build_active_direction(self._fetch_eastmoney_active_direction_rows(), as_of)
+        except Exception as exc:
+            return self._missing_active_direction(as_of, f"东方财富容量方向不可用：{exc}", status="failed")
 
     def fetch_chapter01_limits(self, as_of: date) -> dict[str, Any]:
         return self._fetch_limit_evidence(as_of)
@@ -251,6 +259,44 @@ class MarketDataProvider:
         if total is not None and len(rows) < total:
             raise RuntimeError(f"全 A 快照仅返回 {len(rows)} / {total} 行，拒绝按不完整样本计算")
         return rows
+
+    def _fetch_eastmoney_active_direction_rows(self) -> list[dict[str, Any]]:
+        params = {
+            "pn": "1",
+            "pz": str(self._ACTIVE_DIRECTION_PAGE_SIZE),
+            "po": "1",
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f6",
+            "fs": self._STOCK_UNIVERSE_FILTER,
+            "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
+        }
+        payload = self.eastmoney.get_json(self._STOCK_SNAPSHOT_URL, params)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("容量方向响应缺少 data")
+        rows = data.get("diff")
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            raise RuntimeError("容量方向返回格式无效")
+        valid_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and self._optional_text(row.get("f12")) is not None
+            and self._optional_text(row.get("f14")) is not None
+            and self._optional_float(row.get("f6")) is not None
+        ]
+        if len(valid_rows) < self._ACTIVE_DIRECTION_MIN_ROWS:
+            raise RuntimeError(
+                f"容量方向仅返回 {len(valid_rows)} 个有效样本，至少需要 {self._ACTIVE_DIRECTION_MIN_ROWS} 个"
+            )
+        amounts = [self._optional_float(row.get("f6")) or 0.0 for row in valid_rows]
+        if any(left < right for left, right in zip(amounts, amounts[1:])):
+            raise RuntimeError("容量方向响应未按成交额降序排列")
+        return valid_rows
 
     def _fetch_eastmoney_breadth_fallback(self, as_of: date, primary_warning: str) -> dict[str, Any]:
         """Derive exact breadth statistics from a capped, sorted fallback endpoint.
@@ -380,7 +426,7 @@ class MarketDataProvider:
             as_of,
             source="eastmoney-clist-delay",
             status="fallback",
-            warnings=[primary_warning, "主域不可用，已按涨跌幅排序分页定位全 A 有效样本"],
+            warnings=[primary_warning, "已按涨跌幅排序分页定位全 A 有效样本"],
         )
 
     def _fetch_eastmoney_industries(self) -> list[dict[str, Any]]:

@@ -1,13 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
-from threading import Barrier
+from datetime import date, datetime, timedelta
+from threading import Barrier, Event
+from time import monotonic, sleep
 
 import pytest
 
 from src.market_environment.calculations import Bar
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
 from src.market_environment.schemas import Chapter01Response, MarketEnvironmentResponse
-from src.market_environment.service import MarketEnvironmentService, market_today
+from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService, market_today
+from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
 
 def make_bars(count: int = 130) -> list[Bar]:
@@ -70,33 +72,37 @@ class SectionProvider(FakeProvider):
         raise AssertionError("section-aware service must not call the aggregate provider")
 
     def fetch_chapter01_stock(self, as_of, *, allow_current_snapshot):
-        self.chapter_calls.append("stock")
+        raise AssertionError("breadth and active direction must be collected independently")
+
+    def fetch_chapter01_breadth(self, as_of, *, allow_current_snapshot):
+        self.chapter_calls.append("breadth")
         return {
-            "breadth": {
-                "advanceCount": 2,
-                "declineCount": 1,
-                "flatCount": 0,
-                "validCount": 3,
-                "advanceRatio": 0.6667,
-                "medianReturn": 1.0,
-                "state": "多数上涨",
-                "quality": evidence_quality("market-breadth", as_of, 3),
-            },
-            "activeDirection": {
-                "state": "candidate",
-                "summary": "fixture direction",
-                "topStocks": [
-                    {
-                        "code": "000001",
-                        "name": "样本股",
-                        "industry": "电子",
-                        "changePct": 2.0,
-                        "amount": 1000.0,
-                        "closePosition": 0.8,
-                    }
-                ],
-                "quality": evidence_quality("active-direction", as_of),
-            },
+            "advanceCount": 2,
+            "declineCount": 1,
+            "flatCount": 0,
+            "validCount": 3,
+            "advanceRatio": 0.6667,
+            "medianReturn": 1.0,
+            "state": "多数上涨",
+            "quality": evidence_quality("market-breadth", as_of, 3),
+        }
+
+    def fetch_chapter01_active_direction(self, as_of, *, allow_current_snapshot):
+        self.chapter_calls.append("activeDirection")
+        return {
+            "state": "candidate",
+            "summary": "fixture direction",
+            "topStocks": [
+                {
+                    "code": "000001",
+                    "name": "样本股",
+                    "industry": "电子",
+                    "changePct": 2.0,
+                    "amount": 1000.0,
+                    "closePosition": 0.8,
+                }
+            ],
+            "quality": evidence_quality("active-direction", as_of),
         }
 
     def fetch_chapter01_limits(self, as_of):
@@ -145,24 +151,24 @@ def test_core_does_not_call_chapter_providers() -> None:
     MarketEnvironmentResponse.model_validate(payload)
 
 
-def test_section_loading_is_isolated_and_stock_snapshot_is_shared() -> None:
+def test_section_loading_is_isolated_by_dataset() -> None:
     provider = SectionProvider()
     service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
     selected = market_today()
 
     breadth = service.get_chapter01(selected, "breadth")
-    assert provider.chapter_calls == ["stock"]
+    assert provider.chapter_calls == ["breadth"]
     assert breadth["chapter01"]["breadth"]["advanceCount"] == 2
-    assert breadth["chapter01"]["activeDirection"]["topStocks"][0]["name"] == "样本股"
+    assert breadth["chapter01"]["activeDirection"]["quality"]["status"] == "missing"
 
     active = service.get_chapter01(selected, "activeDirection")
-    assert provider.chapter_calls == ["stock"]
+    assert provider.chapter_calls == ["breadth", "activeDirection"]
     assert active["chapter01"]["activeDirection"]["topStocks"][0]["name"] == "样本股"
     assert active["chapter01"]["breadth"]["advanceCount"] == 2
     Chapter01Response.model_validate(active)
 
     limits = service.get_chapter01(selected, "limits")
-    assert provider.chapter_calls == ["stock", "limits"]
+    assert provider.chapter_calls == ["breadth", "activeDirection", "limits"]
     assert limits["chapter01"]["breadth"]["advanceCount"] == 2
     assert limits["chapter01"]["limits"]["limitUpCount"] == 10
 
@@ -172,7 +178,7 @@ def test_section_loading_is_isolated_and_stock_snapshot_is_shared() -> None:
     [
         ("limits", ["limits"]),
         ("sectors", ["sectors"]),
-        ("summary", ["stock", "limits", "sectors"]),
+        ("summary", ["breadth", "activeDirection", "limits", "sectors"]),
     ],
 )
 def test_section_loading_only_calls_required_provider_groups(section: str, expected_calls: list[str]) -> None:
@@ -190,7 +196,7 @@ def test_legacy_aggregate_composes_all_section_groups_and_reuses_caches() -> Non
     first = service.get(market_today())
     second = service.get(market_today())
 
-    assert provider.chapter_calls == ["stock", "limits", "sectors"]
+    assert provider.chapter_calls == ["breadth", "activeDirection", "limits", "sectors"]
     assert provider.quote_calls == 1
     assert provider.fetch_calls == len(INDEX_SPECS)
     assert second == first
@@ -231,8 +237,195 @@ def test_concurrent_section_requests_share_one_provider_load() -> None:
 
     assert provider.quote_calls == 1
     assert provider.fetch_calls == len(INDEX_SPECS)
-    assert provider.chapter_calls == ["stock"]
+    assert provider.chapter_calls == ["breadth"]
     assert all(item["chapter01"]["breadth"]["advanceCount"] == 2 for item in results)
+
+
+def test_persistent_snapshots_survive_service_restart_without_chapter_provider_calls(tmp_path, caplog) -> None:
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    breadth = provider.fetch_chapter01_breadth(effective, allow_current_snapshot=True)
+    active = provider.fetch_chapter01_active_direction(effective, allow_current_snapshot=True)
+    provider.chapter_calls.clear()
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="breadth",
+            as_of=effective,
+            payload=breadth,
+            source="fixture",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    store.put(
+        SnapshotRecord(
+            dataset="activeDirection",
+            as_of=effective,
+            payload=active,
+            source="fixture",
+            status="ok",
+            observations=1,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+
+    first = MarketEnvironmentService(provider=provider, snapshot_store=store, now=lambda: market_now)
+    second = MarketEnvironmentService(provider=provider, snapshot_store=SnapshotStore(store.path), now=lambda: market_now)
+    started = monotonic()
+    with caplog.at_level("INFO"):
+        breadth_payload = first.get_chapter01(selected, "breadth")
+        active_payload = second.get_chapter01(selected, "activeDirection")
+    elapsed = monotonic() - started
+
+    assert provider.chapter_calls == []
+    assert breadth_payload["chapter01"]["breadth"]["quality"]["cacheState"] == "fresh"
+    assert active_payload["chapter01"]["activeDirection"]["quality"]["cacheState"] == "fresh"
+    assert elapsed < 0.5
+    cache_records = [record for record in caplog.records if getattr(record, "event", None) == "market_snapshot_cache_lookup"]
+    assert cache_records
+    assert all(record.cache_state == "fresh" for record in cache_records)
+    assert all(record.lookup_ms >= 0 for record in cache_records)
+
+
+def test_persistent_cold_requests_share_one_cross_service_refresh(tmp_path) -> None:
+    class BlockingProvider(SectionProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def fetch_chapter01_breadth(self, as_of, *, allow_current_snapshot):
+            self.chapter_calls.append("breadth")
+            self.started.set()
+            assert self.release.wait(timeout=5)
+            return {
+                "advanceCount": 2,
+                "declineCount": 1,
+                "flatCount": 0,
+                "validCount": 3,
+                "advanceRatio": 0.6667,
+                "medianReturn": 1.0,
+                "state": "多数上涨",
+                "quality": evidence_quality("market-breadth", as_of, 3),
+            }
+
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    provider = BlockingProvider()
+    path = tmp_path / "snapshots.sqlite3"
+    first = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=SnapshotStore(path),
+        now=lambda: market_now,
+        cold_wait_seconds=5,
+    )
+    second = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=SnapshotStore(path),
+        now=lambda: market_now,
+        cold_wait_seconds=5,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_result = executor.submit(first.get_chapter01, selected, "breadth")
+        assert provider.started.wait(timeout=5)
+        second_result = executor.submit(second.get_chapter01, selected, "breadth")
+        sleep(0.1)
+        assert provider.chapter_calls == ["breadth"]
+        provider.release.set()
+        results = [first_result.result(timeout=5), second_result.result(timeout=5)]
+
+    assert provider.chapter_calls == ["breadth"]
+    assert all(item["chapter01"]["breadth"]["advanceCount"] == 2 for item in results)
+
+
+def test_stale_snapshot_returns_immediately_and_refreshes_in_background(tmp_path) -> None:
+    class BlockingProvider(SectionProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def fetch_chapter01_breadth(self, as_of, *, allow_current_snapshot):
+            self.chapter_calls.append("breadth")
+            self.started.set()
+            assert self.release.wait(timeout=5)
+            return super().fetch_chapter01_breadth(as_of, allow_current_snapshot=allow_current_snapshot)
+
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=14)
+    provider = BlockingProvider()
+    seed = MarketEnvironmentService(provider=provider, persistent_cache=False)._get_core(selected)
+    effective = seed["effectiveDate"]
+    stale_payload = {
+        "advanceCount": 1,
+        "declineCount": 2,
+        "flatCount": 0,
+        "validCount": 3,
+        "advanceRatio": 0.3333,
+        "medianReturn": -1.0,
+        "state": "多数下跌",
+        "quality": evidence_quality("market-breadth", effective, 3),
+    }
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="breadth",
+            as_of=effective,
+            payload=stale_payload,
+            source="old",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=market_now - timedelta(minutes=10),
+            settled=False,
+        )
+    )
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        snapshot_ttl_seconds=30,
+        now=lambda: market_now,
+    )
+
+    started = monotonic()
+    result = service.get_chapter01(selected, "breadth")
+    elapsed = monotonic() - started
+
+    assert elapsed < 0.5
+    assert result["chapter01"]["breadth"]["advanceCount"] == 1
+    assert result["chapter01"]["breadth"]["quality"]["cacheState"] == "stale"
+    assert result["chapter01"]["breadth"]["quality"]["refreshing"] is True
+    assert provider.started.wait(timeout=5)
+    provider.release.set()
+    deadline = monotonic() + 5
+    while store.get("breadth", effective).source == "old" and monotonic() < deadline:
+        sleep(0.05)
+    assert store.get("breadth", effective).source == "fixture"
+
+
+def test_persistent_cache_can_be_disabled_for_rollback(tmp_path) -> None:
+    provider = SectionProvider()
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=SnapshotStore(tmp_path / "snapshots.sqlite3"),
+        persistent_cache=False,
+    )
+
+    payload = service.get_chapter01(market_today(), "breadth")
+
+    assert provider.chapter_calls == ["breadth"]
+    assert payload["chapter01"]["breadth"]["quality"].get("cacheState") is None
 
 
 def test_service_history_exposes_real_ohlc() -> None:

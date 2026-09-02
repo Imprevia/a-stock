@@ -31,6 +31,39 @@ npm run dev --prefix apps/market-environment-dashboard
 
 打开 `http://localhost:5173` 查看上证、深证、创业板、沪深 300 和中证 500 的趋势、区间位置与成交额分析。市场广度指标暂未接入。
 
+## Helm 部署到 k3s
+
+先构建镜像并推送到 k3s 节点可访问的镜像仓库：
+
+```bash
+docker build -t registry.example.com/a-stock/market-environment:2026.09.02-1 .
+docker push registry.example.com/a-stock/market-environment:2026.09.02-1
+```
+
+首次安装或幂等部署：
+
+```bash
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
+```
+
+后续发布新镜像时使用新 tag，并保留上次部署参数：
+
+```bash
+docker build -t registry.example.com/a-stock/market-environment:2026.09.02-2 .
+docker push registry.example.com/a-stock/market-environment:2026.09.02-2
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --reuse-values --set image.tag=2026.09.02-2 --wait --timeout 3m
+```
+
+查看状态和回滚：
+
+```bash
+helm status a-stock --namespace a-stock
+helm history a-stock --namespace a-stock
+helm rollback a-stock <revision> --namespace a-stock --wait --timeout 3m
+```
+
+默认使用 k3s 的 Traefik 和 `local-path` StorageClass。正式环境的域名、TLS、镜像拉取凭据及其他参数通过 `deploy/helm/a-stock/values.yaml` 或独立 values 文件覆盖。
+
 ## 交易规则平台
 
 ```bash

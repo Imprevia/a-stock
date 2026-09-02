@@ -78,6 +78,10 @@ class EvidenceQuality(BaseModel):
     asOf: str | None = None
     warning: str | None = None
     warnings: list[str]
+    cacheState: str | None = None
+    snapshotFetchedAt: str | None = None
+    refreshing: bool | None = None
+    refreshWarning: str | None = None
 
 
 class ChapterDocument(BaseModel):

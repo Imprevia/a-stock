@@ -90,6 +90,32 @@ def test_sina_index_kline_calibrates_historical_amount(monkeypatch):
 def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(monkeypatch):
     provider = MarketDataProvider()
 
+    breadth = provider._breadth_result(
+        2,
+        1,
+        1,
+        1.0,
+        date(2026, 8, 28),
+        source="eastmoney-clist-delay",
+        status="fallback",
+        warnings=["fixture"],
+    )
+    active_rows = [
+        {
+            "f12": f"{index:06d}",
+            "f14": f"样本{index}",
+            "f3": 2 - index / 10,
+            "f6": 10_000 - index,
+            "f2": 11,
+            "f15": 11 if index == 9 else 12,
+            "f16": 11 if index == 9 else 10,
+            "f100": "电子" if index < 3 else "医药",
+        }
+        for index in range(30)
+    ]
+    monkeypatch.setattr(provider, "_fetch_eastmoney_breadth_fallback", lambda as_of, warning: breadth)
+    monkeypatch.setattr(provider, "_fetch_eastmoney_active_direction_rows", lambda: active_rows)
+
     def fake_get_json(url, params):
         if "push2ex" in url:
             endpoint = url.rsplit("/", 1)[-1]
@@ -117,16 +143,7 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
                     ]
                 }
             }
-        return {
-            "data": {
-                "diff": [
-                    {"f12": "000001", "f14": "甲", "f3": 2, "f6": 400, "f2": 11, "f15": 12, "f16": 10, "f100": "电子"},
-                    {"f12": "000002", "f14": "乙", "f3": -1, "f6": 300, "f2": 9, "f15": 10, "f16": 8, "f100": "电子"},
-                    {"f12": "000003", "f14": "丙", "f3": 0, "f6": 200, "f2": 8, "f15": 9, "f16": 7, "f100": "电子"},
-                    {"f12": "000004", "f14": "丁", "f3": 3, "f6": 100, "f2": 7, "f15": 7, "f16": 7, "f100": "医药"},
-                ]
-            }
-        }
+        raise AssertionError("stock datasets use their independent collectors")
 
     monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
     payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
@@ -142,30 +159,25 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
     assert "percentile" not in json.dumps(payload, ensure_ascii=False).lower()
 
 
-def test_chapter01_provider_accepts_keyed_stock_snapshot(monkeypatch):
+def test_active_direction_provider_accepts_keyed_ranked_response(monkeypatch):
     provider = MarketDataProvider()
+    provider._ACTIVE_DIRECTION_MIN_ROWS = 3
 
     def fake_get_json(url, params):
-        if "push2ex" in url:
-            return {"data": {"pool": []}}
-        if params["fs"] == "m:90+t:2":
-            return {"data": {"diff": []}}
         return {
             "data": {
                 "diff": {
-                    "0": {"f3": "1.5"},
-                    "1": {"f3": "-0.5"},
-                    "2": {"f3": "0"},
+                    "0": {"f12": "000001", "f14": "甲", "f6": 300},
+                    "1": {"f12": "000002", "f14": "乙", "f6": 200},
+                    "2": {"f12": "000003", "f14": "丙", "f6": 100},
                 }
             }
         }
 
     monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
-    payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
+    rows = provider._fetch_eastmoney_active_direction_rows()
 
-    assert payload["breadth"]["advanceCount"] == 1
-    assert payload["breadth"]["declineCount"] == 1
-    assert payload["breadth"]["medianReturn"] == 0.0
+    assert [row["f12"] for row in rows] == ["000001", "000002", "000003"]
 
 
 def test_stock_snapshot_rejects_partial_market_response(monkeypatch):
@@ -186,8 +198,6 @@ def test_chapter01_breadth_falls_back_to_sorted_delay_pages(monkeypatch):
     sorted_returns = [3.0, 2.0, 1.0, None, 0.0, 0.0, -1.0, -2.0, -3.0]
 
     def fake_get_json(url, params):
-        if "push2ex" in url:
-            return {"data": {"pool": []}}
         if url == provider._BREADTH_FALLBACK_URL:
             page = int(params["pn"])
             start = (page - 1) * provider._BREADTH_PAGE_SIZE
@@ -198,20 +208,41 @@ def test_chapter01_breadth_falls_back_to_sorted_delay_pages(monkeypatch):
                     "diff": [{"f3": "-" if value is None else value} for value in values],
                 }
             }
-        if params.get("fs") == "m:90+t:2":
-            raise RuntimeError("industry unavailable")
-        raise RuntimeError("primary stock snapshot blocked")
+        raise AssertionError("breadth must not request the nominal full-market snapshot")
 
     monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
-    payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_stock_snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+    breadth = provider.fetch_chapter01_breadth(date(2026, 8, 28), allow_current_snapshot=True)
 
-    assert payload["breadth"]["advanceCount"] == 3
-    assert payload["breadth"]["declineCount"] == 3
-    assert payload["breadth"]["flatCount"] == 2
-    assert payload["breadth"]["validCount"] == 8
-    assert payload["breadth"]["medianReturn"] == 0.0
-    assert payload["breadth"]["quality"]["status"] == "fallback"
-    assert payload["breadth"]["quality"]["source"] == "eastmoney-clist-delay"
+    assert breadth["advanceCount"] == 3
+    assert breadth["declineCount"] == 3
+    assert breadth["flatCount"] == 2
+    assert breadth["validCount"] == 8
+    assert breadth["medianReturn"] == 0.0
+    assert breadth["quality"]["status"] == "fallback"
+    assert breadth["quality"]["source"] == "eastmoney-clist-delay"
+
+
+def test_active_direction_rejects_unsorted_or_small_top_n(monkeypatch):
+    provider = MarketDataProvider()
+    provider._ACTIVE_DIRECTION_MIN_ROWS = 3
+    rows = [
+        {"f12": "000001", "f14": "甲", "f6": 300},
+        {"f12": "000002", "f14": "乙", "f6": 100},
+        {"f12": "000003", "f14": "丙", "f6": 200},
+    ]
+    monkeypatch.setattr(provider.eastmoney, "get_json", lambda url, params: {"data": {"diff": rows}})
+
+    with pytest.raises(RuntimeError, match="未按成交额降序排列"):
+        provider._fetch_eastmoney_active_direction_rows()
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", lambda url, params: {"data": {"diff": rows[:2]}})
+    with pytest.raises(RuntimeError, match="至少需要 3 个"):
+        provider._fetch_eastmoney_active_direction_rows()
 
 
 def test_chapter01_limit_provider_distinguishes_failure_from_explicit_empty_pool(monkeypatch):

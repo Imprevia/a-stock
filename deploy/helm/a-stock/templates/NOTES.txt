@@ -1,0 +1,12 @@
+{{- if .Values.ingress.enabled }}
+The dashboard is exposed through ingress {{ include "a-stock.fullname" . }}.
+{{- if .Values.ingress.host }}
+URL: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else }}
+Use a k3s node IP and path {{ .Values.ingress.path }}.
+{{- end }}
+{{- else }}
+Run the following command to access the dashboard locally:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "a-stock.fullname" . }} 8080:{{ .Values.service.port }}
+Then open http://127.0.0.1:8080/.
+{{- end }}

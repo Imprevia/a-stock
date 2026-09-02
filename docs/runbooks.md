@@ -7,6 +7,7 @@
 - git
 - 可选：GitHub Actions（仓库 CI）
 - 可访问通达信 TCP 和腾讯/百度 HTTPS 行情接口的网络
+- SQLite 由 Python 标准库提供；默认快照路径为 `.artifacts/market-environment/snapshots.sqlite3`
 
 安装依赖：
 
@@ -32,6 +33,76 @@ npm run dev --prefix apps/market-environment-dashboard
 
 浏览器访问 `http://localhost:5173`；生产构建后可由 FastAPI 从 `apps/market-environment-dashboard/dist` 托管静态文件。
 
+## k3s 部署
+
+仓库根目录的 `Dockerfile` 使用 Node 构建前端，再将 `dist` 与 Python API 放入同一个非 root 运行镜像。构建并推送固定版本镜像：
+
+```bash
+docker build -t registry.example.com/a-stock/market-environment:2026.09.02 .
+docker push registry.example.com/a-stock/market-environment:2026.09.02
+```
+
+将 `deploy/k3s/kustomization.yaml` 的 `images.newName` 和 `newTag` 改为集群可拉取的地址与固定版本，然后部署：
+
+```bash
+kubectl apply -k deploy/k3s
+kubectl -n a-stock rollout status deployment/market-environment-dashboard --timeout=180s
+kubectl -n a-stock get pods,pvc,service,ingress
+```
+
+k3s 单节点也可不使用镜像仓库，将默认名称的镜像直接导入节点。多节点集群必须导入每个可能调度 Pod 的节点，或改用共享镜像仓库：
+
+```bash
+docker build -t a-stock-market-environment:latest .
+docker save a-stock-market-environment:latest | sudo k3s ctr images import -
+kubectl apply -k deploy/k3s
+```
+
+默认 Ingress 使用 k3s 内置 Traefik 的 `web` 入口且不限定 Host，可通过任一节点 IP 访问；正式环境应增加域名、TLS 和证书配置。服务必须允许访问通达信 TCP 与腾讯、百度、新浪、东方财富 HTTPS 行情源。Deployment 默认单副本，因为 SQLite、refresh lease、短缓存与 provider limiter 仍是单机边界；不要直接增加副本数。
+
+`market-environment-data` PVC 使用 k3s 默认 `local-path` StorageClass，并挂载到 `/data`；API 快照路径为 `/data/snapshots.sqlite3`。该存储适合单节点或 Pod 固定在同一 k3s 节点的部署，不提供多节点共享。删除 PVC 通常会连同 local-path 数据一起回收，执行删除前先备份 SQLite 文件。
+
+发布检查、日志和回滚：
+
+```bash
+curl "http://<k3s-node-ip>/api/health"
+kubectl -n a-stock logs deployment/market-environment-dashboard --tail=200 -f
+kubectl -n a-stock describe deployment market-environment-dashboard
+kubectl -n a-stock rollout history deployment/market-environment-dashboard
+kubectl -n a-stock rollout undo deployment/market-environment-dashboard
+```
+
+`/api/health` 不访问外部行情源，只用于容器启动、就绪和存活检查。健康检查成功但行情接口返回 503 时，应继续按 provider 网络和降级 warning 排查，而不是重启 Pod。删除工作负载可使用 `kubectl delete -k deploy/k3s`，但该命令也会删除 PVC；需要保留快照时先移除 `persistent-volume-claim.yaml`，或先导出数据再删除。
+
+### Helm 发布
+
+`deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart。首次发布：
+
+```bash
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
+```
+
+后续仅更新镜像时保留已有 values；Chart 模板或默认 values 有变化时，不要使用 `--reuse-values`，而应重新传入受版本控制的环境 values 文件：
+
+```bash
+# 仅更新镜像
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --reuse-values --set image.tag=2026.09.02-2 --wait --timeout 3m
+
+# 同时应用新的 Chart 默认值和环境覆盖
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set image.tag=2026.09.02-2 --wait --timeout 3m
+```
+
+渲染和检查：
+
+```bash
+helm lint deploy/helm/a-stock
+helm template a-stock deploy/helm/a-stock --namespace a-stock
+helm get values a-stock --namespace a-stock
+helm history a-stock --namespace a-stock
+```
+
+启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
+
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
 新增或调整页面时，布局、组件、颜色、图表、状态和响应式验收遵循 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
@@ -47,9 +118,24 @@ curl "http://127.0.0.1:8000/api/market-environment/chapter-01?as_of=2026-08-28&s
 
 `/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
-章节请求按数据集缓存 30 秒。`breadth` 与 `activeDirection` 共享全 A 快照，因此任一章节首次请求会同时缓存两者；后续切换不重复拉取全市场快照。排查加载慢时分别计时核心接口和目标章节接口，不再只看完整聚合接口总耗时。
+指数核心请求继续使用进程内短缓存。`breadth` 与 `activeDirection` 使用按 `(dataset, as_of)` 隔离的 SQLite 快照：广度直接走精确涨跌幅分页统计，容量方向只请求成交额 Top-N。fresh/settled 命中不访问 provider；stale 命中返回上次成功值并尝试后台刷新；冷 miss 通过 SQLite lease 合并为一次同步采集。排查加载慢时分别查看 cache lookup、lease wait、provider collection、derivation、validation 和 store write 计时。
 
-看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`；API 的默认日期与未来日期校验使用 `Asia/Shanghai`。东方财富 `data.diff` 若为键值对象会先转为行列表；无效行会被丢弃，不能用 0 填充。主 `push2` 全 A 快照必须满足返回行数不小于 `data.total`，否则视为不完整并触发市场广度降级；降级成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。若主域和延迟域均失败，保留 `null` 并在 `quality.warnings` 记录两段错误。
+盘后预计算：
+
+```bash
+python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02
+python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --dataset breadth --dataset activeDirection
+```
+
+当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 仅用于显式本地诊断。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
+
+配置：
+
+- `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
+- `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
+- SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
+
+看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`；API 的默认日期与未来日期校验使用 `Asia/Shanghai`。市场广度直接从 `push2delay` 按涨跌幅排序分页定位边界与中位数，成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。容量方向的 Top-N 响应必须验证排序、最小样本和必需字段。任一采集失败时保留 `null` 或上一次精确日期成功值，并在 `quality.warnings` / `refreshWarning` 记录错误，不能用 0 填充。
 
 指数 `history` 契约中的每个点应包含 `date`、`open`、`close`、`low`、`high`、`ma5`、`ma10`、`ma20`、`ma60` 和 `amount`。浏览器 QA 必须确认 60 日图存在非空 K 线实体、红涨绿跌、均线叠加和 OHLC tooltip；禁止用收盘价复制生成开高低。
 
@@ -95,6 +181,10 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 | hooks 连通 | `git config core.hooksPath`（应为 `.githooks`） | 终端输出 | 是 |
 | Build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Backend tests | `.venv` Python 下运行 `python -m pytest tests -q` | 终端输出 / plan | 是 |
+| k3s manifests | `kubectl kustomize deploy/k3s` 与集群端 `kubectl apply --dry-run=server -k deploy/k3s` | 终端输出 / plan | 是 |
+| Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
+| Snapshot refresh | `python -m src.market_environment.cli snapshots refresh --as-of <date>` | CLI JSON / plan | 是 |
+| Warm cache | 对已预计算日期请求 Chapter 01，确认 provider 0 调用且 <500ms | pytest / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Browser QA | 启动前后端后检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出；01 页检查真实 OHLC K 线、均线和 tooltip；确认首屏先于章节数据出现、章节失败不清空核心数据 | 截图 / plan | 是 |
 | Rule registry | `python -m src.trading_system.cli rules validate` | 终端输出 / PR workflow | 是 |
@@ -111,6 +201,9 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 - **有 5 日成交额比值但没有量价状态**：该日价格变化与比值处于已定义规则之间的空档，属于预期的未分类状态；不要在 API 或前端增加兜底分类。
 - **组合判断显示“未命中明确组合”**：先核对 API 的 `combination.evidence` 和量化版 `0.2` 映射。六类条件要求同时成立，单独处于高位、放量或站上均线都不足以形成组合状态。
 - **第 01 章证据显示 `missing` / `partial`**：先看对应对象的 `quality.warnings`。历史日期缺少广度、板块或成交额榜是当前快照源的预期边界；东方财富 403 或空 `data` 也必须保留缺失状态，不能用空数组伪造为 0。只有接口成功且明确返回空 `pool` 时，涨跌停计数才可为 0。
+- **章节显示 `cacheState=stale`**：查看 `snapshotFetchedAt` 和 `refreshWarning`；旧值仍对应同一交易日，但后台刷新失败或尚在进行。不要删除旧快照后用其他日期数据替代。
+- **refresh 一直显示被占用**：检查同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 SQLite。
+- **需要紧急回滚持久缓存**：设置 `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0` 并重启 API；原 SQLite 文件保留用于诊断，不需要删除。
 - **指数价格异常**：检查实时腾讯报价是否可用。沪市歧义代码没有实时交叉校验时，mootdx/百度结果会被拒绝，避免错误股票数据进入页面。
 - **hook 报 `\r` 相关错误**：`.githooks/*` 行尾被改为 CRLF，恢复 LF（`.gitattributes` 已强制 `eol=lf`，重新 checkout 即可）。
 - **gate 误报需要紧急绕过**：优先修文档；确需绕过用 commit message 标记（`[skip-plan]` / `[no-docs]` + 理由）或环境变量（见 `AGENTS.md` 逃生口）。
