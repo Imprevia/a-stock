@@ -22,7 +22,8 @@
 - `5883fb4` 为 `origin/agent/mika/75ef220144c2` 的合并提交；冲突以该分支完整的按 section API、provider 分组缓存、前端按需加载和完成态文档为最终行为。
 - `.venv\Scripts\python.exe -m pytest tests -q --basetemp .tmp-pytest-merge-branches`：`62 passed`，仅有既有 Starlette/httpx 弃用 warning。
 - `npm run build --prefix apps/market-environment-dashboard`：构建成功；保留单 chunk 超过 500 kB 的既有 warning。
-- `.venv\Scripts\python.exe scripts/check-docs-contract.py --mode=full`：通过，检查到代码 5、文档 7、plan 2。
+- 合并冲突解决阶段运行 `.venv\Scripts\python.exe scripts/check-docs-contract.py --mode=full`：通过，检查到代码 5、文档 7、plan 2。
+- 计划归档后的最终提交态使用 `SKIP_PLAN_GATE=1` 再运行 full gate：代码与文档映射通过；逃生口仅用于 Gate 2/3 无法从 `origin/main..HEAD` 的净 diff 识别已创建后归档的 active plan，本计划及其完整证据已实际入库。
 - `git diff --check`：通过；冲突标记扫描为空。
 
 ## Remaining Gaps
