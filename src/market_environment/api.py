@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .schemas import MarketEnvironmentResponse
+from .schemas import Chapter01Response, MarketEnvironmentCoreResponse, MarketEnvironmentResponse
 from .service import MarketEnvironmentService, market_today
 
 app = FastAPI(title="市场环境分析 API", version="1.0.0")
@@ -23,16 +23,38 @@ app.add_middleware(
 service = MarketEnvironmentService()
 
 
+def _ensure_valid_date(as_of: date) -> None:
+    if as_of > market_today():
+        raise HTTPException(status_code=422, detail="as_of 不能晚于当前日期")
+
+
+def _service_call(method: str, as_of: date) -> dict:
+    _ensure_valid_date(as_of)
+    try:
+        return getattr(service, method)(as_of)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/market-environment", response_model=MarketEnvironmentResponse)
 def market_environment(
     as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
 ) -> dict:
-    if as_of > market_today():
-        raise HTTPException(status_code=422, detail="as_of 不能晚于当前日期")
-    try:
-        return service.get(as_of)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _service_call("get", as_of)
+
+
+@app.get("/api/market-environment/core", response_model=MarketEnvironmentCoreResponse)
+def market_environment_core(
+    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+) -> dict:
+    return _service_call("get_core", as_of)
+
+
+@app.get("/api/market-environment/chapter-01", response_model=Chapter01Response)
+def market_environment_chapter01(
+    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+) -> dict:
+    return _service_call("get_chapter01", as_of)
 
 
 @app.get("/api/health")

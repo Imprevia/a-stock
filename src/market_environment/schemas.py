@@ -181,11 +181,20 @@ class Chapter01Evidence(BaseModel):
     assessment: ChapterAssessment
 
 
-class MarketEnvironmentResponse(BaseModel):
+class MarketEnvironmentCoreResponse(BaseModel):
     asOf: str
     generatedAt: str
     indices: list[IndexAnalysis]
     summary: Summary
+
+
+class Chapter01Response(BaseModel):
+    asOf: str
+    generatedAt: str
+    chapter01: Chapter01Evidence
+
+
+class MarketEnvironmentResponse(MarketEnvironmentCoreResponse):
     chapter01: Chapter01Evidence | None = None
 
 

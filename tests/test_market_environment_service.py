@@ -1,10 +1,12 @@
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
 from src.market_environment.calculations import Bar
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
-from src.market_environment.schemas import MarketEnvironmentResponse
+from src.market_environment.schemas import Chapter01Response, MarketEnvironmentCoreResponse, MarketEnvironmentResponse
 from src.market_environment.service import MarketEnvironmentService
 
 
@@ -46,6 +48,28 @@ class FakeProvider:
         return ProviderResult(make_bars(), "fixture")
 
 
+class CountingChapterProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chapter_calls = 0
+
+    def fetch_chapter01(self, as_of: date, *, allow_current_snapshot: bool):
+        self.chapter_calls += 1
+        raise RuntimeError("fixture chapter source unavailable")
+
+
+class BlockingProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+
+    def fetch_quotes(self, specs):
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        return super().fetch_quotes(specs)
+
+
 def test_service_falls_back_to_last_trading_day_and_caches() -> None:
     provider = FakeProvider()
     service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
@@ -59,6 +83,62 @@ def test_service_falls_back_to_last_trading_day_and_caches() -> None:
     assert second is first
     assert provider.quote_calls == 1
     assert provider.fetch_calls == len(INDEX_SPECS)
+
+
+def test_core_returns_before_chapter_and_chapter_reuses_core_cache() -> None:
+    provider = CountingChapterProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+    selected = date(2026, 8, 1)
+
+    core = service.get_core(selected)
+    assert "chapter01" not in core
+    assert provider.chapter_calls == 0
+    assert provider.fetch_calls == len(INDEX_SPECS)
+    MarketEnvironmentCoreResponse.model_validate(core)
+
+    chapter = service.get_chapter01(selected)
+    assert chapter["asOf"] == core["asOf"]
+    assert chapter["chapter01"]["status"] == "insufficient"
+    assert provider.chapter_calls == 1
+    assert provider.fetch_calls == len(INDEX_SPECS)
+    Chapter01Response.model_validate(chapter)
+
+    assert service.get_chapter01(selected) is chapter
+    assert provider.chapter_calls == 1
+
+
+def test_concurrent_core_requests_share_one_provider_load() -> None:
+    provider = BlockingProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+    selected = date(2026, 8, 28)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.get_core, selected)
+        assert provider.started.wait(timeout=2)
+        second = executor.submit(service.get_core, selected)
+        provider.release.set()
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert first_result is second_result
+    assert provider.quote_calls == 1
+    assert provider.fetch_calls == len(INDEX_SPECS)
+
+
+def test_refreshed_core_invalidates_derived_chapter_cache() -> None:
+    provider = CountingChapterProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+    selected = date(2026, 8, 28)
+
+    first_chapter = service.get_chapter01(selected)
+    with service._condition:
+        service._core_cache[selected.isoformat()] = (0.0, service._core_cache[selected.isoformat()][1])
+
+    service.get_core(selected)
+    second_chapter = service.get_chapter01(selected)
+
+    assert second_chapter is not first_chapter
+    assert provider.chapter_calls == 2
 
 
 def test_service_history_exposes_real_ohlc() -> None:

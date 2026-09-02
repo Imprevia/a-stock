@@ -2,13 +2,14 @@
 
 ## 主计划
 
-- `merge-market-loading-branches.md`
+- [`merge-market-loading-branches.md`](merge-market-loading-branches.md) — 合并两套市场环境渐进加载实现。
 
 ## 活动计划
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
 | `merge-market-loading-branches.md` | Codex | 进行中 | 2026-09-02 |
+| `optimize-market-data-loading.md` | Mika | 进行中 | 2026-09-02 |
 
 ## 说明
 
