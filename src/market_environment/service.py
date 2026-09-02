@@ -19,6 +19,12 @@ from .calculations import (
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 
+MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
+
+
+def market_today() -> date:
+    return datetime.now(MARKET_TIME_ZONE).date()
+
 
 class MarketEnvironmentService:
     def __init__(self, provider: MarketDataProvider | None = None, ttl_seconds: int = 30) -> None:
@@ -85,13 +91,13 @@ class MarketEnvironmentService:
         dominant = trends.most_common(1)[0][0] if trends else "数据不足"
         payload = {
             "asOf": effective_date.isoformat(),
-            "generatedAt": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
             "indices": analyses,
             "summary": {"synchronization": sync, "dominantTrend": dominant, "warnings": warnings},
         }
         payload["chapter01"] = self._chapter01(
             effective_date,
-            allow_current_snapshot=as_of == date.today(),
+            allow_current_snapshot=as_of == market_today(),
             analyses=analyses,
             synchronization=sync,
             dominant_trend=dominant,

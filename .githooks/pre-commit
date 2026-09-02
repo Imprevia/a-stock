@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# 薄入口：真正规则在 scripts/check-docs-contract.py（保持本文件无业务逻辑）
+set -eu
+
+if command -v python >/dev/null 2>&1; then
+  exec python scripts/check-docs-contract.py --mode=fast
+elif command -v py >/dev/null 2>&1; then
+  exec py scripts/check-docs-contract.py --mode=fast
+else
+  echo "[docs-contract] 未找到 python 解释器，跳过检查（建议安装 Python 3，见 docs/runbooks.md）" >&2
+  exit 0
+fi

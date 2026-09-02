@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -51,6 +52,11 @@ class ProviderResult:
 
 
 class MarketDataProvider:
+    _STOCK_SNAPSHOT_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+    _BREADTH_FALLBACK_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+    _STOCK_UNIVERSE_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
+    _BREADTH_PAGE_SIZE = 100
+
     def __init__(self, timeout: float = 8.0) -> None:
         self.timeout = timeout
         self.session = requests.Session()
@@ -165,14 +171,27 @@ class MarketDataProvider:
         requests. The limit pools accept a trading date and remain available.
         """
         if allow_current_snapshot:
+            stocks: list[dict[str, Any]] | None = None
+            stock_warning: str | None = None
             try:
                 stocks = self._fetch_eastmoney_stock_snapshot()
+            except Exception as exc:
+                stock_warning = f"东方财富全 A 当前快照不可用：{exc}"
+
+            if stocks is not None:
                 breadth = self._build_breadth(stocks, as_of)
                 active_direction = self._build_active_direction(stocks, as_of)
-            except Exception as exc:
-                warning = f"东方财富全 A 当前快照不可用：{exc}"
-                breadth = self._missing_breadth(as_of, warning, status="failed")
-                active_direction = self._missing_active_direction(as_of, warning, status="failed")
+            else:
+                try:
+                    breadth = self._fetch_eastmoney_breadth_fallback(as_of, stock_warning or "主快照不可用")
+                except Exception as exc:
+                    warning = f"{stock_warning or '东方财富全 A 当前快照不可用'}；市场广度降级失败：{exc}"
+                    breadth = self._missing_breadth(as_of, warning, status="failed")
+                active_direction = self._missing_active_direction(
+                    as_of,
+                    stock_warning or "东方财富全 A 当前快照不可用",
+                    status="failed",
+                )
             try:
                 sectors = self._build_sectors(self._fetch_eastmoney_industries(), as_of)
             except Exception as exc:
@@ -191,7 +210,6 @@ class MarketDataProvider:
         }
 
     def _fetch_eastmoney_stock_snapshot(self) -> list[dict[str, Any]]:
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
         params = {
             "pn": "1",
             "pz": "6000",
@@ -200,10 +218,10 @@ class MarketDataProvider:
             "fltt": "2",
             "invt": "2",
             "fid": "f6",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+            "fs": self._STOCK_UNIVERSE_FILTER,
             "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
         }
-        payload = self.eastmoney.get_json(url, params)
+        payload = self.eastmoney.get_json(self._STOCK_SNAPSHOT_URL, params)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise RuntimeError("全 A 快照响应缺少 data")
@@ -215,7 +233,141 @@ class MarketDataProvider:
         rows = [row for row in rows if isinstance(row, dict)]
         if not rows:
             raise RuntimeError("全 A 快照未返回有效股票")
+        total = self._optional_int(data.get("total"))
+        if total is not None and len(rows) < total:
+            raise RuntimeError(f"全 A 快照仅返回 {len(rows)} / {total} 行，拒绝按不完整样本计算")
         return rows
+
+    def _fetch_eastmoney_breadth_fallback(self, as_of: date, primary_warning: str) -> dict[str, Any]:
+        """Derive exact breadth statistics from a capped, sorted fallback endpoint.
+
+        The delay host caps each response at 100 rows. Binary-searching the
+        positive and negative boundaries avoids downloading the whole market
+        while preserving exact counts and the median over valid returns.
+        """
+        page_size = self._BREADTH_PAGE_SIZE
+        page_cache: dict[int, tuple[list[float | None], int]] = {}
+
+        def fetch_page(page_number: int) -> tuple[list[float | None], int]:
+            cached = page_cache.get(page_number)
+            if cached is not None:
+                return cached
+            params = {
+                "pn": str(page_number),
+                "pz": str(page_size),
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f3",
+                "fs": self._STOCK_UNIVERSE_FILTER,
+                "fields": "f3",
+            }
+            payload = self.eastmoney.get_json(self._BREADTH_FALLBACK_URL, params)
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError("延迟行情响应缺少 data")
+            rows = data.get("diff")
+            if isinstance(rows, Mapping):
+                rows = list(rows.values())
+            if not isinstance(rows, list):
+                raise RuntimeError("延迟行情返回格式无效")
+            total = self._optional_int(data.get("total"))
+            if total is None or total <= 0:
+                raise RuntimeError("延迟行情缺少有效总样本数")
+            values = [self._optional_float(row.get("f3")) for row in rows if isinstance(row, dict)]
+            if not values:
+                raise RuntimeError(f"延迟行情第 {page_number} 页没有有效行")
+            result = (values, total)
+            page_cache[page_number] = result
+            return result
+
+        _, total = fetch_page(1)
+        page_count = math.ceil(total / page_size)
+
+        def last_page_with_positive() -> int | None:
+            low, high, result = 1, page_count, None
+            while low <= high:
+                middle_page = (low + high) // 2
+                values, observed_total = fetch_page(middle_page)
+                if observed_total != total:
+                    raise RuntimeError("延迟行情分页期间总样本数发生变化")
+                if any(value is not None and value > 0 for value in values):
+                    result = middle_page
+                    low = middle_page + 1
+                else:
+                    high = middle_page - 1
+            return result
+
+        def first_page_with_negative() -> int | None:
+            low, high, result = 1, page_count, None
+            while low <= high:
+                middle_page = (low + high) // 2
+                values, observed_total = fetch_page(middle_page)
+                if observed_total != total:
+                    raise RuntimeError("延迟行情分页期间总样本数发生变化")
+                if any(value is not None and value < 0 for value in values):
+                    result = middle_page
+                    high = middle_page - 1
+                else:
+                    low = middle_page + 1
+            return result
+
+        positive_page = last_page_with_positive()
+        negative_page = first_page_with_negative()
+        if positive_page is None or negative_page is None or positive_page > negative_page:
+            raise RuntimeError("延迟行情无法定位涨跌分界")
+
+        positive_values, _ = fetch_page(positive_page)
+        advance_count = (positive_page - 1) * page_size + sum(
+            value is not None and value > 0 for value in positive_values
+        )
+        negative_values, _ = fetch_page(negative_page)
+        first_negative_offset = next(
+            (index for index, value in enumerate(negative_values) if value is not None and value < 0),
+            None,
+        )
+        if first_negative_offset is None:
+            raise RuntimeError("延迟行情跌幅边界页缺少负值")
+        negative_start = (negative_page - 1) * page_size + first_negative_offset
+        decline_count = total - negative_start
+
+        boundary_values: list[float | None] = []
+        for page_number in range(positive_page, negative_page + 1):
+            values, _ = fetch_page(page_number)
+            boundary_values.extend(values)
+        flat_count = sum(value == 0 for value in boundary_values if value is not None)
+        invalid_count = sum(value is None for value in boundary_values)
+        valid_count = advance_count + flat_count + decline_count
+        if valid_count + invalid_count != total:
+            raise RuntimeError("延迟行情排序边界不连续，无法保证统计口径")
+
+        def value_at_valid_rank(rank: int) -> float:
+            if rank < advance_count:
+                raw_index = rank
+            elif rank < advance_count + flat_count:
+                return 0.0
+            else:
+                raw_index = negative_start + rank - advance_count - flat_count
+            values, _ = fetch_page(raw_index // page_size + 1)
+            value = values[raw_index % page_size]
+            if value is None:
+                raise RuntimeError("延迟行情中位数位置缺少有效涨跌幅")
+            return value
+
+        lower_rank = (valid_count - 1) // 2
+        upper_rank = valid_count // 2
+        middle = (value_at_valid_rank(lower_rank) + value_at_valid_rank(upper_rank)) / 2
+        return self._breadth_result(
+            advance_count,
+            decline_count,
+            flat_count,
+            middle,
+            as_of,
+            source="eastmoney-clist-delay",
+            status="fallback",
+            warnings=[primary_warning, "主域不可用，已按涨跌幅排序分页定位全 A 有效样本"],
+        )
 
     def _fetch_eastmoney_industries(self) -> list[dict[str, Any]]:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -312,23 +464,48 @@ class MarketDataProvider:
         decline_count = sum(value < 0 for value in returns)
         flat_count = len(returns) - advance_count - decline_count
         middle = median(returns)
-        advance_ratio = advance_count / len(returns)
+        return self._breadth_result(
+            advance_count,
+            decline_count,
+            flat_count,
+            middle,
+            as_of,
+            source="eastmoney-clist",
+            status="partial",
+            warnings=["当前快照按可返回涨跌幅的股票计数，板块/ST/上市时长分层尚未接入"],
+        )
+
+    def _breadth_result(
+        self,
+        advance_count: int,
+        decline_count: int,
+        flat_count: int,
+        middle: float,
+        as_of: date,
+        *,
+        source: str,
+        status: str,
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        valid_count = advance_count + decline_count + flat_count
+        if valid_count <= 0:
+            return self._missing_breadth(as_of, "全 A 快照缺少有效涨跌幅", status="failed")
+        advance_ratio = advance_count / valid_count
         if advance_ratio > 0.5 and middle > 0:
             state = "多数上涨"
         elif advance_ratio < 0.5 and middle < 0:
             state = "多数下跌"
         else:
             state = "涨跌分化"
-        warnings = ["当前快照按可返回涨跌幅的股票计数，板块/ST/上市时长分层尚未接入"]
         return {
             "advanceCount": advance_count,
             "declineCount": decline_count,
             "flatCount": flat_count,
-            "validCount": len(returns),
+            "validCount": valid_count,
             "advanceRatio": round(advance_ratio, 4),
             "medianReturn": round(float(middle), 4),
             "state": state,
-            "quality": self._quality("market-breadth", "eastmoney-clist", "partial", len(returns), as_of, warnings),
+            "quality": self._quality("market-breadth", source, status, valid_count, as_of, warnings),
         }
 
     def _build_sectors(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:

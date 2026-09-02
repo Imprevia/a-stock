@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .schemas import MarketEnvironmentResponse
-from .service import MarketEnvironmentService
+from .service import MarketEnvironmentService, market_today
 
 app = FastAPI(title="市场环境分析 API", version="1.0.0")
 app.add_middleware(
@@ -25,9 +25,9 @@ service = MarketEnvironmentService()
 
 @app.get("/api/market-environment", response_model=MarketEnvironmentResponse)
 def market_environment(
-    as_of: date = Query(default_factory=date.today, description="交易日，格式 YYYY-MM-DD"),
+    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
 ) -> dict:
-    if as_of > date.today():
+    if as_of > market_today():
         raise HTTPException(status_code=422, detail="as_of 不能晚于当前日期")
     try:
         return service.get(as_of)
@@ -50,4 +50,3 @@ if static_dir.is_dir():
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(static_dir / "index.html")
-
