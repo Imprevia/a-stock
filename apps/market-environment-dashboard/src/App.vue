@@ -32,7 +32,13 @@ const combinationDefinitions = [
 const data = ref<MarketEnvironmentResponse | null>(null)
 const selectedCode = ref('sh000001')
 const selectedDocumentId = ref('01')
-const selectedDate = ref(new Date().toISOString().slice(0, 10))
+const formatLocalDate = (value: Date) => {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const selectedDate = ref(formatLocalDate(new Date()))
 const loading = ref(false)
 const error = ref('')
 const sidebarOpen = ref(false)
@@ -196,7 +202,7 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
     </aside>
 
     <main class="main-shell">
-      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>如何判断市场环境</span><ChevronRight :size="14" /><strong>{{ selectedDocument.id }}</strong></div></div><div class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="new Date().toISOString().slice(0, 10)" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div></header>
+      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>如何判断市场环境</span><ChevronRight :size="14" /><strong>{{ selectedDocument.id }}</strong></div></div><div class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div></header>
       <div class="content-shell">
         <section class="document-header"><div class="document-number">{{ selectedDocument.id }}</div><div class="document-title"><span>01 · 如何判断市场环境</span><h1>{{ selectedDocument.title }}</h1><p>{{ selectedDocument.objective }}</p></div><div class="rule-reference"><span>规则范围</span><strong>{{ selectedDocument.rules }}</strong><em>经验阈值 · 待回测</em></div></section>
         <section v-if="error" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>行情暂时不可用</strong><p>{{ error }}</p></div><button class="text-button" type="button" @click="loadData">重新加载</button></section>

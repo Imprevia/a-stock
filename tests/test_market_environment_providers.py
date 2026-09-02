@@ -140,6 +140,32 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
     assert "percentile" not in json.dumps(payload, ensure_ascii=False).lower()
 
 
+def test_chapter01_provider_accepts_keyed_stock_snapshot(monkeypatch):
+    provider = MarketDataProvider()
+
+    def fake_get_json(url, params):
+        if "push2ex" in url:
+            return {"data": {"pool": []}}
+        if params["fs"] == "m:90+t:2":
+            return {"data": {"diff": []}}
+        return {
+            "data": {
+                "diff": {
+                    "0": {"f3": "1.5"},
+                    "1": {"f3": "-0.5"},
+                    "2": {"f3": "0"},
+                }
+            }
+        }
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    payload = provider.fetch_chapter01(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert payload["breadth"]["advanceCount"] == 1
+    assert payload["breadth"]["declineCount"] == 1
+    assert payload["breadth"]["medianReturn"] == 0.0
+
+
 def test_chapter01_limit_provider_distinguishes_failure_from_explicit_empty_pool(monkeypatch):
     provider = MarketDataProvider()
 

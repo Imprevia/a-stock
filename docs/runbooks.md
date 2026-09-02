@@ -45,6 +45,8 @@ curl "http://127.0.0.1:8000/api/market-environment?as_of=2026-08-28"
 
 `chapter01` 是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
+看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`，否则中国时区午夜至 08:00 期间会请求前一日并使当前广度数据（上涨家数、下跌家数和涨跌幅中位数）显示为缺失。东方财富 `data.diff` 若为键值对象会先转为行列表；无效行会被丢弃，不能用 0 填充。
+
 指数 `history` 契约中的每个点应包含 `date`、`open`、`close`、`low`、`high`、`ma5`、`ma10`、`ma20`、`ma60` 和 `amount`。浏览器 QA 必须确认 60 日图存在非空 K 线实体、红涨绿跌、均线叠加和 OHLC tooltip；禁止用收盘价复制生成开高低。
 
 指数卡的量价区域应先展示 `amountRatio5`，再展示可选的 `volumePriceState`。量价状态为 `null` 表示价格与成交额组合未命中任何明确规则，不是接口错误，前端不得改写为“量价平稳”；只有比值缺失时显示 `--` / “数据不足”。

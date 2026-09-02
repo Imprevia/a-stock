@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import median
@@ -207,7 +208,12 @@ class MarketDataProvider:
         if not isinstance(data, dict):
             raise RuntimeError("全 A 快照响应缺少 data")
         rows = data.get("diff")
-        if not isinstance(rows, list) or not rows:
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            raise RuntimeError("全 A 快照返回格式无效")
+        rows = [row for row in rows if isinstance(row, dict)]
+        if not rows:
             raise RuntimeError("全 A 快照未返回有效股票")
         return rows
 
