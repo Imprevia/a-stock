@@ -1,11 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from threading import Barrier
 
 import pytest
 
 from src.market_environment.calculations import Bar
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
-from src.market_environment.schemas import MarketEnvironmentResponse
-from src.market_environment.service import MarketEnvironmentService
+from src.market_environment.schemas import Chapter01Response, MarketEnvironmentResponse
+from src.market_environment.service import MarketEnvironmentService, market_today
 
 
 def make_bars(count: int = 130) -> list[Bar]:
@@ -46,6 +48,78 @@ class FakeProvider:
         return ProviderResult(make_bars(), "fixture")
 
 
+def evidence_quality(dataset: str, as_of: date, observations: int = 1) -> dict:
+    return {
+        "dataset": dataset,
+        "source": "fixture",
+        "provider": "fixture",
+        "status": "ok",
+        "observations": observations,
+        "asOf": as_of.isoformat(),
+        "warning": None,
+        "warnings": [],
+    }
+
+
+class SectionProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chapter_calls: list[str] = []
+
+    def fetch_chapter01(self, as_of, *, allow_current_snapshot):
+        raise AssertionError("section-aware service must not call the aggregate provider")
+
+    def fetch_chapter01_stock(self, as_of, *, allow_current_snapshot):
+        self.chapter_calls.append("stock")
+        return {
+            "breadth": {
+                "advanceCount": 2,
+                "declineCount": 1,
+                "flatCount": 0,
+                "validCount": 3,
+                "advanceRatio": 0.6667,
+                "medianReturn": 1.0,
+                "state": "多数上涨",
+                "quality": evidence_quality("market-breadth", as_of, 3),
+            },
+            "activeDirection": {
+                "state": "candidate",
+                "summary": "fixture direction",
+                "topStocks": [
+                    {
+                        "code": "000001",
+                        "name": "样本股",
+                        "industry": "电子",
+                        "changePct": 2.0,
+                        "amount": 1000.0,
+                        "closePosition": 0.8,
+                    }
+                ],
+                "quality": evidence_quality("active-direction", as_of),
+            },
+        }
+
+    def fetch_chapter01_limits(self, as_of):
+        self.chapter_calls.append("limits")
+        return {
+            "limitUpCount": 10,
+            "limitDownCount": 2,
+            "failedLimitUpCount": 3,
+            "failedLimitUpRatio": 0.2308,
+            "maxStreak": 4,
+            "state": "已观测",
+            "quality": evidence_quality("limit-pools", as_of, 15),
+        }
+
+    def fetch_chapter01_sectors(self, as_of, *, allow_current_snapshot):
+        self.chapter_calls.append("sectors")
+        return {
+            "rows": [],
+            "state": "当日排名已观测",
+            "quality": evidence_quality("industry-ranking", as_of),
+        }
+
+
 def test_service_falls_back_to_last_trading_day_and_caches() -> None:
     provider = FakeProvider()
     service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
@@ -56,9 +130,109 @@ def test_service_falls_back_to_last_trading_day_and_caches() -> None:
 
     assert first["asOf"] == "2026-07-31"
     assert len(first["indices"]) == len(INDEX_SPECS)
-    assert second is first
+    assert second == first
     assert provider.quote_calls == 1
     assert provider.fetch_calls == len(INDEX_SPECS)
+
+
+def test_core_does_not_call_chapter_providers() -> None:
+    provider = SectionProvider()
+    payload = MarketEnvironmentService(provider=provider).get_core(market_today())
+
+    assert provider.chapter_calls == []
+    assert payload["chapter01"]["breadth"]["quality"]["status"] == "missing"
+    assert payload["chapter01"]["limits"]["quality"]["status"] == "missing"
+    MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_section_loading_is_isolated_and_stock_snapshot_is_shared() -> None:
+    provider = SectionProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+    selected = market_today()
+
+    breadth = service.get_chapter01(selected, "breadth")
+    assert provider.chapter_calls == ["stock"]
+    assert breadth["chapter01"]["breadth"]["advanceCount"] == 2
+    assert breadth["chapter01"]["activeDirection"]["topStocks"][0]["name"] == "样本股"
+
+    active = service.get_chapter01(selected, "activeDirection")
+    assert provider.chapter_calls == ["stock"]
+    assert active["chapter01"]["activeDirection"]["topStocks"][0]["name"] == "样本股"
+    assert active["chapter01"]["breadth"]["advanceCount"] == 2
+    Chapter01Response.model_validate(active)
+
+    limits = service.get_chapter01(selected, "limits")
+    assert provider.chapter_calls == ["stock", "limits"]
+    assert limits["chapter01"]["breadth"]["advanceCount"] == 2
+    assert limits["chapter01"]["limits"]["limitUpCount"] == 10
+
+
+@pytest.mark.parametrize(
+    ("section", "expected_calls"),
+    [
+        ("limits", ["limits"]),
+        ("sectors", ["sectors"]),
+        ("summary", ["stock", "limits", "sectors"]),
+    ],
+)
+def test_section_loading_only_calls_required_provider_groups(section: str, expected_calls: list[str]) -> None:
+    provider = SectionProvider()
+    payload = MarketEnvironmentService(provider=provider).get_chapter01(market_today(), section)
+
+    assert provider.chapter_calls == expected_calls
+    Chapter01Response.model_validate(payload)
+
+
+def test_legacy_aggregate_composes_all_section_groups_and_reuses_caches() -> None:
+    provider = SectionProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+
+    first = service.get(market_today())
+    second = service.get(market_today())
+
+    assert provider.chapter_calls == ["stock", "limits", "sectors"]
+    assert provider.quote_calls == 1
+    assert provider.fetch_calls == len(INDEX_SPECS)
+    assert second == first
+    assert first["chapter01"]["breadth"]["advanceCount"] == 2
+    assert first["chapter01"]["limits"]["limitUpCount"] == 10
+    MarketEnvironmentResponse.model_validate(first)
+
+
+def test_cache_ttl_starts_after_slow_core_fetch_completes() -> None:
+    ticks = [0.0]
+
+    class SlowProvider(FakeProvider):
+        def fetch(self, spec, limit=160, expected_price=None, quote=None):
+            ticks[0] += 10
+            return super().fetch(spec, limit, expected_price, quote)
+
+    provider = SlowProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=30, clock=lambda: ticks[0])
+
+    service.get_core(date(2026, 8, 28))
+    service.get_core(date(2026, 8, 28))
+
+    assert provider.quote_calls == 1
+    assert provider.fetch_calls == len(INDEX_SPECS)
+
+
+def test_concurrent_section_requests_share_one_provider_load() -> None:
+    provider = SectionProvider()
+    service = MarketEnvironmentService(provider=provider, ttl_seconds=60)
+    barrier = Barrier(4)
+
+    def load_breadth() -> dict:
+        barrier.wait()
+        return service.get_chapter01(market_today(), "breadth")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _: load_breadth(), range(4)))
+
+    assert provider.quote_calls == 1
+    assert provider.fetch_calls == len(INDEX_SPECS)
+    assert provider.chapter_calls == ["stock"]
+    assert all(item["chapter01"]["breadth"]["advanceCount"] == 2 for item in results)
 
 
 def test_service_history_exposes_real_ohlc() -> None:

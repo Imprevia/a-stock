@@ -189,5 +189,11 @@ class MarketEnvironmentResponse(BaseModel):
     chapter01: Chapter01Evidence | None = None
 
 
+class Chapter01Response(BaseModel):
+    asOf: str
+    generatedAt: str
+    chapter01: Chapter01Evidence
+
+
 def schema_extra(value: Any) -> Any:
     return value

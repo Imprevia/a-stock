@@ -62,6 +62,14 @@ export interface MarketEnvironmentResponse {
   chapter01?: Chapter01Analysis
 }
 
+export type Chapter01Section = 'breadth' | 'limits' | 'sectors' | 'activeDirection' | 'summary'
+
+export interface Chapter01SectionResponse {
+  asOf: string
+  generatedAt: string
+  chapter01: Chapter01Analysis
+}
+
 export interface DataSetQuality {
   dataset?: string
   source: string
