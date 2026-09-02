@@ -2,13 +2,13 @@
 
 ## 主计划
 
-- 当前无 active exec plan。
+- [`optimize-market-data-loading.md`](optimize-market-data-loading.md) — 优化市场环境数据加载。
 
 ## 活动计划
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
-| - | - | - | - |
+| `optimize-market-data-loading.md` | Mika | 进行中 | 2026-09-02 |
 
 ## 说明
 

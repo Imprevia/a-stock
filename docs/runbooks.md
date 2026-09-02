@@ -40,10 +40,14 @@ npm run dev --prefix apps/market-environment-dashboard
 
 ```bash
 curl "http://127.0.0.1:8000/api/health"
+curl "http://127.0.0.1:8000/api/market-environment/core?as_of=2026-08-28"
+curl "http://127.0.0.1:8000/api/market-environment/chapter-01?as_of=2026-08-28"
 curl "http://127.0.0.1:8000/api/market-environment?as_of=2026-08-28"
 ```
 
-`chapter01` 是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
+网页使用前两个窄接口进行两阶段加载：`core` 成功后立即展示指数，随后以同一请求日期加载 `chapter-01`。章节请求期间只显示章节加载状态；失败时保留核心行情并允许单独重试整轮加载。响应的 `asOf` 不一致时不得合并。原聚合接口继续保留，`chapter01` 仍是向后兼容的可选扩展。
+
+`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
 看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`；API 的默认日期与未来日期校验使用 `Asia/Shanghai`。东方财富 `data.diff` 若为键值对象会先转为行列表；无效行会被丢弃，不能用 0 填充。主 `push2` 全 A 快照必须满足返回行数不小于 `data.total`，否则视为不完整并触发市场广度降级；降级成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。若主域和延迟域均失败，保留 `null` 并在 `quality.warnings` 记录两段错误。
 
@@ -92,7 +96,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 | Build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Backend tests | `.venv` Python 下运行 `python -m pytest tests -q` | 终端输出 / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
-| Browser QA | 启动前后端后检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出；01 页检查真实 OHLC K 线、均线和 tooltip | 截图 / plan | 是 |
+| Browser QA | 启动前后端后检查核心响应先于章节响应可见，章节失败不清空指数；再检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出，01 页检查真实 OHLC K 线、均线和 tooltip | 截图 / plan | 是 |
 | Rule registry | `python -m src.trading_system.cli rules validate` | 终端输出 / PR workflow | 是 |
 | Rule coverage | `python -m src.trading_system.cli rules coverage` | `trading-rules/coverage.yaml` / PR workflow | 是 |
 | Deterministic replay | 固定 fixture 执行两次并比较 canonical result | pytest / golden fixture | 是 |
@@ -102,6 +106,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 
 - **pre-commit / pre-push 未触发**：`git config core.hooksPath` 是否为 `.githooks`；不是则跑 `python scripts/install-hooks.py`。
 - **API 返回 503**：先检查 `/api/health`，再查看服务日志中的各指数数据源错误；mootdx 失败时应看到百度或腾讯降级 warning。
+- **指数已经显示但章节仍在加载**：这是渐进加载的预期状态。分别检查浏览器中 `core` 与 `chapter-01` 请求耗时；只有章节请求失败或响应日期不一致才显示章节错误，核心行情应继续保留。
 - **成交额比值显示 `--`**：腾讯历史 K 线公共接口可能只提供成交量而无成交额；服务会先尝试新浪指数 K 线（用腾讯实时成交额校准），再尝试东方财富显式指数 K 线，最后降级到腾讯。若所有历史成交额源均不可用，保留 `--`，不要把缺失成交额当成 0。
 - **有 5 日成交额比值但没有量价状态**：该日价格变化与比值处于已定义规则之间的空档，属于预期的未分类状态；不要在 API 或前端增加兜底分类。
 - **组合判断显示“未命中明确组合”**：先核对 API 的 `combination.evidence` 和量化版 `0.2` 映射。六类条件要求同时成立，单独处于高位、放量或站上均线都不足以形成组合状态。

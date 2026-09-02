@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import Counter
 from datetime import date, datetime
-from threading import Lock
+from threading import Condition, Lock
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from .calculations import (
@@ -31,16 +33,34 @@ class MarketEnvironmentService:
         self.provider = provider or MarketDataProvider()
         self.ttl_seconds = ttl_seconds
         self._cache: dict[str, tuple[float, dict]] = {}
+        self._core_cache: dict[str, tuple[float, dict]] = {}
+        self._chapter_cache: dict[str, tuple[float, dict]] = {}
         self._lock = Lock()
+        self._condition = Condition(self._lock)
+        self._inflight: set[tuple[str, str]] = set()
 
     def get(self, as_of: date) -> dict:
         cache_key = as_of.isoformat()
-        now = datetime.now().timestamp()
-        with self._lock:
-            cached = self._cache.get(cache_key)
-            if cached and now - cached[0] < self.ttl_seconds:
-                return cached[1]
+        return self._load_cached(self._cache, "aggregate", cache_key, lambda: self._build_aggregate(as_of))
 
+    def _build_aggregate(self, as_of: date) -> dict:
+        core = self.get_core(as_of)
+        chapter_response = self.get_chapter01(as_of)
+        warnings = list(core["summary"]["warnings"])
+        if chapter_response["chapter01"]["status"] != "ok":
+            warnings.append("第 01 章扩展证据未完整覆盖，结论保持低置信度或数据不足")
+        return {
+            **core,
+            "generatedAt": chapter_response["generatedAt"],
+            "summary": {**core["summary"], "warnings": warnings},
+            "chapter01": chapter_response["chapter01"],
+        }
+
+    def get_core(self, as_of: date) -> dict:
+        cache_key = as_of.isoformat()
+        return self._load_cached(self._core_cache, "core", cache_key, lambda: self._build_core(as_of))
+
+    def _build_core(self, as_of: date) -> dict:
         warnings: list[str] = []
         try:
             quotes = self.provider.fetch_quotes(INDEX_SPECS)
@@ -89,23 +109,65 @@ class MarketEnvironmentService:
         trends = Counter(item["trendState"] for item in analyses)
         sync = self._synchronization(analyses)
         dominant = trends.most_common(1)[0][0] if trends else "数据不足"
-        payload = {
+        return {
             "asOf": effective_date.isoformat(),
             "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
             "indices": analyses,
             "summary": {"synchronization": sync, "dominantTrend": dominant, "warnings": warnings},
         }
-        payload["chapter01"] = self._chapter01(
-            effective_date,
+
+    def get_chapter01(self, as_of: date) -> dict:
+        cache_key = as_of.isoformat()
+        return self._load_cached(self._chapter_cache, "chapter01", cache_key, lambda: self._build_chapter01(as_of))
+
+    def _build_chapter01(self, as_of: date) -> dict:
+        core = self.get_core(as_of)
+        chapter = self._chapter01(
+            date.fromisoformat(core["asOf"]),
             allow_current_snapshot=as_of == market_today(),
-            analyses=analyses,
-            synchronization=sync,
-            dominant_trend=dominant,
+            analyses=core["indices"],
+            synchronization=core["summary"]["synchronization"],
+            dominant_trend=core["summary"]["dominantTrend"],
         )
-        if payload["chapter01"]["status"] != "ok":
-            warnings.append("第 01 章扩展证据未完整覆盖，结论保持低置信度或数据不足")
-        with self._lock:
-            self._cache[cache_key] = (now, payload)
+        return {
+            "asOf": core["asOf"],
+            "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
+            "chapter01": chapter,
+        }
+
+    def _load_cached(
+        self,
+        cache: dict[str, tuple[float, dict]],
+        scope: str,
+        cache_key: str,
+        loader: Callable[[], dict],
+    ) -> dict:
+        token = (scope, cache_key)
+        with self._condition:
+            while True:
+                cached = cache.get(cache_key)
+                if cached and monotonic() - cached[0] < self.ttl_seconds:
+                    return cached[1]
+                if token not in self._inflight:
+                    self._inflight.add(token)
+                    break
+                self._condition.wait()
+
+        try:
+            payload = loader()
+        except Exception:
+            with self._condition:
+                self._inflight.remove(token)
+                self._condition.notify_all()
+            raise
+
+        with self._condition:
+            cache[cache_key] = (monotonic(), payload)
+            if scope == "core":
+                self._chapter_cache.pop(cache_key, None)
+                self._cache.pop(cache_key, None)
+            self._inflight.remove(token)
+            self._condition.notify_all()
         return payload
 
     def _chapter01(
