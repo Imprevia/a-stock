@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import date, datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+CollectionDataset = Literal["core", "breadth", "limits", "sectors", "activeDirection"]
+CollectionRunState = Literal["queued", "collecting", "success", "partial", "failed"]
+CollectionTaskState = Literal[
+    "queued",
+    "collecting",
+    "success",
+    "partial",
+    "failed-retained",
+    "failed-missing",
+    "busy",
+]
 
 
 class MovingAverages(BaseModel):
@@ -197,6 +210,86 @@ class Chapter01Response(BaseModel):
     asOf: str
     generatedAt: str
     chapter01: Chapter01Evidence
+
+
+class CollectionRunRequest(BaseModel):
+    asOf: date
+    datasets: list[CollectionDataset] | None = None
+
+
+class CoreIndexCollectionResult(BaseModel):
+    code: str
+    name: str
+    status: CollectionTaskState
+    source: str
+    observations: int
+    warning: str | None
+    durationMs: float | None
+
+
+class CollectionTaskResponse(BaseModel):
+    taskId: str
+    dataset: CollectionDataset
+    asOf: date
+    status: CollectionTaskState
+    source: str
+    observations: int
+    warning: str | None
+    timings: dict[str, float]
+    queuedAt: datetime | None
+    startedAt: datetime | None
+    completedAt: datetime | None
+    durationMs: float | None
+    settled: bool
+    coreIndices: list[CoreIndexCollectionResult] = Field(default_factory=list)
+
+
+class CollectionRunResponse(BaseModel):
+    runId: str
+    asOf: date
+    status: CollectionRunState
+    requestedDatasets: list[CollectionDataset]
+    completedTasks: int
+    totalTasks: int
+    createdAt: datetime
+    startedAt: datetime | None
+    completedAt: datetime | None
+    tasks: list[CollectionTaskResponse]
+
+
+class CollectionAttemptSummary(BaseModel):
+    taskId: str
+    runId: str
+    status: CollectionTaskState
+    source: str
+    observations: int
+    warning: str | None
+    queuedAt: datetime | None
+    startedAt: datetime | None
+    completedAt: datetime | None
+    durationMs: float | None
+    settled: bool
+
+
+class DatasetCollectionStatus(BaseModel):
+    dataset: CollectionDataset
+    available: bool
+    source: str
+    observations: int
+    lastSuccessAt: datetime | None
+    settled: bool
+    refreshWarning: str | None
+    latestAttempt: CollectionAttemptSummary | None
+    activeTaskId: str | None
+    collectionAllowed: bool
+    restriction: str | None
+    coreIndices: list[CoreIndexCollectionResult]
+
+
+class CollectionStatusResponse(BaseModel):
+    asOf: date
+    manualRefreshEnabled: bool
+    datasets: list[DatasetCollectionStatus]
 
 
 def schema_extra(value: Any) -> Any:

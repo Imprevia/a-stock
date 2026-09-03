@@ -1,0 +1,105 @@
+{{- if .Values.marketEnvironment.scheduledCollection.enabled }}
+{{- if not .Values.persistence.enabled }}
+{{- fail "marketEnvironment.scheduledCollection.enabled requires persistence.enabled=true" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "a-stock.dataCollectionName" . }}
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: data-collection
+spec:
+  schedule: {{ .Values.marketEnvironment.scheduledCollection.schedule | quote }}
+  timeZone: {{ .Values.marketEnvironment.scheduledCollection.timeZone | quote }}
+  suspend: {{ .Values.marketEnvironment.scheduledCollection.suspend }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.marketEnvironment.scheduledCollection.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.marketEnvironment.scheduledCollection.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.marketEnvironment.scheduledCollection.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.marketEnvironment.scheduledCollection.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "a-stock.dataCollectionName" . }}
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/part-of: a-stock
+            app.kubernetes.io/component: data-collection
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: collector
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command:
+                - python
+                - -m
+                - src.market_environment.cli
+                - snapshots
+                - scheduled-refresh
+              env:
+                - name: TZ
+                  value: {{ .Values.marketEnvironment.timezone | quote }}
+                - name: MARKET_ENVIRONMENT_SNAPSHOT_PATH
+                  value: {{ .Values.marketEnvironment.snapshotPath | quote }}
+                - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
+                  value: {{ ternary "1" "0" .Values.marketEnvironment.persistentCache | quote }}
+                - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
+                  value: {{ .Values.marketEnvironment.settlementTime | quote }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+                {{- with .Values.marketEnvironment.scheduledCollection.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              resources:
+                {{- toYaml .Values.marketEnvironment.scheduledCollection.resources | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              volumeMounts:
+                - name: data
+                  mountPath: {{ .Values.persistence.mountPath }}
+                - name: tmp
+                  mountPath: /tmp
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "a-stock.pvcName" . }}
+            - name: tmp
+              emptyDir: {}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $nodeSelector := default .Values.nodeSelector .Values.marketEnvironment.scheduledCollection.nodeSelector }}
+          {{- with $nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $affinity := default .Values.affinity .Values.marketEnvironment.scheduledCollection.affinity }}
+          {{- with $affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $tolerations := default .Values.tolerations .Values.marketEnvironment.scheduledCollection.tolerations }}
+          {{- with $tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $priorityClassName := default .Values.priorityClassName .Values.marketEnvironment.scheduledCollection.priorityClassName }}
+          {{- with $priorityClassName }}
+          priorityClassName: {{ . | quote }}
+          {{- end }}
+{{- end }}

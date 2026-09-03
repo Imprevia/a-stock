@@ -39,6 +39,8 @@ spec:
               value: /data/snapshots.sqlite3
             - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
               value: "1"
+            - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
+              value: "15:10"
           ports:
             - name: http
               containerPort: 8000

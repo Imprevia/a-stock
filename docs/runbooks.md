@@ -114,28 +114,69 @@ curl "http://127.0.0.1:8000/api/health"
 curl "http://127.0.0.1:8000/api/market-environment?as_of=2026-08-28"
 curl "http://127.0.0.1:8000/api/market-environment/core?as_of=2026-08-28"
 curl "http://127.0.0.1:8000/api/market-environment/chapter-01?as_of=2026-08-28&section=breadth"
+curl "http://127.0.0.1:8000/api/market-environment/data-collection"
+curl "http://127.0.0.1:8000/api/market-environment/data-collection?as_of=2026-08-28"
 ```
 
 `/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
-指数核心请求继续使用进程内短缓存。`breadth` 与 `activeDirection` 使用按 `(dataset, as_of)` 隔离的 SQLite 快照：广度直接走精确涨跌幅分页统计，容量方向只请求成交额 Top-N。fresh/settled 命中不访问 provider；stale 命中返回上次成功值并尝试后台刷新；冷 miss 通过 SQLite lease 合并为一次同步采集。排查加载慢时分别查看 cache lookup、lease wait、provider collection、derivation、validation 和 store write 计时。
+普通市场环境 GET 优先读取精确日期的 SQLite 数据集快照或 materialized aggregate，不自动启动 provider 采集。五类数据 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止其他结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 store write 计时。
 
 盘后预计算：
 
 ```bash
 python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02
-python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --dataset breadth --dataset activeDirection
+python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --dataset core --dataset breadth --dataset limits --dataset sectors --dataset activeDirection
 ```
 
 当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 仅用于显式本地诊断。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
+
+容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
+
+部署内盘后定时采集：
+
+```bash
+# 本地验证调度入口；日期由 Python 按 Asia/Shanghai 解析
+python -m src.market_environment.cli snapshots scheduled-refresh
+
+# 查看 CronJob、最近 Job 和结构化日志
+kubectl get cronjob,job -n a-stock
+kubectl logs -n a-stock job/<job-name>
+
+# Kustomize 部署的 CronJob 暂停与恢复
+kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":true}}'
+kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":false}}'
+
+# 从现有 CronJob 创建一次性补跑；名称必须唯一
+kubectl create job -n a-stock --from=cronjob/market-data-collection market-data-collection-manual-20260903
+```
+
+默认 CronJob 使用 `Asia/Shanghai` 和 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。标准 `spec.timeZone` 要求 Kubernetes/k3s 1.27 或更高版本，Helm Chart 也声明该最低版本。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
+
+Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不渲染 CronJob，`suspend=true` 保留资源但不创建新 Job，`schedule` 和 `timeZone` 可覆盖默认值。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC。先以 suspend 部署后，可用 `kubectl create job --from=cronjob/<helm-fullname>-data-collection ...` 验证 PVC、外网和日志，再解除暂停。
+
+第一版只用 cron 周范围排除周末，不维护交易所节假日日历。工作日节假日可能产生 failed/partial run；这是可审计的失败安全行为，任何 provider 无法证明属于当天的数据都不得落入当天快照。不要用 `--force` 或跨日期复制规避该限制。
 
 配置：
 
 - `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
+- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`：仅在受控开发环境启用数据采集页面写操作和 collection POST；默认关闭，对外无认证部署禁止启用。
+- `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
 
-看板日期控件使用浏览器本地日期作为默认值和最大值，不要改回 `new Date().toISOString().slice(0, 10)`；API 的默认日期与未来日期校验使用 `Asia/Shanghai`。市场广度直接从 `push2delay` 按涨跌幅排序分页定位边界与中位数，成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。容量方向的 Top-N 响应必须验证排序、最小样本和必需字段。任一采集失败时保留 `null` 或上一次精确日期成功值，并在 `quality.warnings` / `refreshWarning` 记录错误，不能用 0 填充。
+开发期手工采集 API：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/market-environment/collection-runs" -H "Content-Type: application/json" -d '{"asOf":"2026-09-03"}'
+curl "http://127.0.0.1:8000/api/market-environment/collection-runs/<run-id>"
+```
+
+POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task，传 `{"datasets":["breadth"]}` 时只采集单项。父批次允许 `partial`，每个成功 task 独立提交；失败 task 不覆盖同日期旧值。数据采集页 `/data-collection` 只通过 GET 查询本地状态，所有 provider 故障时仍应可打开。历史日期仅允许采集 provider 能验证日期的数据集；无法证明日期的最新快照型数据按钮必须禁用并由 API 返回 422。服务重启后，遗留 collecting task 在 lease 过期后可重新采集。
+
+数据采集页首次加载调用不带 `as_of` 的状态 GET，并用响应 `asOf` 初始化日期控件；该值由后端按 `Asia/Shanghai` 计算，因此在 15:00 前也会选择上海市场当天，使 `breadth`、`sectors` 和 `activeDirection` 可按当前快照能力采集。用户手工切换日期后使用显式 `as_of`，历史限制继续生效。研究看板仍使用下述 15:00 结算日期逻辑，两者不要重新合并。
+
+研究看板日期控件使用浏览器本地时间计算默认值：15:00 前为前一天，达到 15:00 后为当天；最大值始终为浏览器本地当天。不要改回 `new Date().toISOString().slice(0, 10)`，否则 UTC 转换可能导致日期错位。API 的默认日期与未来日期校验使用 `Asia/Shanghai`。市场广度直接从 `push2delay` 按涨跌幅排序分页定位边界与中位数，成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。行业板块先请求 `push2`，连接/读取错误、429 和 5xx 有界重试后仍失败再请求 `push2delay`；403 不重试。延迟域成功时保留主域 warning，领涨股名称使用 `f128`，不得显示 `f140` 证券代码。容量方向的 Top-N 响应必须验证排序、最小样本和必需字段。任一采集失败时保留 `null` 或上一次精确日期成功值，并在 `quality.warnings` / `refreshWarning` 记录错误，不能用 0 填充。
 
 指数 `history` 契约中的每个点应包含 `date`、`open`、`close`、`low`、`high`、`ma5`、`ma10`、`ma20`、`ma60` 和 `amount`。浏览器 QA 必须确认 60 日图存在非空 K 线实体、红涨绿跌、均线叠加和 OHLC tooltip；禁止用收盘价复制生成开高低。
 
@@ -184,6 +225,8 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 | k3s manifests | `kubectl kustomize deploy/k3s` 与集群端 `kubectl apply --dry-run=server -k deploy/k3s` | 终端输出 / plan | 是 |
 | Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
 | Snapshot refresh | `python -m src.market_environment.cli snapshots refresh --as-of <date>` | CLI JSON / plan | 是 |
+| Collection management | 启用开发开关后验证状态 GET、单项 POST、全部 POST、轮询和 partial 结果 | pytest / 浏览器 / plan | 是 |
+| Scheduled collection | scheduled-refresh success/partial/skipped、`kubectl kustomize`、Helm enabled/disabled/suspended 渲染 | pytest / CLI JSON / plan | 是 |
 | Warm cache | 对已预计算日期请求 Chapter 01，确认 provider 0 调用且 <500ms | pytest / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Browser QA | 启动前后端后检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出；01 页检查真实 OHLC K 线、均线和 tooltip；确认首屏先于章节数据出现、章节失败不清空核心数据 | 截图 / plan | 是 |
@@ -203,6 +246,15 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 - **第 01 章证据显示 `missing` / `partial`**：先看对应对象的 `quality.warnings`。历史日期缺少广度、板块或成交额榜是当前快照源的预期边界；东方财富 403 或空 `data` 也必须保留缺失状态，不能用空数组伪造为 0。只有接口成功且明确返回空 `pool` 时，涨跌停计数才可为 0。
 - **章节显示 `cacheState=stale`**：查看 `snapshotFetchedAt` 和 `refreshWarning`；旧值仍对应同一交易日，但后台刷新失败或尚在进行。不要删除旧快照后用其他日期数据替代。
 - **refresh 一直显示被占用**：检查同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 SQLite。
+- **数据采集批次显示 `partial`**：查看每个 task 的 warning；成功 task 已独立保存，只对失败行执行重新采集，不要删除整批成功快照。
+- **最近采集失败但数据仍可用**：这是 `failed-retained`，页面继续服务同日期最后成功值并展示刷新错误；只有 `failed-missing` 才表示该日期没有可用数据。
+- **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED`、所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
+- **CronJob 没有启动**：检查资源是否被 Helm `enabled=false` 省略、`spec.suspend`、schedule/timeZone、`startingDeadlineSeconds` 和控制器事件；先用 `kubectl create job --from=cronjob/...` 验证命令与 PVC。
+- **CronJob 为 Failed 但页面有部分数据**：检查容器 JSON 中的父状态和各 task warning；`partial` 有意返回非零且不自动整批重试，成功兄弟任务已经落盘，只补采失败行。
+- **CronJob 卡住或错过下一次运行**：查看 `activeDeadlineSeconds`、Pod 外网访问和 PVC 挂载；`concurrencyPolicy: Forbid` 会跳过重叠触发，确认旧 Job 结束后再补跑一次性 Job。
+- **节假日出现 failed/partial**：第一版预期会在周一至周五节假日触发；确认没有跨日期 snapshot 后保留审计记录，不要伪造当天成功。
+- **行业板块采集偶发 `RemoteDisconnected`**：确认请求经过共享串行门；主域会先执行有限连接重试，再降级到 `push2delay`。若两个域都失败，查看 task warning 和同日期 snapshot 是否触发 `failed-retained`，不要删除旧值或跨日期回填。
+- **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。
 - **需要紧急回滚持久缓存**：设置 `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0` 并重启 API；原 SQLite 文件保留用于诊断，不需要删除。
 - **指数价格异常**：检查实时腾讯报价是否可用。沪市歧义代码没有实时交叉校验时，mootdx/百度结果会被拒绝，避免错误股票数据进入页面。
 - **hook 报 `\r` 相关错误**：`.githooks/*` 行尾被改为 CRLF，恢复 LF（`.gitattributes` 已强制 `eol=lf`，重新 checkout 即可）。

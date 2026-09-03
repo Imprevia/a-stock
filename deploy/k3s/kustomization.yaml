@@ -7,6 +7,7 @@ resources:
   - namespace.yaml
   - persistent-volume-claim.yaml
   - deployment.yaml
+  - market-data-collection-cronjob.yaml
   - service.yaml
   - ingress.yaml
 

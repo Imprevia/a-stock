@@ -17,6 +17,22 @@ class FakeResponse:
         return self.payload
 
 
+def build_active_direction_rows() -> list[dict]:
+    return [
+        {
+            "f12": f"{index:06d}",
+            "f14": f"样本{index}",
+            "f3": 3 - index / 10,
+            "f6": 30_000 - index,
+            "f2": 11,
+            "f15": 12,
+            "f16": 10,
+            "f100": "电子" if index < 4 else f"行业{index}",
+        }
+        for index in range(30)
+    ]
+
+
 def test_eastmoney_index_kline_parses_amount_and_explicit_secid(monkeypatch):
     start = date(2026, 6, 1)
     rows = []
@@ -100,21 +116,15 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
         status="fallback",
         warnings=["fixture"],
     )
-    active_rows = [
-        {
-            "f12": f"{index:06d}",
-            "f14": f"样本{index}",
-            "f3": 2 - index / 10,
-            "f6": 10_000 - index,
-            "f2": 11,
-            "f15": 11 if index == 9 else 12,
-            "f16": 11 if index == 9 else 10,
-            "f100": "电子" if index < 3 else "医药",
-        }
-        for index in range(30)
-    ]
+    active_rows = build_active_direction_rows()
+    active_rows[9]["f15"] = 11
+    active_rows[9]["f16"] = 11
     monkeypatch.setattr(provider, "_fetch_eastmoney_breadth_fallback", lambda as_of, warning: breadth)
-    monkeypatch.setattr(provider, "_fetch_eastmoney_active_direction_rows", lambda: active_rows)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (active_rows, "eastmoney-clist", "partial", []),
+    )
 
     def fake_get_json(url, params):
         if "push2ex" in url:
@@ -138,7 +148,8 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
                             "f184": 3.0,
                             "f104": 20,
                             "f105": 5,
-                            "f140": "样本股",
+                            "f128": "样本股",
+                            "f140": "000001",
                         }
                     ]
                 }
@@ -156,28 +167,145 @@ def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(mo
     assert payload["limits"]["maxStreak"] == 3
     assert payload["activeDirection"]["state"] == "candidate"
     assert payload["activeDirection"]["topStocks"][-1]["closePosition"] is None
+    assert payload["sectors"]["rows"][0]["leader"] == "样本股"
     assert "percentile" not in json.dumps(payload, ensure_ascii=False).lower()
 
 
-def test_active_direction_provider_accepts_keyed_ranked_response(monkeypatch):
+def test_sector_provider_uses_primary_source_and_real_leader_name(monkeypatch):
     provider = MarketDataProvider()
-    provider._ACTIVE_DIRECTION_MIN_ROWS = 3
+    calls = []
 
     def fake_get_json(url, params):
+        calls.append((url, params["fields"]))
         return {
             "data": {
-                "diff": {
-                    "0": {"f12": "000001", "f14": "甲", "f6": 300},
-                    "1": {"f12": "000002", "f14": "乙", "f6": 200},
-                    "2": {"f12": "000003", "f14": "丙", "f6": 100},
-                }
+                "diff": [
+                    {
+                        "f12": "BK001",
+                        "f14": "电子",
+                        "f3": 2.5,
+                        "f6": 1000,
+                        "f62": 300,
+                        "f184": 3.0,
+                        "f104": 20,
+                        "f105": 5,
+                        "f128": "领涨名称",
+                        "f140": "000001",
+                    }
+                ]
             }
         }
 
     monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
-    rows = provider._fetch_eastmoney_active_direction_rows()
+    result = provider.fetch_chapter01_sectors(date(2026, 9, 3), allow_current_snapshot=True)
 
-    assert [row["f12"] for row in rows] == ["000001", "000002", "000003"]
+    assert len(calls) == 1
+    assert "push2.eastmoney.com" in calls[0][0]
+    assert "f128" in calls[0][1]
+    assert result["rows"][0]["leader"] == "领涨名称"
+    assert result["quality"]["source"] == "eastmoney-clist"
+    assert result["quality"]["status"] == "partial"
+
+
+def test_sector_provider_falls_back_to_delayed_endpoint(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+
+    def fake_get_json(url, _params):
+        calls.append(url)
+        if "push2.eastmoney.com" in url:
+            raise RuntimeError("primary disconnected")
+        return {"data": {"diff": [{"f12": "BK002", "f14": "医药", "f3": 1.2}]}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_sectors(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert len(calls) == 2
+    assert "push2delay.eastmoney.com" in calls[1]
+    assert result["quality"]["source"] == "eastmoney-clist-delay"
+    assert result["quality"]["status"] == "fallback"
+    assert "primary disconnected" in result["quality"]["warning"]
+    assert result["rows"][0]["leader"] is None
+
+
+def test_sector_provider_reports_both_endpoint_failures(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+
+    def fail(url, _params):
+        calls.append(url)
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fail)
+    result = provider.fetch_chapter01_sectors(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert len(calls) == 2
+    assert result["quality"]["status"] == "failed"
+    assert "主域失败" in result["quality"]["warning"]
+    assert "延迟域失败" in result["quality"]["warning"]
+
+
+def test_historical_sector_request_calls_no_endpoint(monkeypatch):
+    provider = MarketDataProvider()
+    monkeypatch.setattr(
+        provider.eastmoney,
+        "get_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not call provider")),
+    )
+
+    result = provider.fetch_chapter01_sectors(date(2026, 9, 2), allow_current_snapshot=False)
+
+    assert result["quality"]["status"] == "missing"
+
+
+def test_active_direction_provider_uses_primary_without_delayed_request(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+    rows = build_active_direction_rows()
+
+    def fake_get_json(url, params):
+        calls.append((url, params))
+        return {"data": {"diff": rows}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert len(calls) == 1
+    assert calls[0][0] == provider._STOCK_SNAPSHOT_URL
+    assert calls[0][1]["fid"] == "f6"
+    assert result["state"] == "candidate"
+    assert "电子 有 4 只" in result["summary"]
+    assert len(result["topStocks"]) == 10
+    assert result["topStocks"][0]["code"] == "000000"
+    assert result["quality"]["source"] == "eastmoney-clist"
+    assert result["quality"]["status"] == "partial"
+    assert result["quality"]["observations"] == 30
+    assert "降级" not in result["quality"]["warning"]
+
+
+def test_active_direction_provider_falls_back_to_keyed_delayed_response(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+    rows = build_active_direction_rows()
+
+    def fake_get_json(url, _params):
+        calls.append(url)
+        if url == provider._STOCK_SNAPSHOT_URL:
+            raise RuntimeError("primary disconnected")
+        return {"data": {"diff": {str(index): row for index, row in enumerate(rows)}}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert calls == [provider._STOCK_SNAPSHOT_URL, provider._ACTIVE_DIRECTION_FALLBACK_URL]
+    assert result["state"] == "candidate"
+    assert "电子 有 4 只" in result["summary"]
+    assert [item["code"] for item in result["topStocks"]] == [f"{index:06d}" for index in range(10)]
+    assert result["quality"]["source"] == "eastmoney-clist-delay"
+    assert result["quality"]["status"] == "fallback"
+    assert result["quality"]["observations"] == 30
+    assert "primary disconnected" in result["quality"]["warnings"][0]
+    assert "已降级到东方财富延迟容量方向" in result["quality"]["warnings"]
 
 
 def test_stock_snapshot_rejects_partial_market_response(monkeypatch):
@@ -227,22 +355,68 @@ def test_chapter01_breadth_falls_back_to_sorted_delay_pages(monkeypatch):
     assert breadth["quality"]["source"] == "eastmoney-clist-delay"
 
 
-def test_active_direction_rejects_unsorted_or_small_top_n(monkeypatch):
+@pytest.mark.parametrize("invalid_case", ["too-small", "missing-field", "unsorted"])
+def test_active_direction_provider_rejects_invalid_delayed_payload(monkeypatch, invalid_case):
     provider = MarketDataProvider()
-    provider._ACTIVE_DIRECTION_MIN_ROWS = 3
-    rows = [
-        {"f12": "000001", "f14": "甲", "f6": 300},
-        {"f12": "000002", "f14": "乙", "f6": 100},
-        {"f12": "000003", "f14": "丙", "f6": 200},
-    ]
-    monkeypatch.setattr(provider.eastmoney, "get_json", lambda url, params: {"data": {"diff": rows}})
+    rows = build_active_direction_rows()
+    if invalid_case == "too-small":
+        rows = rows[:29]
+        expected_warning = "仅返回 29 个有效样本"
+    elif invalid_case == "missing-field":
+        rows[0] = {key: value for key, value in rows[0].items() if key != "f14"}
+        expected_warning = "仅返回 29 个有效样本"
+    else:
+        rows[1]["f6"] = 1
+        expected_warning = "未按成交额降序排列"
 
-    with pytest.raises(RuntimeError, match="未按成交额降序排列"):
-        provider._fetch_eastmoney_active_direction_rows()
+    calls = []
 
-    monkeypatch.setattr(provider.eastmoney, "get_json", lambda url, params: {"data": {"diff": rows[:2]}})
-    with pytest.raises(RuntimeError, match="至少需要 3 个"):
-        provider._fetch_eastmoney_active_direction_rows()
+    def fake_get_json(url, _params):
+        calls.append(url)
+        if url == provider._STOCK_SNAPSHOT_URL:
+            raise RuntimeError("primary disconnected")
+        return {"data": {"diff": rows}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert calls == [provider._STOCK_SNAPSHOT_URL, provider._ACTIVE_DIRECTION_FALLBACK_URL]
+    assert result["state"] == "insufficient"
+    assert result["topStocks"] == []
+    assert result["quality"]["status"] == "failed"
+    assert "主域失败：primary disconnected" in result["quality"]["warning"]
+    assert "延迟域失败" in result["quality"]["warning"]
+    assert expected_warning in result["quality"]["warning"]
+
+
+def test_active_direction_provider_reports_both_endpoint_failures(monkeypatch):
+    provider = MarketDataProvider()
+
+    def fail(url, _params):
+        if url == provider._STOCK_SNAPSHOT_URL:
+            raise RuntimeError("primary disconnected")
+        raise RuntimeError("delayed unavailable")
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fail)
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert result["quality"]["status"] == "failed"
+    assert "主域失败：primary disconnected" in result["quality"]["warning"]
+    assert "延迟域失败：delayed unavailable" in result["quality"]["warning"]
+
+
+def test_historical_active_direction_request_calls_no_endpoint(monkeypatch):
+    provider = MarketDataProvider()
+    monkeypatch.setattr(
+        provider.eastmoney,
+        "get_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not call provider")),
+    )
+
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 2), allow_current_snapshot=False)
+
+    assert result["state"] == "insufficient"
+    assert result["quality"]["status"] == "missing"
 
 
 def test_chapter01_limit_provider_distinguishes_failure_from_explicit_empty_pool(monkeypatch):

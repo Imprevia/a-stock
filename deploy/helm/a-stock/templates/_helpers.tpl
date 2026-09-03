@@ -35,3 +35,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "a-stock.pvcName" -}}
 {{- default (printf "%s-data" (include "a-stock.fullname" .)) .Values.persistence.existingClaim }}
 {{- end }}
+
+{{- define "a-stock.dataCollectionName" -}}
+{{- printf "%s-data-collection" (include "a-stock.fullname" .) | trunc 52 | trimSuffix "-" }}
+{{- end }}

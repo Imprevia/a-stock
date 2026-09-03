@@ -56,6 +56,7 @@ class MarketDataProvider:
     _BREADTH_FALLBACK_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
     _STOCK_UNIVERSE_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
     _BREADTH_PAGE_SIZE = 100
+    _ACTIVE_DIRECTION_FALLBACK_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
     _ACTIVE_DIRECTION_PAGE_SIZE = 100
     _ACTIVE_DIRECTION_MIN_ROWS = 30
 
@@ -215,7 +216,14 @@ class MarketDataProvider:
                 "该数据源仅提供最新市场快照，历史日期不使用当前数据回填",
             )
         try:
-            return self._build_active_direction(self._fetch_eastmoney_active_direction_rows(), as_of)
+            rows, source, status, warnings = self._fetch_eastmoney_active_direction()
+            return self._build_active_direction(
+                rows,
+                as_of,
+                source=source,
+                status=status,
+                warnings=warnings,
+            )
         except Exception as exc:
             return self._missing_active_direction(as_of, f"东方财富容量方向不可用：{exc}", status="failed")
 
@@ -227,7 +235,8 @@ class MarketDataProvider:
             warning = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
             return self._missing_sectors(as_of, warning)
         try:
-            return self._build_sectors(self._fetch_eastmoney_industries(), as_of)
+            rows, source, status, warnings = self._fetch_eastmoney_industries()
+            return self._build_sectors(rows, as_of, source=source, status=status, warnings=warnings)
         except Exception as exc:
             return self._missing_sectors(as_of, f"东方财富行业排名不可用：{exc}", status="failed")
 
@@ -260,7 +269,23 @@ class MarketDataProvider:
             raise RuntimeError(f"全 A 快照仅返回 {len(rows)} / {total} 行，拒绝按不完整样本计算")
         return rows
 
-    def _fetch_eastmoney_active_direction_rows(self) -> list[dict[str, Any]]:
+    def _fetch_eastmoney_active_direction(self) -> tuple[list[dict[str, Any]], str, str, list[str]]:
+        try:
+            rows = self._fetch_eastmoney_active_direction_rows(self._STOCK_SNAPSHOT_URL)
+            return rows, "eastmoney-clist", "partial", []
+        except Exception as primary_error:
+            try:
+                rows = self._fetch_eastmoney_active_direction_rows(self._ACTIVE_DIRECTION_FALLBACK_URL)
+            except Exception as delayed_error:
+                raise RuntimeError(f"主域失败：{primary_error}；延迟域失败：{delayed_error}") from delayed_error
+            return (
+                rows,
+                "eastmoney-clist-delay",
+                "fallback",
+                [f"东方财富容量方向主域不可用：{primary_error}", "已降级到东方财富延迟容量方向"],
+            )
+
+    def _fetch_eastmoney_active_direction_rows(self, url: str) -> list[dict[str, Any]]:
         params = {
             "pn": "1",
             "pz": str(self._ACTIVE_DIRECTION_PAGE_SIZE),
@@ -272,7 +297,7 @@ class MarketDataProvider:
             "fs": self._STOCK_UNIVERSE_FILTER,
             "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
         }
-        payload = self.eastmoney.get_json(self._STOCK_SNAPSHOT_URL, params)
+        payload = self.eastmoney.get_json(url, params)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise RuntimeError("容量方向响应缺少 data")
@@ -429,8 +454,25 @@ class MarketDataProvider:
             warnings=[primary_warning, "已按涨跌幅排序分页定位全 A 有效样本"],
         )
 
-    def _fetch_eastmoney_industries(self) -> list[dict[str, Any]]:
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
+    def _fetch_eastmoney_industries(self) -> tuple[list[dict[str, Any]], str, str, list[str]]:
+        primary_url = "https://push2.eastmoney.com/api/qt/clist/get"
+        delayed_url = "https://push2delay.eastmoney.com/api/qt/clist/get"
+        try:
+            rows = self._fetch_eastmoney_industries_from(primary_url)
+            return rows, "eastmoney-clist", "partial", []
+        except Exception as primary_error:
+            try:
+                rows = self._fetch_eastmoney_industries_from(delayed_url)
+            except Exception as delayed_error:
+                raise RuntimeError(f"主域失败：{primary_error}；延迟域失败：{delayed_error}") from delayed_error
+            return (
+                rows,
+                "eastmoney-clist-delay",
+                "fallback",
+                [f"东方财富行业主域不可用：{primary_error}", "已降级到东方财富延迟行业排名"],
+            )
+
+    def _fetch_eastmoney_industries_from(self, url: str) -> list[dict[str, Any]]:
         params = {
             "pn": "1",
             "pz": "100",
@@ -440,16 +482,28 @@ class MarketDataProvider:
             "invt": "2",
             "fid": "f3",
             "fs": "m:90+t:2",
-            "fields": "f3,f6,f12,f14,f62,f104,f105,f140,f184",
+            "fields": "f3,f6,f12,f14,f62,f104,f105,f128,f136,f140,f141,f184",
         }
         payload = self.eastmoney.get_json(url, params)
         data = payload.get("data")
         if not isinstance(data, dict):
             raise RuntimeError("行业排名响应缺少 data")
         rows = data.get("diff")
-        if not isinstance(rows, list) or not rows:
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            raise RuntimeError("行业排名返回格式无效")
+        valid_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and self._optional_text(row.get("f12")) is not None
+            and self._optional_text(row.get("f14")) is not None
+            and self._optional_float(row.get("f3")) is not None
+        ]
+        if not valid_rows:
             raise RuntimeError("行业排名未返回有效板块")
-        return rows
+        return valid_rows
 
     def _fetch_limit_pool(self, endpoint: str, sort: str, as_of: date) -> list[dict[str, Any]]:
         url = f"https://push2ex.eastmoney.com/{endpoint}"
@@ -568,7 +622,15 @@ class MarketDataProvider:
             "quality": self._quality("market-breadth", source, status, valid_count, as_of, warnings),
         }
 
-    def _build_sectors(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+    def _build_sectors(
+        self,
+        rows: list[dict[str, Any]],
+        as_of: date,
+        *,
+        source: str,
+        status: str,
+        warnings: list[str],
+    ) -> dict[str, Any]:
         result = []
         for rank, item in enumerate(rows[:10], start=1):
             result.append(
@@ -582,17 +644,28 @@ class MarketDataProvider:
                     "mainNetPct": self._optional_float(item.get("f184")),
                     "upCount": self._optional_int(item.get("f104")),
                     "downCount": self._optional_int(item.get("f105")),
-                    "leader": self._optional_text(item.get("f140")),
+                    "leader": self._optional_text(item.get("f128")),
                 }
             )
-        warnings = ["仅反映当日行业排名和资金流，5日持续性、板块宽度与分歧承接尚未接入"]
+        quality_warnings = [
+            *warnings,
+            "仅反映当日行业排名和资金流，5日持续性、板块宽度与分歧承接尚未接入",
+        ]
         return {
             "rows": result,
             "state": "当日排名已观测",
-            "quality": self._quality("industry-ranking", "eastmoney-clist", "partial", len(rows), as_of, warnings),
+            "quality": self._quality("industry-ranking", source, status, len(rows), as_of, quality_warnings),
         }
 
-    def _build_active_direction(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
+    def _build_active_direction(
+        self,
+        rows: list[dict[str, Any]],
+        as_of: date,
+        *,
+        source: str,
+        status: str,
+        warnings: list[str],
+    ) -> dict[str, Any]:
         ranked = sorted(
             (row for row in rows if self._optional_float(row.get("f6")) is not None),
             key=lambda row: self._optional_float(row.get("f6")) or 0,
@@ -627,12 +700,15 @@ class MarketDataProvider:
                     "closePosition": round(close_position, 4) if close_position is not None else None,
                 }
             )
-        warnings = ["仅有当日成交额、涨跌幅和收盘位置；20日成交放大、超额收益与连续2日确认尚未接入"]
+        quality_warnings = [
+            *warnings,
+            "仅有当日成交额、涨跌幅和收盘位置；20日成交放大、超额收益与连续2日确认尚未接入",
+        ]
         return {
             "state": state,
             "summary": summary,
             "topStocks": stocks,
-            "quality": self._quality("active-direction", "eastmoney-clist", "partial", len(top30), as_of, warnings),
+            "quality": self._quality("active-direction", source, status, len(top30), as_of, quality_warnings),
         }
 
     @classmethod

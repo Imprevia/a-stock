@@ -14,6 +14,10 @@ import type {
   IndexAnalysis,
   MarketEnvironmentResponse,
 } from './types'
+import { formatLocalDate, getDefaultMarketDate } from './date-util'
+import DataCollectionView from './data-collection-view.vue'
+
+type AppView = 'dashboard' | 'data-collection'
 
 const documents = [
   { id: '01', title: '指数、趋势位置和成交额', objective: '量化指数方向、均线结构、区间位置和量价推进。', rules: 'QTS-01-01-01 ~ 05', icon: LineChart },
@@ -39,19 +43,14 @@ const combinationDefinitions = [
 const data = ref<MarketEnvironmentResponse | null>(null)
 const selectedCode = ref('sh000001')
 const selectedDocumentId = ref('01')
-const formatLocalDate = (value: Date) => {
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-const selectedDate = ref(formatLocalDate(new Date()))
+const selectedDate = ref(getDefaultMarketDate(new Date()))
 const loading = ref(false)
 const error = ref('')
 const loadedSections = ref<Chapter01Section[]>([])
 const sectionLoading = ref(false)
 const sectionError = ref('')
 const sidebarOpen = ref(false)
+const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : 'dashboard')
 const chartElement = ref<HTMLElement | null>(null)
 const volumeChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -258,9 +257,21 @@ function renderChart() {
 }
 
 function selectDocument(id: string) {
+  navigateTo('dashboard')
   selectedDocumentId.value = id
   sidebarOpen.value = false
   window.location.hash = `document-${id}`
+}
+function navigateTo(view: AppView) {
+  currentView.value = view
+  sidebarOpen.value = false
+  const path = view === 'data-collection' ? '/data-collection' : '/'
+  if (window.location.pathname !== path) window.history.pushState({}, '', path)
+  if (view === 'dashboard' && !data.value && !loading.value) void loadData()
+}
+function handlePopState() {
+  currentView.value = window.location.pathname === '/data-collection' ? 'data-collection' : 'dashboard'
+  if (currentView.value === 'dashboard' && !data.value && !loading.value) void loadData()
 }
 function selectIndex(code: string) { selectedCode.value = code }
 function resizeCharts() { chart?.resize(); volumeChart?.resize() }
@@ -281,10 +292,15 @@ watch(selectedDocumentId, async (documentId) => {
 onMounted(() => {
   const match = window.location.hash.match(/document-(0[1-9])$/)
   if (match) selectedDocumentId.value = match[1]
-  loadData()
+  if (currentView.value === 'dashboard') loadData()
   window.addEventListener('resize', resizeCharts)
+  window.addEventListener('popstate', handlePopState)
 })
-onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disposeCharts() })
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeCharts)
+  window.removeEventListener('popstate', handlePopState)
+  disposeCharts()
+})
 </script>
 
 <template>
@@ -294,15 +310,19 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
       <div class="brand-block"><div class="brand-mark"><Activity :size="19" /></div><div><strong>交易研究系统</strong><span>A 股 · 盘后证据</span></div><button class="mobile-close" type="button" aria-label="关闭导航" @click="sidebarOpen = false"><X :size="18" /></button></div>
       <nav aria-label="交易研究导航">
         <div class="nav-label">市场研判</div>
-        <div class="primary-nav active"><Gauge :size="17" /><span>如何判断市场环境</span><ChevronRight :size="15" /></div>
-        <div class="secondary-nav"><button v-for="document in documents" :key="document.id" type="button" :class="{ active: selectedDocumentId === document.id }" @click="selectDocument(document.id)"><span class="nav-number">{{ document.id }}</span><span>{{ document.title }}</span></button></div>
+        <button class="primary-nav" :class="{ active: currentView === 'dashboard' }" type="button" @click="navigateTo('dashboard')"><Gauge :size="17" /><span>如何判断市场环境</span><ChevronRight :size="15" /></button>
+        <div class="secondary-nav"><button v-for="document in documents" :key="document.id" type="button" :class="{ active: currentView === 'dashboard' && selectedDocumentId === document.id }" @click="selectDocument(document.id)"><span class="nav-number">{{ document.id }}</span><span>{{ document.title }}</span></button></div>
+        <div class="nav-label management-label">数据管理</div>
+        <button class="primary-nav" :class="{ active: currentView === 'data-collection' }" type="button" @click="navigateTo('data-collection')"><Database :size="17" /><span>数据采集</span><ChevronRight :size="15" /></button>
       </nav>
       <div class="sidebar-foot"><Database :size="15" /><div><span>规则事实源</span><strong>market-environment v1</strong></div></div>
     </aside>
 
     <main class="main-shell">
-      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>如何判断市场环境</span><ChevronRight :size="14" /><strong>{{ selectedDocument.id }}</strong></div></div><div class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div></header>
+      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : '数据管理' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : '数据采集' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
       <div class="content-shell">
+        <DataCollectionView v-if="currentView === 'data-collection'" />
+        <template v-else>
         <section class="document-header"><div class="document-number">{{ selectedDocument.id }}</div><div class="document-title"><span>01 · 如何判断市场环境</span><h1>{{ selectedDocument.title }}</h1><p>{{ selectedDocument.objective }}</p></div><div class="rule-reference"><span>规则范围</span><strong>{{ selectedDocument.rules }}</strong><em>经验阈值 · 待回测</em></div></section>
         <section v-if="error" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>行情暂时不可用</strong><p>{{ error }}</p></div><button class="text-button" type="button" @click="loadData">重新加载</button></section>
         <section v-else-if="loading && !data" class="state-panel"><div class="loader" /><span>正在读取市场证据…</span></section>
@@ -375,6 +395,7 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); disp
 
           <section v-if="sectionWarning" class="warning-band"><AlertTriangle :size="17" /><div><strong>本节证据边界</strong><span>{{ sectionWarning }}</span></div></section>
           <section v-if="data.summary.warnings.length" class="warning-band"><AlertTriangle :size="17" /><div><strong>数据质量提醒</strong><span>{{ data.summary.warnings.join('；') }}</span></div></section>
+        </template>
         </template>
       </div>
     </main>

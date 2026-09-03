@@ -25,7 +25,13 @@ from .calculations import (
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from .refresh import SnapshotRefresher
-from .snapshot_store import SnapshotStore, cache_state, persistent_cache_enabled
+from .schemas import MarketEnvironmentResponse
+from .snapshot_store import (
+    MaterializedAggregateRecord,
+    SnapshotStore,
+    cache_state,
+    persistent_cache_enabled,
+)
 
 MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 CHAPTER_SECTIONS = frozenset({"breadth", "limits", "sectors", "activeDirection", "summary"})
@@ -54,6 +60,7 @@ class MarketEnvironmentService:
         snapshot_ttl_seconds: int = 30,
         now: Callable[[], datetime] | None = None,
         cold_wait_seconds: float = 30.0,
+        local_reads_only: bool | None = None,
     ) -> None:
         provider_was_injected = provider is not None
         self.provider = provider or MarketDataProvider()
@@ -66,6 +73,11 @@ class MarketEnvironmentService:
             )
         self.persistent_cache = persistent_cache
         self.snapshot_store = snapshot_store or (SnapshotStore() if persistent_cache else None)
+        self.local_reads_only = (
+            local_reads_only
+            if local_reads_only is not None
+            else bool(persistent_cache and not provider_was_injected)
+        )
         self.snapshot_ttl_seconds = snapshot_ttl_seconds
         self.cold_wait_seconds = cold_wait_seconds
         self._refresh_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-snapshot")
@@ -77,6 +89,8 @@ class MarketEnvironmentService:
 
     def get(self, as_of: date) -> dict:
         """Return the legacy complete aggregate response."""
+        if self.local_reads_only:
+            return self._get_local_aggregate(as_of)
         core = self._get_core(as_of)
         provider_data = self._chapter_provider_data(core, "summary")
         chapter = self._build_chapter01(core, provider_data)
@@ -88,6 +102,18 @@ class MarketEnvironmentService:
 
     def get_core(self, as_of: date) -> dict:
         """Return index data without calling Chapter 01 providers."""
+        if self.local_reads_only:
+            core = self._get_local_core(as_of)
+            provider_data = self._missing_chapter_provider_data(
+                date.fromisoformat(core["asOf"]),
+                "该接口只返回已采集的核心指数数据",
+                status="missing",
+            )
+            core["chapter01"] = self._build_chapter01(
+                self._local_core_context(as_of, core),
+                provider_data,
+            )
+            return core
         core = self._get_core(as_of)
         provider_data = self._missing_chapter_provider_data(
             core["effectiveDate"],
@@ -101,12 +127,84 @@ class MarketEnvironmentService:
     def get_chapter01(self, as_of: date, section: str) -> dict:
         if section not in CHAPTER_SECTIONS:
             raise ValueError(f"未知第 01 章 section：{section}")
+        if self.local_reads_only:
+            aggregate = self._get_local_aggregate(as_of)
+            return {
+                "asOf": aggregate["asOf"],
+                "generatedAt": aggregate["generatedAt"],
+                "chapter01": aggregate["chapter01"],
+            }
         core = self._get_core(as_of)
         provider_data = self._chapter_provider_data(core, section)
         return {
             "asOf": core["asOf"],
             "generatedAt": core["generatedAt"],
             "chapter01": self._build_chapter01(core, provider_data),
+        }
+
+    def rebuild_materialized_aggregate(self, as_of: date) -> dict[str, Any] | None:
+        if self.snapshot_store is None:
+            raise RuntimeError("persistent snapshot store is disabled")
+        core_record = self.snapshot_store.get("core", as_of)
+        if core_record is None:
+            return None
+        core_payload = copy.deepcopy(core_record.payload)
+        core = self._local_core_context(as_of, core_payload)
+        provider_data = self._missing_chapter_provider_data(
+            core["effectiveDate"],
+            "该日期尚未采集对应数据集",
+            status="missing",
+        )
+        for group in CHAPTER_GROUP_KEYS:
+            record = self.snapshot_store.get(group, as_of)
+            if record is not None:
+                provider_data[group] = self._snapshot_payload(
+                    record,
+                    cache_state(
+                        record,
+                        now=self._market_now(),
+                        soft_ttl_seconds=self.snapshot_ttl_seconds,
+                    ),
+                    refreshing=self.snapshot_store.has_active_lease(group, as_of),
+                )
+        payload = self._core_payload(core)
+        payload["chapter01"] = self._build_chapter01(core, provider_data)
+        validated = MarketEnvironmentResponse.model_validate(payload).model_dump()
+        self.snapshot_store.put_materialized_aggregate(
+            MaterializedAggregateRecord(
+                as_of=as_of,
+                payload=validated,
+                generated_at=self._market_now(),
+            )
+        )
+        return validated
+
+    def _get_local_aggregate(self, as_of: date) -> dict[str, Any]:
+        if self.snapshot_store is None:
+            raise RuntimeError("persistent snapshot store is disabled")
+        record = self.snapshot_store.get_materialized_aggregate(as_of)
+        if record is not None:
+            return copy.deepcopy(record.payload)
+        payload = self.rebuild_materialized_aggregate(as_of)
+        if payload is None:
+            raise RuntimeError("所选日期没有已采集的核心指数快照")
+        return payload
+
+    def _get_local_core(self, as_of: date) -> dict[str, Any]:
+        if self.snapshot_store is None:
+            raise RuntimeError("persistent snapshot store is disabled")
+        record = self.snapshot_store.get("core", as_of)
+        if record is None:
+            raise RuntimeError("所选日期没有已采集的核心指数快照")
+        return copy.deepcopy(record.payload)
+
+    @staticmethod
+    def _local_core_context(as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
+        effective_date = date.fromisoformat(payload["asOf"])
+        return {
+            **copy.deepcopy(payload),
+            "requestedAsOf": as_of,
+            "effectiveDate": effective_date,
         }
 
     def _get_core(self, as_of: date) -> dict[str, Any]:

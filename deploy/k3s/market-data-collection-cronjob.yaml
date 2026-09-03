@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-data-collection
+  labels:
+    app.kubernetes.io/name: market-data-collection
+    app.kubernetes.io/part-of: a-stock
+    app.kubernetes.io/component: data-collection
+spec:
+  schedule: "30 16 * * 1-5"
+  timeZone: Asia/Shanghai
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: market-data-collection
+            app.kubernetes.io/part-of: a-stock
+            app.kubernetes.io/component: data-collection
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: collector
+              image: a-stock-market-environment:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - src.market_environment.cli
+                - snapshots
+                - scheduled-refresh
+              env:
+                - name: TZ
+                  value: Asia/Shanghai
+                - name: MARKET_ENVIRONMENT_SNAPSHOT_PATH
+                  value: /data/snapshots.sqlite3
+                - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
+                  value: "1"
+                - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
+                  value: "15:10"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: market-environment-data
+            - name: tmp
+              emptyDir: {}

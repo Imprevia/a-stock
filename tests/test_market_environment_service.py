@@ -6,6 +6,7 @@ from time import monotonic, sleep
 import pytest
 
 from src.market_environment.calculations import Bar
+from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
 from src.market_environment.schemas import Chapter01Response, MarketEnvironmentResponse
 from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService, market_today
@@ -481,3 +482,71 @@ def test_service_adds_null_safe_chapter01_contract_when_extended_provider_is_mis
     assert payload["chapter01"]["events"]["state"] == "unverified"
     assert payload["chapter01"]["assessment"]["confidence"] == "insufficient"
     MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path) -> None:
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    provider = SectionProvider()
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        persistent_cache=True,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: market_now,
+        rebuild_aggregate=service.rebuild_materialized_aggregate,
+    ).collect(selected)
+    assert result.run.status == "success"
+    provider.quote_calls = 0
+    provider.fetch_calls = 0
+    provider.chapter_calls.clear()
+    store.acquire_lease("sectors", selected, "active-worker", lease_seconds=60, now=market_now)
+
+    started = monotonic()
+    payload = service.get(selected)
+    elapsed = monotonic() - started
+
+    assert elapsed < 0.5
+    assert provider.quote_calls == 0
+    assert provider.fetch_calls == 0
+    assert provider.chapter_calls == []
+    assert payload["chapter01"]["breadth"]["advanceCount"] == 2
+    MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_failed_refresh_rebuilds_aggregate_with_retained_warning(tmp_path) -> None:
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    provider = SectionProvider()
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        persistent_cache=True,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    coordinator = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: market_now,
+        rebuild_aggregate=service.rebuild_materialized_aggregate,
+    )
+    coordinator.collect(selected)
+
+    def fail_breadth(as_of, *, allow_current_snapshot):
+        raise RuntimeError("breadth fixture failure")
+
+    provider.fetch_chapter01_breadth = fail_breadth
+    failed = coordinator.collect(selected, ["breadth"])
+    payload = service.get(selected)
+
+    assert failed.tasks[0].status == "failed-retained"
+    assert payload["chapter01"]["breadth"]["advanceCount"] == 2
+    assert payload["chapter01"]["breadth"]["quality"]["refreshWarning"] == "breadth fixture failure"

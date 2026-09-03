@@ -44,6 +44,8 @@ spec:
               value: {{ .Values.marketEnvironment.snapshotPath | quote }}
             - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
               value: {{ ternary "1" "0" .Values.marketEnvironment.persistentCache | quote }}
+            - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
+              value: {{ .Values.marketEnvironment.settlementTime | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

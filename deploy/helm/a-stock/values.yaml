@@ -61,6 +61,28 @@ marketEnvironment:
   timezone: Asia/Shanghai
   snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
+  settlementTime: "15:10"
+  scheduledCollection:
+    enabled: true
+    suspend: false
+    schedule: "30 16 * * 1-5"
+    timeZone: Asia/Shanghai
+    startingDeadlineSeconds: 1800
+    activeDeadlineSeconds: 3600
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    extraEnv: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    priorityClassName: ""
 
 startupProbe:
   enabled: true

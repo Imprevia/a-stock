@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 
 from src.market_environment import cli
 from src.market_environment.refresh import MARKET_TIME_ZONE, SnapshotRefresher
@@ -146,29 +147,27 @@ def test_busy_lease_prevents_duplicate_collection(tmp_path) -> None:
 
 
 def test_cli_outputs_structured_refresh_result(monkeypatch, capsys) -> None:
-    class FakeRefresher:
-        def refresh(self, as_of, datasets, *, force):
-            return {
-                "runId": "run-1",
-                "asOf": as_of.isoformat(),
-                "status": "ok",
-                "forced": force,
-                "datasets": [
-                    {
-                        "dataset": "breadth",
-                        "source": "fixture",
-                        "observations": 3,
-                        "durationMs": 1.0,
-                        "cacheResult": "stored",
-                        "quality": "fallback",
-                    }
-                ],
-            }
+    class FakeCoordinator:
+        def collect(self, as_of, datasets):
+            return SimpleNamespace(
+                run=SimpleNamespace(run_id="run-1", as_of=as_of, status="success"),
+                tasks=(
+                    SimpleNamespace(
+                        task_id="task-1",
+                        dataset="breadth",
+                        source="fixture",
+                        observations=3,
+                        duration_ms=1.0,
+                        status="success",
+                        warning=None,
+                    ),
+                ),
+            )
 
-    monkeypatch.setattr(cli, "SnapshotRefresher", FakeRefresher)
+    monkeypatch.setattr(cli, "CollectionCoordinator", FakeCoordinator)
     exit_code = cli.main(["snapshots", "refresh", "--as-of", AS_OF.isoformat(), "--dataset", "breadth"])
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
     assert output["datasets"][0]["source"] == "fixture"
-    assert output["datasets"][0]["cacheResult"] == "stored"
+    assert output["datasets"][0]["status"] == "success"

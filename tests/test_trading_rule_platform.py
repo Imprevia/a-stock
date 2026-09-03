@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import socket
 import shutil
+import threading
 from datetime import date
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -13,7 +16,13 @@ from jsonschema import ValidationError
 from src.trading_system.backtest.runner import run_backtest, validate_validation_evidence
 from src.trading_system.cli import run
 from src.trading_system.data.canonical import canonical_json_bytes, load_snapshot, sha256_value, validate_event
-from src.trading_system.data.providers import FallbackChain, ProviderFailure, SerialRateLimiter, create_after_market_snapshot
+from src.trading_system.data.providers import (
+    EastmoneyClient,
+    FallbackChain,
+    ProviderFailure,
+    SerialRateLimiter,
+    create_after_market_snapshot,
+)
 from src.trading_system.evaluation.engine import evaluate_rule_set
 from src.trading_system.evidence.bundle import create_evidence_bundle, verify_evidence_bundle
 from src.trading_system.rules.coverage import scan_documented_rules, validate_coverage
@@ -137,6 +146,123 @@ def test_serial_limiter_waits_at_least_one_second() -> None:
     limiter.acquire()
 
     assert sleeps == pytest.approx([1.1])
+
+
+def test_serial_limiter_keeps_complete_requests_from_overlapping() -> None:
+    current = [0.0]
+    limiter = SerialRateLimiter(
+        clock=lambda: current[0],
+        sleeper=lambda seconds: current.__setitem__(0, current[0] + seconds),
+        random_uniform=lambda _low, _high: 0.0,
+    )
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_request() -> None:
+        first_entered.set()
+        assert release_first.wait(timeout=1)
+
+    def second_request() -> None:
+        second_entered.set()
+
+    first = threading.Thread(target=lambda: limiter.run(first_request))
+    second = threading.Thread(target=lambda: limiter.run(second_request))
+    first.start()
+    assert first_entered.wait(timeout=1)
+    second.start()
+    assert not second_entered.wait(timeout=0.05)
+    release_first.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+    assert current[0] == pytest.approx(1.0)
+
+
+class _RetryHandler(BaseHTTPRequestHandler):
+    attempts: dict[str, int] = {}
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+        attempt = self.attempts.get(self.path, 0) + 1
+        self.attempts[self.path] = attempt
+        if self.path == "/disconnect" and attempt == 1:
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            return
+        if self.path == "/recover" and attempt < 3:
+            self.send_response(503)
+            self.end_headers()
+            return
+        if self.path == "/exhaust":
+            self.send_response(503)
+            self.end_headers()
+            return
+        if self.path == "/forbidden":
+            self.send_response(403)
+            self.end_headers()
+            return
+        body = b'{"data":{"ok":true}}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+
+@pytest.fixture
+def retry_server():
+    _RetryHandler.attempts = {}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RetryHandler)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        worker.join(timeout=2)
+        server.server_close()
+
+
+def _eastmoney_test_client() -> EastmoneyClient:
+    current = [0.0]
+    limiter = SerialRateLimiter(
+        clock=lambda: current[0],
+        sleeper=lambda seconds: current.__setitem__(0, current[0] + seconds),
+        random_uniform=lambda _low, _high: 0.0,
+    )
+    return EastmoneyClient(timeout=1, limiter=limiter, retry_total=2, retry_backoff=0)
+
+
+@pytest.mark.parametrize("path, expected_attempts", [("/disconnect", 2), ("/recover", 3)])
+def test_eastmoney_client_recovers_transient_failures(retry_server, path: str, expected_attempts: int) -> None:
+    payload = _eastmoney_test_client().get_json(f"{retry_server}{path}", {})
+
+    assert payload == {"data": {"ok": True}}
+    assert _RetryHandler.attempts[path] == expected_attempts
+
+
+def test_eastmoney_client_exhausts_retry_budget(retry_server) -> None:
+    with pytest.raises(ProviderFailure) as caught:
+        _eastmoney_test_client().get_json(f"{retry_server}/exhaust", {})
+
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is True
+    assert _RetryHandler.attempts["/exhaust"] == 3
+
+
+def test_eastmoney_client_does_not_retry_http_403(retry_server) -> None:
+    with pytest.raises(ProviderFailure) as caught:
+        _eastmoney_test_client().get_json(f"{retry_server}/forbidden", {})
+
+    assert caught.value.status_code == 403
+    assert caught.value.retryable is False
+    assert _RetryHandler.attempts["/forbidden"] == 1
 
 
 def test_fallback_chain_records_403_without_retrying_same_provider() -> None:

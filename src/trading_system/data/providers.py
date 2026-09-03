@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -10,6 +11,8 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 _GLOBAL_EASTMONEY_LIMITER: "SerialRateLimiter | None" = None
 
@@ -55,8 +58,19 @@ class SerialRateLimiter:
         self.sleeper = sleeper
         self.random_uniform = random_uniform
         self._last_request_at: float | None = None
+        self._request_lock = threading.Lock()
 
     def acquire(self) -> None:
+        with self._request_lock:
+            self._acquire_unlocked()
+
+    def run(self, operation: Callable[[], Any]) -> Any:
+        """Serialize the complete provider request, including rate-limit waiting."""
+        with self._request_lock:
+            self._acquire_unlocked()
+            return operation()
+
+    def _acquire_unlocked(self) -> None:
         now = self.clock()
         if self._last_request_at is not None:
             required = self.minimum_interval + self.random_uniform(*self.jitter)
@@ -75,6 +89,8 @@ class EastmoneyClient:
         timeout: float = 8.0,
         limiter: SerialRateLimiter | None = None,
         session: requests.Session | None = None,
+        retry_total: int = 2,
+        retry_backoff: float = 0.6,
     ) -> None:
         global _GLOBAL_EASTMONEY_LIMITER
         self.timeout = timeout
@@ -83,17 +99,36 @@ class EastmoneyClient:
         self.limiter = limiter or _GLOBAL_EASTMONEY_LIMITER
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+        mount = getattr(self.session, "mount", None)
+        if callable(mount):
+            retry = Retry(
+                total=retry_total,
+                connect=retry_total,
+                read=retry_total,
+                status=retry_total,
+                backoff_factor=retry_backoff,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset({"GET"}),
+                raise_on_status=False,
+                respect_retry_after_header=True,
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            mount("https://", adapter)
+            mount("http://", adapter)
 
     def get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
-        self.limiter.acquire()
-        response = self.session.get(url, params=params, timeout=self.timeout)
+        try:
+            response = self.limiter.run(lambda: self.session.get(url, params=params, timeout=self.timeout))
+        except requests.RequestException as exc:
+            raise ProviderFailure(str(exc), retryable=True) from exc
         status_code = getattr(response, "status_code", 200)
         if status_code == 403:
             raise ProviderFailure("Eastmoney returned HTTP 403", status_code=403, retryable=False)
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
-            raise ProviderFailure(str(exc), status_code=status_code, retryable=status_code >= 500) from exc
+            retryable = status_code == 429 or status_code >= 500
+            raise ProviderFailure(str(exc), status_code=status_code, retryable=retryable) from exc
         return response.json()
 
 
