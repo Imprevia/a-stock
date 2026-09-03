@@ -73,7 +73,7 @@ SQLite 还保存 collection run/task 和 materialized market-environment aggrega
 
 ## 归属边界
 
-前端仅消费固定 JSON 契约，不直接访问行情源。计算逻辑集中在 `calculations.py`，数据源差异封装在 `providers.py`，持久化快照、collection 状态与 lease 由 snapshot store 模块负责，采集编排和聚合重建由 collection coordinator 负责，CLI、CronJob 与 HTTP 共用该边界，HTTP 错误映射在 `api.py`。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认关闭；无认证的外部部署不得启用。内部 CronJob 直接执行 CLI，不依赖或放开该 HTTP 写开关。
+前端仅消费固定 JSON 契约，不直接访问行情源。计算逻辑集中在 `calculations.py`，数据源差异封装在 `providers.py`，持久化快照、collection 状态与 lease 由 snapshot store 模块负责，采集编排和聚合重建由 collection coordinator 负责，CLI、CronJob 与 HTTP 共用该边界，HTTP 错误映射在 `api.py`。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认开启，可设置为 `0` 显式关闭；无认证的外部部署在接入权限边界前必须显式关闭。内部 CronJob 直接执行 CLI，不依赖该 HTTP 写开关。
 
 ## 已知约束（已定，不可绕过）
 

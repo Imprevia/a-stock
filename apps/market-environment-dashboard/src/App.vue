@@ -60,6 +60,7 @@ let sectionRequestSequence = 0
 let dataRequestDate = ''
 
 const documentSections: Partial<Record<string, Chapter01Section>> = {
+  '01': 'summary',
   '02': 'breadth',
   '03': 'limits',
   '05': 'sectors',

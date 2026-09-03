@@ -487,7 +487,7 @@ class CollectionCoordinator:
 
 
 def manual_refresh_enabled() -> bool:
-    return os.getenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "0").strip().lower() in {
+    return os.getenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1").strip().lower() in {
         "1",
         "true",
         "yes",

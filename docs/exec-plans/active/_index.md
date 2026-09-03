@@ -9,6 +9,7 @@
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
 | `document-truenas-podman-k3s-deployment` | Codex | in-progress | 2026-09-02 |
+| `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 
 ## 说明
 

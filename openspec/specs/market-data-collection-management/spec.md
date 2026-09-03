@@ -1,7 +1,7 @@
 # market-data-collection-management Specification
 
 ## Purpose
-TBD - describe the purpose of the market-data-collection-management capability.
+Provide exact-date visibility and controlled manual collection for the five market-environment datasets while preserving independent task results, local snapshot integrity, and provider-free status reads.
 
 ## Requirements
 
@@ -141,15 +141,19 @@ The system SHALL validate collection requests against each provider's date capab
 - **THEN** successful results are marked provisional rather than settled
 
 ### Requirement: Manual collection access boundary
-The system SHALL keep manual collection write operations disabled by default and SHALL require an explicit server-side configuration switch before accepting them.
+The system SHALL keep manual collection write operations enabled by default and SHALL allow operators to disable them with an explicit server-side configuration switch.
 
-#### Scenario: Manual collection is disabled
-- **WHEN** `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` is not enabled
+#### Scenario: Manual collection is enabled by default
+- **WHEN** `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` is not configured and the request passes date validation
+- **THEN** the client can start collection runs and the server accepts the controlled POST request
+
+#### Scenario: Manual collection is explicitly disabled
+- **WHEN** `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` is set to a disabled value
 - **THEN** the page hides or disables collection actions and the API rejects collection POST requests without starting provider work
 
-#### Scenario: Manual collection is enabled for development
+#### Scenario: Manual collection is explicitly enabled
 - **WHEN** the configuration switch is enabled and the request passes date validation
-- **THEN** the development client can start collection runs and the server permits the required controlled POST request
+- **THEN** the client can start collection runs and the server permits the required controlled POST request
 
 ### Requirement: Read-path isolation and compatibility
 The system SHALL preserve existing market-environment query paths and existing response fields while ensuring normal dashboard reads do not start collection tasks.

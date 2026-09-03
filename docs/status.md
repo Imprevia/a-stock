@@ -20,7 +20,7 @@
   - 已拆分数据加载：保留完整聚合接口，网页首屏改用指数核心接口，第 02、03、05、06、08、09 页按需加载章节证据；章节失败不会清空核心数据，同日期 provider 结果按数据集缓存并复用。
   - 已实现市场数据 SQLite 持久快照与盘后预计算：`breadth` 直接走精确分页统计，`activeDirection` 使用成交额 Top-N；支持 exact-date、checksum、settled freshness、跨进程 lease、stale-while-revalidate、刷新 CLI、回滚开关和可选缓存质量元数据。
   - 已新增 `/data-collection` 数据管理页和五类独立采集任务：`core`、`breadth`、`limits`、`sectors`、`activeDirection` 支持单项或一键采集，单项失败不停止或回滚成功兄弟任务；核心指数进一步隔离五个指数子结果。
-  - 已实现 collection run/task、失败保留、精确日期状态、lease 去重、重启恢复和 materialized aggregate；普通市场环境 GET 只读本地聚合/快照，手工 POST 默认由 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 关闭。
+  - 已实现 collection run/task、失败保留、精确日期状态、lease 去重、重启恢复和 materialized aggregate；普通市场环境 GET 只读本地聚合/快照，手工 POST 默认开启并可由 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭。
   - 数据采集页首次状态请求不再复用研究页的 15:00 截止日期，而是由后端上海市场日初始化；用户改选历史日期后继续发送显式日期。
   - 东方财富请求已在进程内全局串行，并对连接/读取失败、429 和 5xx 有界重试，403 立即失败；行业排名支持 `push2` 到 `push2delay` 降级，领涨股名称按真实 `f128` 字段解析且不跨日期保留。
   - 容量方向已支持 `push2` 到 `push2delay` 的统一 Top-N 校验和可审计降级；当前市场日真实 smoke 在主域断连后保存 `eastmoney-clist-delay` / `fallback` 的 30 个观察样本，双端点失败继续使用精确日期的 `failed-retained` / `failed-missing`。
@@ -49,7 +49,7 @@
 
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
-- 手工采集接口当前无完整用户认证，外部部署必须保持 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 关闭；生产写入口需后续接入权限边界。
+- 手工采集接口当前无完整用户认证且默认开启；外部部署在接入权限边界前必须显式设置 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，生产写入口仍需后续接入认证授权。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - SQLite refresh lease 只支持同一主机的本地文件系统，多主机部署需要共享缓存适配器。
 - 通达信不可用时五个指数仍串行进入降级链，本机冷缓存核心请求约 34 秒；章节拆分已避免额外证据继续阻塞首屏，但指数 provider 仍需独立优化。

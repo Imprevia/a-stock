@@ -124,8 +124,8 @@ def collection_coordinator(tmp_path, provider=None) -> CollectionCoordinator:
     )
 
 
-def test_collection_post_is_disabled_by_default(monkeypatch, tmp_path) -> None:
-    monkeypatch.delenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", raising=False)
+def test_collection_post_can_be_explicitly_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "0")
     monkeypatch.setattr(api, "collection_coordinator", collection_coordinator(tmp_path))
 
     response = TestClient(api.app).post(
@@ -137,6 +137,7 @@ def test_collection_post_is_disabled_by_default(monkeypatch, tmp_path) -> None:
 
 
 def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", raising=False)
     provider = CollectionProvider()
     coordinator = collection_coordinator(tmp_path, provider)
     coordinator.collect(AS_OF, ["breadth"])
@@ -148,14 +149,15 @@ def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, 
     )
 
     assert response.status_code == 200
+    assert response.json()["manualRefreshEnabled"] is True
     assert provider.calls == []
     rows = {item["dataset"]: item for item in response.json()["datasets"]}
     assert rows["breadth"]["available"] is True
     assert rows["core"]["available"] is False
 
 
-def test_collection_single_run_returns_202_and_can_be_polled(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1")
+def test_collection_single_run_is_enabled_by_default_and_can_be_polled(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", raising=False)
     coordinator = collection_coordinator(tmp_path)
     monkeypatch.setattr(api, "collection_coordinator", coordinator)
     monkeypatch.setattr(api, "collection_executor", ImmediateExecutor())

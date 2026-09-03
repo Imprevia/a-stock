@@ -161,7 +161,7 @@ Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不
 
 - `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
-- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`：仅在受控开发环境启用数据采集页面写操作和 collection POST；默认关闭，对外无认证部署禁止启用。
+- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。对外无认证部署在接入权限边界前必须设置为 `0`。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
 
@@ -248,7 +248,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 - **refresh 一直显示被占用**：检查同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 SQLite。
 - **数据采集批次显示 `partial`**：查看每个 task 的 warning；成功 task 已独立保存，只对失败行执行重新采集，不要删除整批成功快照。
 - **最近采集失败但数据仍可用**：这是 `failed-retained`，页面继续服务同日期最后成功值并展示刷新错误；只有 `failed-missing` 才表示该日期没有可用数据。
-- **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED`、所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
+- **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 是否被显式设为 `0`，并检查所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
 - **CronJob 没有启动**：检查资源是否被 Helm `enabled=false` 省略、`spec.suspend`、schedule/timeZone、`startingDeadlineSeconds` 和控制器事件；先用 `kubectl create job --from=cronjob/...` 验证命令与 PVC。
 - **CronJob 为 Failed 但页面有部分数据**：检查容器 JSON 中的父状态和各 task warning；`partial` 有意返回非零且不自动整批重试，成功兄弟任务已经落盘，只补采失败行。
 - **CronJob 卡住或错过下一次运行**：查看 `activeDeadlineSeconds`、Pod 外网访问和 PVC 挂载；`concurrencyPolicy: Forbid` 会跳过重叠触发，确认旧 Job 结束后再补跑一次性 Job。
