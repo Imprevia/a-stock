@@ -22,7 +22,7 @@ npm install --prefix apps/market-environment-dashboard
 启动后端 API：
 
 ```bash
-python -m uvicorn src.market_environment.api:app --reload --port 8000
+python -m uvicorn src.market_environment.api:app --reload --port 8001
 ```
 
 启动前端开发服务器（另开终端）：
@@ -32,6 +32,8 @@ npm run dev --prefix apps/market-environment-dashboard
 ```
 
 浏览器访问 `http://localhost:5173`；生产构建后可由 FastAPI 从 `apps/market-environment-dashboard/dist` 托管静态文件。
+
+本机开发默认使用 8001，避免与常见的 CLodop 打印服务占用的 8000 端口冲突；Vite 会将 `/api` 代理到 `http://127.0.0.1:8001`。容器内 API 端口和 k3s Service 仍为 8000，不受此本机开发配置影响。
 
 ## k3s 部署
 
@@ -110,12 +112,12 @@ helm history a-stock --namespace a-stock
 接口检查：
 
 ```bash
-curl "http://127.0.0.1:8000/api/health"
-curl "http://127.0.0.1:8000/api/market-environment?as_of=2026-08-28"
-curl "http://127.0.0.1:8000/api/market-environment/core?as_of=2026-08-28"
-curl "http://127.0.0.1:8000/api/market-environment/chapter-01?as_of=2026-08-28&section=breadth"
-curl "http://127.0.0.1:8000/api/market-environment/data-collection"
-curl "http://127.0.0.1:8000/api/market-environment/data-collection?as_of=2026-08-28"
+curl "http://127.0.0.1:8001/api/health"
+curl "http://127.0.0.1:8001/api/market-environment?as_of=2026-08-28"
+curl "http://127.0.0.1:8001/api/market-environment/core?as_of=2026-08-28"
+curl "http://127.0.0.1:8001/api/market-environment/chapter-01?as_of=2026-08-28&section=breadth"
+curl "http://127.0.0.1:8001/api/market-environment/data-collection"
+curl "http://127.0.0.1:8001/api/market-environment/data-collection?as_of=2026-08-28"
 ```
 
 `/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
@@ -168,8 +170,8 @@ Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不
 开发期手工采集 API：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/market-environment/collection-runs" -H "Content-Type: application/json" -d '{"asOf":"2026-09-03"}'
-curl "http://127.0.0.1:8000/api/market-environment/collection-runs/<run-id>"
+curl -X POST "http://127.0.0.1:8001/api/market-environment/collection-runs" -H "Content-Type: application/json" -d '{"asOf":"2026-09-03"}'
+curl "http://127.0.0.1:8001/api/market-environment/collection-runs/<run-id>"
 ```
 
 POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task，传 `{"datasets":["breadth"]}` 时只采集单项。父批次允许 `partial`，每个成功 task 独立提交；失败 task 不覆盖同日期旧值。数据采集页 `/data-collection` 只通过 GET 查询本地状态，所有 provider 故障时仍应可打开。历史日期仅允许采集 provider 能验证日期的数据集；无法证明日期的最新快照型数据按钮必须禁用并由 API 返回 422。服务重启后，遗留 collecting task 在 lease 过期后可重新采集。
@@ -180,9 +182,17 @@ POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task
 
 指数 `history` 契约中的每个点应包含 `date`、`open`、`close`、`low`、`high`、`ma5`、`ma10`、`ma20`、`ma60` 和 `amount`。浏览器 QA 必须确认 60 日图存在非空 K 线实体、红涨绿跌、均线叠加和 OHLC tooltip；禁止用收盘价复制生成开高低。
 
+指数 provider 默认拉取 280 根 K 线：mootdx `offset`、新浪 `datalen`、东方财富 `lmt`、腾讯 `param` 数量均按 280 请求，百度响应在本地最多保留 280 根。盘后显式冒烟应逐一记录五指数返回数量与冷缓存耗时；不足 280 根时不得伪造，只能按实际观测降置信。升级前已落 SQLite 的历史核心快照通常只含旧版 160 根输入，本次不回填，相关 250 日分位应保持 `insufficient-history` 或 reduced confidence。
+
 指数卡的量价区域应先展示 `amountRatio5`，再展示可选的 `volumePriceState`。量价状态为 `null` 表示价格与成交额组合未命中任何明确规则，不是接口错误，前端不得改写为“量价平稳”；只有比值缺失时显示 `--` / “数据不足”。
 
 每个指数的 `combination` 契约应包含 `key`、`state`、`matched`、`tone`、`evidence` 和 `tradingMode`。`chapter01.combinationOverview` 汇总 `strength`、`stage`、`capitalAcceptance`、`tradingMode`、`confidence` 和 `evidence`。浏览器 QA 必须切换至少两个指数，确认组合状态和证据同步变化；未命中状态显示“未命中明确组合”，不得补成六类中的任意一类。
+
+`summary.syncPattern` 只记录五指数当日方向模式；`summary.synchronizationAssessment` 是独立的联合研判，返回总状态、稳定结论码、中文结论、置信度，以及 `breadth`、`trend`、`turnover` 三项确认维度。排查结论时先核对原始模式，再逐项核对上涨占比/中位数、MA20 上下方指数数和 5 日成交额比值/放量下跌数，不能只看最终文案。权重指数领涨不等于个股偏弱，普遍走弱也不自动等于系统性下降。
+
+广度改善或恶化只比较精确上一交易日：服务从核心指数历史取得前一交易日期，再读取该日期的 `breadth` SQLite 快照。上一日记录缺失时 `previousAsOf` 与变化值保持 `null`、维度标记不足且整体置信度不高于中；不得向更早日期回退，普通 GET 的 provider 调用数必须仍为 0。需要补齐时先显式采集缺失交易日，再通过既有 collection/rebuild 路径重建目标日期聚合，不要直接修改 SQLite 或复制其他日期 payload。
+
+第 01 页第四部分使用四问结论条、五指数乘六组合矩阵、选中行证据与盘后收束句。移动端矩阵允许组件内横向滚动，但页面本身不得横向溢出。`dataGaps` 四种 reason 必须显示差异化文案；风险相关缺失不能按安全处理。
 
 本地门禁：
 
@@ -243,6 +253,10 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 - **成交额比值显示 `--`**：腾讯历史 K 线公共接口可能只提供成交量而无成交额；服务会先尝试新浪指数 K 线（用腾讯实时成交额校准），再尝试东方财富显式指数 K 线，最后降级到腾讯。若所有历史成交额源均不可用，保留 `--`，不要把缺失成交额当成 0。
 - **有 5 日成交额比值但没有量价状态**：该日价格变化与比值处于已定义规则之间的空档，属于预期的未分类状态；不要在 API 或前端增加兜底分类。
 - **组合判断显示“未命中明确组合”**：先核对 API 的 `combination.evidence` 和量化版 `0.2` 映射。六类条件要求同时成立，单独处于高位、放量或站上均线都不足以形成组合状态。
+- **同步模式与最终结论不同**：这是两阶段模型的预期行为。`syncPattern` 记录指数方向，`synchronizationAssessment.status` 说明广度、趋势和成交额是否确认；查看 `dimensions` 中的实际值和 reason，不要改写原始模式。
+- **同步上涨但显示“反驳”**：检查上涨占比是否不高于 45% 且中位数小于 0；这代表指数上涨没有得到多数个股确认，不应改成全面强势。
+- **普遍走弱但未显示系统性下降**：必须同时满足弱广度、至少三个指数位于 MA20 下方和至少三个指数放量下跌。缺少或未命中任一维度时只保留普遍走弱风险提示。
+- **上一交易日广度为不足**：从指数 history 确认 `previousAsOf`，再检查 SQLite 是否存在该精确日期的 `breadth` 成功快照；更早快照不会被采用，GET 也不会自动联网补采。
 - **第 01 章证据显示 `missing` / `partial`**：先看对应对象的 `quality.warnings`。历史日期缺少广度、板块或成交额榜是当前快照源的预期边界；东方财富 403 或空 `data` 也必须保留缺失状态，不能用空数组伪造为 0。只有接口成功且明确返回空 `pool` 时，涨跌停计数才可为 0。
 - **章节显示 `cacheState=stale`**：查看 `snapshotFetchedAt` 和 `refreshWarning`；旧值仍对应同一交易日，但后台刷新失败或尚在进行。不要删除旧快照后用其他日期数据替代。
 - **refresh 一直显示被占用**：检查同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 SQLite。

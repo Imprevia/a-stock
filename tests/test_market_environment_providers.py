@@ -47,11 +47,12 @@ def test_eastmoney_index_kline_parses_amount_and_explicit_secid(monkeypatch):
 
     provider = MarketDataProvider()
     monkeypatch.setattr(provider.session, "get", fake_get)
-    bars = provider._fetch_eastmoney_kline(INDEX_SPECS[0], 160)
+    bars = provider._fetch_eastmoney_kline(INDEX_SPECS[0], 280)
 
     assert len(bars) == 65
     assert bars[-1].amount == 200000000000
     assert captured["secid"] == "1.000001"
+    assert captured["lmt"] == "280"
 
 
 def test_guarded_shanghai_index_requires_realtime_price():
@@ -76,7 +77,7 @@ def test_baidu_kline_passes_explicit_market_for_ambiguous_index(monkeypatch):
 
     provider = MarketDataProvider()
     monkeypatch.setattr(provider.session, "get", fake_get)
-    bars = provider._fetch_baidu_kline(INDEX_SPECS[0], 160)
+    bars = provider._fetch_baidu_kline(INDEX_SPECS[0], 280)
 
     assert bars[-1].close == 3952
     assert captured["code"] == "000001"
@@ -96,11 +97,12 @@ def test_sina_index_kline_calibrates_historical_amount(monkeypatch):
 
     provider = MarketDataProvider()
     monkeypatch.setattr(provider.session, "get", fake_get)
-    bars = provider._fetch_sina_kline(INDEX_SPECS[0], 160, {"amount": 2000, "volume": 500})
+    bars = provider._fetch_sina_kline(INDEX_SPECS[0], 280, {"amount": 2000, "volume": 500})
 
     assert len(bars) == 2
     assert bars[-1].amount == 2000
     assert captured["symbol"] == "sh000001"
+    assert captured["datalen"] == "280"
 
 
 def test_chapter01_provider_builds_current_snapshot_without_percentile_claims(monkeypatch):

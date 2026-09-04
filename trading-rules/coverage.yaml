@@ -1,6 +1,6 @@
 version: 1
-documentedRules: 327
-executableRules: 46
+documentedRules: 330
+executableRules: 49
 entries:
 - ruleId: QTS-00-00-01
   documentRef: 搭建交易系统-量化版/00-搭建交易系统.md
@@ -96,6 +96,27 @@ entries:
   - tests/test_trading_rule_platform.py
   evidenceRefs: []
 - ruleId: QTS-01-01-05
+  documentRef: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  implementation: executable
+  evaluator: metric.band
+  tests:
+  - tests/test_trading_rule_platform.py
+  evidenceRefs: []
+- ruleId: QTS-01-01-06
+  documentRef: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  implementation: executable
+  evaluator: metric.band
+  tests:
+  - tests/test_trading_rule_platform.py
+  evidenceRefs: []
+- ruleId: QTS-01-01-07
+  documentRef: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  implementation: executable
+  evaluator: metric.band
+  tests:
+  - tests/test_trading_rule_platform.py
+  evidenceRefs: []
+- ruleId: QTS-01-01-08
   documentRef: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
   implementation: executable
   evaluator: metric.band

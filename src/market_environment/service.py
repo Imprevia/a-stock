@@ -17,8 +17,14 @@ from .calculations import (
     Bar,
     amount_ratio,
     classify_index_combination,
+    classify_sync_pattern,
     classify_trend,
     classify_volume_price,
+    advance_efficiency_percentile,
+    bullish_alignment_ratio,
+    build_summary_sentence,
+    build_synchronization_assessment,
+    ma20_slope_percentile,
     moving_average,
     position_label,
     range_position,
@@ -28,6 +34,7 @@ from .refresh import SnapshotRefresher
 from .schemas import MarketEnvironmentResponse
 from .snapshot_store import (
     MaterializedAggregateRecord,
+    SnapshotIntegrityError,
     SnapshotStore,
     cache_state,
     persistent_cache_enabled,
@@ -103,25 +110,28 @@ class MarketEnvironmentService:
     def get_core(self, as_of: date) -> dict:
         """Return index data without calling Chapter 01 providers."""
         if self.local_reads_only:
-            core = self._get_local_core(as_of)
+            core = self._local_core_context(as_of, self._get_local_core(as_of))
             provider_data = self._missing_chapter_provider_data(
-                date.fromisoformat(core["asOf"]),
+                core["effectiveDate"],
                 "该接口只返回已采集的核心指数数据",
                 status="missing",
             )
-            core["chapter01"] = self._build_chapter01(
-                self._local_core_context(as_of, core),
-                provider_data,
-            )
-            return core
+            # Core reads may use an existing same-date breadth snapshot, but never refresh it.
+            if breadth := self._read_snapshot_group(core, "breadth", refresh_stale=False):
+                provider_data.update(breadth)
+            chapter = self._build_chapter01(core, provider_data)
+            payload = self._core_payload(core)
+            payload["chapter01"] = chapter
+            return payload
         core = self._get_core(as_of)
         provider_data = self._missing_chapter_provider_data(
             core["effectiveDate"],
             "该章节数据尚未按需加载",
             status="missing",
         )
+        chapter = self._build_chapter01(core, provider_data)
         payload = self._core_payload(core)
-        payload["chapter01"] = self._build_chapter01(core, provider_data)
+        payload["chapter01"] = chapter
         return payload
 
     def get_chapter01(self, as_of: date, section: str) -> dict:
@@ -132,14 +142,17 @@ class MarketEnvironmentService:
             return {
                 "asOf": aggregate["asOf"],
                 "generatedAt": aggregate["generatedAt"],
+                "summary": aggregate["summary"],
                 "chapter01": aggregate["chapter01"],
             }
         core = self._get_core(as_of)
         provider_data = self._chapter_provider_data(core, section)
+        chapter = self._build_chapter01(core, provider_data)
         return {
             "asOf": core["asOf"],
             "generatedAt": core["generatedAt"],
-            "chapter01": self._build_chapter01(core, provider_data),
+            "summary": self._core_payload(core)["summary"],
+            "chapter01": chapter,
         }
 
     def rebuild_materialized_aggregate(self, as_of: date) -> dict[str, Any] | None:
@@ -167,8 +180,9 @@ class MarketEnvironmentService:
                     ),
                     refreshing=self.snapshot_store.has_active_lease(group, as_of),
                 )
+        chapter = self._build_chapter01(core, provider_data)
         payload = self._core_payload(core)
-        payload["chapter01"] = self._build_chapter01(core, provider_data)
+        payload["chapter01"] = chapter
         validated = MarketEnvironmentResponse.model_validate(payload).model_dump()
         self.snapshot_store.put_materialized_aggregate(
             MaterializedAggregateRecord(
@@ -184,10 +198,33 @@ class MarketEnvironmentService:
             raise RuntimeError("persistent snapshot store is disabled")
         record = self.snapshot_store.get_materialized_aggregate(as_of)
         if record is not None:
-            return copy.deepcopy(record.payload)
+            return self._refresh_materialized_synchronization(as_of, copy.deepcopy(record.payload))
         payload = self.rebuild_materialized_aggregate(as_of)
         if payload is None:
             raise RuntimeError("所选日期没有已采集的核心指数快照")
+        return payload
+
+    def _refresh_materialized_synchronization(self, as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
+        """Recalculate the additive assessment when older aggregates lack the new field."""
+        chapter = payload.get("chapter01")
+        if not isinstance(chapter, dict):
+            return payload
+        breadth = chapter.get("breadth")
+        if not isinstance(breadth, dict):
+            breadth = self._missing_chapter_provider_data(
+                date.fromisoformat(payload["asOf"]),
+                "该日期尚未采集市场广度数据",
+                status="missing",
+            )["breadth"]
+        core = self._local_core_context(as_of, payload)
+        synchronization_assessment = self._synchronization_assessment(core, breadth)
+        core["summary"]["synchronizationAssessment"] = synchronization_assessment
+        payload["summary"] = self._core_payload(core)["summary"]
+        chapter["combinationOverview"] = self._combination_overview(
+            core["indices"],
+            synchronization_assessment,
+            breadth,
+        )
         return payload
 
     def _get_local_core(self, as_of: date) -> dict[str, Any]:
@@ -220,6 +257,7 @@ class MarketEnvironmentService:
 
     def _fetch_core(self, as_of: date, cache_key: str) -> dict[str, Any]:
         warnings: list[str] = []
+        data_gaps: list[dict[str, str]] = []
         try:
             quotes = self.provider.fetch_quotes(INDEX_SPECS)
         except Exception as exc:
@@ -243,10 +281,12 @@ class MarketEnvironmentService:
         for spec, result, error in results:
             if result is None:
                 warnings.append(f"{spec.name}：{error or '无数据'}")
+                data_gaps.append({"field": f"indices.{spec.code}", "reason": "provider-failed"})
                 continue
             bars = [bar for bar in result.bars if bar.date <= as_of]
             if not bars:
                 warnings.append(f"{spec.name}：所选日期前无历史数据")
+                data_gaps.append({"field": f"indices.{spec.code}", "reason": "missing-today"})
                 continue
             effective_dates.append(bars[-1].date)
             quote = quotes.get(spec.code, {})
@@ -265,13 +305,22 @@ class MarketEnvironmentService:
                 item["dataQuality"]["warning"] = f"非交易日，已回退到 {effective_date.isoformat()}"
 
         trends = Counter(item["trendState"] for item in analyses)
-        sync = self._synchronization(analyses)
+        sync_pattern = self._sync_pattern(analyses)
+        sync = sync_pattern["label"]
         dominant = trends.most_common(1)[0][0] if trends else "数据不足"
+        alignment = bullish_alignment_ratio(analyses)
         core = {
             "asOf": effective_date.isoformat(),
             "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
             "indices": analyses,
-            "summary": {"synchronization": sync, "dominantTrend": dominant, "warnings": warnings},
+            "summary": {
+                "synchronization": sync,
+                "syncPattern": sync_pattern,
+                "bullishAlignmentRatio": alignment,
+                "dominantTrend": dominant,
+                "warnings": warnings,
+                "dataGaps": data_gaps,
+            },
             "requestedAsOf": as_of,
             "effectiveDate": effective_date,
         }
@@ -285,8 +334,12 @@ class MarketEnvironmentService:
             "indices": core["indices"],
             "summary": {
                 "synchronization": core["summary"]["synchronization"],
+                "syncPattern": core["summary"].get("syncPattern"),
+                "synchronizationAssessment": core["summary"].get("synchronizationAssessment"),
+                "bullishAlignmentRatio": core["summary"].get("bullishAlignmentRatio"),
                 "dominantTrend": core["summary"]["dominantTrend"],
                 "warnings": list(core["summary"]["warnings"]),
+                "dataGaps": list(core["summary"].get("dataGaps", [])),
             },
         }
 
@@ -528,7 +581,17 @@ class MarketEnvironmentService:
         status_weight = {"ok": 1.0, "fallback": 0.75, "partial": 0.5, "missing": 0.0, "failed": 0.0}
         coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 6.0, 4)
         status = "partial" if coverage >= 0.5 else "insufficient"
-        combination_overview = self._combination_overview(analyses, synchronization, breadth)
+        synchronization_assessment = self._synchronization_assessment(core, breadth)
+        core["summary"]["synchronizationAssessment"] = synchronization_assessment
+        combination_overview = self._combination_overview(analyses, synchronization_assessment, breadth)
+        summary_sentence = build_summary_sentence(
+            core["summary"].get("syncPattern", {}).get("label") if core["summary"].get("syncPattern") else synchronization,
+            next((item.get("ma20PositionLabel") for item in analyses if item.get("ma20PositionLabel")), None),
+            next((item.get("rangePosition60Label") for item in analyses if item.get("rangePosition60Label")), None),
+            next((item.get("amountRatio5") for item in analyses if item.get("amountRatio5") is not None), None),
+            next((item.get("volumePriceState") for item in analyses if item.get("volumePriceState")), None),
+            combination_overview.get("tradingMode"),
+        )
 
         evidence = [f"指数：{synchronization}，主导趋势 {dominant_trend}，有效指数 {len(analyses)} 个"]
         if breadth.get("validCount") is not None:
@@ -561,6 +624,11 @@ class MarketEnvironmentService:
             "activeDirection": active_direction,
             "events": events,
             "combinationOverview": combination_overview,
+            "summarySentence": summary_sentence,
+            "dataGaps": [
+                *core["summary"].get("dataGaps", []),
+                *(gap for item in analyses for gap in item.get("dataGaps", [])),
+            ],
             "assessment": {
                 "state": "证据不完整" if confidence == "low" else "insufficient",
                 "confidence": confidence,
@@ -648,22 +716,9 @@ class MarketEnvironmentService:
         ]
 
     @staticmethod
-    def _combination_overview(analyses: list[dict], synchronization: str, breadth: dict) -> dict:
+    def _combination_overview(analyses: list[dict], synchronization_assessment: dict, breadth: dict) -> dict:
         breadth_available = breadth.get("advanceRatio") is not None and breadth.get("medianReturn") is not None
-        if synchronization == "同步上涨":
-            if breadth_available and breadth["advanceRatio"] >= 0.55 and breadth["medianReturn"] > 0:
-                strength = "指数与多数个股同步偏强"
-            elif breadth_available:
-                strength = "指数偏强但市场广度未确认"
-            else:
-                strength = "指数同步上涨，等待市场广度确认"
-        elif synchronization == "普遍走弱":
-            if breadth_available and breadth["advanceRatio"] <= 0.45 and breadth["medianReturn"] < 0:
-                strength = "指数与多数个股同步偏弱"
-            else:
-                strength = "指数普遍走弱，市场广度待确认"
-        else:
-            strength = "指数分化，未形成真实强弱共振"
+        strength = synchronization_assessment["conclusion"]
 
         matched = [item["combination"] for item in analyses if item["combination"]["matched"]]
         stage_counts = Counter(item["key"] for item in matched)
@@ -689,7 +744,7 @@ class MarketEnvironmentService:
         }
         capital_acceptance = capital_map.get(volume_state, "量价信号分化或未分类") if volume_count >= 3 else "量价信号分化或未分类"
 
-        if synchronization == "普遍走弱" or stage == "趋势破坏或退潮":
+        if synchronization_assessment["conclusionCode"] == "systemic-decline-confirmed" or stage == "趋势破坏或退潮":
             trading_mode = "风险控制"
         elif stage == "高位分歧或派发风险":
             trading_mode = "降低追高，等待承接"
@@ -704,8 +759,11 @@ class MarketEnvironmentService:
         else:
             trading_mode = "保持观察"
 
-        confidence = "medium" if breadth_available and stage_count >= 3 else "low"
-        evidence = [f"五大指数同步性：{synchronization}", f"明确组合覆盖：{len(matched)} / {len(analyses)}"]
+        confidence = "medium" if synchronization_assessment["confidence"] in {"high", "medium"} and stage_count >= 3 else "low"
+        evidence = [
+            f"五大指数同步性：{synchronization_assessment['patternLabel']}（{synchronization_assessment['status']}）",
+            f"明确组合覆盖：{len(matched)} / {len(analyses)}",
+        ]
         if breadth_available:
             evidence.append(f"市场广度：上涨占比 {breadth['advanceRatio']:.0%}，中位涨跌幅 {breadth['medianReturn']:.2f}%")
         else:
@@ -726,6 +784,8 @@ class MarketEnvironmentService:
         ratio5 = amount_ratio(bars, 5)
         ratio20 = amount_ratio(bars, 20)
         combination = classify_index_combination(bars, ratio5)
+        slope_percentile = ma20_slope_percentile(bars)
+        efficiency_percentile = advance_efficiency_percentile(bars)
         close = bars[-1].close
         change_pct = quote.get("change_pct")
         if change_pct is None or quote.get("is_stale"):
@@ -742,6 +802,18 @@ class MarketEnvironmentService:
             quality_warnings.insert(0, "腾讯报价疑似停牌或过期，涨跌幅已使用历史 K 线计算")
         if quality_warnings:
             warning = "；".join(filter(None, [warning, *quality_warnings]))
+        data_gaps: list[dict[str, str]] = []
+        for field, metric in (("ma20SlopePercentile", slope_percentile), ("advanceEfficiencyPercentile", efficiency_percentile)):
+            if metric["value"] is None:
+                data_gaps.append({"field": field, "reason": metric["reason"]})
+        if len(bars) < 20:
+            data_gaps.append({"field": "rangePosition20", "reason": "insufficient-history"})
+        elif range_position(bars, 20) is None:
+            data_gaps.append({"field": "rangePosition20", "reason": "not-computable"})
+        if len(bars) < 60:
+            data_gaps.append({"field": "rangePosition60", "reason": "insufficient-history"})
+        elif range_position(bars, 60) is None:
+            data_gaps.append({"field": "rangePosition60", "reason": "not-computable"})
         history = []
         for index in range(max(0, len(bars) - 60), len(bars)):
             sample = bars[: index + 1]
@@ -770,6 +842,11 @@ class MarketEnvironmentService:
             "rangePosition60": range_position(bars, 60),
             "rangePosition20Label": position_label(range_position(bars, 20)),
             "rangePosition60Label": position_label(range_position(bars, 60)),
+            "ma20SlopePercentile": slope_percentile["value"],
+            "advanceEfficiencyPercentile": efficiency_percentile["value"],
+            "ma20SlopeConfidence": slope_percentile["confidence"],
+            "advanceEfficiencyConfidence": efficiency_percentile["confidence"],
+            "ma20PositionLabel": "上方" if ma["ma20"] is not None and close >= ma["ma20"] else ("下方" if ma["ma20"] is not None else None),
             "amount": round(bars[-1].amount, 2),
             "amountRatio5": round(ratio5, 2) if ratio5 is not None else None,
             "amountRatio20": round(ratio20, 2) if ratio20 is not None else None,
@@ -778,17 +855,54 @@ class MarketEnvironmentService:
             "combination": combination,
             "history": history,
             "dataQuality": {"source": result.source, "isStale": bool(quote.get("is_stale")), "warning": warning},
+            "dataGaps": data_gaps,
         }
 
     @staticmethod
+    def _sync_pattern(analyses: list[dict]) -> dict:
+        changes = {item["name"]: item.get("changePct") for item in analyses}
+        return classify_sync_pattern(changes)
+
+    def _synchronization_assessment(self, core: dict[str, Any], breadth: dict) -> dict[str, object]:
+        previous_breadth = self._previous_breadth(core)
+        sync_pattern = core["summary"].get("syncPattern") or self._sync_pattern(core["indices"])
+        return build_synchronization_assessment(sync_pattern, core["indices"], breadth, previous_breadth)
+
+    def _previous_breadth(self, core: dict[str, Any]) -> dict[str, Any] | None:
+        if self.snapshot_store is None:
+            return None
+        previous_date = self._previous_trading_date(core)
+        if previous_date is None:
+            return None
+        try:
+            record = self.snapshot_store.get("breadth", previous_date)
+        except SnapshotIntegrityError as exc:
+            logger.warning(
+                "previous breadth snapshot rejected",
+                extra={"event": "previous_breadth_snapshot_invalid", "as_of": previous_date.isoformat(), "error": str(exc)},
+            )
+            return None
+        if record is None:
+            return None
+        payload = copy.deepcopy(record.payload)
+        quality = payload.setdefault("quality", {})
+        quality["asOf"] = previous_date.isoformat()
+        return payload
+
+    @staticmethod
+    def _previous_trading_date(core: dict[str, Any]) -> date | None:
+        as_of = core["effectiveDate"]
+        candidates: list[date] = []
+        for item in core["indices"]:
+            for point in item.get("history", []):
+                try:
+                    observed = date.fromisoformat(point["date"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if observed < as_of:
+                    candidates.append(observed)
+        return max(candidates) if candidates else None
+
+    @staticmethod
     def _synchronization(analyses: list[dict]) -> str:
-        changes = [item["changePct"] for item in analyses]
-        if not changes:
-            return "无可用数据"
-        positive = sum(value >= 0.5 for value in changes)
-        negative = sum(value <= -0.5 for value in changes)
-        if positive >= max(3, len(changes) - 1):
-            return "同步上涨"
-        if negative >= max(3, len(changes) - 1):
-            return "普遍走弱"
-        return "指数分化"
+        return MarketEnvironmentService._sync_pattern(analyses)["label"]

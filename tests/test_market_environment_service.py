@@ -10,7 +10,7 @@ from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.providers import INDEX_SPECS, ProviderResult
 from src.market_environment.schemas import Chapter01Response, MarketEnvironmentResponse
 from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService, market_today
-from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
+from src.market_environment.snapshot_store import MaterializedAggregateRecord, SnapshotRecord, SnapshotStore
 
 
 def make_bars(count: int = 130) -> list[Bar]:
@@ -44,7 +44,7 @@ class FakeProvider:
             for spec in specs
         }
 
-    def fetch(self, spec, limit=160, expected_price=None, quote=None):
+    def fetch(self, spec, limit=280, expected_price=None, quote=None):
         self.fetch_calls += 1
         if spec.code in self.failing:
             raise RuntimeError("fixture source unavailable")
@@ -449,6 +449,17 @@ def test_service_exposes_index_combination_and_market_overview() -> None:
     overview = payload["chapter01"]["combinationOverview"]
     assert set(overview) == {"strength", "stage", "capitalAcceptance", "tradingMode", "confidence", "evidence"}
     assert overview["evidence"]
+    assert payload["summary"]["syncPattern"]["code"] == "synchronized_rally"
+    assert payload["summary"]["bullishAlignmentRatio"] == 1
+    assert payload["indices"][0]["ma20SlopePercentile"] is not None
+    assert payload["indices"][0]["advanceEfficiencyPercentile"] is not None
+    assert payload["chapter01"]["summarySentence"]
+    assert {gap["reason"] for gap in payload["chapter01"]["dataGaps"]} <= {
+        "insufficient-history",
+        "missing-today",
+        "provider-failed",
+        "not-computable",
+    }
     MarketEnvironmentResponse.model_validate(payload)
 
 
@@ -458,6 +469,31 @@ def test_service_keeps_partial_success_and_warning() -> None:
 
     assert len(payload["indices"]) == 4
     assert any(INDEX_SPECS[0].name in warning for warning in payload["summary"]["warnings"])
+    assert {"field": f"indices.{INDEX_SPECS[0].code}", "reason": "provider-failed"} in payload["summary"]["dataGaps"]
+    assert {"field": f"indices.{INDEX_SPECS[0].code}", "reason": "provider-failed"} in payload["chapter01"]["dataGaps"]
+
+
+def test_service_marks_missing_today_when_history_starts_after_request() -> None:
+    class FutureProvider(FakeProvider):
+        def fetch(self, spec, limit=280, expected_price=None, quote=None):
+            if spec == INDEX_SPECS[0]:
+                future = Bar(date(2027, 1, 4), 100, 100, 101, 99, 1000)
+                return ProviderResult([future], "fixture")
+            return super().fetch(spec, limit, expected_price, quote)
+
+    payload = MarketEnvironmentService(provider=FutureProvider()).get(date(2026, 8, 28))
+    assert {"field": f"indices.{INDEX_SPECS[0].code}", "reason": "missing-today"} in payload["summary"]["dataGaps"]
+
+
+def test_data_gap_schema_accepts_closed_reason_set_and_rejects_unknown() -> None:
+    from pydantic import ValidationError
+
+    from src.market_environment.schemas import DataGap
+
+    reasons = ("insufficient-history", "missing-today", "provider-failed", "not-computable")
+    assert [DataGap(field="fixture", reason=reason).reason for reason in reasons] == list(reasons)
+    with pytest.raises(ValidationError):
+        DataGap(field="fixture", reason="unknown")
 
 
 def test_service_marks_stale_quote() -> None:
@@ -550,3 +586,235 @@ def test_failed_refresh_rebuilds_aggregate_with_retained_warning(tmp_path) -> No
     assert failed.tasks[0].status == "failed-retained"
     assert payload["chapter01"]["breadth"]["advanceCount"] == 2
     assert payload["chapter01"]["breadth"]["quality"]["refreshWarning"] == "breadth fixture failure"
+
+
+def test_materialized_assessment_uses_exact_previous_trading_day_without_provider_calls(tmp_path) -> None:
+    selected = date(2026, 8, 28)
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    previous = seed_service._previous_trading_date(core)
+    assert previous is not None
+    market_now = datetime.combine(effective, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=effective,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=5,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    current_breadth = SectionProvider().fetch_chapter01_breadth(effective, allow_current_snapshot=True)
+    previous_breadth = {
+        **current_breadth,
+        "advanceRatio": 0.55,
+        "medianReturn": 0.2,
+        "quality": evidence_quality("market-breadth", previous, 3),
+    }
+    for snapshot_date, snapshot_payload in ((effective, current_breadth), (previous, previous_breadth)):
+        store.put(
+            SnapshotRecord(
+                dataset="breadth",
+                as_of=snapshot_date,
+                payload=snapshot_payload,
+                source="fixture",
+                status="ok",
+                observations=3,
+                warnings=(),
+                fetched_at=market_now,
+                settled=True,
+            )
+        )
+    provider.quote_calls = 0
+    provider.fetch_calls = 0
+    provider.chapter_calls.clear()
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+
+    payload = service.rebuild_materialized_aggregate(effective)
+    assessment = payload["summary"]["synchronizationAssessment"]
+
+    assert assessment["dimensions"]["breadth"]["previousAsOf"] == previous.isoformat()
+    assert assessment["dimensions"]["breadth"]["comparisonStatus"] == "available"
+    assert provider.quote_calls == 0
+    assert provider.fetch_calls == 0
+    assert provider.chapter_calls == []
+    MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_assessment_does_not_substitute_older_breadth_snapshot(tmp_path) -> None:
+    selected = date(2026, 8, 28)
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    previous = seed_service._previous_trading_date(core)
+    history_dates = sorted(
+        date.fromisoformat(point["date"])
+        for point in core["indices"][0]["history"]
+        if date.fromisoformat(point["date"]) < previous
+    )
+    older = history_dates[-1]
+    market_now = datetime.combine(effective, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=effective,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=5,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    for snapshot_date in (effective, older):
+        snapshot_payload = SectionProvider().fetch_chapter01_breadth(snapshot_date, allow_current_snapshot=True)
+        store.put(
+            SnapshotRecord(
+                dataset="breadth",
+                as_of=snapshot_date,
+                payload=snapshot_payload,
+                source="fixture",
+                status="ok",
+                observations=3,
+                warnings=(),
+                fetched_at=market_now,
+                settled=True,
+            )
+        )
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+
+    payload = service.rebuild_materialized_aggregate(effective)
+    breadth_dimension = payload["summary"]["synchronizationAssessment"]["dimensions"]["breadth"]
+
+    assert breadth_dimension["previousAsOf"] is None
+    assert breadth_dimension["comparisonStatus"] == "insufficient"
+    assert breadth_dimension["comparisonReason"] == "previous-breadth-unavailable"
+
+
+def test_chapter_response_returns_updated_synchronization_summary() -> None:
+    provider = SectionProvider()
+    payload = MarketEnvironmentService(provider=provider).get_chapter01(market_today(), "breadth")
+
+    assert payload["summary"]["synchronizationAssessment"] is not None
+    assert payload["summary"]["synchronizationAssessment"]["patternCode"] == "synchronized_rally"
+    Chapter01Response.model_validate(payload)
+
+
+def test_local_chapter_response_refreshes_missing_materialized_synchronization_without_provider_calls(tmp_path) -> None:
+    selected = market_today()
+    market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    provider = SectionProvider()
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        persistent_cache=True,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: market_now,
+        rebuild_aggregate=service.rebuild_materialized_aggregate,
+    ).collect(selected)
+    materialized = store.get_materialized_aggregate(selected)
+    assert materialized is not None
+    legacy_payload = materialized.payload
+    legacy_payload["summary"]["synchronizationAssessment"] = None
+    store.put_materialized_aggregate(
+        MaterializedAggregateRecord(
+            as_of=selected,
+            payload=legacy_payload,
+            generated_at=market_now,
+        )
+    )
+    provider.quote_calls = 0
+    provider.fetch_calls = 0
+    provider.chapter_calls.clear()
+
+    payload = service.get_chapter01(selected, "summary")
+
+    assert payload["summary"]["synchronizationAssessment"] is not None
+    assert payload["chapter01"]["combinationOverview"]["strength"] == payload["summary"]["synchronizationAssessment"]["conclusion"]
+    assert provider.quote_calls == 0
+    assert provider.fetch_calls == 0
+    assert provider.chapter_calls == []
+    Chapter01Response.model_validate(payload)
+
+
+def test_local_core_uses_existing_breadth_snapshot_for_synchronization_without_provider_calls(tmp_path) -> None:
+    selected = date(2026, 8, 28)
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    market_now = datetime.combine(effective, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=effective,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=5,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    breadth = provider.fetch_chapter01_breadth(effective, allow_current_snapshot=True)
+    store.put(
+        SnapshotRecord(
+            dataset="breadth",
+            as_of=effective,
+            payload=breadth,
+            source="fixture",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        persistent_cache=True,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    provider.quote_calls = 0
+    provider.fetch_calls = 0
+    provider.chapter_calls.clear()
+
+    payload = service.get_core(effective)
+
+    breadth = payload["summary"]["synchronizationAssessment"]["dimensions"]["breadth"]
+    assert breadth["reason"] is None
+    assert breadth["advanceRatio"] is not None
+    assert provider.quote_calls == 0
+    assert provider.fetch_calls == 0
+    assert provider.chapter_calls == []
+    MarketEnvironmentResponse.model_validate(payload)

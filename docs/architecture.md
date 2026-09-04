@@ -63,11 +63,13 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 
 `.github/workflows/trading-rules-after-market.yml` 是独立的交易规则证据流水线：它在 GitHub runner 创建临时 snapshot/evidence Artifact，不挂载部署 PVC，也不向市场环境 SQLite 写入数据。它不能替代部署内 CronJob，两者的产物和运维边界必须保持区分。
 
-服务层至少请求 120 个交易日，先按 `as_of` 截断到最近交易日，再计算 MA5/10/20/60、20/60 日高低价区间位置、成交额比值、趋势状态和量价状态。量价状态只在明确命中价格变化与 5 日成交额比值规则时返回；“量价平稳”限定为日涨跌幅绝对值小于 `0.5%` 且比值位于 `[1.0, 1.2)`，其他阈值空档返回 `null`，禁止通用兜底分类。服务层进一步按量化版 `0.2` 的风险优先映射计算每个指数的六类位置量价组合、触发证据和交易模式，并结合五大指数同步性与可用市场广度生成市场强弱、阶段、资金认可和交易模式四项汇总；前端只消费这些结果，不重复计算阈值。返回给前端的 60 日历史点保留真实 `open`、`high`、`low`、`close`、成交额和均线；前端仅负责将 OHLC 渲染为 K 线，不合成或补算行情。单指数失败保留其他指数并写入 warning；全部失败返回 503。
+服务层默认请求 280 个交易日，先按 `as_of` 截断到最近交易日，再计算 MA5/10/20/60、20/60 日高低价区间位置、成交额比值、趋势状态、量价状态、MA20 斜率 250 日滚动分位和量价推进效率 250 日滚动分位；60–249 个有效观测降置信，少于 60 个输出 `insufficient-history`。五指数同步性按同步上涨、普遍走弱、权重护盘、成长占优、分化未定型五态输出，深证成指只参与同步多数。五态是仅由指数涨跌得出的观察事实，服务层另以市场广度、指数相对 MA20 的多数位置和指数成交额形成 `synchronizationAssessment`，分别输出确认、反驳、中性或不足证据，再映射为市场层确认状态与稳定结论码；确认结果不得反写五态。系统性下降必须同时具备弱广度、至少三个指数位于 MA20 下方和至少三个指数放量下跌，权重护盘和成长占优也必须通过各自的广度与量能门槛。服务层进一步计算五指数均线多头比例、六类组合、四问结论和盘后收束句；缺失指标附 `insufficient-history`、`missing-today`、`provider-failed` 或 `not-computable`。量价状态与六类组合仍不使用通用兜底。返回给前端的 60 日历史点保留真实 OHLC、成交额和均线；前端仅负责渲染、矩阵聚合与选中行交互，不补算阈值。单指数失败保留其他指数并写入 warning；全部失败返回 503。
 
 核心指数、市场广度、涨跌停生态、行业板块和容量方向统一使用 `.artifacts/market-environment/snapshots.sqlite3` 的按交易日持久化快照，路径可由环境变量配置；记录规范化 payload、来源、抓取时间、样本数、质量、warning、schema version 和 SHA-256。成功快照与 collection attempt 分开存储：失败尝试只记录 `failed-retained` 或 `failed-missing`，不得覆盖同日期成功值，也不得跨日期回填。`core` 内部对五个指数分别记录子项状态，单指数失败允许 core 为 `partial`。
 
 SQLite 还保存 collection run/task 和 materialized market-environment aggregate。每个成功 task 提交后，从同日期最新成功数据重建完整响应并经 Pydantic 契约验证后原子替换聚合记录；聚合允许明确的 `partial` / `degraded`。当前日盘中结果标记 provisional，结算后成功结果标记 settled。SQLite lease 和 provider limiter 仍是单机边界，多主机共享不在当前范围。
+
+同步性广度变化的读取流为：核心指数历史确定 `as_of` 前一个真实交易日 → `SnapshotStore.get("breadth", previous_trading_date)` 精确日期读取 → 计算上涨占比与涨跌幅中位数变化。精确日期记录不存在时比较维度为 `insufficient`，不得继续向更早日期搜索，也不得在普通 GET 中触发 provider。materialized aggregate 重建复用同一只读路径；后补上一日快照不会自动回填所有后续历史聚合，需要通过既有重建路径显式刷新。
 
 规则平台运行流分为两个阶段：provider 获取数据并创建规范化 snapshot；执行器加载指定规则集和 snapshot，输出确定性 trace 与聚合结果。相同 snapshot、规则版本和 Git 版本必须产生相同 canonical result。完整证据通过 manifest 关联输入哈希、规则版本、Git SHA、provider 降级和结果哈希。
 

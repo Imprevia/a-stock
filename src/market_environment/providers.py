@@ -69,7 +69,7 @@ class MarketDataProvider:
     def fetch(
         self,
         spec: IndexSpec,
-        limit: int = 160,
+        limit: int = 280,
         expected_price: float | None = None,
         quote: dict[str, Any] | None = None,
     ) -> ProviderResult:
@@ -847,7 +847,7 @@ class MarketDataProvider:
                     amount=float(values[positions["amount"]]),
                 )
             )
-        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
+        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-max(limit, 280):]
 
     def _fetch_eastmoney_kline(self, spec: IndexSpec, limit: int) -> list[Bar]:
         """Fetch index K-lines with an explicit Eastmoney market secid.
@@ -865,7 +865,7 @@ class MarketDataProvider:
             "fqt": "1",
             "beg": "19900101",
             "end": (date.today() + timedelta(days=1)).strftime("%Y%m%d"),
-            "lmt": str(max(limit, 160)),
+            "lmt": str(max(limit, 280)),
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
@@ -894,7 +894,7 @@ class MarketDataProvider:
                 )
             except (TypeError, ValueError):
                 continue
-        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
+        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-max(limit, 280):]
 
     def _fetch_sina_kline(self, spec: IndexSpec, limit: int, quote: dict[str, Any]) -> list[Bar]:
         """Fetch index history from Sina and calibrate turnover units.
@@ -905,7 +905,7 @@ class MarketDataProvider:
         as currency.
         """
         url = f"https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_{spec.code}_klines=/CN_MarketData.getKLineData"
-        params = {"symbol": spec.code, "scale": "240", "ma": "no", "datalen": str(max(limit, 160))}
+        params = {"symbol": spec.code, "scale": "240", "ma": "no", "datalen": str(max(limit, 280))}
         response = self.session.get(url, params=params, timeout=self.timeout)
         response.raise_for_status()
         text = response.text
@@ -939,7 +939,7 @@ class MarketDataProvider:
                 )
             except (KeyError, TypeError, ValueError):
                 continue
-        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-160:]
+        return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)[-max(limit, 280):]
 
     def _fetch_tencent_kline(self, spec: IndexSpec, limit: int) -> list[Bar]:
         url = (

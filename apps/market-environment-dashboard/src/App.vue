@@ -20,7 +20,7 @@ import DataCollectionView from './data-collection-view.vue'
 type AppView = 'dashboard' | 'data-collection'
 
 const documents = [
-  { id: '01', title: '指数、趋势位置和成交额', objective: '量化指数方向、均线结构、区间位置和量价推进。', rules: 'QTS-01-01-01 ~ 05', icon: LineChart },
+  { id: '01', title: '指数、趋势位置和成交额', objective: '量化指数方向、均线结构、区间位置和量价推进。', rules: 'QTS-01-01-01 ~ 08', icon: LineChart },
   { id: '02', title: '上涨家数、下跌家数和中位数', objective: '用全 A 参与面验证指数涨跌是否代表多数股票。', rules: 'QTS-01-02-01 ~ 05', icon: Rows3 },
   { id: '03', title: '涨停、跌停、炸板和晋级', objective: '拆分短线热度、封板质量、接力成功率和极端风险。', rules: 'QTS-01-03-01 ~ 05', icon: Activity },
   { id: '04', title: '高、中、低位亏钱效应', objective: '识别亏钱效应是在扩散，还是从恐慌向修复收敛。', rules: 'QTS-01-04-01 ~ 04', icon: ShieldAlert },
@@ -77,6 +77,7 @@ const breadth = computed(() => chapter.value?.breadth)
 const limits = computed(() => chapter.value?.limits)
 const assessment = computed(() => chapter.value?.assessment)
 const combinationOverview = computed(() => chapter.value?.combinationOverview)
+const synchronizationAssessment = computed(() => data.value?.summary.synchronizationAssessment ?? null)
 const activeSection = computed(() => documentSections[selectedDocumentId.value] ?? null)
 const generatedAt = computed(() => data.value?.generatedAt ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(data.value.generatedAt)) : '')
 const breadthBar = computed(() => {
@@ -108,7 +109,24 @@ const formatCoverage = (value: number | null | undefined) => value == null ? '--
 const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级', partial: '部分覆盖', missing: '未接入', failed: '失败' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
 const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
 const confidenceLabel = (value?: string) => ({ high: '高', medium: '中', low: '低', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
+const assessmentStatusLabel = (value?: string) => ({ confirmed: '已确认', unconfirmed: '待确认', contradicted: '证据反驳', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
+const dimensionStatusLabel = (value?: string) => ({ confirming: '确认', neutral: '中性', contradicting: '反驳', insufficient: '不足' } as Record<string, string>)[value ?? ''] ?? value ?? '不足'
+const reasonLabel = (value?: string | null) => ({
+  'current-breadth-unavailable': '当日市场广度不可用',
+  'previous-breadth-unavailable': '精确上一交易日广度快照不可用',
+  'fewer-than-three-ma20-observations': '有效 MA20 位置少于 3 个指数',
+  'growth-turnover-unavailable': '创业板指与中证500成交额数据不完整',
+  'fewer-than-three-turnover-observations': '有效成交额比值少于 3 个指数',
+} as Record<string, string>)[value ?? ''] ?? value ?? ''
+const formatRatioDelta = (value: number | null | undefined) => value == null ? '--' : `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)} 个百分点`
+const formatReturnDelta = (value: number | null | undefined) => value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)} 个百分点`
 const environmentLabel = (value?: string) => ({ trend: '趋势', rotation: '轮动', retreat: '退潮', mixed: '混合', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
+const gapLabel = (reason: string) => ({
+  'insufficient-history': '历史窗口不足，暂无法计算分位',
+  'missing-today': '当日行情尚未返回',
+  'provider-failed': '行情供应商请求失败',
+  'not-computable': '当前数据在数学上不可计算',
+} as Record<string, string>)[reason] ?? '数据不足'
 
 interface ChartTooltipItem {
   axisValueLabel?: string
@@ -217,6 +235,13 @@ async function loadCurrentSection(force = false) {
     data.value = {
       ...data.value,
       generatedAt: nextData.generatedAt,
+      summary: nextData.summary
+        ? {
+            ...data.value.summary,
+            ...nextData.summary,
+            synchronizationAssessment: nextData.summary.synchronizationAssessment ?? data.value.summary.synchronizationAssessment,
+          }
+        : data.value.summary,
       chapter01: mergeChapterSection(data.value.chapter01, nextData.chapter01, section),
     }
     const completedSections = completedChapterSections(nextData.chapter01, section)
@@ -336,26 +361,50 @@ onBeforeUnmount(() => {
           <template v-else-if="selectedDocumentId === '01'">
             <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></button></section>
             <section class="workspace-grid"><article class="panel chart-panel"><div class="panel-heading"><div><span class="panel-kicker">价格结构</span><h2>{{ selectedIndex?.name }} · 60 日走势</h2></div><span class="selected-hint"><TrendingUp v-if="selectedIndex && selectedIndex.changePct >= 0" :size="15" /><TrendingDown v-else :size="15" />{{ selectedIndex?.trendState }}</span></div><div ref="chartElement" class="price-chart" /><div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div><div ref="volumeChartElement" class="volume-chart" /><div class="chart-footnote"><span>日 K 线与 MA5 / MA10 / MA20 / MA60</span><span>来源：{{ selectedIndex?.dataQuality.source }}</span></div></article><article class="panel detail-panel"><div class="panel-heading"><div><span class="panel-kicker">当前结构</span><h2>趋势与量能</h2></div></div><div v-if="selectedIndex" class="metric-stack"><div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div><div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div><div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div><div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div></div></article></section>
-            <section class="combination-grid">
-              <article class="panel combination-panel">
-                <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 当前指数</span><h2>{{ selectedIndex?.name }} · 指数、位置与成交额组合</h2></div><span class="quality-badge" :class="selectedCombination?.matched ? 'ok' : 'missing'">{{ selectedCombination?.matched ? '明确命中' : '未分类' }}</span></div>
-                <div v-if="selectedCombination" class="combination-state" :class="selectedCombination.tone"><span>当前组合</span><strong>{{ selectedCombination.state || '未命中明确组合' }}</strong><p>交易模式：{{ selectedCombination.tradingMode }}</p></div>
-                <ul v-if="selectedCombination" class="combination-evidence"><li v-for="item in selectedCombination.evidence" :key="item">{{ item }}</li></ul>
-              </article>
-              <article class="panel combination-overview-panel">
-                <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 四项输出</span><h2>市场组合结论</h2></div><span class="quality-badge" :class="combinationOverview?.confidence === 'medium' ? 'fallback' : 'missing'">置信度 {{ confidenceLabel(combinationOverview?.confidence) }}</span></div>
-                <div class="combination-output-list">
-                  <div><span>市场是否真强</span><strong>{{ combinationOverview?.strength || '数据不足' }}</strong></div>
-                  <div><span>市场所处阶段</span><strong>{{ combinationOverview?.stage || '数据不足' }}</strong></div>
-                  <div><span>资金是否认可</span><strong>{{ combinationOverview?.capitalAcceptance || '数据不足' }}</strong></div>
-                  <div><span>交易模式</span><strong>{{ combinationOverview?.tradingMode || '数据不足' }}</strong></div>
+            <section v-if="synchronizationAssessment" class="synchronization-assessment-band" aria-labelledby="synchronization-assessment-title">
+              <header class="synchronization-assessment-header">
+                <div>
+                  <span class="panel-kicker">跨指数关系 · 联合确认</span>
+                  <div class="synchronization-title-row">
+                    <h2 id="synchronization-assessment-title">{{ synchronizationAssessment.patternLabel }}</h2>
+                    <span class="synchronization-status" :class="synchronizationAssessment.status">{{ assessmentStatusLabel(synchronizationAssessment.status) }}</span>
+                  </div>
                 </div>
-              </article>
+                <div class="synchronization-confidence"><span>结论置信度</span><strong>{{ confidenceLabel(synchronizationAssessment.confidence) }}</strong></div>
+              </header>
+              <p class="synchronization-conclusion">{{ synchronizationAssessment.conclusion }}</p>
+              <ul v-if="data.summary.syncPattern?.evidence.length" class="synchronization-pattern-evidence" aria-label="五指数方向证据"><li v-for="item in data.summary.syncPattern.evidence" :key="item">{{ item }}</li></ul>
+              <div class="synchronization-dimensions">
+                <article class="synchronization-dimension" :class="synchronizationAssessment.dimensions.breadth.status">
+                  <header><div><span>参与面</span><h3>市场广度</h3></div><strong>{{ dimensionStatusLabel(synchronizationAssessment.dimensions.breadth.status) }}</strong></header>
+                  <dl><div><dt>上涨占比</dt><dd>{{ formatPosition(synchronizationAssessment.dimensions.breadth.advanceRatio) }}</dd></div><div><dt>涨跌幅中位数</dt><dd>{{ formatPct(synchronizationAssessment.dimensions.breadth.medianReturn) }}</dd></div></dl>
+                  <p v-if="synchronizationAssessment.dimensions.breadth.comparisonStatus === 'available'" class="synchronization-comparison">较 {{ synchronizationAssessment.dimensions.breadth.previousAsOf }}：上涨占比 {{ formatRatioDelta(synchronizationAssessment.dimensions.breadth.advanceRatioDelta) }}，中位数 {{ formatReturnDelta(synchronizationAssessment.dimensions.breadth.medianReturnDelta) }}</p>
+                  <p v-else class="synchronization-comparison insufficient">{{ reasonLabel(synchronizationAssessment.dimensions.breadth.comparisonReason) }}</p>
+                  <p v-if="synchronizationAssessment.dimensions.breadth.reason" class="synchronization-reason">{{ reasonLabel(synchronizationAssessment.dimensions.breadth.reason) }}</p>
+                  <ul><li v-for="item in synchronizationAssessment.dimensions.breadth.evidence" :key="item">{{ item }}</li></ul>
+                </article>
+                <article class="synchronization-dimension" :class="synchronizationAssessment.dimensions.trend.status">
+                  <header><div><span>趋势位置</span><h3>MA20 结构</h3></div><strong>{{ dimensionStatusLabel(synchronizationAssessment.dimensions.trend.status) }}</strong></header>
+                  <dl><div><dt>MA20 上方</dt><dd>{{ synchronizationAssessment.dimensions.trend.aboveMa20Count }} / {{ synchronizationAssessment.dimensions.trend.validCount }}</dd></div><div><dt>MA20 下方</dt><dd>{{ synchronizationAssessment.dimensions.trend.belowMa20Count }} / {{ synchronizationAssessment.dimensions.trend.validCount }}</dd></div></dl>
+                  <p v-if="synchronizationAssessment.dimensions.trend.reason" class="synchronization-reason">{{ reasonLabel(synchronizationAssessment.dimensions.trend.reason) }}</p>
+                  <ul><li v-for="item in synchronizationAssessment.dimensions.trend.evidence" :key="item">{{ item }}</li></ul>
+                </article>
+                <article class="synchronization-dimension" :class="synchronizationAssessment.dimensions.turnover.status">
+                  <header><div><span>成交额</span><h3>量能确认</h3></div><strong>{{ dimensionStatusLabel(synchronizationAssessment.dimensions.turnover.status) }}</strong></header>
+                  <dl><div><dt>五指数中位比值</dt><dd>{{ formatRatio(synchronizationAssessment.dimensions.turnover.medianAmountRatio5) }}</dd></div><div><dt>成长组中位比值</dt><dd>{{ formatRatio(synchronizationAssessment.dimensions.turnover.growthMedianAmountRatio5) }}</dd></div><div><dt>放量上涨 / 下跌</dt><dd>{{ synchronizationAssessment.dimensions.turnover.volumeBackedAdvanceCount }} / {{ synchronizationAssessment.dimensions.turnover.volumeBackedDeclineCount }}</dd></div></dl>
+                  <p v-if="synchronizationAssessment.dimensions.turnover.reason" class="synchronization-reason">{{ reasonLabel(synchronizationAssessment.dimensions.turnover.reason) }}</p>
+                  <ul><li v-for="item in synchronizationAssessment.dimensions.turnover.evidence" :key="item">{{ item }}</li></ul>
+                </article>
+              </div>
+              <div v-if="synchronizationAssessment.risks.length" class="synchronization-risks"><AlertTriangle :size="17" /><div><strong>风险提示</strong><ul><li v-for="item in synchronizationAssessment.risks" :key="item">{{ item }}</li></ul></div></div>
             </section>
-            <section class="panel combination-rules-panel">
-              <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 规则对照</span><h2>六类典型组合</h2></div><span class="selected-hint">经验阈值 · 待回测</span></div>
-              <div class="combination-rule-list"><div v-for="item in combinationDefinitions" :key="item.key" :class="{ active: selectedCombination?.key === item.key }"><span>{{ item.condition }}</span><strong>{{ item.state }}</strong></div></div>
+            <section class="panel combination-overview-panel">
+              <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 组合全景</span><h2>四问结论与五指数矩阵</h2></div><span class="quality-badge" :class="combinationOverview?.confidence === 'medium' ? 'fallback' : 'missing'">置信度 {{ confidenceLabel(combinationOverview?.confidence) }}</span></div>
+              <div class="combination-output-list four-question-strip"><div><span>市场是否真强</span><strong>{{ combinationOverview?.strength || '数据不足' }}</strong></div><div><span>市场所处阶段</span><strong>{{ combinationOverview?.stage || '数据不足' }}</strong></div><div><span>资金是否认可</span><strong>{{ combinationOverview?.capitalAcceptance || '数据不足' }}</strong></div><div><span>交易模式</span><strong>{{ combinationOverview?.tradingMode || '数据不足' }}</strong></div></div>
+              <div class="combination-matrix-scroll"><table class="combination-matrix"><thead><tr><th>指数</th><th v-for="item in combinationDefinitions" :key="item.key" :title="item.condition">{{ item.state }}</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><th>{{ index.name }}<small>{{ formatPct(index.changePct) }}</small></th><td v-for="item in combinationDefinitions" :key="item.key" :class="{ matched: index.combination.matched && index.combination.key === item.key }"><span v-if="index.combination.matched && index.combination.key === item.key">{{ formatPosition(index.rangePosition60) }} · {{ formatRatio(index.amountRatio5) }}</span><span v-else>--</span></td></tr></tbody></table></div>
+              <div v-if="selectedCombination" class="combination-state" :class="selectedCombination.tone"><span>{{ selectedIndex?.name }} · 选中行证据</span><strong>{{ selectedCombination.state || '未命中明确组合' }}</strong><p>交易模式：{{ selectedCombination.tradingMode }}</p><ul class="combination-evidence"><li v-for="item in selectedCombination.evidence" :key="item">{{ item }}</li></ul></div>
             </section>
+            <section class="panel summary-sentence-panel"><div class="panel-heading"><div><span class="panel-kicker">盘后记录</span><h2>今日收束句</h2></div></div><blockquote>{{ chapter?.summarySentence || '数据不足' }}</blockquote><ul v-if="chapter?.dataGaps?.length" class="data-gap-list"><li v-for="gap in chapter.dataGaps" :key="`${gap.field}-${gap.reason}`"><strong>{{ gap.field }}</strong><span>{{ gapLabel(gap.reason) }}</span></li></ul></section>
             <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">横向比较</span><h2>五大指数指标表</h2></div></div><div class="table-scroll"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>收盘价</th><th>MA20 / MA60</th><th>20日位置</th><th>60日位置</th><th>成交额</th><th>5日 / 20日</th><th>量价状态</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td><td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td><td>{{ index.close.toFixed(2) }}</td><td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td><td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td><td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td><td>{{ formatAmount(index.amount) }}</td><td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td><td><span v-if="index.volumePriceState" class="state-chip">{{ index.volumePriceState }}</span><span v-else>--</span></td></tr></tbody></table></div></section>
           </template>
 

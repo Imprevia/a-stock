@@ -20,6 +20,13 @@ export interface IndexCombination {
   tradingMode: string
 }
 
+export type DataGapReason = 'insufficient-history' | 'missing-today' | 'provider-failed' | 'not-computable'
+
+export interface DataGap {
+  field: string
+  reason: DataGapReason
+}
+
 export interface IndexAnalysis {
   code: string
   name: string
@@ -39,6 +46,11 @@ export interface IndexAnalysis {
   amount: number
   amountRatio5: number | null
   amountRatio20: number | null
+  ma20SlopePercentile?: number | null
+  advanceEfficiencyPercentile?: number | null
+  ma20SlopeConfidence?: string | null
+  advanceEfficiencyConfidence?: string | null
+  ma20PositionLabel?: string | null
   trendState: string
   volumePriceState: string | null
   combination: IndexCombination
@@ -48,17 +60,79 @@ export interface IndexAnalysis {
     isStale: boolean
     warning: string | null
   }
+  dataGaps?: DataGap[]
+}
+
+export type SynchronizationAssessmentStatus = 'confirmed' | 'unconfirmed' | 'contradicted' | 'insufficient'
+export type SynchronizationDimensionStatus = 'confirming' | 'neutral' | 'contradicting' | 'insufficient'
+export type SynchronizationConfidence = 'high' | 'medium' | 'low' | 'insufficient'
+
+export interface SynchronizationBreadthDimension {
+  status: SynchronizationDimensionStatus
+  currentAsOf: string | null
+  previousAsOf: string | null
+  advanceRatio: number | null
+  medianReturn: number | null
+  advanceRatioDelta: number | null
+  medianReturnDelta: number | null
+  comparisonStatus: 'available' | 'insufficient'
+  reason: string | null
+  comparisonReason: string | null
+  evidence: string[]
+}
+
+export interface SynchronizationTrendDimension {
+  status: SynchronizationDimensionStatus
+  aboveMa20Count: number
+  belowMa20Count: number
+  validCount: number
+  reason: string | null
+  evidence: string[]
+}
+
+export interface SynchronizationTurnoverDimension {
+  status: SynchronizationDimensionStatus
+  medianAmountRatio5: number | null
+  growthMedianAmountRatio5: number | null
+  volumeBackedAdvanceCount: number
+  volumeBackedDeclineCount: number
+  validCount: number
+  reason: string | null
+  evidence: string[]
+}
+
+export interface SynchronizationAssessment {
+  patternCode: string
+  patternLabel: string
+  status: SynchronizationAssessmentStatus
+  conclusionCode: string
+  conclusion: string
+  confidence: SynchronizationConfidence
+  allFiveWeak: boolean
+  dimensions: {
+    breadth: SynchronizationBreadthDimension
+    trend: SynchronizationTrendDimension
+    turnover: SynchronizationTurnoverDimension
+  }
+  evidence: string[]
+  risks: string[]
+}
+
+export interface MarketSummary {
+  synchronization: string
+  syncPattern?: { code: string; label: string; score: number; evidence: string[] } | null
+  synchronizationAssessment?: SynchronizationAssessment | null
+  bullishAlignmentRatio?: number | null
+  dataGaps?: DataGap[]
+  dominantTrend: string
+  warnings: string[]
 }
 
 export interface MarketEnvironmentResponse {
   asOf: string
   generatedAt: string
   indices: IndexAnalysis[]
-  summary: {
-    synchronization: string
-    dominantTrend: string
-    warnings: string[]
-  }
+  summary: MarketSummary
   chapter01?: Chapter01Analysis
 }
 
@@ -67,6 +141,7 @@ export type Chapter01Section = 'breadth' | 'limits' | 'sectors' | 'activeDirecti
 export interface Chapter01SectionResponse {
   asOf: string
   generatedAt: string
+  summary?: MarketSummary | null
   chapter01: Chapter01Analysis
 }
 
@@ -195,5 +270,7 @@ export interface Chapter01Analysis {
   activeDirection?: ActiveDirectionAnalysis
   events?: EventAnalysis
   combinationOverview: CombinationOverview
+  summarySentence?: string | null
+  dataGaps?: DataGap[]
   assessment: ChapterAssessment
 }

@@ -18,6 +18,28 @@ CollectionTaskState = Literal[
     "failed-missing",
     "busy",
 ]
+SynchronizationAssessmentStatus = Literal["confirmed", "unconfirmed", "contradicted", "insufficient"]
+SynchronizationDimensionStatus = Literal["confirming", "neutral", "contradicting", "insufficient"]
+SynchronizationConclusionCode = Literal[
+    "broad-strength-confirmed",
+    "index-strength-breadth-divergence",
+    "synchronized-rally-unconfirmed",
+    "synchronized-rally-insufficient",
+    "weight-shelter-confirmed",
+    "weight-lead-contradicted",
+    "weight-lead-unconfirmed",
+    "weight-lead-insufficient",
+    "growth-lead-confirmed",
+    "growth-lead-contradicted",
+    "growth-lead-unconfirmed",
+    "growth-lead-insufficient",
+    "systemic-decline-confirmed",
+    "broad-weakness-contradicted",
+    "broad-weakness-unconfirmed",
+    "broad-weakness-insufficient",
+    "undetermined-divergence",
+    "undetermined-insufficient",
+]
 
 
 class MovingAverages(BaseModel):
@@ -31,6 +53,71 @@ class DataQuality(BaseModel):
     source: str
     isStale: bool
     warning: str | None
+
+
+class DataGap(BaseModel):
+    field: str
+    reason: Literal["insufficient-history", "missing-today", "provider-failed", "not-computable"]
+
+
+class SyncPattern(BaseModel):
+    code: str
+    label: str
+    score: int
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SynchronizationBreadthDimension(BaseModel):
+    status: SynchronizationDimensionStatus
+    currentAsOf: str | None = None
+    previousAsOf: str | None = None
+    advanceRatio: float | None = None
+    medianReturn: float | None = None
+    advanceRatioDelta: float | None = None
+    medianReturnDelta: float | None = None
+    comparisonStatus: Literal["available", "insufficient"]
+    reason: str | None = None
+    comparisonReason: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SynchronizationTrendDimension(BaseModel):
+    status: SynchronizationDimensionStatus
+    aboveMa20Count: int
+    belowMa20Count: int
+    validCount: int
+    reason: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SynchronizationTurnoverDimension(BaseModel):
+    status: SynchronizationDimensionStatus
+    medianAmountRatio5: float | None = None
+    growthMedianAmountRatio5: float | None = None
+    volumeBackedAdvanceCount: int
+    volumeBackedDeclineCount: int
+    validCount: int
+    reason: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SynchronizationDimensions(BaseModel):
+    breadth: SynchronizationBreadthDimension
+    trend: SynchronizationTrendDimension
+    turnover: SynchronizationTurnoverDimension
+
+
+class SynchronizationAssessment(BaseModel):
+    patternCode: str
+    patternLabel: str
+    status: SynchronizationAssessmentStatus
+    conclusionCode: SynchronizationConclusionCode
+    conclusion: str
+    confidence: Literal["high", "medium", "low", "insufficient"]
+    allFiveWeak: bool
+    dimensions: SynchronizationDimensions
+    evidence: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
 
 
 class HistoryPoint(BaseModel):
@@ -69,17 +156,27 @@ class IndexAnalysis(BaseModel):
     amount: float
     amountRatio5: float | None
     amountRatio20: float | None
+    ma20SlopePercentile: float | None = None
+    advanceEfficiencyPercentile: float | None = None
+    ma20SlopeConfidence: str | None = None
+    advanceEfficiencyConfidence: str | None = None
+    ma20PositionLabel: str | None = None
     trendState: str
     volumePriceState: str | None
     combination: IndexCombination
     history: list[HistoryPoint]
     dataQuality: DataQuality
+    dataGaps: list[DataGap] = Field(default_factory=list)
 
 
 class Summary(BaseModel):
     synchronization: str
     dominantTrend: str
     warnings: list[str]
+    syncPattern: SyncPattern | None = None
+    synchronizationAssessment: SynchronizationAssessment | None = None
+    bullishAlignmentRatio: float | None = None
+    dataGaps: list[DataGap] = Field(default_factory=list)
 
 
 class EvidenceQuality(BaseModel):
@@ -196,6 +293,8 @@ class Chapter01Evidence(BaseModel):
     events: EventEvidence
     combinationOverview: CombinationOverview
     assessment: ChapterAssessment
+    summarySentence: str | None = None
+    dataGaps: list[DataGap] = Field(default_factory=list)
 
 
 class MarketEnvironmentResponse(BaseModel):
@@ -209,6 +308,7 @@ class MarketEnvironmentResponse(BaseModel):
 class Chapter01Response(BaseModel):
     asOf: str
     generatedAt: str
+    summary: Summary | None = None
     chapter01: Chapter01Evidence
 
 

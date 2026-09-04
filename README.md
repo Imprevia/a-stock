@@ -24,7 +24,7 @@ python scripts/check-docs-contract.py --mode=full
 
 ```bash
 python -m pip install -r requirements.txt
-python -m uvicorn src.market_environment.api:app --reload --port 8000
+python -m uvicorn src.market_environment.api:app --reload --port 8001
 npm install --prefix apps/market-environment-dashboard
 npm run dev --prefix apps/market-environment-dashboard
 ```

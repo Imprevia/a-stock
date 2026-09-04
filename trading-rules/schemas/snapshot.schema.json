@@ -27,6 +27,11 @@
     },
     "metrics": {
       "type": "object",
+      "properties": {
+        "index.sync_pattern": {"type": ["number", "null"]},
+        "index.range_position_20": {"type": ["number", "null"]},
+        "market.turnover_ratio_5": {"type": ["number", "null"]}
+      },
       "additionalProperties": {"type": ["number", "integer", "boolean", "string", "null"]}
     },
     "events": {"type": "array", "items": {"$ref": "event.schema.json"}},

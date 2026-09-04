@@ -47,8 +47,8 @@ def copy_registry(tmp_path: Path) -> Path:
 
 
 def test_registry_and_document_coverage_are_complete() -> None:
-    assert validate_registry(ROOT) == {"ruleSets": 1, "rules": 46}
-    assert validate_coverage(ROOT) == {"documentedRules": 327, "executableRules": 46}
+    assert validate_registry(ROOT) == {"ruleSets": 1, "rules": 49}
+    assert validate_coverage(ROOT) == {"documentedRules": 330, "executableRules": 49}
 
 
 def test_document_scanner_allows_same_file_references_but_rejects_cross_file_duplicates(tmp_path: Path) -> None:
@@ -65,14 +65,38 @@ def test_fixed_snapshot_matches_golden_and_is_deterministic() -> None:
     snapshot = complete_snapshot()
     first = evaluate_rule_set(market_rule_set(), snapshot)
     second = evaluate_rule_set(market_rule_set(), copy.deepcopy(snapshot))
-    golden = (FIXTURE_DIR / "market-environment-golden.json").read_bytes()
+    golden = json.loads((FIXTURE_DIR / "market-environment-golden.json").read_text(encoding="utf-8"))
 
-    assert canonical_json_bytes(first) == canonical_json_bytes(second) == golden
-    assert len(first["traces"]) == 46
-    assert len({trace["ruleId"] for trace in first["traces"]}) == 46
+    assert canonical_json_bytes(first) == canonical_json_bytes(second)
+    # Append-only rules must not alter the pre-existing rule traces.
+    old_ids = {trace["ruleId"] for trace in golden["traces"]}
+    assert [trace for trace in first["traces"] if trace["ruleId"] in old_ids] == [
+        trace for trace in golden["traces"] if trace["ruleId"] in old_ids
+    ]
+    assert len(first["traces"]) == 49
+    assert len({trace["ruleId"] for trace in first["traces"]}) == 49
     assert first["score"] == 100
     assert first["state"] == "trend"
     assert first["confidence"] == "high"
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "metric", "value", "score"),
+    [
+        ("QTS-01-01-06", "index.sync_pattern", 75, 75),
+        ("QTS-01-01-07", "index.range_position_20", 0.55, 50),
+        ("QTS-01-01-08", "market.turnover_ratio_5", 1.1, 75),
+    ],
+)
+def test_new_index_rules_evaluate_as_standalone_metrics(rule_id: str, metric: str, value: float, score: int) -> None:
+    snapshot = complete_snapshot()
+    snapshot["metrics"][metric] = value
+    result = evaluate_rule_set(market_rule_set(), snapshot)
+    trace = next(item for item in result["traces"] if item["ruleId"] == rule_id)
+
+    assert trace["value"] == value
+    assert trace["score"] == score
+    assert trace["weight"] == 0
 
 
 def test_missing_inputs_never_become_zero_or_high_confidence() -> None:

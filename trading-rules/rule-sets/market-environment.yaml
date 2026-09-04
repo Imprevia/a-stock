@@ -375,6 +375,113 @@ rules:
   documentRefs:
   - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
   evidenceRefs: []
+- ruleId: QTS-01-01-06
+  version: 1
+  title: 指数同步性五态
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.sync_pattern
+  windows:
+  - 1
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+    provenance: empirical-initial
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lte: 0
+      score: 0
+    - lte: 25
+      score: 25
+    - lte: 50
+      score: 50
+    - lte: 75
+      score: 75
+    - lte: 100
+      score: 100
+  scoring:
+    weight: 0
+    direction: neutral
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-07
+  version: 1
+  title: 20日区间位置
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - index.range_position_20
+  windows:
+  - 20
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - lte: 0.2
+      score: 0
+    - lte: 0.4
+      score: 25
+    - lte: 0.6
+      score: 50
+    - lte: 0.8
+      score: 75
+    - gt: 0.8
+      score: 100
+  scoring:
+    weight: 0
+    direction: neutral
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
+- ruleId: QTS-01-01-08
+  version: 1
+  title: 5日成交额比值
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - market.turnover_ratio_5
+  windows:
+  - 5
+  parameters:
+    formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  thresholds:
+    provenance: fixed
+    bands:
+    - lte: 0.8
+      score: 25
+    - lte: 1.0
+      score: 50
+    - lte: 1.2
+      score: 75
+    - gt: 1.2
+      score: 100
+  scoring:
+    weight: 0
+    direction: neutral
+  vetoes: []
+  missingData: reduce-confidence
+  outputs:
+  - score
+  - trace
+  documentRefs:
+  - 搭建交易系统-量化版/01-如何判断市场环境/01.指数、趋势位置和成交额.md
+  evidenceRefs: []
 - ruleId: QTS-01-02-01
   version: 1
   title: 上涨占比

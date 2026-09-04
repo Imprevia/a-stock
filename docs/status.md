@@ -6,7 +6,7 @@
   - 事实源：`docs/repository-guide.md`、`docs/architecture.md`、`docs/runbooks.md`
 - `搭建交易系统/` 已完成目录归档：11 个章节各自使用唯一章节目录，章节总览和正文不再散落于下载批次子目录。
 - `docs/trading-system-directory.md` 已记录交易系统知识库的完整目录和文件清单，并由 `AGENTS.md` 提供入口说明。
-- `搭建交易系统-量化版/` 已按原目录的 70 个相对路径完成量化重写：统一 YAML 元数据、327 个稳定规则 ID、固定/分位混合阈值、五档评分、风险否决、缺失处理和校准状态。
+- `搭建交易系统-量化版/` 已按原目录的 70 个相对路径完成量化重写：统一 YAML 元数据、330 个稳定规则 ID、固定/分位混合阈值、五档评分、风险否决、缺失处理和校准状态。
 - `docs/trading-system-quantified-directory.md` 已记录量化版完整目录和维护规则；所有经验阈值当前均为 `needs-backtest`，没有规则被宣称为 `validated`。
 - 市场环境分析看板：`src/market_environment/` + `apps/market-environment-dashboard/`。
   - 已接入 5 个指数、MA5/10/20/60、20/60 日区间位置、成交额比值、趋势/量价状态。
@@ -16,6 +16,8 @@
   - 已覆盖计算、provider、服务层和 API 契约测试，并通过前端生产构建与桌面/移动浏览器检查。
   - 已修复上证指数和中证500成交额缺失：新浪指数 K 线按腾讯实时成交额校准，量价状态不再误报“数据不足”。
   - 已实现第 01 页第四部分“指数、趋势位置和成交额结合判断”：每个指数输出六类明确组合或显式未分类证据，第 01 章汇总市场强弱、阶段、资金认可和交易模式；页面支持随指数切换同步更新，不使用兜底分类。
+  - 已将指数 K 线深度提升至 280 根，新增五态同步性、MA20 斜率/量价推进效率滚动分位、五指数均线多头比例、收束句与分层缺失原因；第四部分重组为四问结论条、五指数乘六组合矩阵和选中行证据。
+  - 已补全五态 `syncPattern` 的联合研判：`synchronizationAssessment` 独立返回广度、MA20 位置和成交额确认，区分同步上涨、权重护盘、成长占优、普遍走弱和未定型分化；精确前一交易日广度缺失时不回退旧快照、不调用 provider，并以 `insufficient` 保留风险边界。第 01 页在四问矩阵前展示结论、置信度、三项维度、证据和风险；桌面与 390px 已完成无页面横向溢出检查。
   - 已修复看板日期错位和东方财富主域连接拦截导致的市场广度缺失：浏览器与 API 使用正确日期边界，全 A 完整快照兼容 `diff` 数组和键值对象；主域失败或分页受限时按排序分页降级计算，上涨家数、下跌家数和涨跌幅中位数只使用有效样本。
   - 已拆分数据加载：保留完整聚合接口，网页首屏改用指数核心接口，第 02、03、05、06、08、09 页按需加载章节证据；章节失败不会清空核心数据，同日期 provider 结果按数据集缓存并复用。
   - 已实现市场数据 SQLite 持久快照与盘后预计算：`breadth` 直接走精确分页统计，`activeDirection` 使用成交额 Top-N；支持 exact-date、checksum、settled freshness、跨进程 lease、stale-while-revalidate、刷新 CLI、回滚开关和可选缓存质量元数据。
@@ -31,8 +33,8 @@
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
-- 交易规则工程平台已实现：327 条覆盖清单、第 01 章 46 条 YAML 规则、确定性执行、证据、回测骨架、CLI 和两条 GitHub Actions workflow。
-- 固定快照生成 46 条 trace 并通过 golden 回放；全量测试 34 passed，OpenSpec strict 与 docs-contract full 均通过。
+- 交易规则工程平台已实现：330 条覆盖清单、第 01 章 49 条 YAML 规则、确定性执行、证据、回测骨架、CLI 和两条 GitHub Actions workflow。
+- 固定快照生成 49 条 trace；新增三条规则不进入 `QTS-01-00-01`，既有规则 trace 保持不变。
 
 ## 进行中
 
@@ -69,4 +71,4 @@
 
 ## 最后更新
 
-2026-09-03
+2026-09-04
