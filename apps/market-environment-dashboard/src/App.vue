@@ -315,6 +315,15 @@ watch(selectedDocumentId, async (documentId) => {
   renderChart()
   void loadCurrentSection()
 })
+watch(sectionLoading, async (isLoading) => {
+  if (isLoading) {
+    // The section loading state replaces the chart DOM; discard instances bound to the old nodes.
+    disposeCharts()
+    return
+  }
+  await nextTick()
+  renderChart()
+})
 onMounted(() => {
   const match = window.location.hash.match(/document-(0[1-9])$/)
   if (match) selectedDocumentId.value = match[1]

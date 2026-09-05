@@ -1,0 +1,1 @@
+{"version":"2.1.9","results":[[":apps/market-environment-dashboard/src/app.test.ts",{"duration":0,"failed":true}],[":apps/market-environment-dashboard/src/collection-api.test.ts",{"duration":21.438999999999965,"failed":false}],[":apps/market-environment-dashboard/src/date-util.test.ts",{"duration":3.592999999999961,"failed":false}]]}

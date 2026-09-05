@@ -21,3 +21,4 @@ Thumbs.db
 .codex
 node_modules
 .artifacts/
+deploy/truenas/deploy.env

@@ -105,6 +105,45 @@ helm history a-stock --namespace a-stock
 
 启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
 
+### TrueNAS 1.20 + VM 1.21 一键发布
+
+当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH 和 SCP，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。
+
+首次配置：
+
+```bash
+cd /home/gyt/a-stock
+cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
+editor deploy/truenas/deploy.env
+```
+
+至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `STORAGE_CLASS` 与 `TRUENAS_INGRESS_PORT`。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
+
+执行一键发布：
+
+```bash
+bash scripts/deploy-truenas-k3s.sh
+```
+
+脚本使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。首次默认暂停盘后 CronJob；确认 PVC、外网行情出口和手工 Job 日志后，将 `SCHEDULED_COLLECTION_SUSPEND=false` 写入环境文件，再次执行脚本。
+
+后续更新只需在 1.21 拉取代码并重新执行同一命令；如需明确指定版本，可在环境文件设置新的 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档，旧 tag 可用于 Helm 回滚。
+
+一键发布完成后，1.21 NGINX 建议新增独立 TLS 端口，例如 `8443`，反代到 1.20 的 Traefik HTTP 入口（若 Traefik 是 NodePort，使用其实际 HTTP NodePort）：
+
+```nginx
+location / {
+    proxy_pass http://<1.20的IP>:<Traefik_HTTP端口>;
+    proxy_set_header Host a-stock.k3s.lan;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+}
+```
+
+当前 `gyt.tail0007b1.ts.net/` 根路径已用于 multica，本项目应访问 `https://gyt.tail0007b1.ts.net:8443/` 或使用另一个独立 hostname；不要未经前端 base path 改造就直接挂载 `/a-stock/`。1.20 的 `6443` 只供 1.21 的 Helm/kubectl 管理访问，不应暴露给公网或普通 Tailnet 客户端。
+
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
 新增或调整页面时，布局、组件、颜色、图表、状态和响应式验收遵循 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
@@ -280,6 +319,12 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 ## 运维控制
 
 - hook 逃生开关：`SKIP_DOCS_CONTRACT=1`（仅应急，须在 plan 或 commit message 记录原因）。
+
+## 看板图表空白排障
+
+- 第 01 章出现有高度但无内容的价格或成交额图表时，先确认 `GET /api/market-environment/core?as_of=<date>` 返回 `indices[*].history`，且每个指数至少有一条历史记录。
+- 若 API 数据完整，检查浏览器页面是否刚结束“正在读取本节证据”状态。图表容器会随该加载态被替换，前端应在加载开始时释放旧实例，并在加载结束后的下一轮 DOM 更新中重新初始化 ECharts。
+- 浏览器验收应确认 `.price-chart canvas` 和 `.volume-chart canvas` 均存在，容器尺寸非零，且截图中同时可见 K 线、均线和成交额柱状图；仅看到空白容器不算通过。
 
 ## 失败解读指引
 

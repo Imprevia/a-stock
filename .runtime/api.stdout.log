@@ -1,0 +1,8 @@
+INFO:     127.0.0.1:2197 - "GET /api/market-environment/core?as_of=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:2198 - "GET /api/market-environment/chapter-01?as_of=2026-09-04&section=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:8983 - "GET /api/market-environment/core?as_of=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:6439 - "GET /api/market-environment/chapter-01?as_of=2026-09-04&section=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:9478 - "GET /api/market-environment/core?as_of=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13763 - "GET /api/market-environment/chapter-01?as_of=2026-09-04&section=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:12048 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:12050 - "GET /api/health HTTP/1.1" 200 OK

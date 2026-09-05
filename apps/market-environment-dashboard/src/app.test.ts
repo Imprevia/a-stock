@@ -6,9 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import type { SynchronizationAssessment, SynchronizationDimensionStatus } from './types'
 
-vi.mock('echarts', () => ({
-  init: () => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() }),
-}))
+const mockEchartsSetOption = vi.hoisted(() => vi.fn())
+const mockEchartsDispose = vi.hoisted(() => vi.fn())
+const mockEchartsInit = vi.hoisted(() => vi.fn(() => ({
+  setOption: mockEchartsSetOption,
+  resize: vi.fn(),
+  dispose: mockEchartsDispose,
+})))
+
+vi.mock('echarts', () => ({ init: mockEchartsInit }))
 
 const combinations = ['bottom_repair', 'uptrend', 'breakout', 'high_divergence', 'rotation', 'trend_damage']
 let mountedWrapper: VueWrapper | null = null
@@ -302,5 +308,60 @@ describe('index combination matrix', () => {
     expect(wrapper.text()).toContain('当日行情尚未返回')
     expect(wrapper.text()).toContain('行情供应商请求失败')
     expect(wrapper.text()).toContain('当前数据在数学上不可计算')
+  })
+})
+
+describe('chart lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    mountedWrapper?.unmount()
+    mountedWrapper = null
+    vi.unstubAllGlobals()
+  })
+
+  it('recreates charts after section loading replaces their DOM nodes', async () => {
+    const assessment = synchronizationAssessment()
+    const coreSummary = {
+      synchronization: 'fixture',
+      syncPattern: { code: assessment.patternCode, label: assessment.patternLabel, score: 4, evidence: assessment.evidence },
+      synchronizationAssessment: assessment,
+      dominantTrend: 'fixture',
+      warnings: [],
+    }
+    const response = {
+      asOf: '2026-09-03',
+      generatedAt: '2026-09-03T16:00:00+08:00',
+      indices: Array.from({ length: 5 }, (_, index) => indexItem(index)),
+      summary: coreSummary,
+      chapter01: chapter(),
+    }
+    let resolveChapter!: (value: unknown) => void
+    const chapterResponse = new Promise((resolve) => { resolveChapter = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => url.includes('chapter-01') ? chapterResponse : response,
+    })))
+
+    mountedWrapper = mount(App)
+    await flushPromises()
+
+    expect(mockEchartsInit).toHaveBeenCalledTimes(2)
+    expect(mockEchartsSetOption).toHaveBeenCalledTimes(2)
+
+    resolveChapter({
+      asOf: response.asOf,
+      generatedAt: response.generatedAt,
+      summary: { ...coreSummary, synchronizationAssessment: assessment },
+      chapter01: chapter(),
+    })
+    await flushPromises()
+    await flushPromises()
+
+    expect(mockEchartsDispose).toHaveBeenCalledTimes(2)
+    expect(mockEchartsInit).toHaveBeenCalledTimes(4)
+    expect(mockEchartsSetOption).toHaveBeenCalledTimes(4)
   })
 })

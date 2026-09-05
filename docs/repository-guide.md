@@ -26,6 +26,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/` | 市场环境看板的 k3s Kustomize、持久卷、Service 与 Traefik Ingress 清单 | 修改镜像、端口、探针、存储、资源或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
+| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数模板；脚本入口位于 `scripts/deploy-truenas-k3s.sh` | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 
