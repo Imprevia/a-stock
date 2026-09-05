@@ -8,6 +8,9 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
+| `restore-truenas-nodeport-direct-access` | 资深后端工程师 | in-progress | 2026-09-05 |
+| `deploy-to-truenas-k3s-192-168-1-20` | 资深运维专家 | completed | 2026-09-05 |
+| `one-click-truenas-k3s-deployment` | Codex | completed | 2026-09-06 |
 | `document-truenas-podman-k3s-deployment` | Codex | in-progress | 2026-09-02 |
 | `index-combination-rework` | Codex | completed | 2026-09-04 |
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |

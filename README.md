@@ -62,7 +62,7 @@ helm history a-stock --namespace a-stock
 helm rollback a-stock <revision> --namespace a-stock --wait --timeout 3m
 ```
 
-默认使用 k3s 1.27+ 的 Traefik 和 `local-path` StorageClass，并启用上海时区工作日 16:30 的市场数据 CronJob。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；可通过 `marketEnvironment.scheduledCollection.enabled=false` 关闭，或通过 `suspend=true` 暂停。正式环境的域名、TLS、镜像拉取凭据、调度时间及其他参数通过 `deploy/helm/a-stock/values.yaml` 或独立 values 文件覆盖。
+Chart 支持 Kubernetes 1.26+；默认使用 k3s 1.27+ 的 Traefik 和 `local-path` StorageClass，并启用上海时区工作日 16:30 的市场数据 CronJob。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；可通过 `marketEnvironment.scheduledCollection.enabled=false` 关闭，或通过 `suspend=true` 暂停。Kubernetes 1.26 必须关闭使用 `spec.timeZone` 的 CronJob；无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。正式环境的域名、TLS、镜像拉取凭据、调度时间及其他参数通过 `deploy/helm/a-stock/values.yaml` 或独立 values 文件覆盖。
 
 ## 交易规则平台
 

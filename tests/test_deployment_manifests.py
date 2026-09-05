@@ -12,6 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 K3S_DIR = ROOT / "deploy" / "k3s"
 CHART_DIR = ROOT / "deploy" / "helm" / "a-stock"
+TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
 HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
 
@@ -82,7 +83,7 @@ def test_helm_values_define_enabled_configurable_scheduled_collection() -> None:
     values = _load_yaml(CHART_DIR / "values.yaml")
     scheduled = values["marketEnvironment"]["scheduledCollection"]
 
-    assert chart["kubeVersion"] == ">=1.27.0-0"
+    assert chart["kubeVersion"] == ">=1.26.0-0"
     assert scheduled["enabled"] is True
     assert scheduled["suspend"] is False
     assert scheduled["schedule"] == "30 16 * * 1-5"
@@ -134,6 +135,61 @@ def test_helm_render_supports_disabled_suspended_and_custom_schedule() -> None:
     assert cronjob["spec"]["suspend"] is True
     assert cronjob["spec"]["schedule"] == "15 17 * * 1-5"
     assert cronjob["spec"]["timeZone"] == "Etc/UTC"
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_render_supports_node_port_on_kubernetes_126() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=false",
+        "--set",
+        "ingress.enabled=false",
+        "--set",
+        "service.type=NodePort",
+        "--set",
+        "service.nodePort=32001",
+    )
+
+    service = _resource(documents, "Service")
+    assert service["spec"]["type"] == "NodePort"
+    assert service["spec"]["ports"][0]["nodePort"] == 32001
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+    )
+    deployment = _resource(documents, "Deployment")
+    service = _resource(documents, "Service")
+    pod = deployment["spec"]["template"]["spec"]
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    manual_refresh = [
+        item for item in container["env"] if item["name"] == "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+    ]
+
+    assert deployment["spec"]["replicas"] == 1
+    assert container["image"] == "localhost/a-stock-market-environment:20260905-1904b66"
+    assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "a-stock-data"
+    assert container["volumeMounts"][0] == {"name": "data", "mountPath": "/data"}
+    assert _environment(container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["runAsUser"] == 10001
+    assert pod["securityContext"]["runAsGroup"] == 10001
+    assert pod["securityContext"]["fsGroup"] == 10001
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert service["spec"]["type"] == "NodePort"
+    assert service["spec"]["ports"][0]["nodePort"] == 32001
+    assert manual_refresh == [{"name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "value": "1"}]
+    assert all(document.get("kind") not in {"Ingress", "CronJob", "PersistentVolumeClaim"} for document in documents)
 
 
 @pytest.mark.skipif(KUBECTL_BINARY is None, reason="kubectl is not installed")

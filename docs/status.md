@@ -39,6 +39,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
+- 市场环境看板已部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，线上 Helm revision 6 使用镜像 `localhost/a-stock-market-environment:20260906-001322-1904b66`，保持固定 `NodePort:32001` 且手工采集开启；静态 Retain PV、单副本非 root Deployment、Ingress 与盘后定时采集关闭保持不变。1.21 到 1.20 的路由正常，TrueNAS 6443 仍只允许本机来源，部署脚本改经受限 SSH 回环隧道访问 k3s API。已完成 SQLite 一致性备份、健康/页面/状态 GET 和 core 采集验收；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
 
@@ -51,7 +52,7 @@
 
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
-- 手工采集接口当前无完整用户认证且默认开启；外部部署在接入权限边界前必须显式设置 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，生产写入口仍需后续接入认证授权。
+- 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 SQLite 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按需恢复 revision 4 ClusterIP。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - SQLite refresh lease 只支持同一主机的本地文件系统，多主机部署需要共享缓存适配器。
 - 通达信不可用时五个指数仍串行进入降级链，本机冷缓存核心请求约 34 秒；章节拆分已避免额外证据继续阻塞首屏，但指数 provider 仍需独立优化。
@@ -71,4 +72,4 @@
 
 ## 最后更新
 
-2026-09-04
+2026-09-06

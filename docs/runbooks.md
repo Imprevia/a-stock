@@ -84,6 +84,10 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
 ```
 
+Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 `spec.timeZone` 仍要求 Kubernetes 1.27+；1.26 集群必须设置 `marketEnvironment.scheduledCollection.enabled=false`。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
+
+TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
+
 后续仅更新镜像时保留已有 values；Chart 模板或默认 values 有变化时，不要使用 `--reuse-values`，而应重新传入受版本控制的环境 values 文件：
 
 ```bash
@@ -107,7 +111,7 @@ helm history a-stock --namespace a-stock
 
 ### TrueNAS 1.20 + VM 1.21 一键发布
 
-当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH 和 SCP，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。
+当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH、SCP 和 netcat，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。默认 `K3S_API_SSH_TUNNEL=true`，脚本把临时 kubeconfig 指向 1.21 回环端口，并经 SSH 转发到 TrueNAS `127.0.0.1:6443`；SSH 服务必须允许该目标的 TCP forwarding。脚本退出时自动关闭隧道，不要求也不建议向局域网开放 `6443/tcp`。
 
 首次配置：
 
@@ -117,7 +121,7 @@ cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
 editor deploy/truenas/deploy.env
 ```
 
-至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `STORAGE_CLASS` 与 `TRUENAS_INGRESS_PORT`。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
+至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `TRUENAS_INGRESS_PORT`。动态存储与 Traefik 环境可设置 `STORAGE_CLASS`、`INGRESS_CLASS`；TrueNAS 24.04 无 StorageClass/IngressClass 的静态 PVC 环境应设置 `HELM_VALUES_FILE=deploy/truenas/values-secure-manual-collection.yaml`，脚本将使用该完整 values 并只用新镜像 repository/tag 覆盖其中版本。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若本机 `K3S_API_LOCAL_PORT` 已占用，应换成其他 1024–65535 端口；只有在 TrueNAS 已将 6443 精确放行给管理机时才设置 `K3S_API_SSH_TUNNEL=false`。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
 
 执行一键发布：
 
@@ -142,7 +146,27 @@ location / {
 }
 ```
 
-当前 `gyt.tail0007b1.ts.net/` 根路径已用于 multica，本项目应访问 `https://gyt.tail0007b1.ts.net:8443/` 或使用另一个独立 hostname；不要未经前端 base path 改造就直接挂载 `/a-stock/`。1.20 的 `6443` 只供 1.21 的 Helm/kubectl 管理访问，不应暴露给公网或普通 Tailnet 客户端。
+当前 `gyt.tail0007b1.ts.net/` 根路径已用于 multica，本项目应访问 `https://gyt.tail0007b1.ts.net:8443/` 或使用另一个独立 hostname；不要未经前端 base path 改造就直接挂载 `/a-stock/`。1.20 的 `6443` 只供集群本机访问；1.21 的 Helm/kubectl 默认经临时 SSH 回环隧道管理，不应把该端口暴露给局域网、公网或普通 Tailnet 客户端。
+
+### TrueNAS NodePort 手工采集
+
+当前线上 Helm revision 4 的 ClusterIP 完整 values 是受保护回滚基线。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
+
+离线检查候选：
+
+```bash
+helm lint --strict deploy/helm/a-stock
+helm template a-stock deploy/helm/a-stock --namespace a-stock \
+  --kube-version 1.26.6 -f deploy/truenas/values-secure-manual-collection.yaml
+```
+
+获准发布前，确认节点/集群没有占用 `32001`，并保存 Helm history、revision 4 完整 values、Service、Deployment、Endpoint/EndpointSlice、运行镜像、Pod 安全上下文、PVC 名称/UID/PV/容量/使用量以及 Ingress/CronJob 状态。检查节点和路由器/防火墙不存在公网映射；没有 ACL 证据时只能把边界描述为“所有可路由网络”。
+
+使用 SQLite `Connection.backup()` 把 `/data/snapshots.sqlite3` 一致性备份到独立 TrueNAS 数据集，记录恢复路径和 SHA-256，并在备份上执行 `PRAGMA quick_check` 与只读查询；不要只复制活动 WAL 数据库主文件。对 revision 4 与候选执行 Helm diff，任何 PVC 删除/替换或不变量变化都必须停止发布。
+
+发布只能在单独批准的维护窗口执行一次 Helm upgrade 并等待单个 Deployment ready。随后从预期 LAN 客户端验证 `/api/health`、`/data-collection` 和 provider-free 状态 GET，再提交一次上海市场当天的受支持数据集并验证 202 和合法终态；历史不支持请求仍须返回 422。观察 collection run/task、provider warning/限流、SQLite lock、任务时长与 PVC 增长，并记录实际可达边界和最终 revision。
+
+若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步按需恢复 revision 4 ClusterIP values 或对应 Helm revision，确认 Service 无 nodePort；不得 uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
 
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
@@ -202,7 +226,7 @@ Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不
 
 - `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
-- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。对外无认证部署在接入权限边界前必须设置为 `0`。
+- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再决定是否恢复 revision 4 ClusterIP。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
 

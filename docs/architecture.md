@@ -59,7 +59,7 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 
 盘后定时采集流为：k3s/Helm CronJob → `python -m src.market_environment.cli snapshots scheduled-refresh` → collection coordinator → 同一组五类独立 task → 同一 SQLite/PVC。CLI 在 Python 内按 `Asia/Shanghai` 解析日期，周末无 provider 调用并返回 skipped，结算边界前拒绝执行；CronJob 默认工作日 16:30、`concurrencyPolicy: Forbid` 且不对 `partial` 自动整批重试。CronJob 与人工触发并发时仍由 SQLite dataset/date lease 作为最终去重边界。第一版不维护交易所节假日日历，工作日节假日可能留下 failed/partial 记录，但精确日期校验禁止把其他交易日数据写成当天。
 
-生产部署使用单镜像边界：Node 构建阶段生成 `apps/market-environment-dashboard/dist`，Python 运行阶段由 FastAPI 同时托管静态网页与 `/api`。原生 k3s Kustomize 资源位于 `deploy/k3s/`，等价 Helm Chart 位于 `deploy/helm/a-stock/`；两条路径均为 Traefik Ingress → ClusterIP Service → 单副本 Deployment，并使用持久卷保存 SQLite 快照，盘后 CronJob 使用同一不可变镜像和 PVC 执行短生命周期 CLI。当前缓存、SQLite lease 和 provider 限流均按单机边界设计，因此默认保持一个 Uvicorn 进程和一个 Dashboard Pod；扩展为多副本前必须先引入支持多节点共享与协调的存储方案。Dashboard 与 CronJob Pod 都需要访问通达信 TCP 及外部 HTTPS 行情源，健康探针只访问不触发外部 provider 的 `/api/health`。
+生产部署使用单镜像边界：Node 构建阶段生成 `apps/market-environment-dashboard/dist`，Python 运行阶段由 FastAPI 同时托管静态网页与 `/api`。原生 k3s Kustomize 资源位于 `deploy/k3s/`，等价 Helm Chart 位于 `deploy/helm/a-stock/`；默认路径为 Traefik Ingress → ClusterIP Service → 单副本 Deployment，也允许在没有 Ingress Controller 的单节点环境显式使用 NodePort Service。TrueNAS 直连候选为明文 HTTP `NodePort:32001` 且手工写入口开启，没有应用身份认证、TLS 或请求级授权；安全边界是所有实际可路由到节点端口的网络，不能声称仅限用户、设备或子网，且不得配置公网映射。1.21 的部署控制面与应用入口分离：Helm/kubectl 默认通过仅绑定 1.21 回环地址的临时 SSH 隧道连接 TrueNAS `127.0.0.1:6443`，不要求将 k3s API 放行给局域网。两条路径均使用持久卷保存 SQLite 快照，盘后 CronJob 使用同一不可变镜像和 PVC 执行短生命周期 CLI。当前缓存、SQLite lease 和 provider 限流均按单机边界设计，因此默认保持一个 Uvicorn 进程和一个 Dashboard Pod；扩展为多副本前必须先引入支持多节点共享与协调的存储方案。Dashboard 与 CronJob Pod 都需要访问通达信 TCP 及外部 HTTPS 行情源，健康探针只访问不触发外部 provider 的 `/api/health`。
 
 `.github/workflows/trading-rules-after-market.yml` 是独立的交易规则证据流水线：它在 GitHub runner 创建临时 snapshot/evidence Artifact，不挂载部署 PVC，也不向市场环境 SQLite 写入数据。它不能替代部署内 CronJob，两者的产物和运维边界必须保持区分。
 
@@ -75,7 +75,7 @@ SQLite 还保存 collection run/task 和 materialized market-environment aggrega
 
 ## 归属边界
 
-前端仅消费固定 JSON 契约，不直接访问行情源。计算逻辑集中在 `calculations.py`，数据源差异封装在 `providers.py`，持久化快照、collection 状态与 lease 由 snapshot store 模块负责，采集编排和聚合重建由 collection coordinator 负责，CLI、CronJob 与 HTTP 共用该边界，HTTP 错误映射在 `api.py`。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认开启，可设置为 `0` 显式关闭；无认证的外部部署在接入权限边界前必须显式关闭。内部 CronJob 直接执行 CLI，不依赖该 HTTP 写开关。
+前端仅消费固定 JSON 契约，不直接访问行情源。计算逻辑集中在 `calculations.py`，数据源差异封装在 `providers.py`，持久化快照、collection 状态与 lease 由 snapshot store 模块负责，采集编排和聚合重建由 collection coordinator 负责，CLI、CronJob 与 HTTP 共用该边界，HTTP 错误映射在 `api.py`。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认开启，可设置为 `0` 显式关闭。TrueNAS NodePort 是已接受的匿名写入口而非授权机制；CORS、前端按钮、lease 与 provider 串行化均不能阻止可路由客户端依次发起有效请求。出现异常调用、provider 压力、SQLite 锁或 PVC 增长时，先发布开关为 `0` 以停止新写入，再按需恢复 revision 4 ClusterIP；两个步骤均复用原 PVC。内部 CronJob 直接执行 CLI，不依赖该 HTTP 写开关。
 
 ## 已知约束（已定，不可绕过）
 

@@ -1,0 +1,32 @@
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20260905-1904b66
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  snapshotPath: /data/snapshots.sqlite3
+  persistentCache: true
+  settlementTime: "15:10"
+  scheduledCollection:
+    enabled: false
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
