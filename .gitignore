@@ -7,6 +7,8 @@ venv/
 
 # 工具缓存
 .codegraph/
+.agent_context/
+.multica/
 midscene_run/
 apps/*/dist/
 mobile-dashboard*.png
