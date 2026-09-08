@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已经记录，但不授权本任务绕过修复、独立审阅、Stage 3 验收或各自的精确发布门禁。
+Gate A / Stage 3 离线全矩阵验证与评审包。Gate B/Gate C 的推进授权已经记录，但不授权本任务访问生产、调用真实 provider，或绕过 Stage 3 验收及后续精确发布门禁。
 
 ## Status（状态）
 
-`stage-2-complete-awaiting-acceptance`：GYT-47 implementation candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 已在隔离 worktree `agent/backend/gyt-47-scheduled-collection-clean-baseline` 提交、推送并经三路独立复审取得 GO。冻结基线为 `bb0de075c4336e6a4532b38f221b043d9859f590`；rejected HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`、`e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 与 `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 均不得成为 Stage 3 基线。Stage 2 仓库交付已完成，等待 GYT-47 人工验收。
+`stage-3-in-progress`：GYT-47 已进入 terminal `done`；Stage 3 以独立复审 GO 后的 exact clean HEAD `dd1277b86d04ed3a5d2cabe41c558d6de9049c09` 为冻结基线，在独立分支 `agent/backend/gyt-48-scheduled-collection-offline-verification` 执行 OpenSpec 3.1-3.5。共享脏工作树保持不触碰，本阶段只运行固定离线 render、fixture/fake-provider 测试和本地门禁。
 
 ## Context（上下文）
 
@@ -46,8 +46,8 @@ Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已�
 |---|---|---|---|---|---|
 | Stage 1 / D0 | Gate A 计划与分配 | 资深项目经理 | Gate A approval | approval trace、OpenSpec/active plan、串行 backlog、strict validation | accepted |
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
-| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.5；focused render/deployment tests；无应用/前端/生产 diff | independent GO; awaiting GYT-47 acceptance |
-| Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` terminal + reviewed | tasks 3.1-3.5；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | backlog |
+| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.5；focused render/deployment tests；无应用/前端/生产 diff | accepted / terminal |
+| Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` terminal + reviewed | tasks 3.1-3.5；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | in progress |
 | Gate B | 生产验证 | 未分配 | GYT-47 independent GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | progression/read-only permission recorded; blocked by prerequisites |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
 
@@ -71,7 +71,7 @@ Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已�
 ## Acceptance（验收）
 
 - OpenSpec 和本 plan 可追溯记录 Gate A 批准、里程碑、依赖、风险、负责人、验收证据和下一检查点。
-- 实际仓库研发只分配给现有资深后端工程师；Stage 2 在隔离 worktree active remediation，Stage 3 保持 `backlog` 串行停放，没有新建 specialist。
+- 实际仓库研发只分配给现有资深后端工程师；Stage 2 已完成并获验收，Stage 3 在冻结 clean HEAD 派生的独立 worktree 中串行执行，没有新建 specialist。
 - 显式记录“无前端范围”及依据，没有向资深前端工程师创建无效任务。
 - 八项 NO-GO 阻塞均有修复位置、负例、离线命令和输出摘要，并绑定新的完整 clean HEAD；rejected HEAD 不作为 Stage 3 基线。
 - 部署入口在网络、构建或写操作前，以最终合并后的 typed Helm values 校验授权、`enabled`、`suspend`、业务时区和目标 release/namespace；离线非法输入不得读取 env、发起 SSH 或调用目标 API。
@@ -118,15 +118,17 @@ Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已�
 - 2026-09-09：全库复跑为 `257 passed, 1 failed, 2 warnings`；唯一失败仍是 baseline-identical 的 `tests/test_market_environment_service.py::test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU，冻结 baseline 到候选的 diff 不含 `src/market_environment/` 或该测试。本 issue 保留该真实结果，不重试、放宽断言或越界修改应用层。
 - 2026-09-09：successor implementation candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 已提交并推送；工作树 clean、`HEAD == @{upstream}`，baseline diff 不含 `src/`、`apps/`、`trading-rules/`、provider、dataset 或 SQLite schema。
 - 2026-09-09：三路独立只读复审均以 baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 和 exact candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 为对象并给出 GO，无 blocking finding；审阅分别覆盖八项 release fail-safe、SemVer/activation-window/compensation 测试严谨性、OpenSpec/docs/scope 一致性。独立验证包括 focused `117 passed`，另一路全库 `258 passed, 2 warnings`，确认上述冷加载竞态为非确定性 baseline defect。
+- 2026-09-09：GYT-47 已为 terminal `done`；其证据提交形成 Stage 3 exact clean baseline `dd1277b86d04ed3a5d2cabe41c558d6de9049c09`，该 SHA 与远端 Stage 2 分支一致且 worktree clean。
+- 2026-09-09：GYT-48 已从该 SHA 建立独立分支/worktree `agent/backend/gyt-48-scheduled-collection-offline-verification`；OpenSpec apply 状态为 `ready`（8/30 完成），本阶段仅处理 3.1-3.5。
 
 ## Remaining Gaps（剩余缺口）
 
 - 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
-- Stage 2 仓库修复已在 candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 完成并取得三路独立 GO；GYT-47 尚待人工验收，未因此自动推进 GYT-48。
+- Stage 2 仓库修复已在 candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 完成并取得三路独立 GO；GYT-47 已获验收并为 terminal `done`。
 - baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
-- GYT-48 的 Stage 3 仍为 backlog；只有新的完整 clean HEAD 取得独立 GO 且 GYT-47 被接受后才可提升。
+- GYT-48 的 Stage 3 正在执行；3.1-3.5 尚未全部完成，离线结果和最终 review HEAD 仍待记录。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
 ## Next Step（下一步）
 
-将 GYT-47 置为 `in_review` 等待人工验收；只有 parent owner 确认该 Stage 2 交付并将 GYT-47 置为 terminal 后，才可提升 GYT-48。当前不得执行生产 preflight、server-side dry-run、canary、Job、备份、部署或解除暂停。
+在冻结 SHA `dd1277b86d04ed3a5d2cabe41c558d6de9049c09` 上完成 OpenSpec 3.1-3.5：离线 render/非法输入矩阵、manifest 不变量、固定 fake-provider 回归、Helm/OpenSpec/docs/diff gate 和 clean review packet。当前不得执行生产 preflight、server-side dry-run、canary、Job、备份、部署或解除暂停。
