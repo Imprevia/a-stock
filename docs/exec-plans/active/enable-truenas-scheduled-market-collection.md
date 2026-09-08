@@ -91,6 +91,7 @@ Gate A / Stage 2 仓库实现与离线验证。后续仅包含仓库实现和离
 - 2026-09-08：`bash -n scripts/deploy-truenas-k3s.sh`、`python3 -m py_compile tests/test_deployment_manifests.py`、`helm lint --strict deploy/helm/a-stock`、`kubectl kustomize deploy/k3s` 与 offline-render suspended/off 命令通过。系统 Python 无 `pytest`，且无法创建 venv（缺少 `ensurepip`），因此未运行 pytest runner；对应 Helm/YAML assertions 已由无 target 的固定离线命令执行。
 - 2026-09-08：`openspec validate enable-truenas-scheduled-market-collection --strict --json` 通过（1/1）；`python3 scripts/check-docs-contract.py --mode=full` 通过（代码 0 / 文档 2 / plan 1）；`git diff --cached --check` 通过。diff 仅包含部署 chart/Kustomize/TrueNAS values/entry script、对应 tests、OpenSpec 和所需文档，不含 application API、provider、dataset、SQLite schema、frontend 或生产状态改动。
 - 2026-09-08：reviewable Stage 2 implementation commit 为 `4b334051de43f09ef44fd2753f7b6a64510c5738`（`GYT-47: add scheduled collection compatibility`）；该独立 branch 已推送，未创建 PR，因为运行环境未安装 `gh` CLI。
+- 2026-09-08：在 review-evidence commit 前再次运行 `python3 scripts/check-docs-contract.py --mode=full`，通过（代码 4 / 文档 8 / plan 2）；strict OpenSpec validation 仍通过（1/1）。
 
 ## Remaining Gaps（剩余缺口）
 
