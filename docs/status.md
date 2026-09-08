@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 正在 Gate A 仓库修复阶段：独立审阅已拒绝冻结 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`，当前在隔离 baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 上关闭 offline fail-open、boolean 类型、上海业务时区、typed values 授权、exact admission、clean/frozen release 和真实 release/namespace/version 绑定等阻塞项。Gate B/Gate C 推进授权已记录，但 GYT-47 独立 GO、GYT-48 验收和精确 packet 前置条件未满足；当前不访问目标环境且 CronJob 保持关闭。
+- `enable-truenas-scheduled-market-collection` 正在 Gate A 仓库修复阶段：独立审阅已拒绝冻结 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`；首轮 remediation candidate `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 已提交、推送且 clean/upstream 一致，但复审仍为 NO-GO。严格 SemVer、Gate C missed-schedule window、激活异常补偿和受控 runbook 入口修复及 104 项 focused 回归现已完成，正在生成 successor review HEAD。Gate B/Gate C 推进授权已记录，但 successor 独立 GO、GYT-48 验收和精确 packet 前置条件未满足；当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
@@ -74,4 +74,4 @@
 
 ## 最后更新
 
-2026-09-08
+2026-09-09

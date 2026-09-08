@@ -315,7 +315,23 @@ def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path
     (repo / "deploy" / "truenas").mkdir(parents=True)
     shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
     shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
-    shutil.copy2(VALIDATOR, repo / "scripts" / VALIDATOR.name)
+    real_validator = repo / "scripts" / "validate-scheduling-packet-real.py"
+    shutil.copy2(VALIDATOR, real_validator)
+    (repo / "scripts" / VALIDATOR.name).write_text(
+        "from __future__ import annotations\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == 'validate-activation-window':\n"
+        "    if os.environ.get('FAKE_ACTIVATION_WINDOW_FAILURE') == 'true':\n"
+        "        raise SystemExit('outside the authorized activation window')\n"
+        "    print(os.environ.get('FAKE_ACTIVATION_WINDOW_OUTPUT', "
+        "'{\"allowed\":true,\"mode\":\"test\"}'))\n"
+        "    raise SystemExit(0)\n"
+        "real = Path(__file__).with_name('validate-scheduling-packet-real.py')\n"
+        "os.execv(sys.executable, [sys.executable, str(real), *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
     copied_values = []
     for source in (BASELINE, SUSPENDED, ACTIVE, OFF):
         destination = repo / "deploy" / "truenas" / source.name
@@ -355,6 +371,33 @@ def test_git_update_is_rejected_before_any_target_or_update_command(tmp_path: Pa
 
     assert completed.returncode != 0
     assert "GIT_UPDATE=true is unsupported" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Path) -> None:
+    fake_bin, marker = _write_target_spies(tmp_path)
+    env_file = tmp_path / "deploy.env"
+    _write_env(env_file, ROOT, BASELINE, SUSPENDED)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--env-file",
+            str(env_file),
+            "--server-dry-run",
+            "--kube-version",
+            "1.26.6-.",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "invalid Kubernetes version" in completed.stderr
     assert not marker.exists()
 
 
@@ -712,6 +755,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         "authorization",
         "pre_live_drift",
         "post_live_drift",
+        "activation_window_failure",
+        "post_live_capture_failure",
+        "signal_after_helm",
         "expected_success",
     ),
     [
@@ -722,6 +768,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "SUSPENDED_RELEASE_AUTHORIZED=true\nGATE_B_AUTHORIZATION_REF=reviewed-gate-b-packet",
             False,
             False,
+            False,
+            False,
+            False,
             True,
         ),
         (
@@ -729,6 +778,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            False,
+            False,
+            False,
             False,
             False,
             True,
@@ -740,6 +792,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "SCHEDULE_ROLLBACK_AUTHORIZED=true",
             False,
             False,
+            False,
+            False,
+            False,
             True,
         ),
         (
@@ -750,18 +805,69 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             True,
             False,
             False,
+            False,
+            False,
+            False,
         ),
         (
             "--activate-schedule",
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            False,
+            False,
+            False,
             False,
             True,
             False,
         ),
     ],
-    ids=("release-suspended", "activate", "disable", "pre-live-drift", "post-live-drift"),
+    ids=(
+        "release-suspended",
+        "activate",
+        "disable",
+        "pre-live-drift",
+        "post-live-drift",
+        "activation-window-failure",
+        "post-live-capture-failure",
+        "signal-after-helm",
+    ),
 )
 def test_reviewed_release_modes_are_atomic_and_fail_closed(
     tmp_path: Path,
@@ -771,6 +877,9 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     authorization: str,
     pre_live_drift: bool,
     post_live_drift: bool,
+    activation_window_failure: bool,
+    post_live_capture_failure: bool,
+    signal_after_helm: bool,
     expected_success: bool,
 ) -> None:
     repo, baseline, suspended, active, off, head = _prepare_reviewed_repo(tmp_path)
@@ -837,6 +946,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"    printf '\\ninvalid: [concurrent-change\\n' >> {selected}\n"
         f"    \"$REAL_HELM\" template \"$release_name\" \"$chart_path\" --kube-version 1.26.6+k3s1 \"${{template_args[@]}}\" > {deployed_manifest}\n"
         f"    touch {released}\n"
+        "    if [[ \"${SIGNAL_AFTER_HELM:-false}\" == true ]]; then kill -TERM \"$PPID\"; sleep 0.1; fi\n"
         "    ;;\n"
         "  *) exit 98 ;;\n"
         "esac\n",
@@ -861,7 +971,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"printf 'kubectl %s\\n' \"$*\" >> {target_calls}\n"
         "if [[ \"$*\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
         "if [[ \"$*\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\": \"v1.26.6+k3s1\"}'; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get deployment,service,cronjob\"* ]]; then if [[ -f {released} ]]; then cat {desired_live}; else cat {current_live}; fi; exit 0; fi\n"
+        f"if [[ \"$*\" == *\"get deployment,service,cronjob\"* ]]; then if [[ -f {released} ]]; then if [[ \"${{FAIL_POST_LIVE_CAPTURE:-false}}\" == true ]]; then exit 96; fi; cat {desired_live}; else cat {current_live}; fi; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get deployment\"* ]]; then cat {deployments_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get replicasets\"* ]]; then cat {replicasets_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get pods\"* ]]; then cat {pods_json}; exit 0; fi\n"
@@ -917,18 +1027,33 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "REAL_HELM": HELM,
+            "FAKE_ACTIVATION_WINDOW_FAILURE": str(activation_window_failure).lower(),
+            "FAIL_POST_LIVE_CAPTURE": str(post_live_capture_failure).lower(),
+            "SIGNAL_AFTER_HELM": str(signal_after_helm).lower(),
         },
         capture_output=True,
         text=True,
         check=False,
     )
 
-    calls = target_calls.read_text(encoding="utf-8")
+    calls = target_calls.read_text(encoding="utf-8") if target_calls.exists() else ""
     if not expected_success:
         assert completed.returncode != 0
-        if pre_live_drift:
+        if activation_window_failure:
+            assert "Gate C activation window validation failed" in completed.stderr
+            assert "helm-upgrade" not in calls
+            assert "ssh " not in calls and "kubectl " not in calls
+        elif pre_live_drift:
             assert "live declarative state differs" in completed.stderr
             assert "helm-upgrade" not in calls
+        elif post_live_capture_failure:
+            assert "activation did not complete safely" in completed.stderr
+            assert "patch cronjob research-a-stock-data-collection" in calls
+            assert '--patch {"spec":{"suspend":true}}' in calls
+        elif signal_after_helm:
+            assert completed.returncode == 143
+            assert "activation did not complete safely" in completed.stderr
+            assert calls.count("patch cronjob research-a-stock-data-collection") == 1
         else:
             assert "postcondition failed" in completed.stderr
             assert "patch cronjob research-a-stock-data-collection" in calls
@@ -941,6 +1066,8 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     assert "image.repository=localhost/a-stock-market-environment" in calls
     assert "image.tag=20260905-1904b66" in calls
     assert "--atomic" in calls
+    if operation == "--activate-schedule":
+        assert "Gate C activation window:" in completed.stdout
     assert str(repo / "deploy" / "helm" / "a-stock") not in next(
         line for line in calls.splitlines() if line.startswith("helm-upgrade")
     )

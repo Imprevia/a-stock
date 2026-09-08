@@ -182,8 +182,11 @@ validate_identifier() {
 
 normalize_kubernetes_version() {
   local value="$1"
-  [[ "$value" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || die "invalid Kubernetes version: $value"
-  printf '%s\n' "${value#v}"
+  local normalized
+  if ! normalized="$(python3 "$PACKET_VALIDATOR" normalize-version --version "$value")"; then
+    die "invalid Kubernetes version: $value"
+  fi
+  printf '%s\n' "$normalized"
 }
 
 parse_server_version() {
@@ -467,6 +470,15 @@ case "$OPERATION" in
     [[ "$SCHEDULE_ACTIVATION_AUTHORIZED" == true ]] || die '--activate-schedule requires SCHEDULE_ACTIVATION_AUTHORIZED=true'
     [[ -n "$GATE_C_AUTHORIZATION_REF" ]] || die '--activate-schedule requires an exact GATE_C_AUTHORIZATION_REF'
     [[ "$GATE_C_CATCH_UP_MODE" == next-schedule || "$GATE_C_CATCH_UP_MODE" == immediate-catch-up ]] || die 'Gate C requires GATE_C_CATCH_UP_MODE=next-schedule or immediate-catch-up'
+    if ! ACTIVATION_WINDOW_INSPECTION="$(
+      printf '%s\n' "$PACKET_INSPECTION" \
+        | python3 "$PACKET_VALIDATOR" validate-activation-window \
+          --mode "$GATE_C_CATCH_UP_MODE"
+    )"; then
+      die 'Gate C activation window validation failed'
+    fi
+    ACTIVATION_WINDOW_LOG="${ACTIVATION_WINDOW_INSPECTION//$'\n'/ }"
+    log "Gate C activation window: $ACTIVATION_WINDOW_LOG"
     ;;
   disable-schedule)
     [[ "$SCHEDULE_ROLLBACK_AUTHORIZED" == true ]] || die '--disable-schedule requires SCHEDULE_ROLLBACK_AUTHORIZED=true'
@@ -493,7 +505,14 @@ TMP_DIR="$(mktemp -d -t a-stock-deploy.XXXXXX)"
 SMOKE_NAME="a-stock-smoke-$$"
 SMOKE_CREATED=false
 K3S_TUNNEL_PID=''
+ACTIVATION_IN_FLIGHT=false
+ACTIVATION_CRONJOB_NAME=''
 cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM HUP
+  if [[ "$ACTIVATION_IN_FLIGHT" == true ]]; then
+    suspend_after_uncertain_activation "$ACTIVATION_CRONJOB_NAME"
+  fi
   if [[ "$SMOKE_CREATED" == true ]]; then
     podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
   fi
@@ -503,8 +522,12 @@ cleanup() {
   fi
   chmod -R u+w "$TMP_DIR" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
+  exit "$exit_code"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 OPERATION_CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
@@ -621,7 +644,8 @@ capture_live_release() {
 
 suspend_after_uncertain_activation() {
   local cronjob_name="$1"
-  warn "activation postcondition failed; forcing $cronjob_name back to suspend=true"
+  ACTIVATION_IN_FLIGHT=false
+  warn "activation did not complete safely; forcing $cronjob_name back to suspend=true"
   if ! kubectl patch cronjob "$cronjob_name" --namespace "$NAMESPACE" \
     --type=merge --patch '{"spec":{"suspend":true}}'; then
     warn 'emergency suspend failed; target state is uncertain and requires operator intervention'
@@ -673,6 +697,14 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$PRE_WRITE_RENDER")"
 
   log "applying reviewed $OPERATION packet to $RELEASE_NAME/$NAMESPACE without building or importing an image"
+  if [[ "$OPERATION" == activate-schedule ]]; then
+    ACTIVATION_CRONJOB_NAME="$(
+      printf '%s\n' "$PACKET_INSPECTION" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])'
+    )"
+    [[ -n "$ACTIVATION_CRONJOB_NAME" ]] || die 'activation CronJob name is missing'
+    ACTIVATION_IN_FLIGHT=true
+  fi
   if ! helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
     --namespace "$NAMESPACE" \
     --values "$OPERATION_BASELINE_VALUES" \
@@ -682,10 +714,6 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --atomic \
     --wait \
     --timeout "$HELM_TIMEOUT"; then
-    if [[ "$OPERATION" == activate-schedule ]]; then
-      CRONJOB_NAME="$(printf '%s\n' "$PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
-      suspend_after_uncertain_activation "$CRONJOB_NAME"
-    fi
     die "$OPERATION failed; Helm atomic rollback was requested"
   fi
 
@@ -693,16 +721,13 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   if ! python3 "$PACKET_VALIDATOR" compare-live-desired \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$DESIRED_MANIFEST" < "$LIVE_AFTER_MANIFEST"; then
-    if [[ "$OPERATION" == activate-schedule ]]; then
-      CRONJOB_NAME="$(printf '%s\n' "$PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
-      suspend_after_uncertain_activation "$CRONJOB_NAME"
-    fi
     die "$OPERATION postcondition failed; target state must be re-audited"
   fi
   if [[ "$REQUIRED_SCHEDULING_STATE" != disabled ]]; then
     CRONJOB_NAME="$(printf '%s\n' "$PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
     kubectl get cronjob "$CRONJOB_NAME" --namespace "$NAMESPACE" -o yaml
   fi
+  ACTIVATION_IN_FLIGHT=false
   log "$OPERATION completed; no canary or provider-backed Job was created"
   exit 0
 fi

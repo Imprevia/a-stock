@@ -31,11 +31,247 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def test_version_parser_accepts_prerelease_and_build_metadata() -> None:
-    completed = _run("parse-version", '{"gitVersion":"v1.30.0-rc.1+build.7"}')
+@pytest.mark.parametrize(
+    ("version", "normalized"),
+    [
+        ("v1.26.6+k3s1", "1.26.6+k3s1"),
+        ("v1.30.0-rc.1+build.7", "1.30.0-rc.1+build.7"),
+        ("1.27.0+001", "1.27.0+001"),
+    ],
+)
+def test_version_parser_accepts_strict_semver(version: str, normalized: str) -> None:
+    completed = _run("parse-version", json.dumps({"gitVersion": version}))
 
     assert completed.returncode == 0
-    assert completed.stdout.strip() == "1.30.0-rc.1+build.7"
+    assert completed.stdout.strip() == normalized
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "v01.27.0",
+        "v1.027.0",
+        "v1.27.00",
+        "v1.27.0-.",
+        "v1.27.0-rc..1",
+        "v1.27.0-rc.01",
+        "v1.27.0+build..1",
+        "v1.27.0+build_1",
+    ],
+)
+def test_version_parser_rejects_invalid_semver(version: str) -> None:
+    completed = _run("parse-version", json.dumps({"gitVersion": version}))
+
+    assert completed.returncode != 0
+    assert "missing or invalid" in completed.stderr
+
+
+def test_normalize_version_outputs_strict_version_without_v_prefix() -> None:
+    completed = _run("normalize-version", "", "--version", "v1.26.6+k3s1")
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "1.26.6+k3s1"
+
+
+def test_normalize_version_rejects_invalid_semver() -> None:
+    completed = _run("normalize-version", "", "--version", "1.27.0-rc.01")
+
+    assert completed.returncode != 0
+    assert "invalid Kubernetes version" in completed.stderr
+
+
+def _activation_inspection(
+    *,
+    strategy: str = "native",
+    schedule: str = "30 16 * * 1-5",
+    controller_timezone: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "suspend": False,
+        "state": "active",
+        "releaseName": "a-stock",
+        "namespace": "a-stock",
+        "name": "a-stock-data-collection",
+        "strategy": strategy,
+        "controllerTimeZone": controller_timezone,
+        "schedule": schedule,
+        "timeZone": "Asia/Shanghai" if strategy == "native" else None,
+        "startingDeadlineSeconds": 1800,
+    }
+
+
+def _run_activation(
+    inspection: dict[str, Any], mode: str, now: str
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "validate-activation-window",
+        json.dumps(inspection),
+        "--mode",
+        mode,
+        "--now",
+        now,
+    )
+
+
+@pytest.mark.parametrize(
+    ("inspection", "now"),
+    [
+        (_activation_inspection(), "2026-09-07T08:40:00Z"),
+        (
+            _activation_inspection(
+                strategy="controller",
+                schedule="30 8 * * 1-5",
+                controller_timezone="Etc/UTC",
+            ),
+            "2026-09-07T08:40:00Z",
+        ),
+        (
+            _activation_inspection(
+                strategy="controller",
+                controller_timezone="Asia/Shanghai",
+            ),
+            "2026-09-07T16:40:00+08:00",
+        ),
+    ],
+    ids=["native-shanghai", "controller-utc", "controller-shanghai"],
+)
+def test_immediate_catch_up_accepts_current_deadline_window_and_reports_timezones(
+    inspection: dict[str, Any], now: str
+) -> None:
+    completed = _run_activation(inspection, "immediate-catch-up", now)
+
+    assert completed.returncode == 0, completed.stderr
+    audit = json.loads(completed.stdout)
+    assert audit["allowed"] is True
+    assert audit["decision"] == "allowed"
+    assert audit["previousTriggerUtc"] == "2026-09-07T08:30:00Z"
+    assert audit["previousTriggerShanghai"] == "2026-09-07T16:30:00+08:00"
+    assert audit["nextTriggerUtc"] == "2026-09-08T08:30:00Z"
+    assert audit["safetyBufferSeconds"] == 300
+
+
+@pytest.mark.parametrize(
+    ("now", "expected_previous", "expected_next"),
+    [
+        ("2026-09-07T09:00:01Z", "2026-09-07T08:30:00Z", "2026-09-08T08:30:00Z"),
+        ("2026-09-13T00:00:00Z", "2026-09-11T08:30:00Z", "2026-09-14T08:30:00Z"),
+    ],
+    ids=["weekday", "weekend"],
+)
+def test_next_schedule_accepts_after_deadline_with_safety_buffer(
+    now: str, expected_previous: str, expected_next: str
+) -> None:
+    completed = _run_activation(_activation_inspection(), "next-schedule", now)
+
+    assert completed.returncode == 0, completed.stderr
+    audit = json.loads(completed.stdout)
+    assert audit["previousTriggerUtc"] == expected_previous
+    assert audit["nextTriggerUtc"] == expected_next
+    assert audit["secondsUntilNextTrigger"] >= 300
+
+
+@pytest.mark.parametrize(
+    "now",
+    ["2026-09-07T09:00:01Z", "2026-09-13T00:00:00Z"],
+    ids=["weekday", "weekend"],
+)
+def test_immediate_catch_up_rejects_missed_deadline(now: str) -> None:
+    completed = _run_activation(
+        _activation_inspection(), "immediate-catch-up", now
+    )
+
+    assert completed.returncode != 0
+    assert "outside the previous trigger deadline" in completed.stderr
+
+
+def test_next_schedule_rejects_before_previous_deadline_passes() -> None:
+    completed = _run_activation(
+        _activation_inspection(), "next-schedule", "2026-09-07T09:00:00Z"
+    )
+
+    assert completed.returncode != 0
+    assert "deadline to have passed" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("now", "expected_success"),
+    [
+        ("2026-09-07T08:25:00Z", True),
+        ("2026-09-07T08:25:01Z", False),
+    ],
+)
+def test_next_schedule_enforces_five_minute_safety_buffer(
+    now: str, expected_success: bool
+) -> None:
+    completed = _run_activation(_activation_inspection(), "next-schedule", now)
+
+    assert (completed.returncode == 0) is expected_success
+    if not expected_success:
+        assert "next-trigger safety buffer" in completed.stderr
+
+
+def test_inspect_reports_positive_starting_deadline() -> None:
+    cronjob = {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {
+            "name": "a-stock-data-collection",
+            "namespace": "a-stock",
+            "labels": {"app.kubernetes.io/instance": "a-stock"},
+        },
+        "spec": {
+            "schedule": "30 16 * * 1-5",
+            "timeZone": "Asia/Shanghai",
+            "suspend": False,
+            "startingDeadlineSeconds": 1800,
+        },
+    }
+
+    completed = _run(
+        "inspect",
+        yaml.safe_dump(cronjob),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["startingDeadlineSeconds"] == 1800
+
+
+@pytest.mark.parametrize("starting_deadline", [0, -1, True, "1800", None])
+def test_inspect_rejects_non_positive_or_non_integer_starting_deadline(
+    starting_deadline: Any,
+) -> None:
+    cronjob = {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {
+            "name": "a-stock-data-collection",
+            "namespace": "a-stock",
+            "labels": {"app.kubernetes.io/instance": "a-stock"},
+        },
+        "spec": {
+            "schedule": "30 16 * * 1-5",
+            "timeZone": "Asia/Shanghai",
+            "suspend": False,
+            "startingDeadlineSeconds": starting_deadline,
+        },
+    }
+
+    completed = _run(
+        "inspect",
+        yaml.safe_dump(cronjob),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+    )
+
+    assert completed.returncode != 0
+    assert "positive integer" in completed.stderr
 
 
 @pytest.mark.parametrize(

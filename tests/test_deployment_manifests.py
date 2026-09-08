@@ -501,12 +501,58 @@ def test_checked_native_kustomize_rejects_126_before_kubectl(tmp_path: Path) -> 
     assert not marker.exists()
 
 
-def test_runbook_does_not_offer_unguarded_schedule_activation_commands() -> None:
+@pytest.mark.parametrize(
+    "version",
+    [
+        "01.27.0",
+        "1.027.0",
+        "1.27.00",
+        "1.27.0-.",
+        "1.27.0-rc..1",
+        "1.27.0-rc.01",
+        "1.27.0+build..1",
+        "1.27.0+build_1",
+        "1.27.0-rc.1",
+    ],
+)
+def test_checked_native_kustomize_rejects_invalid_or_prerelease_version_before_kubectl(
+    tmp_path: Path, version: str
+) -> None:
+    marker = tmp_path / "kubectl-called"
+    fake_kubectl = tmp_path / "kubectl"
+    fake_kubectl.write_text(
+        f"#!/usr/bin/env sh\nprintf called > {marker}\nexit 99\n",
+        encoding="utf-8",
+    )
+    fake_kubectl.chmod(0o755)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(K3S_RENDER_SCRIPT),
+            "--kube-version",
+            version,
+            "--kubectl",
+            str(fake_kubectl),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert not marker.exists()
+
+
+def test_runbook_does_not_offer_unguarded_schedule_write_commands() -> None:
     content = RUNBOOK.read_text(encoding="utf-8")
     helm_upgrades = [line for line in content.splitlines() if line.startswith("helm upgrade")]
+    kubectl_cronjob_patches = [
+        line for line in content.splitlines() if line.startswith("kubectl patch cronjob")
+    ]
 
     assert helm_upgrades
     assert all("marketEnvironment.scheduledCollection.enabled=false" in line for line in helm_upgrades)
     assert all("--reuse-values" not in line for line in helm_upgrades)
-    assert "kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{\"spec\":{\"suspend\":false}}'" not in content
+    assert not kubectl_cronjob_patches
     assert "kubectl create job -n a-stock --from=cronjob" not in content

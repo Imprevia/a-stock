@@ -6,8 +6,10 @@ import copy
 import json
 import re
 import sys
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -17,6 +19,15 @@ TRACKED_LIVE_KINDS = {
     "Deployment": "apps/v1",
     "CronJob": "batch/v1",
 }
+SEMVER_PATTERN = re.compile(
+    r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\."
+    r"(?P<patch>0|[1-9]\d*)"
+    r"(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+(?P<build>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+ACTIVATION_SAFETY_BUFFER_SECONDS = 300
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def fail(message: str) -> None:
@@ -57,6 +68,12 @@ def load_json_path(path: Path, description: str) -> dict[str, Any]:
             return load_json(stream, description)
     except OSError as exc:
         fail(f"could not read {description} file {path}: {exc}")
+
+
+def normalize_semver(value: Any) -> str:
+    if not isinstance(value, str) or SEMVER_PATTERN.fullmatch(value) is None:
+        fail(f"invalid Kubernetes version: {value}")
+    return value.removeprefix("v")
 
 
 def cronjob_for(
@@ -103,6 +120,12 @@ def inspect(
         schedule = spec.get("schedule")
         if not isinstance(schedule, str) or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* 1-5", schedule):
             fail("CronJob spec.schedule must be one numeric weekday trigger")
+        minute, hour = (int(item) for item in schedule.split()[:2])
+        if minute > 59 or hour > 23:
+            fail("CronJob spec.schedule must contain a valid clock time")
+        starting_deadline = spec.get("startingDeadlineSeconds")
+        if type(starting_deadline) is not int or starting_deadline <= 0:
+            fail("CronJob spec.startingDeadlineSeconds must be a positive integer")
         time_zone = spec.get("timeZone")
         if time_zone is not None and time_zone != "Asia/Shanghai":
             fail("native CronJob timeZone must equal Asia/Shanghai")
@@ -127,6 +150,7 @@ def inspect(
             "controllerTimeZone": controller_timezone,
             "schedule": schedule,
             "timeZone": time_zone,
+            "startingDeadlineSeconds": starting_deadline,
         }
 
     if required_state != "any" and state != required_state:
@@ -850,15 +874,125 @@ def compare_live_desired(
             fail(f"live declarative state differs from desired for {key}")
 
 
+def parse_utc_now(value: str | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"invalid activation time: {value}")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        fail("activation time must include a UTC offset")
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def audit_timestamp(value: datetime, target_timezone: timezone | ZoneInfo) -> str:
+    rendered = value.astimezone(target_timezone).isoformat(timespec="seconds")
+    return rendered.replace("+00:00", "Z")
+
+
+def activation_trigger_pair(
+    now: datetime, scheduler_timezone: ZoneInfo, hour: int, minute: int
+) -> tuple[datetime, datetime]:
+    local_date = now.astimezone(scheduler_timezone).date()
+    candidates = []
+    for offset in range(-8, 9):
+        candidate_date = local_date + timedelta(days=offset)
+        if candidate_date.weekday() < 5:
+            candidates.append(
+                datetime.combine(
+                    candidate_date,
+                    time(hour=hour, minute=minute),
+                    tzinfo=scheduler_timezone,
+                ).astimezone(timezone.utc)
+            )
+    previous = [candidate for candidate in candidates if candidate <= now]
+    following = [candidate for candidate in candidates if candidate > now]
+    if not previous or not following:
+        fail("could not determine the surrounding weekday schedule triggers")
+    return max(previous), min(following)
+
+
+def validate_activation_window(
+    inspection: dict[str, Any], mode: str, now_value: str | None
+) -> dict[str, Any]:
+    if (
+        inspection.get("enabled") is not True
+        or inspection.get("suspend") is not False
+        or inspection.get("state") != "active"
+    ):
+        fail("activation window requires an active scheduling inspection")
+
+    schedule = inspection.get("schedule")
+    if not isinstance(schedule, str) or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* 1-5", schedule):
+        fail("activation inspection has an invalid weekday schedule")
+    minute, hour = (int(item) for item in schedule.split()[:2])
+    if minute > 59 or hour > 23:
+        fail("activation inspection schedule has an invalid clock time")
+    starting_deadline = inspection.get("startingDeadlineSeconds")
+    if type(starting_deadline) is not int or starting_deadline <= 0:
+        fail("activation inspection startingDeadlineSeconds must be a positive integer")
+
+    strategy = inspection.get("strategy")
+    if strategy == "native":
+        if inspection.get("timeZone") != "Asia/Shanghai":
+            fail("native activation inspection must use Asia/Shanghai")
+        scheduler_timezone_name = "Asia/Shanghai"
+    elif strategy == "controller":
+        scheduler_timezone_name = inspection.get("controllerTimeZone")
+        if not isinstance(scheduler_timezone_name, str):
+            fail("controller activation inspection must declare its timezone")
+        expected_schedule = {
+            "Etc/UTC": "30 8 * * 1-5",
+            "Asia/Shanghai": "30 16 * * 1-5",
+        }.get(scheduler_timezone_name)
+        if schedule != expected_schedule:
+            fail("controller activation inspection has an unapproved timezone mapping")
+    else:
+        fail("activation inspection strategy must be native or controller")
+
+    scheduler_timezone = ZoneInfo(scheduler_timezone_name)
+    now = parse_utc_now(now_value)
+    previous, following = activation_trigger_pair(now, scheduler_timezone, hour, minute)
+    deadline = previous + timedelta(seconds=starting_deadline)
+    seconds_after_previous = int((now - previous).total_seconds())
+    seconds_until_next = int((following - now).total_seconds())
+
+    if mode == "immediate-catch-up":
+        if now > deadline:
+            fail("immediate-catch-up is outside the previous trigger deadline")
+    elif mode == "next-schedule":
+        if now <= deadline:
+            fail("next-schedule requires the previous trigger deadline to have passed")
+        if seconds_until_next < ACTIVATION_SAFETY_BUFFER_SECONDS:
+            fail("next-schedule is inside the next-trigger safety buffer")
+    else:
+        fail(f"unsupported activation mode: {mode}")
+
+    return {
+        "allowed": True,
+        "decision": "allowed",
+        "mode": mode,
+        "nowUtc": audit_timestamp(now, timezone.utc),
+        "schedule": schedule,
+        "schedulerTimeZone": scheduler_timezone_name,
+        "startingDeadlineSeconds": starting_deadline,
+        "safetyBufferSeconds": ACTIVATION_SAFETY_BUFFER_SECONDS,
+        "secondsAfterPreviousTrigger": seconds_after_previous,
+        "secondsUntilNextTrigger": seconds_until_next,
+        "previousTriggerUtc": audit_timestamp(previous, timezone.utc),
+        "previousTriggerShanghai": audit_timestamp(previous, SHANGHAI),
+        "previousDeadlineUtc": audit_timestamp(deadline, timezone.utc),
+        "nextTriggerUtc": audit_timestamp(following, timezone.utc),
+        "nextTriggerShanghai": audit_timestamp(following, SHANGHAI),
+    }
+
+
 def parse_server_version(payload: Any) -> str:
     if not isinstance(payload, dict):
         fail("Kubernetes /version response must be an object")
     value = payload.get("gitVersion")
-    if not isinstance(value, str) or not re.fullmatch(
-        r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
-        value,
-    ):
+    if not isinstance(value, str) or SEMVER_PATTERN.fullmatch(value) is None:
         fail("Kubernetes /version gitVersion is missing or invalid")
     return value.removeprefix("v")
 
@@ -868,6 +1002,13 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("parse-version")
+    normalize_version = subparsers.add_parser("normalize-version")
+    normalize_version.add_argument("--version", required=True)
+    activation_window = subparsers.add_parser("validate-activation-window")
+    activation_window.add_argument(
+        "--mode", choices=("next-schedule", "immediate-catch-up"), required=True
+    )
+    activation_window.add_argument("--now")
 
     for name in ("inspect", "extract-suspended"):
         child = subparsers.add_parser(name)
@@ -915,6 +1056,14 @@ def main() -> None:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             fail(f"invalid Kubernetes /version JSON: {exc}")
         print(parse_server_version(payload))
+    elif args.command == "normalize-version":
+        print(normalize_semver(args.version))
+    elif args.command == "validate-activation-window":
+        result = validate_activation_window(
+            load_json(sys.stdin, "scheduling inspection"), args.mode, args.now
+        )
+        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+        sys.stdout.write("\n")
     elif args.command in {"inspect", "extract-suspended"}:
         documents = load_documents(sys.stdin)
         cronjob, result = inspect(

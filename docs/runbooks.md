@@ -207,12 +207,9 @@ python -m src.market_environment.cli snapshots scheduled-refresh
 # 查看 CronJob、最近 Job 和结构化日志
 kubectl get cronjob,job -n a-stock
 kubectl logs -n a-stock job/<job-name>
-
-# 紧急 fail-safe 可直接暂停 exact CronJob
-kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":true}}'
 ```
 
-不得使用裸 `kubectl patch ... suspend:false` 恢复周期调度；TrueNAS 只能走下文受控的 `--activate-schedule`。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由 4.4 冻结的 Gate B packet 给出 exact name/resource/日期，并由覆盖该精确操作的 Gate B authorization 执行。
+不得使用裸 `kubectl patch` 暂停或恢复周期调度；TrueNAS 的正常激活、回退和激活失败补偿都必须走下文受控入口，由入口绑定实际 release-derived CronJob、clean/upstream、冻结 hashes、授权与 live state。紧急停止新调度使用 `--disable-schedule`；若目标状态不确定则保持 NO-GO 并按已审核的 exact-resource incident packet 处置。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由 4.4 冻结的 Gate B packet 给出 exact name/resource/日期，并由覆盖该精确操作的 Gate B authorization 执行。
 
 业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
@@ -248,7 +245,7 @@ bash scripts/deploy-truenas-k3s.sh --disable-schedule \
   --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
 ```
 
-所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。read-only discovery 不要求 baseline/overlay/version/render hash，先从 `/version` JSON 取得真实版本并输出 release 事实；完成该步骤后才用真实 release/namespace/version 冻结 baseline、overlay 与 render。server dry-run 及后续写模式还必须校验 `REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256` 和 `REVIEWED_RENDER_SHA256`。server dry-run 需 `SERVER_DRY_RUN_AUTHORIZED=true` 和覆盖 exact packet 的 `GATE_B_AUTHORIZATION_REF`；suspended release 需同一 exact Gate B 引用和 `SUSPENDED_RELEASE_AUTHORIZED=true`；Gate C 需 Gate B evidence 被接受后形成的 `GATE_C_AUTHORIZATION_REF`、`SCHEDULE_ACTIVATION_AUTHORIZED=true` 和明确 catch-up mode；off rollback 需 `SCHEDULE_ROLLBACK_AUTHORIZED=true`。布尔开关只启用本地 guard，不能自行充当授权证据。
+所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。read-only discovery 不要求 baseline/overlay/version/render hash，先从 `/version` JSON 取得真实版本并输出 release 事实；完成该步骤后才用真实 release/namespace/version 冻结 baseline、overlay 与 render。所有版本字符串使用严格 SemVer，非法 identifier、core/numeric-prerelease 前导零和低于 native stable boundary 的 prerelease 都在 kubectl/target access 前拒绝。server dry-run 及后续写模式还必须校验 `REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256` 和 `REVIEWED_RENDER_SHA256`。server dry-run 需 `SERVER_DRY_RUN_AUTHORIZED=true` 和覆盖 exact packet 的 `GATE_B_AUTHORIZATION_REF`；suspended release 需同一 exact Gate B 引用和 `SUSPENDED_RELEASE_AUTHORIZED=true`；Gate C 需 Gate B evidence 被接受后形成的 `GATE_C_AUTHORIZATION_REF`、`SCHEDULE_ACTIVATION_AUTHORIZED=true` 和明确 catch-up mode。入口从 active render 的 schedule/timezone/`startingDeadlineSeconds` 计算 previous/next trigger 并记录 UTC/上海审计值：`next-schedule` 必须已越过上一触发的 1800 秒 deadline 且距下一触发至少 300 秒，`immediate-catch-up` 只允许在上一触发的 deadline window 内。activation 写前启用 fail-safe，Helm、写后读取/比较/最终查询或 HUP/INT/TERM 任一失败都对 release-derived exact CronJob 补偿 `suspend=true`，全部 postcondition 通过才解除。off rollback 需 `SCHEDULE_ROLLBACK_AUTHORIZED=true`。布尔开关只启用本地 guard，不能自行充当授权证据；authorization ref 是对外部人工授权记录的受限字符审计指针，脚本不访问 Multica 校验其正文，packet/operation 约束由本地 typed state、冻结 hashes 与 live diff 独立强制。
 
 从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确 imageID digest 和目标 containerd tag→digest；任一 drift 都拒绝。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；Gate C 失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
 
