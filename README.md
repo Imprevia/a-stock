@@ -62,7 +62,7 @@ helm history a-stock --namespace a-stock
 helm rollback a-stock <revision> --namespace a-stock --wait --timeout 3m
 ```
 
-Chart 的 Dashboard 支持 Kubernetes 1.26+。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；可关闭或暂停，但 controller 策略在获授权 canary 证明触发前必须保持暂停。TrueNAS 使用受版本控制的 baseline 加 `scheduled-suspended`、`scheduled-active` 或 `scheduled-off` overlay；Kustomize 固定输出原生 `spec.timeZone`，仅作为 Kubernetes 1.27+ 的渲染路径。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
+Chart 的 Dashboard 支持 Kubernetes 1.26+。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；可关闭或暂停，但 controller 策略在获授权 canary 证明触发前必须保持暂停。TrueNAS 使用受版本控制的 baseline 加 `scheduled-suspended`、`scheduled-active` 或 `scheduled-off` overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
 
 ## 交易规则平台
 

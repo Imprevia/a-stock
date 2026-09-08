@@ -2,9 +2,9 @@
 
 See `proposal.md` for motivation and `specs/after-market-data-collection-scheduling/spec.md` for the changed contract.
 
-The issue's latest production observation is authoritative: TrueNAS runs k3s 1.26 and Helm revision 7 with `marketEnvironment.scheduledCollection.enabled=false`; no CronJob or collection Job exists, while the single Dashboard Deployment is healthy. The existing CronJob already calls `snapshots scheduled-refresh`, uses the Dashboard image and PVC, runs the five independent datasets, sets `concurrencyPolicy: Forbid` and `backoffLimit: 0`, and relies on SQLite dataset/date leases for concurrency with manual triggers.
+The issue reports that TrueNAS runs k3s 1.26 and Helm revision 7 with `marketEnvironment.scheduledCollection.enabled=false`, no CronJob or collection Job, and a healthy single Dashboard Deployment. These production facts remain unverified until the authorized read-only preflight; release decisions must use that live capture, not the report. The repository CronJob already calls `snapshots scheduled-refresh`, uses the Dashboard image and PVC, runs the five independent datasets, sets `concurrencyPolicy: Forbid` and `backoffLimit: 0`, and relies on SQLite dataset/date leases for concurrency with manual triggers.
 
-The incompatibility is in deployment policy. `Chart.yaml` admits Kubernetes 1.26, the enabled Helm template always emits `spec.timeZone`, and the TrueNAS one-click defaults request an enabled but suspended CronJob. Repository documentation instead treats `spec.timeZone` as a stable Kubernetes 1.27+ boundary and requires 1.26 to keep the CronJob disabled. Helm client-side rendering cannot prove target API admission or controller trigger semantics, and container `TZ=Asia/Shanghai` affects the CLI but not when Kubernetes creates a Job.
+The initial incompatibility was in deployment policy. `Chart.yaml` admitted Kubernetes 1.26 while the enabled Helm template always emitted `spec.timeZone`, and the TrueNAS one-click defaults requested an enabled but suspended CronJob. Repository documentation instead treated `spec.timeZone` as a stable Kubernetes 1.27+ boundary and required 1.26 to keep the CronJob disabled. Helm client-side rendering cannot prove target API admission or controller trigger semantics, and container `TZ=Asia/Shanghai` affects the CLI but not when Kubernetes creates a Job.
 
 ## Goals / Non-Goals
 
@@ -53,13 +53,13 @@ The existing complete TrueNAS values remain the production baseline. Implementat
 - `scheduled-active`: the same settings with `suspend=false`;
 - `scheduled-off`: `enabled=false` for rollback.
 
-The deployment entry point will render the baseline plus exactly one reviewed overlay using the actual target Kubernetes version. It will print the selected strategy and effective Shanghai trigger time, reject an unclean or inconsistent production packet, and run Helm lint/template offline. Its target admission-probe mode is separately explicit and may run server-side dry-run only under Gate B, because dry-run create/patch still requires write-class RBAC and traverses admission. It will not automatically create the canary or validation Job or unsuspend the application CronJob; those remain explicit operator actions tied to separate approvals.
+Read-only discovery first binds only a clean reviewed HEAD/upstream and Chart hash, then reports the actual release name, namespace, and target Kubernetes version without requiring a circular precomputed render hash. The operator next renders the baseline plus exactly one reviewed overlay with those facts and freezes the Chart, baseline, overlay, and render hashes. Before any later network, build, or write operation, the deployment entry point validates the final merged typed values, including strict booleans, the Shanghai business timezone, `enabled/suspend`, and the applicable exact-operation authorization reference. It rejects in-process repository updates, snapshots the reviewed Chart and values into a per-run read-only directory, and uses only that snapshot for admission or Helm upgrade. Its admission-probe mode may submit only the exact suspended CronJob to the exact namespace with the pre-authorized create dry-run verb; active overlays, full Helm manifest streams, other kinds, and namespace drift are rejected. Actual releases compare both Helm history and API-server live state against the reviewed packet, bind the Deployment→ReplicaSet→ready Dashboard Pod and target containerd tag to one exact digest, use atomic upgrade, and verify the server-observed postcondition. Gate C additionally proves that the live suspended resource matches the reviewed packet and that the candidate changes only `/spec/suspend`; a failed activation attempts an exact emergency suspend before reporting uncertain state. The entry point never creates the canary or validation Job automatically.
 
 Layered values avoid copying the full image/PVC/NodePort/manual-write baseline into multiple files and make activation diffs narrow. Production evidence records the ordered values files and SHA-256 hashes so a later release cannot silently change the strategy.
 
 ### 4. Treat target evidence as a release gate, not a planning assumption
 
-After implementation is reviewed, a read-only preflight must capture the actual Helm revision and full values, k3s version, absence/current state of CronJobs and Jobs, controller timezone evidence, image tag and digest, Deployment security context, Service exposure, PVC/PV identity and capacity, snapshot path, manual-refresh setting, and rollback baseline. `docs/status.md` currently mentions revision 6, while the issue reports revision 7; implementation must correct documentation, but release decisions use the live read-only capture.
+After implementation is reviewed, the already recorded read-only permission may be used to capture the final clean HEAD and remote tracking state, actual release name and namespace, Helm revision and full values, reliably parsed k3s `/version`, absence/current state of CronJobs and Jobs, controller timezone evidence, image tag and digest, Deployment security context, Service exposure, PVC/PV identity/capacity/free space, snapshot path and ownership, manual-refresh setting, and rollback baseline. The issue reports revision 7, but release decisions use the live read-only capture. Only after that capture can the actual version-derived render become the frozen Gate B packet.
 
 The read-only preflight may inspect API discovery/OpenAPI but does not submit server-side dry-run requests. The rendered suspended CronJob must pass target `--dry-run=server` under Gate B with the exact resource, namespace, dry-run verb, and admission audit evidence recorded. A client-side `helm template --kube-version 1.26.x` result is necessary for tests but is not production compatibility evidence.
 
@@ -67,12 +67,15 @@ The read-only preflight may inspect API discovery/OpenAPI but does not submit se
 
 ```mermaid
 flowchart LR
-  A[OpenSpec approved] --> B[Implementation and offline gates]
-  B --> C[Read-only production preflight]
-  C -->|production validation authorized| T[Admission probe and no-provider canary]
-  T --> D[Suspended CronJob]
-  D --> E[One-time Job from CronJob]
-  E -->|evidence accepted and activation authorized| F[Recurring schedule active]
+  A[OpenSpec approved] --> B[New clean HEAD and independent GO]
+  B --> S[Stage 3 accepted]
+  S --> C[Permitted read-only production preflight]
+  C --> P[Frozen exact packet review]
+  P -->|Gate B action authorization| T[Exact admission and no-provider canary]
+  T --> K[Non-overwriting SQLite backup]
+  K --> D[Suspended CronJob]
+  D --> E[One named provider-backed Job]
+  E -->|evidence accepted, catch-up chosen, Gate C operation authorized| F[Recurring schedule active]
   C -->|no-go| G[Remain disabled]
   T -->|no-go| G
   D -->|threshold breach| H[Suspend or disable]
@@ -81,8 +84,9 @@ flowchart LR
 ```
 
 - Gate A authorizes repository implementation only.
-- Gate B authorizes a bounded production validation window: the exact server-side dry-run, one no-provider scheduling canary, consistent SQLite backup, suspended application CronJob release, and exactly one named provider-backed Job cloned from that CronJob after settlement.
-- Gate C authorizes changing only `suspend` to false after the validation evidence is reviewed.
+- The recorded Gate B/Gate C progression permission authorizes moving through prerequisite review; it is not an exact production-operation authorization.
+- Gate B action authorization is recorded only after the frozen packet review and covers a bounded validation window: the exact server-side dry-run, one no-provider scheduling canary, consistent SQLite backup, suspended application CronJob release, and exactly one named provider-backed Job cloned from that CronJob after settlement.
+- Gate C operation authorization is recorded only after the validation evidence is reviewed and explicitly selects catch-up behavior while authorizing only `suspend: true -> false`.
 
 Before the provider-backed Job is created, the CronJob image reference must equal the Dashboard's immutable tag, the running Dashboard `imageID` must equal the containerd content digest for that tag, and the release window must freeze image import/re-tag operations. The Job must then resolve to that same image digest and PVC, retain its non-root/read-only-rootfs/no-token security posture, reach required provider endpoints, emit one structured JSON result, release all leases, leave `PRAGMA quick_check=ok`, and make exact-date results visible through provider-free reads. A `partial` exit is not automatically retried; recurring activation remains blocked until the partial result is explicitly accepted.
 
@@ -134,11 +138,11 @@ Rejected. An application scheduler couples the trigger to Dashboard process heal
 
 ### Approval and scope control
 
-Gate A was approved on 2026-09-08 (Asia/Shanghai) in `GYT-45`. The approval evidence is member comment `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b`, followed by the recorded gate decision in `01a07e3d-5a77-7972-a9cd-360c9d41dc84`. It authorizes repository implementation and offline verification only. Gate B production validation and Gate C recurring activation remain unapproved.
+Gate A was approved on 2026-09-08 (Asia/Shanghai) in `GYT-45`. The approval evidence is member comment `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b`, followed by the recorded gate decision in `01a07e3d-5a77-7972-a9cd-360c9d41dc84`. It authorizes repository implementation and offline verification only. Gate B/Gate C progression authorization was later recorded in `GYT-47` comment `01a07fcd-9140-7aa7-b05a-83485a7ed8c7`, but execution is blocked until the rejected HEAD is remediated and independently approved, Stage 3 passes, the exact Gate B packet is reviewed, and Gate C records its catch-up choice after Gate B evidence acceptance.
 
 Backend scope covers the Helm timezone strategies and fail-closed validation, TrueNAS scheduling overlays, the deployment entry-point contract, deployment tests, and the required repository documentation. There is **no frontend scope**: the approved change does not alter Dashboard behavior, UI, browser flows, or frontend-facing API fields. No frontend issue will be assigned unless a later reviewed change adds such behavior.
 
-The current shared worktree is not an implementation baseline: it contains unrelated tracked and untracked changes in documents and tests that this change must also touch. Planning records may be added without reverting those changes, but implementation must begin from a reviewed clean commit in an isolated branch/worktree. If that isolation cannot be established, or implementation requires a new configuration/API contract not stated in these approved artifacts, work stops and returns for architecture review.
+The shared worktree is not an implementation baseline because it contains unrelated tracked and untracked changes. GYT-47 therefore uses the isolated branch/worktree rooted at baseline `bb0de075c4336e6a4532b38f221b043d9859f590`. Independent review rejected HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`; it cannot become the Stage 3 baseline. If a new clean remediation HEAD cannot be established, or implementation requires a new external configuration/API contract not stated in these approved artifacts, work stops and returns for architecture review.
 
 ### Milestones, ownership, and evidence
 
@@ -146,12 +150,12 @@ Schedule estimates are relative to promotion of the first backend backlog issue 
 
 | Milestone | Target | Owner | Dependency | Deliverable and acceptance evidence | State |
 |---|---|---|---|---|---|
-| M0 - Gate A plan | D0 | Senior project manager | Gate A approval | Approval trace, active plan, serial backlog assignment, strict OpenSpec validation; no code or production action | Ready for review |
-| M1 - Clean baseline and documentation contract | D1 | Senior backend engineer (`GYT-47`) | M0 accepted; reviewed clean commit/worktree | Import approved change without unrelated diffs; reconcile README, product spec, architecture, runbook, and status; fast docs-contract gate before code | Backlog |
-| M2 - Repository implementation | D2-D3 | Senior backend engineer (`GYT-47`) | M1 passes | Tasks 2.1-2.5: Helm strategies/validation, three TrueNAS overlays, deployment entry point, Kustomize boundary; focused tests green | Backlog |
+| M0 - Gate A plan | D0 | Senior project manager | Gate A approval | Approval trace, active plan, serial backlog assignment, strict OpenSpec validation; no code or production action | Accepted |
+| M1 - Clean baseline and documentation contract | D1 | Senior backend engineer (`GYT-47`) | M0 accepted; reviewed clean commit/worktree | Import approved change without unrelated diffs; reconcile README, product spec, architecture, runbook, and status; fast docs-contract gate before code | Completed; NO-GO documentation conflicts remediated |
+| M2 - Repository implementation | D2-D3 | Senior backend engineer (`GYT-47`) | M1 passes | Tasks 2.1-2.5: Helm strategies/validation, three TrueNAS overlays, deployment entry point, Kustomize boundary; focused tests green | Ready for independent review |
 | M3 - Offline verification and review packet | D4 | Senior backend engineer (`GYT-48`) | `GYT-47` terminal and reviewed | Tasks 3.1-3.5: render matrix, manifest invariants, fake-provider regressions, Helm/OpenSpec/docs/diff gates, clean reviewable diff | Backlog |
-| M4 - Production validation preparation | Unscheduled | Unassigned until separately authorized | M3 accepted plus explicit read-only/Gate B authorization | Tasks 4.x-5.x evidence packet and bounded production validation | Not authorized |
-| M5 - Recurring activation | Unscheduled | Unassigned until Gate C | M4 evidence accepted plus explicit Gate C authorization | Tasks 6.x; fresh diff changes only `/spec/suspend` | Not authorized |
+| M4 - Production validation preparation | Unscheduled | Unassigned until prerequisites pass | M3 accepted plus exact packet review | Tasks 4.x-5.x evidence packet and bounded production validation | Progression authorized; blocked |
+| M5 - Recurring activation | Unscheduled | Unassigned until Gate B evidence acceptance | M4 evidence accepted plus explicit catch-up choice | Tasks 6.x; fresh diff changes only `/spec/suspend` | Progression authorized; blocked |
 
 M1 and M2 are one backend implementation stage because the documentation baseline must be completed before its first code edit. M3 is a later serial backend stage and remains parked until the implementation stage is terminal and reviewed. Tasks 4.x onward are not assigned in this Gate A plan.
 
@@ -165,16 +169,16 @@ M1 and M2 are one backend implementation stage because the documentation baselin
 
 ## Migration Plan
 
-1. Obtain Gate A approval for these OpenSpec artifacts. This does not authorize code or production changes until a new apply request is issued.
+1. Use the recorded Gate A approval for these OpenSpec artifacts only for the completed apply request's repository implementation and offline verification; it does not authorize production access or mutation.
 2. Create and register an active exec plan; first reconcile product, architecture, runbook, status, README, and Chart compatibility facts.
 3. Implement the two Helm strategies, fail-closed validation, layered TrueNAS profiles, deployment preflight checks, and the Kubernetes 1.26/1.27 render matrix. Do not change collector application code.
 4. Run offline tests with fake providers only: enabled/disabled/suspended modes, native 1.27+, controller 1.26 UTC/Shanghai, invalid combinations, shared image/PVC/security, deadlines/history, Helm lint/template, OpenSpec strict validation, docs-contract full, and `git diff --check`.
-5. Submit the implementation and offline evidence for review. Obtain permission for a read-only target preflight; update the release packet with live revision/values/controller-runtime/image/PVC evidence without submitting an admission request.
-6. Obtain Gate B production-validation authorization. Run the exact server-side dry-run, execute and capture one no-provider scheduling canary, and stop if the predicted controller trigger is not observed.
+5. Submit the implementation and offline evidence for independent GO. After GYT-47 and Stage 3 are accepted, use the already recorded read-only permission to update the release packet with live revision/values/controller-runtime/image/PVC evidence without submitting an admission request.
+6. Freeze and review the actual-version packet, then record Gate B action authorization covering its exact admission, canary, backup, suspended release, and one named Job. Run the exact server-side dry-run, execute and capture one no-provider scheduling canary, and stop if the predicted controller trigger is not observed.
 7. Create a non-overwriting SQLite backup, record its checksum and validate a recovery copy, then release only the suspended profile. Before provider work, bind the CronJob tag to the running Dashboard/containerd digest and freeze image changes.
 8. Create exactly one uniquely named provider-backed Job from the suspended CronJob after the Shanghai settlement boundary. Capture Pod spec, image digest, PVC UID, logs, run/tasks, provider outcomes, lease release, SQLite integrity, provider-free reads, duration, restarts, and PVC delta.
 9. If any date, timezone, security, storage, integrity, lease, or resource threshold fails, suspend/disable and follow the exact-Job incident procedure. A provider-only partial requires explicit disposition and is never automatically replayed.
-10. Obtain Gate C recurring-activation authorization with the allowed catch-up behavior recorded. Recheck the locked hashes and require a fresh Helm diff containing only `spec.suspend`; apply the active overlay and observe the next authorized controller-created Job timestamp against 16:30 `Asia/Shanghai`.
+10. After Gate B evidence is accepted, record a Gate C operation authorization with the allowed catch-up behavior. Recheck the locked hashes and require a fresh live diff containing only `spec.suspend`; apply the active overlay and observe the next authorized controller-created Job timestamp against 16:30 `Asia/Shanghai`.
 11. Keep the off profile and validated SQLite backup available; after the observation window, update runbook/status and the exec plan's completion evidence and remaining gaps.
 
 Rollback:

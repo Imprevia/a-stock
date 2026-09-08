@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 K3S_DIR = ROOT / "deploy" / "k3s"
+K3S_NATIVE_OVERLAY = ROOT / "deploy" / "k3s-native-scheduled"
+K3S_RENDER_POLICY = K3S_NATIVE_OVERLAY / "render-policy.yaml"
+K3S_RENDER_SCRIPT = ROOT / "scripts" / "render-k3s.py"
+RUNBOOK = ROOT / "docs" / "runbooks.md"
 CHART_DIR = ROOT / "deploy" / "helm" / "a-stock"
 TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
 TRUENAS_SCHEDULED_SUSPENDED_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
@@ -70,18 +75,20 @@ def _environment(container: dict) -> dict[str, str]:
     return {item["name"]: item["value"] for item in container["env"]}
 
 
-def test_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary() -> None:
+def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary() -> None:
     kustomization = _load_yaml(K3S_DIR / "kustomization.yaml")
+    native_kustomization = _load_yaml(K3S_NATIVE_OVERLAY / "kustomization.yaml")
     deployment = _load_yaml(K3S_DIR / "deployment.yaml")
     service = _load_yaml(K3S_DIR / "service.yaml")
-    cronjob = _load_yaml(K3S_DIR / "market-data-collection-cronjob.yaml")
+    cronjob = _load_yaml(K3S_NATIVE_OVERLAY / "market-data-collection-cronjob.yaml")
     deployment_pod = deployment["spec"]["template"]["spec"]
     deployment_container = deployment_pod["containers"][0]
     cron_spec = cronjob["spec"]
     cron_pod = cron_spec["jobTemplate"]["spec"]["template"]["spec"]
     cron_container = cron_pod["containers"][0]
 
-    assert "market-data-collection-cronjob.yaml" in kustomization["resources"]
+    assert "market-data-collection-cronjob.yaml" not in kustomization["resources"]
+    assert "market-data-collection-cronjob.yaml" in native_kustomization["resources"]
     assert cron_spec["schedule"] == "30 16 * * 1-5"
     assert cron_spec["timeZone"] == "Asia/Shanghai"
     assert cron_spec["concurrencyPolicy"] == "Forbid"
@@ -107,6 +114,7 @@ def test_helm_values_define_enabled_configurable_scheduled_collection() -> None:
     scheduled = values["marketEnvironment"]["scheduledCollection"]
 
     assert chart["kubeVersion"] == ">=1.26.0-0"
+    assert values["marketEnvironment"]["timezone"] == "Asia/Shanghai"
     assert scheduled["enabled"] is True
     assert scheduled["suspend"] is False
     assert scheduled["schedule"] == "30 16 * * 1-5"
@@ -262,6 +270,40 @@ def test_helm_rejects_invalid_scheduling_profiles(arguments: tuple[str, ...], me
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "field",
+    [
+        "enabled",
+        "suspend",
+        "controllerTimeZoneVerified",
+        "controllerCanaryVerified",
+    ],
+)
+def test_helm_rejects_string_scheduling_booleans(field: str) -> None:
+    error = _render_helm_error(
+        "--set-string",
+        f"marketEnvironment.scheduledCollection.{field}=false",
+    )
+
+    assert f"scheduledCollection/{field}" in error
+    assert "got string, want boolean" in error
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_helm_rejects_non_shanghai_business_timezone(enabled: str) -> None:
+    error = _render_helm_error(
+        "--set",
+        f"marketEnvironment.scheduledCollection.enabled={enabled}",
+        "--set",
+        "marketEnvironment.timezone=Etc/UTC",
+    )
+
+    assert "marketEnvironment/timezone" in error
+    assert "value must be 'Asia/Shanghai'" in error
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 def test_helm_render_supports_node_port_on_kubernetes_126() -> None:
     documents = _render_helm(
         "--kube-version",
@@ -376,21 +418,43 @@ def test_truenas_deploy_script_offline_render_does_not_access_a_target() -> None
             str(TRUENAS_SCHEDULED_SUSPENDED_VALUES),
             "--kube-version",
             "1.26.6",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
         ],
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present"},
     )
 
     assert "effectiveShanghai=16:30 weekdays" in completed.stdout
     assert "kind: CronJob" in completed.stdout
     assert "timeZone:" not in completed.stdout
+    assert "name: research-a-stock-data-collection" in completed.stdout
+    assert "namespace: market-data" in completed.stdout
+    assert "environment file" not in completed.stderr
 
 
 @pytest.mark.skipif(KUBECTL_BINARY is None, reason="kubectl is not installed")
-def test_kubectl_kustomize_renders_one_data_collection_cronjob() -> None:
+def test_base_kustomize_renders_dashboard_without_cronjob() -> None:
     completed = subprocess.run(
         [str(KUBECTL_BINARY), "kustomize", str(K3S_DIR)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    documents = [document for document in yaml.safe_load_all(completed.stdout) if document]
+    cronjobs = [document for document in documents if document.get("kind") == "CronJob"]
+
+    assert cronjobs == []
+
+
+@pytest.mark.skipif(KUBECTL_BINARY is None, reason="kubectl is not installed")
+def test_checked_native_kustomize_renders_one_data_collection_cronjob() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(K3S_RENDER_SCRIPT), "--kube-version", "1.27.0"],
         check=True,
         capture_output=True,
         text=True,
@@ -401,4 +465,48 @@ def test_kubectl_kustomize_renders_one_data_collection_cronjob() -> None:
     assert len(cronjobs) == 1
     assert cronjobs[0]["metadata"]["name"] == "market-data-collection"
     assert cronjobs[0]["spec"]["timeZone"] == "Asia/Shanghai"
-    assert "Kubernetes 1.27+" in (K3S_DIR / "market-data-collection-cronjob.yaml").read_text(encoding="utf-8")
+    render_policy = _load_yaml(K3S_RENDER_POLICY)
+    assert render_policy == {
+        "minimumKubernetesVersion": "1.27.0",
+        "scheduledCollectionTimezoneStrategy": "native",
+    }
+    assert K3S_RENDER_POLICY.name not in _load_yaml(K3S_NATIVE_OVERLAY / "kustomization.yaml")["resources"]
+
+
+def test_checked_native_kustomize_rejects_126_before_kubectl(tmp_path: Path) -> None:
+    marker = tmp_path / "kubectl-called"
+    fake_kubectl = tmp_path / "kubectl"
+    fake_kubectl.write_text(
+        f"#!/usr/bin/env sh\nprintf called > {marker}\nexit 99\n",
+        encoding="utf-8",
+    )
+    fake_kubectl.chmod(0o755)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(K3S_RENDER_SCRIPT),
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--kubectl",
+            str(fake_kubectl),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "requires Kubernetes 1.27.0+" in completed.stderr
+    assert not marker.exists()
+
+
+def test_runbook_does_not_offer_unguarded_schedule_activation_commands() -> None:
+    content = RUNBOOK.read_text(encoding="utf-8")
+    helm_upgrades = [line for line in content.splitlines() if line.startswith("helm upgrade")]
+
+    assert helm_upgrades
+    assert all("marketEnvironment.scheduledCollection.enabled=false" in line for line in helm_upgrades)
+    assert all("--reuse-values" not in line for line in helm_upgrades)
+    assert "kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{\"spec\":{\"suspend\":false}}'" not in content
+    assert "kubectl create job -n a-stock --from=cronjob" not in content

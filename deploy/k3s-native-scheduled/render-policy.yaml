@@ -1,0 +1,3 @@
+# Machine-readable boundary consumed by scripts/render-k3s.py.
+minimumKubernetesVersion: 1.27.0
+scheduledCollectionTimezoneStrategy: native

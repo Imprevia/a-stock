@@ -44,7 +44,7 @@ docker build -t registry.example.com/a-stock/market-environment:2026.09.02 .
 docker push registry.example.com/a-stock/market-environment:2026.09.02
 ```
 
-将 `deploy/k3s/kustomization.yaml` 的 `images.newName` 和 `newTag` 改为集群可拉取的地址与固定版本，然后部署：
+将 `deploy/k3s/kustomization.yaml` 的 `images.newName` 和 `newTag` 改为集群可拉取的地址与固定版本，然后部署 Dashboard 基础资源；该 base 不包含 CronJob：
 
 ```bash
 kubectl apply -k deploy/k3s
@@ -81,33 +81,33 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart。首次发布：
 
 ```bash
-helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set marketEnvironment.scheduledCollection.enabled=false --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
 ```
 
 Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
 
-后续仅更新镜像时保留已有 values；Chart 模板或默认 values 有变化时，不要使用 `--reuse-values`，而应重新传入受版本控制的环境 values 文件：
+所有通用 Helm 发布都必须显式保持 scheduled collection 关闭。不要使用 `--reuse-values`，因为它会继承目标上无法从当前命令审阅的调度状态；每次都重新传入受版本控制的完整环境 values，并显式覆盖 `enabled=false`：
 
 ```bash
-# 仅更新镜像
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --reuse-values --set image.tag=2026.09.02-2 --wait --timeout 3m
+# 仅更新镜像，仍重新提交完整环境 values
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set image.tag=2026.09.02-2 --wait --timeout 3m
 
 # 同时应用新的 Chart 默认值和环境覆盖
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set image.tag=2026.09.02-2 --wait --timeout 3m
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set image.tag=2026.09.02-2 --wait --timeout 3m
 ```
 
 渲染和检查：
 
 ```bash
 helm lint deploy/helm/a-stock
-helm template a-stock deploy/helm/a-stock --namespace a-stock
+helm template a-stock deploy/helm/a-stock --namespace a-stock --set marketEnvironment.scheduledCollection.enabled=false
 helm get values a-stock --namespace a-stock
 helm history a-stock --namespace a-stock
 ```
 
-启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。Chart 的 Dashboard 支持 Kubernetes 1.26+，但 CronJob timezone 需显式选择：`native` 仅支持 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；1.26 只能选 `controller`，省略该字段并要求已验证的 `Etc/UTC` 或 `Asia/Shanghai` controller timezone 和精确 16:30 上海映射。Kustomize 无条件输出 native timezone，仅是 1.27+ 渲染路径。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
+启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。Chart 的 Dashboard 支持 Kubernetes 1.26+，但 CronJob timezone 需显式选择：`native` 仅支持 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；1.26 只能选 `controller`，省略该字段并要求已验证的 `Etc/UTC` 或 `Asia/Shanghai` controller timezone 和精确 16:30 上海映射。`deploy/k3s/` base 只渲染 Dashboard；native CronJob 位于同级 `deploy/k3s-native-scheduled/`，只允许通过 `python scripts/render-k3s.py --kube-version <actual-version>` 检查渲染，1.26 会在启动 kubectl 前失败。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
 
 ### TrueNAS 1.20 + VM 1.21 一键发布
 
@@ -121,7 +121,7 @@ cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
 editor deploy/truenas/deploy.env
 ```
 
-至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `TRUENAS_INGRESS_PORT`。动态存储与 Traefik 环境可设置 `STORAGE_CLASS`、`INGRESS_CLASS`；TrueNAS 24.04 无 StorageClass/IngressClass 的静态 PVC 环境使用 `deploy/truenas/values-secure-manual-collection.yaml` 作为 baseline，再按顺序叠加唯一的 `values-scheduled-suspended.yaml`、`values-scheduled-active.yaml` 或 `values-scheduled-off.yaml`。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若本机 `K3S_API_LOCAL_PORT` 已占用，应换成其他 1024–65535 端口；只有在 TrueNAS 已将 6443 精确放行给管理机时才设置 `K3S_API_SSH_TUNNEL=false`。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
+至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `TRUENAS_INGRESS_PORT`。动态存储与 Traefik 环境可设置 `STORAGE_CLASS`、`INGRESS_CLASS`；TrueNAS 24.04 无 StorageClass/IngressClass 的静态 PVC 环境使用 `deploy/truenas/values-secure-manual-collection.yaml` 作为 baseline，再按顺序叠加唯一的 `values-scheduled-suspended.yaml`、`values-scheduled-active.yaml` 或 `values-scheduled-off.yaml`。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若本机 `K3S_API_LOCAL_PORT` 已占用，应换成其他 1024–65535 端口；只有在 TrueNAS 已将 6443 精确放行给管理机时才设置 `K3S_API_SSH_TUNNEL=false`。仓库更新必须作为独立前置步骤完成并重新审阅；部署脚本固定拒绝 `GIT_UPDATE=true`，不会在校验与发布之间 fetch、checkout 或 pull。
 
 执行一键发布：
 
@@ -129,7 +129,7 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh
 ```
 
-脚本使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。调度相关操作先使用离线 render 模式配合 baseline 和一个 overlay；只读 discovery 与 server-side dry-run 是分离模式，后者必须显式写授权。不得因为手工 Job、PVC 或日志检查而把 CronJob 解除暂停：controller 策略必须在获授权 no-provider canary 证明预测触发后，才可由单独 Gate C 授权 active overlay。
+普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。调度发布不得复用这条构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 Gate C activation 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values 和对应授权。入口不会自动创建 canary/Job；Gate C 还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。
 
 后续更新只需在 1.21 拉取代码并重新执行同一命令；如需明确指定版本，可在环境文件设置新的 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档，旧 tag 可用于 Helm 回滚。
 
@@ -150,7 +150,7 @@ location / {
 
 ### TrueNAS NodePort 手工采集
 
-问题报告为当前线上 Helm revision 7，但该值必须在后续获授权只读预检中与完整 values、镜像 digest、PVC UID 和 controller timezone 一起确认；此前 revision 4/6 的文字不能替代 live evidence。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
+问题报告为当前线上 Helm revision 7，但该值必须在后续只读 preflight 中与完整 values、镜像 digest、PVC UID 和 controller timezone 一起确认；此前 revision 4/6 的文字不能替代 live evidence。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
 
 离线检查候选：
 
@@ -208,17 +208,59 @@ python -m src.market_environment.cli snapshots scheduled-refresh
 kubectl get cronjob,job -n a-stock
 kubectl logs -n a-stock job/<job-name>
 
-# Kustomize native CronJob (Kubernetes 1.27+ only) 的暂停与恢复；恢复需 Gate C 授权
+# 紧急 fail-safe 可直接暂停 exact CronJob
 kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":true}}'
-kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":false}}'
-
-# 仅在 Gate B 明确授权后，从 suspended CronJob 创建一次性验证 Job；名称必须唯一
-kubectl create job -n a-stock --from=cronjob/market-data-collection market-data-collection-manual-20260903
 ```
+
+不得使用裸 `kubectl patch ... suspend:false` 恢复周期调度；TrueNAS 只能走下文受控的 `--activate-schedule`。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由 4.4 冻结的 Gate B packet 给出 exact name/resource/日期，并由覆盖该精确操作的 Gate B authorization 执行。
 
 业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
 Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不渲染 CronJob，`suspend=true` 保留资源但不创建新 Job，`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC；Gate A 不创建 Job 或解除暂停。
+
+仓库入口的离线与后续目标模式如下；目标命令只可在对应前置证据和精确环境变量已冻结时运行：
+
+```bash
+# 无 env、SSH 或目标 API；release/namespace 也参与最终 render
+bash scripts/deploy-truenas-k3s.sh --offline-render \
+  --baseline-values deploy/truenas/values-secure-manual-collection.yaml \
+  --scheduling-overlay deploy/truenas/values-scheduled-suspended.yaml \
+  --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
+
+# 已记录的 read-only permission；只要求 clean reviewed HEAD/upstream 与 chart hash
+bash scripts/deploy-truenas-k3s.sh --read-only-discovery \
+  --release-name a-stock --namespace a-stock
+
+# Gate B exact admission：只把单个 suspend=true CronJob 交给 create dryRun=All
+bash scripts/deploy-truenas-k3s.sh --server-dry-run \
+  --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
+
+# Gate B suspended release；复用 FROZEN_IMAGE_*，禁止 build/import/re-tag
+bash scripts/deploy-truenas-k3s.sh --release-suspended \
+  --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
+
+# Gate C；GATE_C_CATCH_UP_MODE 必须为 next-schedule 或 immediate-catch-up
+bash scripts/deploy-truenas-k3s.sh --activate-schedule \
+  --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
+
+# 调度回退；只允许移除 exact CronJob，其他 release manifest 必须不变
+bash scripts/deploy-truenas-k3s.sh --disable-schedule \
+  --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
+```
+
+所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。read-only discovery 不要求 baseline/overlay/version/render hash，先从 `/version` JSON 取得真实版本并输出 release 事实；完成该步骤后才用真实 release/namespace/version 冻结 baseline、overlay 与 render。server dry-run 及后续写模式还必须校验 `REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256` 和 `REVIEWED_RENDER_SHA256`。server dry-run 需 `SERVER_DRY_RUN_AUTHORIZED=true` 和覆盖 exact packet 的 `GATE_B_AUTHORIZATION_REF`；suspended release 需同一 exact Gate B 引用和 `SUSPENDED_RELEASE_AUTHORIZED=true`；Gate C 需 Gate B evidence 被接受后形成的 `GATE_C_AUTHORIZATION_REF`、`SCHEDULE_ACTIVATION_AUTHORIZED=true` 和明确 catch-up mode；off rollback 需 `SCHEDULE_ROLLBACK_AUTHORIZED=true`。布尔开关只启用本地 guard，不能自行充当授权证据。
+
+从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确 imageID digest 和目标 containerd tag→digest；任一 drift 都拒绝。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；Gate C 失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
+
+Gate B/Gate C 的推进授权已经记录，但执行仍须严格按以下前置顺序，任何一步失败都保持 disabled/suspended：
+
+1. GYT-47 新 clean HEAD 独立审阅 GO，随后 GYT-48 完成离线矩阵、fake-provider 回归和 full gates。
+2. 使用评论 `01a07fda-22e9-705d-b2c3-eb19276d0e73` 已记录的 read-only permission，且仅在前置仓库验收完成后，读取目标 `/version`、release/namespace、Helm history/full values、Deployment/Service/CronJob/Job/PVC/PV 和 controller 时区证据；此阶段不得提交 server-side dry-run。
+3. 用实际 release/namespace/Kubernetes version 渲染并冻结 baseline + suspended overlay，完成 4.4 exact packet review，再记录覆盖 exact admission/canary/backup/suspended release/one named Job 的 Gate B action authorization。server-side dry-run 只允许对目标 namespace 中该 release 的单个 `suspend=true` CronJob 使用预先记录的必要 verb；active/off overlay、其他 kind、其他 namespace 或额外 manifest 一律拒绝。
+4. 另行执行无 provider、无 PVC、无 service-account token 的 controller canary，捕获预测分钟、事件、API 时间戳与 UTC/上海日志；配置中的 `controllerCanaryVerified=true` 不能替代这份证据。
+5. 使用 `sqlite3.Connection.backup()` 创建不覆盖既有文件的独立备份，记录源 PVC UID、空间阈值、路径、大小和 SHA-256，并只在恢复副本上验证 `PRAGMA quick_check` 和 provider-free 读取。
+6. 从 clean、无 drift 的已审阅 commit 复用冻结镜像，仅发布 suspended overlay；禁止在此路径构建、导入或重打 tag。随后只创建获批名称的一次性 provider-backed Job并收集 Gate B 证据。
+7. Gate B 证据被接受后，必须形成覆盖最终操作且明确选择 `next-schedule` 或 `immediate catch-up` 的 Gate C authorization。激活前重新绑定 commit/chart/values/image hashes，当前 live release 必须等于已审阅 suspended manifest，候选 diff 必须只含 `/spec/suspend: true -> false`；否则授权失效并返回审阅。
 
 第一版只用 cron 周范围排除周末，不维护交易所节假日日历。工作日节假日可能产生 failed/partial run；这是可审计的失败安全行为，任何 provider 无法证明属于当天的数据都不得落入当天快照。不要用 `--force` 或跨日期复制规避该限制。
 
@@ -295,7 +337,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 | hooks 连通 | `git config core.hooksPath`（应为 `.githooks`） | 终端输出 | 是 |
 | Build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Backend tests | `.venv` Python 下运行 `python -m pytest tests -q` | 终端输出 / plan | 是 |
-| k3s manifests | `kubectl kustomize deploy/k3s` 与集群端 `kubectl apply --dry-run=server -k deploy/k3s` | 终端输出 / plan | 是 |
+| k3s manifests | `kubectl kustomize deploy/k3s` 只渲染 Dashboard base；`python scripts/render-k3s.py --kube-version 1.27.0` 检查 `deploy/k3s-native-scheduled/render-policy.yaml` 后才渲染 native overlay；不得把该输出作为 TrueNAS 1.26 admission probe | 终端输出 / plan | 是 |
 | Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
 | Snapshot refresh | `python -m src.market_environment.cli snapshots refresh --as-of <date>` | CLI JSON / plan | 是 |
 | Collection management | 启用开发开关后验证状态 GET、单项 POST、全部 POST、轮询和 partial 结果 | pytest / 浏览器 / plan | 是 |

@@ -1,8 +1,23 @@
-{{- if .Values.marketEnvironment.scheduledCollection.enabled }}
+{{- $scheduled := .Values.marketEnvironment.scheduledCollection }}
+{{- if not (kindIs "bool" $scheduled.enabled) }}
+{{- fail "marketEnvironment.scheduledCollection.enabled must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.suspend) }}
+{{- fail "marketEnvironment.scheduledCollection.suspend must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.controllerTimeZoneVerified) }}
+{{- fail "marketEnvironment.scheduledCollection.controllerTimeZoneVerified must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.controllerCanaryVerified) }}
+{{- fail "marketEnvironment.scheduledCollection.controllerCanaryVerified must be a boolean" }}
+{{- end }}
+{{- if ne .Values.marketEnvironment.timezone "Asia/Shanghai" }}
+{{- fail "marketEnvironment.timezone must be Asia/Shanghai" }}
+{{- end }}
+{{- if $scheduled.enabled }}
 {{- if not .Values.persistence.enabled }}
 {{- fail "marketEnvironment.scheduledCollection.enabled requires persistence.enabled=true" }}
 {{- end }}
-{{- $scheduled := .Values.marketEnvironment.scheduledCollection }}
 {{- $strategy := default "" $scheduled.timezoneStrategy }}
 {{- $schedule := default "" $scheduled.schedule }}
 {{- $settlement := default "" .Values.marketEnvironment.settlementTime }}
@@ -65,6 +80,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: {{ include "a-stock.dataCollectionName" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "a-stock.labels" . | nindent 4 }}
     app.kubernetes.io/component: data-collection

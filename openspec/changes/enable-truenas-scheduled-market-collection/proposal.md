@@ -1,6 +1,6 @@
 ## Why
 
-TrueNAS k3s currently has no market-data CronJob because the production Helm values disable scheduled collection. Enabling the existing template directly is unsafe: the target cluster is k3s 1.26, while the template unconditionally emits `spec.timeZone` and the repository has conflicting 1.26/1.27 compatibility claims.
+The issue reports that TrueNAS k3s currently has no market-data CronJob and that its production Helm values disable scheduled collection; those live facts remain unverified until the permitted read-only preflight. Enabling the existing template directly is unsafe: the reported target is k3s 1.26, while the template unconditionally emits `spec.timeZone` and the repository has conflicting 1.26/1.27 compatibility claims.
 
 ## What Changes
 
@@ -9,14 +9,14 @@ TrueNAS k3s currently has no market-data CronJob because the production Helm val
 - Stage TrueNAS activation as an authorized no-provider scheduling canary, a suspended application CronJob, then one approved provider-backed Job using the shared image/PVC, and finally a separately approved unsuspend after trigger semantics, logs, provider access, SQLite integrity, and exact-date results pass.
 - Preserve the existing five-dataset coordinator, CLI, failure isolation, `Forbid` concurrency policy, zero automatic retries, single-node SQLite boundary, Dashboard/NodePort behavior, and manual-collection setting.
 - Define rollback as suspend/disable first while preserving the Deployment, PVC, snapshots, and audit records; do not uninstall the release or perform a destructive data rollback.
-- Require explicit user approval of these planning artifacts before implementation, and a second explicit production authorization after offline implementation evidence and a read-only target preflight.
+- Require explicit approval of the planning artifacts before implementation. Gate B/Gate C progression authorization has since been recorded, but it does not bypass the new clean HEAD review, Stage 3 acceptance, exact production packet, Gate B evidence acceptance, or the explicit Gate C catch-up choice.
 
 ## Approval Record
 
 - Gate A was approved on 2026-09-08 (Asia/Shanghai) in parent issue `GYT-45`: member comment `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` replied "批准" to the architecture-review thread, and follow-up comment `01a07e3d-5a77-7972-a9cd-360c9d41dc84` recorded the decision.
 - This approval authorizes repository implementation and offline verification only. It does not authorize production access or preflight, a server-side dry-run, the no-provider canary, a SQLite backup, a suspended application CronJob, any provider-backed Job, or recurring activation.
 - Delivery is governed by `docs/exec-plans/active/enable-truenas-scheduled-market-collection.md`. Gate A repository work is assigned to the existing senior backend engineer through serial backlog stages; there is no frontend scope because no UI, browser workflow, or frontend API contract changes are planned.
-- Gate B and Gate C remain unapproved. Later-stage work must not be created or promoted as executable work until its explicit authorization is recorded.
+- Gate B and Gate C progression authorization was recorded later in `GYT-47` member comment `01a07fcd-9140-7aa7-b05a-83485a7ed8c7`. Execution remains blocked: the rejected HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969` must be remediated and independently approved, Stage 3 must pass, the exact Gate B packet must be reviewed, and Gate C must explicitly select `next-schedule` or `immediate catch-up` after Gate B evidence is accepted.
 
 ## Capabilities
 
@@ -32,5 +32,5 @@ None.
 
 - Deployment configuration and validation: `deploy/helm/a-stock/`, `deploy/truenas/`, `scripts/deploy-truenas-k3s.sh`, and `tests/test_deployment_manifests.py`.
 - Documentation: a new active execution plan plus `README.md`, `docs/product-specs/market-environment-dashboard.md`, `docs/architecture.md`, `docs/runbooks.md`, and `docs/status.md` before implementation changes.
-- Production boundary: the current Helm revision, image, Service, Deployment, PVC, and controller timezone must be captured during a later read-only preflight; production changes remain out of scope until separately authorized.
+- Production boundary: the current Helm revision, image, Service, Deployment, PVC, and controller timezone must be captured during a later read-only preflight. The recorded progression permission covers that read-only step after repository prerequisites; each production mutation remains out of scope until the frozen exact packet receives Gate B action authorization or the accepted Gate B evidence receives final Gate C operation authorization, as applicable.
 - No application API, dataset, provider, SQLite schema, or frontend behavior changes are planned.

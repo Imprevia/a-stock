@@ -41,7 +41,7 @@
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业与容量方向主域失败后允许降级到兼容延迟域，并保留实际来源和主域失败 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 盘后定时采集使用与 Dashboard 相同镜像和 SQLite PVC，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
-- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；controller 策略在获授权的 no-provider canary 观察到预测触发前不得解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
+- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，再由 exact Gate B action authorization 覆盖的 no-provider canary 实际观察预测触发，配置断言不能替代 canary 证据。canary 通过只允许继续非覆盖备份、suspended release 和一个已命名 provider-backed Job；Gate B 证据被接受并形成明确 catch-up 选择的 Gate C operation authorization、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
 - 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
 
 不包含自动下单、主体意图推断、未经来源核实的事件评分，也不宣称经验阈值已经通过 500 至 750 个交易日回测。高/中/低位亏钱效应在形成独立可追溯样本前保持数据不足。
@@ -77,7 +77,7 @@
 - 行业 `leader` 字段来自 provider 的名称字段，不返回领涨股证券代码。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。
 - 容量方向延迟域不足 30 个有效样本、缺少代码/名称/成交额或未按成交额非递增排列时必须拒绝保存；两个端点均失败时只保留同日期成功快照，不得跨日期替代。
-- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection`；1.26 controller 兼容路径仅在离线验证和后续授权预检证明时区映射后可用。
+- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection`；1.26 controller 兼容路径的 no-provider canary 只能证明触发映射并进入 Gate B 后半序列，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、Gate B evidence acceptance、明确 catch-up 的 Gate C operation authorization 与 suspend-only live diff 全部通过后才可激活。
 - scheduled-refresh 在结算时间前拒绝运行，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态和每项 warning 可在 `/data-collection` 查看。
 - CronJob 与手工触发同日期同数据集时不产生重复 provider 调用；异常退出后的 task 按现有 lease 过期规则恢复。
 - 禁用或暂停定时采集不影响 Dashboard、本地快照读取、手工 CLI 或开发期开关控制的 HTTP 采集。
