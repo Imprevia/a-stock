@@ -29,7 +29,7 @@
   - 容量方向已支持 `push2` 到 `push2delay` 的统一 Top-N 校验和可审计降级；当前市场日真实 smoke 在主域断连后保存 `eastmoney-clist-delay` / `fallback` 的 30 个观察样本，双端点失败继续使用精确日期的 `failed-retained` / `failed-missing`。
   - 数据采集管理已通过 124 个 Python 测试、11 个前端测试和生产构建；当前市场日行业真实 smoke 在主域断连后由 `eastmoney-clist-delay` 成功返回 100 条记录。
   - 已提供单镜像 k3s 部署配置：`deploy/k3s/` 提供原生 Kustomize 清单，`deploy/helm/a-stock/` 提供可覆盖镜像、Ingress/TLS、PVC、资源与调度参数的 Helm Chart；两者均保持单副本非 root 运行、健康探针和 SQLite 持久化。
-  - 已新增部署内盘后自动采集：k3s/Helm CronJob 默认在 `Asia/Shanghai` 工作日 16:30 调用 `snapshots scheduled-refresh`，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；支持关闭、暂停和调度覆盖。
+  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 正在 Gate A 离线验证，支持关闭、暂停和受限调度覆盖。
   - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。部署与 CLI 测试已纳入全量 `117 passed, 3 skipped`，真实 Helm/kubectl render 补充验证为 `5 passed`。
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
@@ -40,7 +40,8 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- 市场环境看板已部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，线上 Helm revision 6 使用镜像 `localhost/a-stock-market-environment:20260906-001322-1904b66`，保持固定 `NodePort:32001` 且手工采集开启；静态 Retain PV、单副本非 root Deployment、Ingress 与盘后定时采集关闭保持不变。1.21 到 1.20 的路由正常，TrueNAS 6443 仍只允许本机来源，部署脚本改经受限 SSH 回环隧道访问 k3s API。已完成 SQLite 一致性备份、健康/页面/状态 GET 和 core 采集验收；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
+- `enable-truenas-scheduled-market-collection` 正在 Gate A 仓库实施阶段：隔离 baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 上先对齐 1.26 controller 与 1.27+ native timezone 策略、TrueNAS scheduling overlays 和离线 render 入口。问题报告为 Helm revision 7，但该数字、controller runtime timezone、镜像 digest 与 PVC identity 均待后续获授权只读预检确认；当前不访问目标环境且 CronJob 保持关闭。
+- 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续获授权只读预检确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
 
@@ -53,7 +54,7 @@
 
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
-- 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 SQLite 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按需恢复 revision 4 ClusterIP。
+- 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 SQLite 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按现场捕获的 pre-release 网络与 release 基线回退。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - SQLite refresh lease 只支持同一主机的本地文件系统，多主机部署需要共享缓存适配器。
 - 通达信不可用时五个指数仍串行进入降级链，本机冷缓存核心请求约 34 秒；章节拆分已避免额外证据继续阻塞首屏，但指数 provider 仍需独立优化。
@@ -73,4 +74,4 @@
 
 ## 最后更新
 
-2026-09-06
+2026-09-08

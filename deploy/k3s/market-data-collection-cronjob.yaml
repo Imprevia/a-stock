@@ -1,5 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
+# This manifest uses native CronJob timeZone support and requires Kubernetes 1.27+.
+# TrueNAS k3s 1.26 must use the Helm controller-timezone strategy instead.
 metadata:
   name: market-data-collection
   labels:

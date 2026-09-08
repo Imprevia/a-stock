@@ -67,7 +67,11 @@ marketEnvironment:
     enabled: true
     suspend: false
     schedule: "30 16 * * 1-5"
+    timezoneStrategy: native
     timeZone: Asia/Shanghai
+    controllerTimeZone: ""
+    controllerTimeZoneVerified: false
+    controllerCanaryVerified: false
     startingDeadlineSeconds: 1800
     activeDeadlineSeconds: 3600
     successfulJobsHistoryLimit: 3

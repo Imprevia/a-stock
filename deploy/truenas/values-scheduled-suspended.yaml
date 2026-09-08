@@ -1,0 +1,13 @@
+# Overlay for Gate B's reviewed suspended CronJob packet only. The evidence
+# flags are configuration assertions and must be replaced with actual preflight
+# and canary evidence before any production submission.
+marketEnvironment:
+  scheduledCollection:
+    enabled: true
+    suspend: true
+    timezoneStrategy: controller
+    timeZone: Asia/Shanghai
+    schedule: "30 8 * * 1-5"
+    controllerTimeZone: Etc/UTC
+    controllerTimeZoneVerified: true
+    controllerCanaryVerified: false

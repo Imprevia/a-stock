@@ -1,0 +1,5 @@
+# Non-destructive rollback overlay. It removes only the scheduled CronJob;
+# Dashboard, image, PVC, NodePort and manual-refresh values stay in the baseline.
+marketEnvironment:
+  scheduledCollection:
+    enabled: false

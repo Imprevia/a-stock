@@ -84,7 +84,7 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
 ```
 
-Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 `spec.timeZone` 仍要求 Kubernetes 1.27+；1.26 集群必须设置 `marketEnvironment.scheduledCollection.enabled=false`。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
+Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
 
@@ -107,7 +107,7 @@ helm get values a-stock --namespace a-stock
 helm history a-stock --namespace a-stock
 ```
 
-启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
+启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。Chart 的 Dashboard 支持 Kubernetes 1.26+，但 CronJob timezone 需显式选择：`native` 仅支持 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；1.26 只能选 `controller`，省略该字段并要求已验证的 `Etc/UTC` 或 `Asia/Shanghai` controller timezone 和精确 16:30 上海映射。Kustomize 无条件输出 native timezone，仅是 1.27+ 渲染路径。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
 
 ### TrueNAS 1.20 + VM 1.21 一键发布
 
@@ -121,7 +121,7 @@ cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
 editor deploy/truenas/deploy.env
 ```
 
-至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `TRUENAS_INGRESS_PORT`。动态存储与 Traefik 环境可设置 `STORAGE_CLASS`、`INGRESS_CLASS`；TrueNAS 24.04 无 StorageClass/IngressClass 的静态 PVC 环境应设置 `HELM_VALUES_FILE=deploy/truenas/values-secure-manual-collection.yaml`，脚本将使用该完整 values 并只用新镜像 repository/tag 覆盖其中版本。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若本机 `K3S_API_LOCAL_PORT` 已占用，应换成其他 1024–65535 端口；只有在 TrueNAS 已将 6443 精确放行给管理机时才设置 `K3S_API_SSH_TUNNEL=false`。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
+至少修改 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、`REMOTE_IMAGE_DIR`，并根据 1.20 的实际输出设置 `TRUENAS_INGRESS_PORT`。动态存储与 Traefik 环境可设置 `STORAGE_CLASS`、`INGRESS_CLASS`；TrueNAS 24.04 无 StorageClass/IngressClass 的静态 PVC 环境使用 `deploy/truenas/values-secure-manual-collection.yaml` 作为 baseline，再按顺序叠加唯一的 `values-scheduled-suspended.yaml`、`values-scheduled-active.yaml` 或 `values-scheduled-off.yaml`。`REMOTE_IMAGE_DIR` 应是 1.20 上允许该 SSH 用户写入的专用数据集目录。`INGRESS_HOST` 默认使用 `a-stock.k3s.lan`，NGINX 反代时必须发送相同的 `Host` 值。若本机 `K3S_API_LOCAL_PORT` 已占用，应换成其他 1024–65535 端口；只有在 TrueNAS 已将 6443 精确放行给管理机时才设置 `K3S_API_SSH_TUNNEL=false`。若希望脚本先更新代码，将 `GIT_UPDATE=true` 写入环境文件；脚本只接受干净工作区的 `git pull --ff-only`，也可通过 `GIT_REF` 固定到 tag 或 commit。
 
 执行一键发布：
 
@@ -129,7 +129,7 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh
 ```
 
-脚本使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。首次默认暂停盘后 CronJob；确认 PVC、外网行情出口和手工 Job 日志后，将 `SCHEDULED_COLLECTION_SUSPEND=false` 写入环境文件，再次执行脚本。
+脚本使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。调度相关操作先使用离线 render 模式配合 baseline 和一个 overlay；只读 discovery 与 server-side dry-run 是分离模式，后者必须显式写授权。不得因为手工 Job、PVC 或日志检查而把 CronJob 解除暂停：controller 策略必须在获授权 no-provider canary 证明预测触发后，才可由单独 Gate C 授权 active overlay。
 
 后续更新只需在 1.21 拉取代码并重新执行同一命令；如需明确指定版本，可在环境文件设置新的 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档，旧 tag 可用于 Helm 回滚。
 
@@ -150,7 +150,7 @@ location / {
 
 ### TrueNAS NodePort 手工采集
 
-当前线上 Helm revision 4 的 ClusterIP 完整 values 是受保护回滚基线。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
+问题报告为当前线上 Helm revision 7，但该值必须在后续获授权只读预检中与完整 values、镜像 digest、PVC UID 和 controller timezone 一起确认；此前 revision 4/6 的文字不能替代 live evidence。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
 
 离线检查候选：
 
@@ -160,13 +160,13 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock \
   --kube-version 1.26.6 -f deploy/truenas/values-secure-manual-collection.yaml
 ```
 
-获准发布前，确认节点/集群没有占用 `32001`，并保存 Helm history、revision 4 完整 values、Service、Deployment、Endpoint/EndpointSlice、运行镜像、Pod 安全上下文、PVC 名称/UID/PV/容量/使用量以及 Ingress/CronJob 状态。检查节点和路由器/防火墙不存在公网映射；没有 ACL 证据时只能把边界描述为“所有可路由网络”。
+获准发布前，确认节点/集群没有占用 `32001`，并保存 Helm history、获现场确认的当前 revision（问题报告为 7）、完整 values、Service、Deployment、Endpoint/EndpointSlice、运行镜像、Pod 安全上下文、PVC 名称/UID/PV/容量/使用量以及 Ingress/CronJob 状态。检查节点和路由器/防火墙不存在公网映射；没有 ACL 证据时只能把边界描述为“所有可路由网络”。
 
-使用 SQLite `Connection.backup()` 把 `/data/snapshots.sqlite3` 一致性备份到独立 TrueNAS 数据集，记录恢复路径和 SHA-256，并在备份上执行 `PRAGMA quick_check` 与只读查询；不要只复制活动 WAL 数据库主文件。对 revision 4 与候选执行 Helm diff，任何 PVC 删除/替换或不变量变化都必须停止发布。
+使用 SQLite `Connection.backup()` 把 `/data/snapshots.sqlite3` 一致性备份到独立 TrueNAS 数据集，记录恢复路径和 SHA-256，并在备份上执行 `PRAGMA quick_check` 与只读查询；不要只复制活动 WAL 数据库主文件。对现场捕获的当前 values 与候选执行 Helm diff，任何 PVC 删除/替换或不变量变化都必须停止发布。
 
 发布只能在单独批准的维护窗口执行一次 Helm upgrade 并等待单个 Deployment ready。随后从预期 LAN 客户端验证 `/api/health`、`/data-collection` 和 provider-free 状态 GET，再提交一次上海市场当天的受支持数据集并验证 202 和合法终态；历史不支持请求仍须返回 422。观察 collection run/task、provider warning/限流、SQLite lock、任务时长与 PVC 增长，并记录实际可达边界和最终 revision。
 
-若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步按需恢复 revision 4 ClusterIP values 或对应 Helm revision，确认 Service 无 nodePort；不得 uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
+若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步按现场捕获的 pre-release values 或对应 Helm revision 回退，确认 Service 语义符合该现场基线；不得 uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
 
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
@@ -208,17 +208,17 @@ python -m src.market_environment.cli snapshots scheduled-refresh
 kubectl get cronjob,job -n a-stock
 kubectl logs -n a-stock job/<job-name>
 
-# Kustomize 部署的 CronJob 暂停与恢复
+# Kustomize native CronJob (Kubernetes 1.27+ only) 的暂停与恢复；恢复需 Gate C 授权
 kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":true}}'
 kubectl patch cronjob market-data-collection -n a-stock --type=merge -p '{"spec":{"suspend":false}}'
 
-# 从现有 CronJob 创建一次性补跑；名称必须唯一
+# 仅在 Gate B 明确授权后，从 suspended CronJob 创建一次性验证 Job；名称必须唯一
 kubectl create job -n a-stock --from=cronjob/market-data-collection market-data-collection-manual-20260903
 ```
 
-默认 CronJob 使用 `Asia/Shanghai` 和 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。标准 `spec.timeZone` 要求 Kubernetes/k3s 1.27 或更高版本，Helm Chart 也声明该最低版本。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
+业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
-Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不渲染 CronJob，`suspend=true` 保留资源但不创建新 Job，`schedule` 和 `timeZone` 可覆盖默认值。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC。先以 suspend 部署后，可用 `kubectl create job --from=cronjob/<helm-fullname>-data-collection ...` 验证 PVC、外网和日志，再解除暂停。
+Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不渲染 CronJob，`suspend=true` 保留资源但不创建新 Job，`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC；Gate A 不创建 Job 或解除暂停。
 
 第一版只用 cron 周范围排除周末，不维护交易所节假日日历。工作日节假日可能产生 failed/partial run；这是可审计的失败安全行为，任何 provider 无法证明属于当天的数据都不得落入当天快照。不要用 `--force` 或跨日期复制规避该限制。
 
@@ -226,7 +226,7 @@ Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不
 
 - `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
-- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再决定是否恢复 revision 4 ClusterIP。
+- `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再按现场捕获的回退基线决定网络入口。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
 
@@ -326,7 +326,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 - **数据采集批次显示 `partial`**：查看每个 task 的 warning；成功 task 已独立保存，只对失败行执行重新采集，不要删除整批成功快照。
 - **最近采集失败但数据仍可用**：这是 `failed-retained`，页面继续服务同日期最后成功值并展示刷新错误；只有 `failed-missing` 才表示该日期没有可用数据。
 - **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 是否被显式设为 `0`，并检查所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
-- **CronJob 没有启动**：检查资源是否被 Helm `enabled=false` 省略、`spec.suspend`、schedule/timeZone、`startingDeadlineSeconds` 和控制器事件；先用 `kubectl create job --from=cronjob/...` 验证命令与 PVC。
+- **CronJob 没有启动**：检查资源是否被 Helm `enabled=false` 省略、`spec.suspend`、selected strategy、schedule、`startingDeadlineSeconds` 和控制器事件；1.26 controller strategy 还须复核时区证据与 canary。创建一次性 Job 仅在 Gate B 授权后进行。
 - **CronJob 为 Failed 但页面有部分数据**：检查容器 JSON 中的父状态和各 task warning；`partial` 有意返回非零且不自动整批重试，成功兄弟任务已经落盘，只补采失败行。
 - **CronJob 卡住或错过下一次运行**：查看 `activeDeadlineSeconds`、Pod 外网访问和 PVC 挂载；`concurrencyPolicy: Forbid` 会跳过重叠触发，确认旧 Job 结束后再补跑一次性 Job。
 - **节假日出现 failed/partial**：第一版预期会在周一至周五节假日触发；确认没有跨日期 snapshot 后保留审计记录，不要伪造当天成功。

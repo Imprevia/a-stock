@@ -19,6 +19,12 @@ usage() {
   cat <<'USAGE'
 Usage: bash scripts/deploy-truenas-k3s.sh [--env-file PATH]
 
+Scheduling-only modes never build, copy, import, upgrade, create a Job, or
+change CronJob suspension:
+  --offline-render --baseline-values PATH --scheduling-overlay PATH --kube-version VERSION
+  --read-only-discovery
+  --server-dry-run
+
 The command must run on the 1.21 Linux VM. It builds the image from the
 repository, smoke-tests it, copies an archive to TrueNAS 1.20, imports it into
 k3s/containerd, and installs/upgrades the Helm release.
@@ -26,11 +32,42 @@ USAGE
 }
 
 ENV_FILE="${DEPLOY_ENV_FILE:-/home/gyt/a-stock/deploy/truenas/deploy.env}"
+OPERATION=deploy
+BASELINE_VALUES_FILE=''
+SCHEDULING_OVERLAY_FILE=''
+TARGET_KUBERNETES_VERSION=''
 while (($#)); do
   case "$1" in
     --env-file)
       (($# >= 2)) || die '--env-file requires a path'
       ENV_FILE="$2"
+      shift 2
+      ;;
+    --offline-render)
+      OPERATION=offline-render
+      shift
+      ;;
+    --read-only-discovery)
+      OPERATION=read-only-discovery
+      shift
+      ;;
+    --server-dry-run)
+      OPERATION=server-dry-run
+      shift
+      ;;
+    --baseline-values)
+      (($# >= 2)) || die '--baseline-values requires a path'
+      BASELINE_VALUES_FILE="$2"
+      shift 2
+      ;;
+    --scheduling-overlay)
+      (($# >= 2)) || die '--scheduling-overlay requires a path'
+      SCHEDULING_OVERLAY_FILE="$2"
+      shift 2
+      ;;
+    --kube-version)
+      (($# >= 2)) || die '--kube-version requires a version'
+      TARGET_KUBERNETES_VERSION="$2"
       shift 2
       ;;
     --help|-h)
@@ -42,6 +79,63 @@ while (($#)); do
       ;;
   esac
 done
+
+render_scheduling_packet() {
+  local chart_dir="$1"
+  local baseline_values="$2"
+  local scheduling_overlay="$3"
+  local kube_version="$4"
+
+  helm lint --strict "$chart_dir" >&2
+  helm template a-stock "$chart_dir" --namespace a-stock \
+    --kube-version "$kube_version" \
+    --values "$baseline_values" \
+    --values "$scheduling_overlay"
+}
+
+report_effective_trigger() {
+  local rendered="$1"
+  local strategy controller_timezone schedule minute hour effective_hour
+
+  strategy="$(awk '/^[[:space:]]*timezoneStrategy:/ { print $2; exit }' "$SCHEDULING_OVERLAY_FILE")"
+  controller_timezone="$(awk '/^[[:space:]]*controllerTimeZone:/ { print $2; exit }' "$SCHEDULING_OVERLAY_FILE")"
+  schedule="$(printf '%s\n' "$rendered" | awk '
+    /^kind: CronJob$/ { cronjob = 1; next }
+    cronjob && /^[[:space:]]+schedule:/ {
+      sub(/^[[:space:]]*schedule:[[:space:]]*/, "")
+      gsub(/"/, "")
+      print
+      exit
+    }
+  ')"
+  if [[ -z "$schedule" ]]; then
+    log 'scheduling packet: disabled; no CronJob is rendered'
+    return
+  fi
+
+  read -r minute hour _ <<< "$schedule"
+  if [[ "$strategy" == controller ]]; then
+    log "scheduling packet: strategy=controller controllerTimeZone=$controller_timezone cron=$schedule effectiveShanghai=16:30 weekdays"
+  else
+    printf -v effective_hour '%02d' "$((10#$hour))"
+    log "scheduling packet: strategy=native cron=$schedule effectiveShanghai=${effective_hour}:$(printf '%02d' "$((10#$minute))") weekdays"
+  fi
+}
+
+if [[ "$OPERATION" == offline-render ]]; then
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
+  [[ -n "$BASELINE_VALUES_FILE" ]] || die '--offline-render requires --baseline-values'
+  [[ -n "$SCHEDULING_OVERLAY_FILE" ]] || die '--offline-render requires --scheduling-overlay'
+  [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die '--offline-render requires --kube-version'
+  [[ -f "$BASELINE_VALUES_FILE" ]] || die "baseline values file does not exist: $BASELINE_VALUES_FILE"
+  [[ -f "$SCHEDULING_OVERLAY_FILE" ]] || die "scheduling overlay does not exist: $SCHEDULING_OVERLAY_FILE"
+
+  RENDERED_PACKET="$(render_scheduling_packet "$CHART_DIR" "$BASELINE_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION")"
+  report_effective_trigger "$RENDERED_PACKET"
+  printf '%s\n' "$RENDERED_PACKET"
+  exit 0
+fi
 
 if [[ -f "$ENV_FILE" ]]; then
   # The file is an operator-owned local configuration file.
@@ -68,6 +162,12 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 NAMESPACE="${NAMESPACE:-a-stock}"
 RELEASE_NAME="${RELEASE_NAME:-a-stock}"
 HELM_VALUES_FILE="${HELM_VALUES_FILE:-}"
+if [[ -n "$BASELINE_VALUES_FILE" ]]; then
+  HELM_VALUES_FILE="$BASELINE_VALUES_FILE"
+fi
+SCHEDULING_OVERLAY_FILE="${SCHEDULING_OVERLAY_FILE:-}"
+SERVER_DRY_RUN_AUTHORIZED="${SERVER_DRY_RUN_AUTHORIZED:-false}"
+SCHEDULING_RELEASE_AUTHORIZED="${SCHEDULING_RELEASE_AUTHORIZED:-false}"
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 INGRESS_HOST="${INGRESS_HOST:-a-stock.k3s.lan}"
 TRUENAS_INGRESS_PORT="${TRUENAS_INGRESS_PORT:-80}"
@@ -96,6 +196,12 @@ if [[ -n "$HELM_VALUES_FILE" && "$HELM_VALUES_FILE" != /* ]]; then
 fi
 if [[ -n "$HELM_VALUES_FILE" ]]; then
   [[ -f "$HELM_VALUES_FILE" ]] || die "HELM_VALUES_FILE does not exist: $HELM_VALUES_FILE"
+fi
+if [[ -n "$SCHEDULING_OVERLAY_FILE" && "$SCHEDULING_OVERLAY_FILE" != /* ]]; then
+  SCHEDULING_OVERLAY_FILE="$REPO_DIR/$SCHEDULING_OVERLAY_FILE"
+fi
+if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
+  [[ -f "$SCHEDULING_OVERLAY_FILE" ]] || die "SCHEDULING_OVERLAY_FILE does not exist: $SCHEDULING_OVERLAY_FILE"
 fi
 if [[ "$GIT_UPDATE" == true ]]; then
   [[ -z "$(git status --porcelain)" ]] || die 'GIT_UPDATE=true requires a clean working tree'
@@ -135,6 +241,15 @@ fi
 [[ "$SCHEDULED_COLLECTION_ENABLED" =~ ^(true|false)$ ]] || die 'SCHEDULED_COLLECTION_ENABLED must be true or false'
 [[ "$SCHEDULED_COLLECTION_SUSPEND" =~ ^(true|false)$ ]] || die 'SCHEDULED_COLLECTION_SUSPEND must be true or false'
 [[ "$DISABLE_MANUAL_REFRESH" =~ ^(true|false)$ ]] || die 'DISABLE_MANUAL_REFRESH must be true or false'
+[[ "$SERVER_DRY_RUN_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SERVER_DRY_RUN_AUTHORIZED must be true or false'
+[[ "$SCHEDULING_RELEASE_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SCHEDULING_RELEASE_AUTHORIZED must be true or false'
+
+if [[ "$SCHEDULED_COLLECTION_ENABLED" == true && "$SCHEDULED_COLLECTION_SUSPEND" == false && "$SCHEDULING_RELEASE_AUTHORIZED" != true ]]; then
+  die 'SCHEDULED_COLLECTION_SUSPEND=false requires SCHEDULING_RELEASE_AUTHORIZED=true'
+fi
+if [[ "$OPERATION" != server-dry-run ]] && [[ -n "$SCHEDULING_OVERLAY_FILE" ]] && grep -Eq '^[[:space:]]*suspend:[[:space:]]*false([[:space:]]*(#.*)?)?$' "$SCHEDULING_OVERLAY_FILE" && [[ "$SCHEDULING_RELEASE_AUTHORIZED" != true ]]; then
+  die 'an active scheduling overlay requires SCHEDULING_RELEASE_AUTHORIZED=true'
+fi
 
 SSH_TARGET="${TRUENAS_SSH_USER}@${TRUENAS_HOST}"
 remote() {
@@ -193,8 +308,31 @@ fi
 log 'checking target k3s capabilities'
 NODE_ARCH="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')"
 [[ -n "$NODE_ARCH" ]] || die 'no k3s node was returned'
+TARGET_KUBERNETES_VERSION="$(kubectl get --raw /version | sed -n 's/.*"gitVersion":"\\([^"]*\\)".*/\\1/p')"
+[[ -n "$TARGET_KUBERNETES_VERSION" ]] || die 'could not determine the target Kubernetes version'
+TARGET_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION#v}"
 if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
+fi
+
+if [[ "$OPERATION" == read-only-discovery ]]; then
+  log "read-only discovery: Kubernetes $TARGET_KUBERNETES_VERSION"
+  helm history "$RELEASE_NAME" --namespace "$NAMESPACE"
+  helm get values "$RELEASE_NAME" --namespace "$NAMESPACE" --all
+  kubectl -n "$NAMESPACE" get deployment,service,cronjob,job,pvc -o yaml
+  exit 0
+fi
+
+if [[ "$OPERATION" == server-dry-run ]]; then
+  [[ "$SERVER_DRY_RUN_AUTHORIZED" == true ]] || die '--server-dry-run requires SERVER_DRY_RUN_AUTHORIZED=true'
+  [[ -n "$HELM_VALUES_FILE" ]] || die '--server-dry-run requires HELM_VALUES_FILE baseline values'
+  [[ -n "$SCHEDULING_OVERLAY_FILE" ]] || die '--server-dry-run requires SCHEDULING_OVERLAY_FILE'
+
+  log "server-side dry-run: Kubernetes $TARGET_KUBERNETES_VERSION; no resource will persist"
+  render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" \
+    | kubectl -n "$NAMESPACE" apply --server-side --dry-run=server --validate=true -f -
+  log 'server-side dry-run completed; no canary, validation Job, or unsuspend action was created'
+  exit 0
 fi
 
 if [[ -z "$HELM_VALUES_FILE" ]]; then
@@ -294,11 +432,21 @@ else
   cp "$HELM_VALUES_FILE" "$VALUES_FILE"
 fi
 
+if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
+  RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION")"
+  report_effective_trigger "$RENDERED_PACKET"
+fi
+
+HELM_VALUES_ARGS=(--values "$VALUES_FILE")
+if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
+  HELM_VALUES_ARGS+=(--values "$SCHEDULING_OVERLAY_FILE")
+fi
+
 log "installing Helm release $RELEASE_NAME/$NAMESPACE"
 helm upgrade --install "$RELEASE_NAME" "$REPO_DIR/deploy/helm/a-stock" \
   --namespace "$NAMESPACE" \
   --create-namespace \
-  --values "$VALUES_FILE" \
+  "${HELM_VALUES_ARGS[@]}" \
   --set "image.repository=$IMAGE_REPOSITORY" \
   --set "image.tag=$IMAGE_TAG" \
   --wait \
@@ -323,5 +471,5 @@ log "Tailscale URL after NGINX is configured: https://${TAILSCALE_HOST}:${TAILSC
 if [[ -n "$HELM_VALUES_FILE" ]]; then
   log "scheduled collection settings follow $HELM_VALUES_FILE"
 elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
-  log 'CronJob is suspended; after a manual Job check, set SCHEDULED_COLLECTION_SUSPEND=false and run this command again'
+  log 'CronJob is suspended; do not unsuspend without accepted Gate B canary evidence and separate Gate C authorization'
 fi

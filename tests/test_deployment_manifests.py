@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 K3S_DIR = ROOT / "deploy" / "k3s"
 CHART_DIR = ROOT / "deploy" / "helm" / "a-stock"
 TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
+TRUENAS_SCHEDULED_SUSPENDED_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
+TRUENAS_SCHEDULED_ACTIVE_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-active.yaml"
+TRUENAS_SCHEDULED_OFF_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
 HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
 
@@ -37,6 +40,26 @@ def _render_helm(*arguments: str) -> list[dict]:
         text=True,
     )
     return [document for document in yaml.safe_load_all(completed.stdout) if document]
+
+
+def _render_helm_error(*arguments: str) -> str:
+    completed = subprocess.run(
+        [
+            str(HELM_BINARY),
+            "template",
+            "a-stock",
+            str(CHART_DIR),
+            "--namespace",
+            "a-stock",
+            *arguments,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    return completed.stderr
 
 
 def _resource(documents: list[dict], kind: str) -> dict:
@@ -87,7 +110,11 @@ def test_helm_values_define_enabled_configurable_scheduled_collection() -> None:
     assert scheduled["enabled"] is True
     assert scheduled["suspend"] is False
     assert scheduled["schedule"] == "30 16 * * 1-5"
+    assert scheduled["timezoneStrategy"] == "native"
     assert scheduled["timeZone"] == "Asia/Shanghai"
+    assert scheduled["controllerTimeZone"] == ""
+    assert scheduled["controllerTimeZoneVerified"] is False
+    assert scheduled["controllerCanaryVerified"] is False
     assert scheduled["startingDeadlineSeconds"] == 1800
     assert scheduled["activeDeadlineSeconds"] == 3600
 
@@ -119,22 +146,119 @@ def test_helm_default_render_matches_dashboard_image_pvc_and_security() -> None:
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
-def test_helm_render_supports_disabled_suspended_and_custom_schedule() -> None:
+def test_helm_render_supports_disabled_suspended_and_custom_native_schedule() -> None:
     disabled = _render_helm("--set", "marketEnvironment.scheduledCollection.enabled=false")
     custom = _render_helm(
         "--set",
         "marketEnvironment.scheduledCollection.suspend=true",
         "--set-string",
         "marketEnvironment.scheduledCollection.schedule=15 17 * * 1-5",
-        "--set-string",
-        "marketEnvironment.scheduledCollection.timeZone=Etc/UTC",
     )
 
     assert all(document.get("kind") != "CronJob" for document in disabled)
     cronjob = _resource(custom, "CronJob")
     assert cronjob["spec"]["suspend"] is True
     assert cronjob["spec"]["schedule"] == "15 17 * * 1-5"
-    assert cronjob["spec"]["timeZone"] == "Etc/UTC"
+    assert cronjob["spec"]["timeZone"] == "Asia/Shanghai"
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("controller_timezone", "schedule"),
+    [("Etc/UTC", "30 8 * * 1-5"), ("Asia/Shanghai", "30 16 * * 1-5")],
+)
+def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
+    controller_timezone: str,
+    schedule: str,
+) -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--set",
+        "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+        "--set",
+        f"marketEnvironment.scheduledCollection.controllerTimeZone={controller_timezone}",
+        "--set",
+        "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+        "--set",
+        "marketEnvironment.scheduledCollection.suspend=true",
+        "--set-string",
+        f"marketEnvironment.scheduledCollection.schedule={schedule}",
+    )
+
+    cronjob = _resource(documents, "CronJob")
+    assert cronjob["spec"]["schedule"] == schedule
+    assert cronjob["spec"]["suspend"] is True
+    assert "timeZone" not in cronjob["spec"]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (
+            ("--set", "marketEnvironment.scheduledCollection.timezoneStrategy=unknown"),
+            "timezoneStrategy must be native or controller",
+        ),
+        (
+            ("--kube-version", "1.26.6"),
+            "timezoneStrategy=native requires Kubernetes 1.27+",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Etc/UTC",
+                "--set-string",
+                "marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5",
+            ),
+            "controllerTimeZoneVerified=true is required",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=10 15 * * 1-5"),
+            "schedule must be strictly after settlementTime",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=15 17\\,18 * * 1-5"),
+            "must use one numeric M H * * 1-5 trigger",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Etc/UTC",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=true",
+            ),
+            "controller UTC schedule must equal 30 8 * * 1-5",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Asia/Shanghai",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=false",
+            ),
+            "controllerCanaryVerified=true before suspend=false",
+        ),
+    ],
+)
+def test_helm_rejects_invalid_scheduling_profiles(arguments: tuple[str, ...], message: str) -> None:
+    assert message in _render_helm_error(*arguments)
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -192,6 +316,77 @@ def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() 
     assert all(document.get("kind") not in {"Ingress", "CronJob", "PersistentVolumeClaim"} for document in documents)
 
 
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_truenas_scheduling_overlays_only_change_reviewed_scheduling_fields() -> None:
+    baseline = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+    )
+    suspended = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+        "--values",
+        str(TRUENAS_SCHEDULED_SUSPENDED_VALUES),
+    )
+    active = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+        "--values",
+        str(TRUENAS_SCHEDULED_ACTIVE_VALUES),
+    )
+    off = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+        "--values",
+        str(TRUENAS_SCHEDULED_OFF_VALUES),
+    )
+
+    baseline_non_cronjobs = [document for document in baseline if document["kind"] != "CronJob"]
+    assert [document for document in suspended if document["kind"] != "CronJob"] == baseline_non_cronjobs
+    assert [document for document in active if document["kind"] != "CronJob"] == baseline_non_cronjobs
+    assert [document for document in off if document["kind"] != "CronJob"] == baseline_non_cronjobs
+
+    suspended_cronjob = _resource(suspended, "CronJob")
+    active_cronjob = _resource(active, "CronJob")
+    assert suspended_cronjob["spec"]["schedule"] == active_cronjob["spec"]["schedule"] == "30 8 * * 1-5"
+    assert suspended_cronjob["spec"]["suspend"] is True
+    assert active_cronjob["spec"]["suspend"] is False
+    assert "timeZone" not in suspended_cronjob["spec"]
+    assert all(document["kind"] != "CronJob" for document in off)
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_truenas_deploy_script_offline_render_does_not_access_a_target() -> None:
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "deploy-truenas-k3s.sh"),
+            "--offline-render",
+            "--baseline-values",
+            str(TRUENAS_DIRECT_ACCESS_VALUES),
+            "--scheduling-overlay",
+            str(TRUENAS_SCHEDULED_SUSPENDED_VALUES),
+            "--kube-version",
+            "1.26.6",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "effectiveShanghai=16:30 weekdays" in completed.stdout
+    assert "kind: CronJob" in completed.stdout
+    assert "timeZone:" not in completed.stdout
+
+
 @pytest.mark.skipif(KUBECTL_BINARY is None, reason="kubectl is not installed")
 def test_kubectl_kustomize_renders_one_data_collection_cronjob() -> None:
     completed = subprocess.run(
@@ -205,3 +400,5 @@ def test_kubectl_kustomize_renders_one_data_collection_cronjob() -> None:
 
     assert len(cronjobs) == 1
     assert cronjobs[0]["metadata"]["name"] == "market-data-collection"
+    assert cronjobs[0]["spec"]["timeZone"] == "Asia/Shanghai"
+    assert "Kubernetes 1.27+" in (K3S_DIR / "market-data-collection-cronjob.yaml").read_text(encoding="utf-8")

@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Gate A / Stage 1 项目计划与研发分配。后续仅包含仓库实现和离线验证；Gate B 生产验证与 Gate C 周期激活未获授权。
+Gate A / Stage 2 仓库实现与离线验证。后续仅包含仓库实现和离线验证；Gate B 生产验证与 Gate C 周期激活未获授权。
 
 ## Status（状态）
 
-`in-progress`：Gate A 已批准，规划与研发分配已完成并待验收；后端研发任务保持串行 `backlog`，等待 Stage 1 验收和 reviewed clean baseline。
+`ready-for-review`：GYT-46 已完成验收；GYT-47 已在隔离 worktree `agent/backend/gyt-47-scheduled-collection-clean-baseline` 的 clean baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 上完成 Stage 2。Gate B/Gate C 仍未获授权。
 
 ## Context（上下文）
 
@@ -45,8 +45,8 @@ Gate A / Stage 1 项目计划与研发分配。后续仅包含仓库实现和离
 | Stage / 时间 | 里程碑 | 负责人 | 依赖 | 验收证据 | 状态 |
 |---|---|---|---|---|---|
 | Stage 1 / D0 | Gate A 计划与分配 | 资深项目经理 | Gate A approval | approval trace、OpenSpec/active plan、串行 backlog、strict validation | ready-for-review |
-| Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | backlog |
-| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.5；focused render/deployment tests；无应用/前端/生产 diff | backlog |
+| Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed |
+| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.5；focused render/deployment tests；无应用/前端/生产 diff | ready-for-review |
 | Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` terminal + reviewed | tasks 3.1-3.5；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | backlog |
 | Gate B | 生产验证 | 未分配 | Stage 3 accepted + separate authorization | tasks 4.x-5.x 指定证据 | not authorized |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + explicit authorization | suspend-only diff + next trigger evidence | not authorized |
@@ -84,14 +84,20 @@ Gate A / Stage 1 项目计划与研发分配。后续仅包含仓库实现和离
 - 2026-09-08：已在 parent `GYT-45` 下创建 `GYT-47`（Stage 2 implementation，issue `01a07e48-7b5a-712b-b22b-dcd3c8b1ba17`）与 `GYT-48`（Stage 3 offline verification，issue `01a07e48-7bd4-7a56-b7a6-7f9322520306`），均分配给资深后端工程师并保持 `backlog`，未触发执行。
 - 2026-09-08：`openspec validate enable-truenas-scheduled-market-collection --strict --json` 通过（1/1）；active plan 六个必需字段齐全；full docs-contract 通过（代码 5 / 文档 7 / plan 2）；`git diff --check` 通过。
 - 2026-09-08：fast docs-contract 输出“无变更，跳过 diff 检查”（代码 0 / 文档 0 / plan 0）。由于当前规划文件未 staged、full 模式又基于 upstream 范围，这两次结果不能证明 shared dirty tree 是 clean implementation baseline；OpenSpec 1.2 保持未完成，须在 `GYT-47` 的 reviewed clean baseline 中重跑。
+- 2026-09-08：GYT-47 已确认共享 worktree 保持不触碰；隔离 worktree 的 HEAD 为 `bb0de075c4336e6a4532b38f221b043d9859f590`（`docs: establish GYT-47 clean baseline`），branch 为 `agent/backend/gyt-47-scheduled-collection-clean-baseline`，工作树干净且没有重叠 active run。
+- 2026-09-08：在该隔离 worktree 暂存 README、产品规格、architecture、runbooks、status 和本计划后，`python3 scripts/check-docs-contract.py --mode=fast` 通过（代码 0 / 文档 6 / plan 1）。文档明确 Dashboard 保持 Kubernetes 1.26+、native CronJob timezone 仅为 1.27+、revision 7 仅为待预检确认的报告值。
+- 2026-09-08：Helm template 实现 `timezoneStrategy=native|controller`：native 仅接受 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；controller 仅接受 1.26、`Etc/UTC` 或 `Asia/Shanghai`、已声明时区证据及精确 16:30 上海映射，未证明 canary 时不能设置 `suspend=false`。unknown/native-1.26/missing-evidence/early/complex/mapping/canary 7 个非法 profile 均在 Helm render 前失败。
+- 2026-09-08：新增 `values-scheduled-suspended.yaml`、`values-scheduled-active.yaml` 与 `values-scheduled-off.yaml`。固定离线 YAML 解析确认 native 1.27、controller 1.26 UTC/Shanghai、disabled/suspended/active/off matrix 正确，所有 CronJob 保持共享 image/PVC、non-root/read-only-rootfs/no-token、`Forbid`、`backoffLimit: 0` 与 `scheduled-refresh`；各 overlay 的非 CronJob manifests 与 baseline 完全一致。
+- 2026-09-08：`bash -n scripts/deploy-truenas-k3s.sh`、`python3 -m py_compile tests/test_deployment_manifests.py`、`helm lint --strict deploy/helm/a-stock`、`kubectl kustomize deploy/k3s` 与 offline-render suspended/off 命令通过。系统 Python 无 `pytest`，且无法创建 venv（缺少 `ensurepip`），因此未运行 pytest runner；对应 Helm/YAML assertions 已由无 target 的固定离线命令执行。
+- 2026-09-08：`openspec validate enable-truenas-scheduled-market-collection --strict --json` 通过（1/1）；`python3 scripts/check-docs-contract.py --mode=full` 通过（代码 0 / 文档 2 / plan 1）；`git diff --cached --check` 通过。diff 仅包含部署 chart/Kustomize/TrueNAS values/entry script、对应 tests、OpenSpec 和所需文档，不含 application API、provider、dataset、SQLite schema、frontend 或生产状态改动。
 
 ## Remaining Gaps（剩余缺口）
 
-- 当前分支和 shared tree 不是 clean implementation baseline；在隔离完成前 Stage 2/3 不得启动。
-- OpenSpec 1.2 的 staged fast gate 与 1.3 的 README/product spec/architecture/runbook/status 对齐仍待 clean baseline 中完成。
-- tasks 2.x-3.x 的实现与离线证据尚未开始。
+- 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
+- GYT-48 的 Stage 3 仍为 backlog：它拥有完整 pytest/fake-provider 回归、full docs-contract、strict OpenSpec 与最终 review packet；本阶段只完成 focused render/deployment evidence。
+- Gate B/Gate C 明确未授权；controller runtime timezone、canary、production revision、image digest、PVC identity 和验证日期仍是后续待采集事实。
 - Gate B/Gate C 明确未授权；生产 revision、controller runtime timezone、image digest、PVC identity 和验证日期仍是后续待采集事实。
 
 ## Next Step（下一步）
 
-完成本轮规划验收后，由 parent owner 在 reviewed clean commit/worktree 已建立且无重叠 active run 时，将 `GYT-47` 从 `backlog` 提升为 `todo`。`GYT-47` 必须先完成 OpenSpec 1.2/1.3 和 staged fast gate，再开始任何实现文件修改；`GYT-48` 在 `GYT-47` terminal + reviewed 前保持 `backlog`。
+审核 GYT-47 的 implementation diff 和 focused evidence；接受后保持其 terminal/review 状态，并由 parent owner 仅在该状态成立后提升 GYT-48。后续仍不得执行生产预检、server-side dry-run、canary、Job、备份、部署或解除暂停。
