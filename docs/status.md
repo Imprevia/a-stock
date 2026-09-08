@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 正在 Gate A 仓库复审阶段：独立审阅已拒绝 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`、`e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 和 clean/upstream-equal candidate `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6`。其 Helm native stable 1.27.0 prerelease 边界与 activation 写前时间窗重验阻塞已在隔离 baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 上关闭，focused suite `117 passed`，successor 正待完整门禁与独立审阅。Gate B/Gate C 推进授权已记录，但 successor 独立 GO、GYT-48 验收和精确 packet 前置条件未满足；当前不访问目标环境且 CronJob 保持关闭。
+- `enable-truenas-scheduled-market-collection` 的 Gate A Stage 2 仓库实现已完成并等待 GYT-47 验收：独立审阅拒绝旧 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`、`e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 和 `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 后，successor `5672c2a147e8975ac0de218fa0605ce83882aadf` 已关闭全部阻塞、通过 focused `117 passed` 并取得三路独立 GO。Gate B/Gate C 推进授权已记录，但 GYT-47 人工验收、GYT-48 验收和精确 packet 前置条件未满足；当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
