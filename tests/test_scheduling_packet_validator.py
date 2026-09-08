@@ -80,6 +80,83 @@ def test_normalize_version_rejects_invalid_semver() -> None:
     assert "invalid Kubernetes version" in completed.stderr
 
 
+def _native_cronjob(*, suspend: bool = False) -> dict[str, Any]:
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {
+            "name": "a-stock-data-collection",
+            "namespace": "a-stock",
+            "labels": {"app.kubernetes.io/instance": "a-stock"},
+        },
+        "spec": {
+            "schedule": "30 16 * * 1-5",
+            "timeZone": "Asia/Shanghai",
+            "suspend": suspend,
+            "startingDeadlineSeconds": 1800,
+        },
+    }
+
+
+def _run_native_inspect(version: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        "inspect",
+        yaml.safe_dump(_native_cronjob()),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--kube-version",
+        version,
+    )
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["1.27.0", "v1.27.0+build.7", "1.27.1", "1.27.1-rc.1"],
+)
+def test_native_inspect_accepts_stable_127_or_later_by_semver_precedence(
+    version: str,
+) -> None:
+    completed = _run_native_inspect(version)
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["strategy"] == "native"
+
+
+@pytest.mark.parametrize(
+    ("version", "message"),
+    [
+        ("1.27.0-rc.1", "requires Kubernetes 1.27.0 stable or later"),
+        ("1.27.0-rc.01", "invalid Kubernetes version"),
+        ("01.27.0", "invalid Kubernetes version"),
+    ],
+)
+def test_native_inspect_rejects_prerelease_boundary_and_malformed_semver(
+    version: str, message: str
+) -> None:
+    completed = _run_native_inspect(version)
+
+    assert completed.returncode != 0
+    assert message in completed.stderr
+
+
+def test_extract_suspended_accepts_optional_stable_kube_version() -> None:
+    completed = _run(
+        "extract-suspended",
+        yaml.safe_dump(_native_cronjob(suspend=True)),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--kube-version",
+        "1.27.0",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert yaml.safe_load(completed.stdout)["spec"]["suspend"] is True
+
+
 def _activation_inspection(
     *,
     strategy: str = "native",

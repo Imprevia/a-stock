@@ -6,7 +6,7 @@ Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已�
 
 ## Status（状态）
 
-`ready-for-independent-review`：GYT-47 在隔离 worktree `agent/backend/gyt-47-scheduled-collection-clean-baseline` 完成首轮 candidate `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 的 NO-GO remediation；严格 SemVer、Gate C missed-schedule window、所有 guarded post-write activation 异常补偿和 runbook 受控入口均已补齐，正在生成 successor review HEAD。冻结基线为 `bb0de075c4336e6a4532b38f221b043d9859f590`；rejected HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969` 与 `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 均不得成为 Stage 3 基线。
+`ready-for-independent-review`：GYT-47 已在隔离 worktree `agent/backend/gyt-47-scheduled-collection-clean-baseline` 关闭 candidate `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 的两项复审阻塞；Helm native 现在要求 stable 1.27.0+，Gate C 在 Helm write 前重复 activation-window 校验。冻结基线为 `bb0de075c4336e6a4532b38f221b043d9859f590`；rejected HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`、`e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 与 `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 均不得成为 Stage 3 基线，successor SHA 待本轮门禁通过后冻结。
 
 ## Context（上下文）
 
@@ -110,15 +110,21 @@ Gate A / Stage 2 仓库修复与离线验证。Gate B/Gate C 的推进授权已�
 - 2026-09-09：successor 修复使用严格 SemVer 2.0.0 并按 precedence 拒绝 `1.27.0-rc.1` 低于 stable 1.27.0；malformed/core 前导零/numeric prerelease 前导零负例均证明 kubectl/target 零调用。Gate C validator 从 active packet 计算 weekday previous/next trigger、1800 秒 deadline、UTC/上海审计时间和固定 300 秒 safety buffer；两种 catch-up mode 的 weekday/weekend/边界正负例通过。
 - 2026-09-09：activation 写前建立 release-derived exact CronJob fail-safe guard；Helm failure、Helm success 后 live capture/read/compare/final get failure 与 HUP/INT/TERM 都统一在 EXIT 路径补偿 `suspend=true`，成功完成全部 postcondition 后才清 guard。combined deployment/validator/guard suite `104 passed`；独立全库复跑 `204 passed, 2 warnings`。
 - 2026-09-09：加入 successor 负例后的主线全库复跑为 `244 passed, 1 failed, 2 warnings`；唯一失败是 baseline-identical 的 `test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU，`src/market_environment/` 与该测试均无本 issue diff。独立审阅已确认竞态发生在第二请求“读缺失”与“获取 lease”之间，并曾在相同 deployment candidate 上跑出 `204 passed`；本任务不以重试或放宽断言掩盖，也不越界修改应用层。
+- 2026-09-09：candidate `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 已提交、推送且 clean/upstream 一致，但最终复审仍为 NO-GO：Helm template 的 `>=1.27.0-0` 接受 native `1.27.0-rc.1`，且早期通过的 activation-window decision 可能在 live/read/render 工作期间老化，必须在 Helm write 前重验。其余补偿、strict parser 与原八项边界未发现新阻塞。
+- 2026-09-09：第二轮 successor remediation 已把 Helm native comparator 收紧为 `>=1.27.0`，并将 raw `--kube-version` 传入 scheduling packet validator；严格 SemVer precedence 使 `1.27.0-rc.1` 在 env、SSH、kubectl 或目标 API 前失败。
+- 2026-09-09：Gate C 在早期 preflight 后，于 live/image/diff/re-render/hash 检查完成且 Helm write 尚未开始时再次校验 activation window；第二次校验失败的负例证明 Helm write 与 compensation patch 均为零，Helm failure 和 final CronJob get failure 负例各证明仅执行一次 exact `suspend=true` compensation。
+- 2026-09-09：更新后的 scheduling packet/deployment guard/deployment manifest focused suite `117 passed`；`bash -n`、Python `py_compile`、Helm 1.26 suspended strict lint 和 `git diff --check` 通过。完整门禁与 successor SHA 待本轮冻结步骤记录。
+- 2026-09-09：候选冻结前门禁通过：OpenSpec strict 1/1、docs-contract fast（代码 3 / 文档 4 / plan 1）与 full（代码 8 / 文档 9 / plan 2）、Helm 1.26 controller suspended lint/render、Helm 1.27 native render、Kustomize Dashboard base/native 1.27 render。Helm 3.21.4 会把 `--kube-version 1.27.0-rc.1` 规范化为 stable capabilities，因此受支持部署入口额外把 raw 版本交给 strict packet validator；对应 focused 负例已证明在 target access 前拒绝。
+- 2026-09-09：全库复跑为 `257 passed, 1 failed, 2 warnings`；唯一失败仍是 baseline-identical 的 `tests/test_market_environment_service.py::test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU，冻结 baseline 到候选的 diff 不含 `src/market_environment/` 或该测试。本 issue 保留该真实结果，不重试、放宽断言或越界修改应用层。
 
 ## Remaining Gaps（剩余缺口）
 
 - 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
-- candidate `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 的复审阻塞已完成本地修复与负例；successor clean HEAD 尚待提交、推送并取得独立 GO。
+- candidate `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 的 Helm native stable boundary 和 activation-window pre-write revalidation 两项阻塞已在本地关闭；successor clean HEAD 尚待提交、推送并取得独立 GO。
 - baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
 - GYT-48 的 Stage 3 仍为 backlog；只有新的完整 clean HEAD 取得独立 GO 且 GYT-47 被接受后才可提升。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
 ## Next Step（下一步）
 
-提交并推送 strict SemVer、Gate C missed-schedule window、post-write activation compensation 与文档入口修复的 successor clean HEAD，再对 baseline→successor 发起独立只读审阅。只有明确 GO 且 GYT-47 被接受后，parent owner 才可提升 GYT-48；本任务不得执行生产 preflight、server-side dry-run、canary、Job、备份、部署或解除暂停。
+运行完整离线门禁，提交并推送新的 successor clean HEAD，再对 baseline→successor 发起独立只读审阅。只有明确 GO 且 GYT-47 被接受后，parent owner 才可提升 GYT-48；本任务不得执行生产 preflight、server-side dry-run、canary、Job、备份、部署或解除暂停。

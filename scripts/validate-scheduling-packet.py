@@ -70,9 +70,45 @@ def load_json_path(path: Path, description: str) -> dict[str, Any]:
         fail(f"could not read {description} file {path}: {exc}")
 
 
-def normalize_semver(value: Any) -> str:
-    if not isinstance(value, str) or SEMVER_PATTERN.fullmatch(value) is None:
+def parse_semver(value: Any) -> tuple[tuple[int, int, int], tuple[str, ...]]:
+    if not isinstance(value, str):
         fail(f"invalid Kubernetes version: {value}")
+    match = SEMVER_PATTERN.fullmatch(value)
+    if match is None:
+        fail(f"invalid Kubernetes version: {value}")
+    core = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
+    prerelease = tuple((match.group("prerelease") or "").split("."))
+    return core, prerelease if prerelease != ("",) else ()
+
+
+def compare_semver(
+    left: tuple[tuple[int, int, int], tuple[str, ...]],
+    right: tuple[tuple[int, int, int], tuple[str, ...]],
+) -> int:
+    if left[0] != right[0]:
+        return -1 if left[0] < right[0] else 1
+    left_prerelease, right_prerelease = left[1], right[1]
+    if not left_prerelease or not right_prerelease:
+        if left_prerelease == right_prerelease:
+            return 0
+        return -1 if left_prerelease else 1
+    for left_identifier, right_identifier in zip(left_prerelease, right_prerelease):
+        if left_identifier == right_identifier:
+            continue
+        left_numeric = left_identifier.isdigit()
+        right_numeric = right_identifier.isdigit()
+        if left_numeric and right_numeric:
+            return -1 if int(left_identifier) < int(right_identifier) else 1
+        if left_numeric != right_numeric:
+            return -1 if left_numeric else 1
+        return -1 if left_identifier < right_identifier else 1
+    if len(left_prerelease) == len(right_prerelease):
+        return 0
+    return -1 if len(left_prerelease) < len(right_prerelease) else 1
+
+
+def normalize_semver(value: Any) -> str:
+    parse_semver(value)
     return value.removeprefix("v")
 
 
@@ -101,7 +137,11 @@ def cronjob_for(
 
 
 def inspect(
-    documents: list[dict[str, Any]], release_name: str, namespace: str, required_state: str
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    required_state: str,
+    kube_version: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     cronjob = cronjob_for(documents, release_name, namespace)
     if cronjob is None:
@@ -130,6 +170,15 @@ def inspect(
         if time_zone is not None and time_zone != "Asia/Shanghai":
             fail("native CronJob timeZone must equal Asia/Shanghai")
         strategy = "native" if time_zone is not None else "controller"
+        if kube_version is not None:
+            actual_version = parse_semver(kube_version)
+            if strategy == "native" and compare_semver(
+                actual_version, parse_semver("1.27.0")
+            ) < 0:
+                fail(
+                    "native scheduling requires Kubernetes 1.27.0 stable or later; "
+                    f"got {kube_version}"
+                )
         controller_timezone = None
         if strategy == "controller":
             if schedule == "30 8 * * 1-5":
@@ -1014,6 +1063,7 @@ def main() -> None:
         child = subparsers.add_parser(name)
         child.add_argument("--release-name", required=True)
         child.add_argument("--namespace", required=True)
+        child.add_argument("--kube-version")
         child.add_argument(
             "--require-state", choices=("any", "disabled", "suspended", "active"), default="any"
         )
@@ -1067,7 +1117,11 @@ def main() -> None:
     elif args.command in {"inspect", "extract-suspended"}:
         documents = load_documents(sys.stdin)
         cronjob, result = inspect(
-            documents, args.release_name, args.namespace, args.require_state
+            documents,
+            args.release_name,
+            args.namespace,
+            args.require_state,
+            args.kube_version,
         )
         if args.command == "inspect":
             json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))

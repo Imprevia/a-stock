@@ -42,7 +42,7 @@
 {{- $scheduleTotalMinutes := add (mul $scheduleHour 60) $scheduleMinute }}
 {{- $settlementTotalMinutes := add (mul $settlementHour 60) $settlementMinute }}
 {{- if eq $strategy "native" }}
-{{- if not (semverCompare ">=1.27.0-0" .Capabilities.KubeVersion.Version) }}
+{{- if not (semverCompare ">=1.27.0" .Capabilities.KubeVersion.Version) }}
 {{- fail "marketEnvironment.scheduledCollection.timezoneStrategy=native requires Kubernetes 1.27+" }}
 {{- end }}
 {{- if ne $scheduled.timeZone "Asia/Shanghai" }}

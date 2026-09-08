@@ -90,6 +90,32 @@ def test_native_offline_render_exits_without_loading_environment() -> None:
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_native_offline_render_rejects_kubernetes_prerelease_boundary() -> None:
+    completed = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--offline-render",
+            "--baseline-values",
+            str(CHART / "values.yaml"),
+            "--scheduling-overlay",
+            str(CHART / "values.yaml"),
+            "--kube-version",
+            "1.27.0-rc.1",
+        ],
+        env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "requires Kubernetes 1.27.0 stable or later" in completed.stderr
+    assert "offline scheduling packet validation failed" in completed.stderr
+    assert "environment file" not in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_invalid_offline_cron_stops_before_environment_or_target_access(tmp_path: Path) -> None:
     overlay = tmp_path / "invalid-schedule.yaml"
     overlay.write_text(
@@ -323,7 +349,11 @@ def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path
         "import sys\n"
         "from pathlib import Path\n"
         "if len(sys.argv) > 1 and sys.argv[1] == 'validate-activation-window':\n"
-        "    if os.environ.get('FAKE_ACTIVATION_WINDOW_FAILURE') == 'true':\n"
+        "    counter = Path(os.environ['FAKE_ACTIVATION_WINDOW_COUNTER'])\n"
+        "    call_count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "    counter.write_text(str(call_count))\n"
+        "    fail_on_call = int(os.environ.get('FAKE_ACTIVATION_WINDOW_FAIL_ON_CALL', '0'))\n"
+        "    if call_count == fail_on_call:\n"
         "        raise SystemExit('outside the authorized activation window')\n"
         "    print(os.environ.get('FAKE_ACTIVATION_WINDOW_OUTPUT', "
         "'{\"allowed\":true,\"mode\":\"test\"}'))\n"
@@ -402,6 +432,39 @@ def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Pa
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path: Path) -> None:
+    fake_bin, marker = _write_target_spies(tmp_path)
+    overlay = tmp_path / "native-suspended.yaml"
+    overlay.write_text(
+        "marketEnvironment:\n  scheduledCollection:\n    suspend: true\n",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "deploy.env"
+    _write_env(env_file, ROOT, CHART / "values.yaml", overlay)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--env-file",
+            str(env_file),
+            "--server-dry-run",
+            "--kube-version",
+            "1.27.0-rc.1",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "requires Kubernetes 1.27.0 stable or later" in completed.stderr
+    assert "operation server-dry-run rejected the final scheduling state" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Path) -> None:
     repo, _, _, _, _, head = _prepare_reviewed_repo(tmp_path)
     fake_bin = tmp_path / "read-only-bin"
@@ -449,7 +512,6 @@ def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-
     completed = subprocess.run(
         [
             "bash",
@@ -753,11 +815,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         "current_name",
         "selected_name",
         "authorization",
-        "pre_live_drift",
-        "post_live_drift",
-        "activation_window_failure",
-        "post_live_capture_failure",
-        "signal_after_helm",
+        "failure_mode",
         "expected_success",
     ),
     [
@@ -766,11 +824,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-off.yaml",
             "values-scheduled-suspended.yaml",
             "SUSPENDED_RELEASE_AUTHORIZED=true\nGATE_B_AUTHORIZATION_REF=reviewed-gate-b-packet",
-            False,
-            False,
-            False,
-            False,
-            False,
+            None,
             True,
         ),
         (
@@ -778,11 +832,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            False,
-            False,
-            False,
-            False,
-            False,
+            None,
             True,
         ),
         (
@@ -790,11 +840,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-off.yaml",
             "SCHEDULE_ROLLBACK_AUTHORIZED=true",
-            False,
-            False,
-            False,
-            False,
-            False,
+            None,
             True,
         ),
         (
@@ -802,11 +848,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            True,
-            False,
-            False,
-            False,
-            False,
+            "pre-live-drift",
             False,
         ),
         (
@@ -814,11 +856,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            False,
-            True,
-            False,
-            False,
-            False,
+            "post-live-drift",
             False,
         ),
         (
@@ -826,11 +864,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            False,
-            False,
-            True,
-            False,
-            False,
+            "activation-window-failure",
             False,
         ),
         (
@@ -838,11 +872,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            False,
-            False,
-            False,
-            True,
-            False,
+            "post-live-capture-failure",
             False,
         ),
         (
@@ -850,11 +880,31 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "values-scheduled-suspended.yaml",
             "values-scheduled-active.yaml",
             "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            "signal-after-helm",
             False,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            "pre-write-activation-window-failure",
             False,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            "helm-failure",
             False,
-            False,
-            True,
+        ),
+        (
+            "--activate-schedule",
+            "values-scheduled-suspended.yaml",
+            "values-scheduled-active.yaml",
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
+            "final-get-failure",
             False,
         ),
     ],
@@ -867,6 +917,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         "activation-window-failure",
         "post-live-capture-failure",
         "signal-after-helm",
+        "pre-write-activation-window-failure",
+        "helm-failure",
+        "final-get-failure",
     ),
 )
 def test_reviewed_release_modes_are_atomic_and_fail_closed(
@@ -875,11 +928,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     current_name: str,
     selected_name: str,
     authorization: str,
-    pre_live_drift: bool,
-    post_live_drift: bool,
-    activation_window_failure: bool,
-    post_live_capture_failure: bool,
-    signal_after_helm: bool,
+    failure_mode: str | None,
     expected_success: bool,
 ) -> None:
     repo, baseline, suspended, active, off, head = _prepare_reviewed_repo(tmp_path)
@@ -894,16 +943,17 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     fake_bin = tmp_path / "release-bin"
     fake_bin.mkdir()
     target_calls = tmp_path / "release-calls"
+    activation_window_counter = tmp_path / "activation-window-count"
     current_manifest = tmp_path / "current.yaml"
     current_manifest.write_text(current_render, encoding="utf-8")
     current_live_payload = yaml.safe_load(_live_list(current_render, "market-data"))
-    if pre_live_drift:
+    if failure_mode == "pre-live-drift":
         service = next(item for item in current_live_payload["items"] if item["kind"] == "Service")
         service["spec"]["ports"][0]["nodePort"] = 32002
     current_live = tmp_path / "current-live.yaml"
     current_live.write_text(yaml.safe_dump(current_live_payload, sort_keys=False), encoding="utf-8")
     desired_live_payload = yaml.safe_load(_live_list(desired_render, "market-data"))
-    if post_live_drift:
+    if failure_mode == "post-live-drift":
         cronjob = next(item for item in desired_live_payload["items"] if item["kind"] == "CronJob")
         cronjob["spec"]["suspend"] = True
     desired_live = tmp_path / "desired-live.yaml"
@@ -926,6 +976,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"  get) cat {current_manifest}; exit 0 ;;\n"
         "  upgrade)\n"
         f"    printf 'helm-upgrade %s\\n' \"$*\" >> {target_calls}\n"
+        "    if [[ \"${FAIL_HELM_UPGRADE:-false}\" == true ]]; then exit 95; fi\n"
         "    release_name=\"$2\"\n"
         "    chart_path=\"$3\"\n"
         "    shift 3\n"
@@ -975,7 +1026,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"if [[ \"$*\" == *\"get deployment\"* ]]; then cat {deployments_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get replicasets\"* ]]; then cat {replicasets_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get pods\"* ]]; then cat {pods_json}; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get cronjob\"* ]]; then cat {desired_live}; exit 0; fi\n"
+        f"if [[ \"$*\" == *\"get cronjob\"* ]]; then if [[ \"${{FAIL_FINAL_CRONJOB_GET:-false}}\" == true ]]; then exit 94; fi; cat {desired_live}; exit 0; fi\n"
         "if [[ \"$*\" == *\"patch cronjob\"* ]]; then exit 0; fi\n"
         "exit 99\n",
         encoding="utf-8",
@@ -1008,6 +1059,10 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         ),
         encoding="utf-8",
     )
+    activation_window_fail_on_call = {
+        "activation-window-failure": 1,
+        "pre-write-activation-window-failure": 2,
+    }.get(failure_mode, 0)
 
     completed = subprocess.run(
         [
@@ -1027,9 +1082,14 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "REAL_HELM": HELM,
-            "FAKE_ACTIVATION_WINDOW_FAILURE": str(activation_window_failure).lower(),
-            "FAIL_POST_LIVE_CAPTURE": str(post_live_capture_failure).lower(),
-            "SIGNAL_AFTER_HELM": str(signal_after_helm).lower(),
+            "FAKE_ACTIVATION_WINDOW_COUNTER": str(activation_window_counter),
+            "FAKE_ACTIVATION_WINDOW_FAIL_ON_CALL": str(activation_window_fail_on_call),
+            "FAIL_POST_LIVE_CAPTURE": str(
+                failure_mode == "post-live-capture-failure"
+            ).lower(),
+            "FAIL_HELM_UPGRADE": str(failure_mode == "helm-failure").lower(),
+            "FAIL_FINAL_CRONJOB_GET": str(failure_mode == "final-get-failure").lower(),
+            "SIGNAL_AFTER_HELM": str(failure_mode == "signal-after-helm").lower(),
         },
         capture_output=True,
         text=True,
@@ -1037,27 +1097,57 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     )
 
     calls = target_calls.read_text(encoding="utf-8") if target_calls.exists() else ""
+    activation_window_calls = (
+        int(activation_window_counter.read_text(encoding="utf-8"))
+        if activation_window_counter.exists()
+        else 0
+    )
+    expected_activation_window_calls = (
+        0
+        if operation != "--activate-schedule"
+        else 1
+        if failure_mode in {"activation-window-failure", "pre-live-drift"}
+        else 2
+    )
+    assert activation_window_calls == expected_activation_window_calls
+    exact_suspend_call = (
+        "kubectl patch cronjob research-a-stock-data-collection --namespace market-data "
+        '--type=merge --patch {"spec":{"suspend":true}}'
+    )
     if not expected_success:
         assert completed.returncode != 0
-        if activation_window_failure:
-            assert "Gate C activation window validation failed" in completed.stderr
+        if failure_mode == "activation-window-failure":
+            assert "Gate C preflight activation window validation failed" in completed.stderr
             assert "helm-upgrade" not in calls
             assert "ssh " not in calls and "kubectl " not in calls
-        elif pre_live_drift:
+        elif failure_mode == "pre-write-activation-window-failure":
+            assert "Gate C pre-write activation window validation failed" in completed.stderr
+            assert "ssh " in calls and "kubectl " in calls
+            assert "helm-upgrade" not in calls
+            assert "patch cronjob" not in calls
+        elif failure_mode == "pre-live-drift":
             assert "live declarative state differs" in completed.stderr
             assert "helm-upgrade" not in calls
-        elif post_live_capture_failure:
+        elif failure_mode == "post-live-capture-failure":
             assert "activation did not complete safely" in completed.stderr
-            assert "patch cronjob research-a-stock-data-collection" in calls
-            assert '--patch {"spec":{"suspend":true}}' in calls
-        elif signal_after_helm:
+            assert calls.splitlines().count(exact_suspend_call) == 1
+        elif failure_mode == "helm-failure":
+            assert "Helm atomic rollback was requested" in completed.stderr
+            assert "activation did not complete safely" in completed.stderr
+            assert "helm-upgrade" in calls
+            assert calls.splitlines().count(exact_suspend_call) == 1
+        elif failure_mode == "final-get-failure":
+            assert completed.returncode == 94
+            assert "activation did not complete safely" in completed.stderr
+            assert "helm-upgrade" in calls
+            assert calls.splitlines().count(exact_suspend_call) == 1
+        elif failure_mode == "signal-after-helm":
             assert completed.returncode == 143
             assert "activation did not complete safely" in completed.stderr
-            assert calls.count("patch cronjob research-a-stock-data-collection") == 1
+            assert calls.splitlines().count(exact_suspend_call) == 1
         else:
             assert "postcondition failed" in completed.stderr
-            assert "patch cronjob research-a-stock-data-collection" in calls
-            assert '--patch {"spec":{"suspend":true}}' in calls
+            assert calls.splitlines().count(exact_suspend_call) == 1
         return
 
     assert completed.returncode == 0, completed.stderr
@@ -1067,7 +1157,8 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     assert "image.tag=20260905-1904b66" in calls
     assert "--atomic" in calls
     if operation == "--activate-schedule":
-        assert "Gate C activation window:" in completed.stdout
+        assert "Gate C activation window (preflight):" in completed.stdout
+        assert "Gate C activation window (pre-write):" in completed.stdout
     assert str(repo / "deploy" / "helm" / "a-stock") not in next(
         line for line in calls.splitlines() if line.startswith("helm-upgrade")
     )

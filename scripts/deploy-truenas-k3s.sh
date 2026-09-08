@@ -196,9 +196,11 @@ parse_server_version() {
 inspect_scheduling_packet() {
   local rendered="$1"
   local required_state="${2:-any}"
+  local kube_version="$3"
   printf '%s\n' "$rendered" | python3 "$PACKET_VALIDATOR" inspect \
     --release-name "$RELEASE_NAME" \
     --namespace "$NAMESPACE" \
+    --kube-version "$kube_version" \
     --require-state "$required_state"
 }
 
@@ -224,7 +226,7 @@ if [[ "$OPERATION" == offline-render ]]; then
   if ! RENDERED_PACKET="$(render_scheduling_packet "$CHART_DIR" "$BASELINE_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE")"; then
     die 'offline scheduling render failed'
   fi
-  if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET")"; then
+  if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" any "$TARGET_KUBERNETES_VERSION")"; then
     die 'offline scheduling packet validation failed'
   fi
   report_effective_trigger "$PACKET_INSPECTION"
@@ -405,7 +407,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       die "unsupported operation: $OPERATION"
       ;;
   esac
-  if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE")"; then
+  if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION")"; then
     die "operation $OPERATION rejected the final scheduling state"
   fi
   report_effective_trigger "$PACKET_INSPECTION"
@@ -448,6 +450,20 @@ verify_reviewed_sources() {
   fi
 }
 
+validate_activation_window() {
+  local phase="$1"
+  local inspection log_value
+  if ! inspection="$(
+    printf '%s\n' "$PACKET_INSPECTION" \
+      | python3 "$PACKET_VALIDATOR" validate-activation-window \
+        --mode "$GATE_C_CATCH_UP_MODE"
+  )"; then
+    die "Gate C $phase activation window validation failed"
+  fi
+  log_value="${inspection//$'\n'/ }"
+  log "Gate C activation window ($phase): $log_value"
+}
+
 case "$OPERATION" in
   read-only-discovery)
     verify_reviewed_sources false
@@ -470,15 +486,7 @@ case "$OPERATION" in
     [[ "$SCHEDULE_ACTIVATION_AUTHORIZED" == true ]] || die '--activate-schedule requires SCHEDULE_ACTIVATION_AUTHORIZED=true'
     [[ -n "$GATE_C_AUTHORIZATION_REF" ]] || die '--activate-schedule requires an exact GATE_C_AUTHORIZATION_REF'
     [[ "$GATE_C_CATCH_UP_MODE" == next-schedule || "$GATE_C_CATCH_UP_MODE" == immediate-catch-up ]] || die 'Gate C requires GATE_C_CATCH_UP_MODE=next-schedule or immediate-catch-up'
-    if ! ACTIVATION_WINDOW_INSPECTION="$(
-      printf '%s\n' "$PACKET_INSPECTION" \
-        | python3 "$PACKET_VALIDATOR" validate-activation-window \
-          --mode "$GATE_C_CATCH_UP_MODE"
-    )"; then
-      die 'Gate C activation window validation failed'
-    fi
-    ACTIVATION_WINDOW_LOG="${ACTIVATION_WINDOW_INSPECTION//$'\n'/ }"
-    log "Gate C activation window: $ACTIVATION_WINDOW_LOG"
+    validate_activation_window preflight
     ;;
   disable-schedule)
     [[ "$SCHEDULE_ROLLBACK_AUTHORIZED" == true ]] || die '--disable-schedule requires SCHEDULE_ROLLBACK_AUTHORIZED=true'
@@ -696,15 +704,16 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   fi
   verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$PRE_WRITE_RENDER")"
 
-  log "applying reviewed $OPERATION packet to $RELEASE_NAME/$NAMESPACE without building or importing an image"
   if [[ "$OPERATION" == activate-schedule ]]; then
     ACTIVATION_CRONJOB_NAME="$(
       printf '%s\n' "$PACKET_INSPECTION" \
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])'
     )"
     [[ -n "$ACTIVATION_CRONJOB_NAME" ]] || die 'activation CronJob name is missing'
+    validate_activation_window pre-write
     ACTIVATION_IN_FLIGHT=true
   fi
+  log "applying reviewed $OPERATION packet to $RELEASE_NAME/$NAMESPACE without building or importing an image"
   if ! helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
     --namespace "$NAMESPACE" \
     --values "$OPERATION_BASELINE_VALUES" \
@@ -788,7 +797,7 @@ fi
 if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
   die 'final deployment values failed target-version rendering before build'
 fi
-if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" disabled)"; then
+if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" disabled "$TARGET_KUBERNETES_VERSION")"; then
   die 'normal deployment cannot create or activate scheduled collection'
 fi
 
