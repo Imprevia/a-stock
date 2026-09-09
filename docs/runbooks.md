@@ -338,7 +338,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 | Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
 | Snapshot refresh | `python -m src.market_environment.cli snapshots refresh --as-of <date>` | CLI JSON / plan | 是 |
 | Collection management | 启用开发开关后验证状态 GET、单项 POST、全部 POST、轮询和 partial 结果 | pytest / 浏览器 / plan | 是 |
-| Scheduled collection | scheduled-refresh success/partial/skipped、`kubectl kustomize`、Helm enabled/disabled/suspended 渲染 | pytest / CLI JSON / plan | 是 |
+| Scheduled collection | scheduled-refresh success/partial/failed/skipped/settlement/lease-conflict 固定 fake-provider 回归；Kubernetes 1.26 controller-UTC/controller-Shanghai 与 1.27+ native 的 disabled/suspended/active Helm 矩阵；`kubectl kustomize` Dashboard base 与受版本门禁的 native overlay | pytest / CLI JSON / plan | 是 |
 | Warm cache | 对已预计算日期请求 Chapter 01，确认 provider 0 调用且 <500ms | pytest / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Browser QA | 启动前后端后检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出；01 页检查真实 OHLC K 线、均线和 tooltip；确认首屏先于章节数据出现、章节失败不清空核心数据 | 截图 / plan | 是 |

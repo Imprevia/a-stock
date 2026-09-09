@@ -3,8 +3,8 @@
 | Multica stage | OpenSpec tasks | Owner | Dependency | Activation state | Required evidence |
 |---|---|---|---|---|---|
 | Stage 1 - planning | 1.1-1.2 | Senior project manager | Gate A approval | Accepted; clean-baseline staged gate completed in Stage 2 | Approval trace, active plan registration, strict OpenSpec validation |
-| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.5 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` independently approved; awaiting GYT-47 acceptance | Documentation baseline, focused tests, reviewable implementation diff |
-| Stage 3 - offline verification (`GYT-48`) | 3.1-3.5 | Senior backend engineer | `GYT-47` terminal and reviewed | Backlog | Render matrix, manifest invariants, fake-provider tests, full offline gates |
+| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.5 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Accepted / terminal | Documentation baseline, focused tests, reviewable implementation diff |
+| Stage 3 - offline verification (`GYT-48`) | 3.1-3.5 | Senior backend engineer | `GYT-47` terminal and reviewed | In progress from `dd1277b86d04ed3a5d2cabe41c558d6de9049c09` | Render matrix, manifest invariants, fake-provider tests, full offline gates |
 | Gate B preparation and validation | 4.1-5.7 | Unassigned | GYT-47 independent GO, Stage 3 accepted, exact packet reviewed and exact Gate B action authorized | Progression/read-only permission recorded; prerequisites not met | Target preflight, frozen packet, exact action authorization, bounded validation evidence |
 | Gate C activation | 6.1-6.3 | Unassigned | Gate B evidence accepted, explicit catch-up choice, exact Gate C operation authorized | Progression authorized; prerequisites not met | Operation authorization record and suspend-only live diff |
 | Closeout | 7.1-7.3 | Assigned only after the preceding authorized stage | Applicable production evidence | Not started | Rollback, final facts, gates, and handoff |
@@ -27,9 +27,9 @@ There is **no frontend scope** in the approved change: no Dashboard UI, browser 
 
 ## 3. Offline Verification
 
-- [ ] 3.1 Add Helm render tests for disabled, suspended, and active modes across Kubernetes 1.26 controller-UTC, 1.26 controller-Shanghai, and 1.27+ native profiles; verify the default and a valid custom native post-settlement schedule, reject earlier/equal settlement times and list/range/step/multiple-time expressions, and assert exact cron/timeZone output plus every invalid configuration's failure message.
-- [ ] 3.2 Extend deployment-manifest tests to verify the scheduled Pod retains the Dashboard image, PVC, snapshot path, non-root/read-only-rootfs/no-token security posture, `Forbid`, `backoffLimit: 0`, deadlines, Job history limits, and the `scheduled-refresh` command.
-- [ ] 3.3 Run the existing fake-provider scheduled-refresh success, partial, failed, skipped, settlement, and lease-conflict tests and verify no real provider, production SQLite/PVC, or cluster is accessed.
+- [x] 3.1 Add Helm render tests for disabled, suspended, and active modes across Kubernetes 1.26 controller-UTC, 1.26 controller-Shanghai, and 1.27+ native profiles; verify the default and a valid custom native post-settlement schedule, reject earlier/equal settlement times and list/range/step/multiple-time expressions, and assert exact cron/timeZone output plus every invalid configuration's failure message.
+- [x] 3.2 Extend deployment-manifest tests to verify the scheduled Pod retains the Dashboard image, PVC, snapshot path, non-root/read-only-rootfs/no-token security posture, `Forbid`, `backoffLimit: 0`, deadlines, Job history limits, and the `scheduled-refresh` command.
+- [x] 3.3 Run the existing fake-provider scheduled-refresh success, partial, failed, skipped, settlement, and lease-conflict tests and verify no real provider, production SQLite/PVC, or cluster is accessed.
 - [ ] 3.4 Run Helm lint/template, the deployment test suite, strict OpenSpec validation, `python scripts/check-docs-contract.py --mode=full`, and `git diff --check`; record exact results and confirm the implementation diff contains no application API, provider, dataset, SQLite schema, frontend, or production-state change.
 - [ ] 3.5 Submit the clean implementation diff and offline evidence for review and verify no production command is scheduled or run until the actual-version packet is reviewed and its exact Gate B actions are authorized.
 

@@ -67,6 +67,17 @@ def _render_helm_error(*arguments: str) -> str:
     return completed.stderr
 
 
+def _render_helm_failure_message(*arguments: str) -> str:
+    first_line = _render_helm_error(*arguments).splitlines()[0]
+    _, separator, message = first_line.partition("): ")
+    assert separator == "): "
+    return message
+
+
+def _render_helm_schema_failures(*arguments: str) -> list[str]:
+    return [line for line in _render_helm_error(*arguments).splitlines() if line.startswith("- at ")]
+
+
 def _resource(documents: list[dict], kind: str) -> dict:
     return next(document for document in documents if document.get("kind") == kind)
 
@@ -92,16 +103,34 @@ def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary
     assert cron_spec["schedule"] == "30 16 * * 1-5"
     assert cron_spec["timeZone"] == "Asia/Shanghai"
     assert cron_spec["concurrencyPolicy"] == "Forbid"
+    assert cron_spec["startingDeadlineSeconds"] == 1800
+    assert cron_spec["successfulJobsHistoryLimit"] == 3
+    assert cron_spec["failedJobsHistoryLimit"] == 3
     assert cron_spec["jobTemplate"]["spec"]["backoffLimit"] == 0
     assert cron_spec["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
     assert cron_container["image"] == deployment_container["image"]
     assert cron_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == deployment_pod["volumes"][0]["persistentVolumeClaim"]["claimName"]
-    assert cron_container["command"][-2:] == ["snapshots", "scheduled-refresh"]
+    assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
+    assert cron_container["command"] == [
+        "python",
+        "-m",
+        "src.market_environment.cli",
+        "snapshots",
+        "scheduled-refresh",
+    ]
     assert cron_pod["automountServiceAccountToken"] is False
+    assert cron_pod["securityContext"] == deployment_pod["securityContext"]
     assert cron_pod["securityContext"]["runAsNonRoot"] is True
+    assert cron_pod["securityContext"]["runAsUser"] == 10001
+    assert cron_pod["securityContext"]["runAsGroup"] == 10001
+    assert cron_pod["securityContext"]["fsGroup"] == 10001
+    assert cron_pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    assert cron_container["securityContext"] == deployment_container["securityContext"]
+    assert cron_container["securityContext"]["allowPrivilegeEscalation"] is False
     assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
     assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert _environment(cron_container) == _environment(deployment_container)
+    assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
     assert any(
         cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"].get(key) != value
         for key, value in service["spec"]["selector"].items()
@@ -142,13 +171,34 @@ def test_helm_default_render_matches_dashboard_image_pvc_and_security() -> None:
     assert cronjob["spec"]["timeZone"] == "Asia/Shanghai"
     assert cronjob["spec"]["suspend"] is False
     assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
+    assert cronjob["spec"]["startingDeadlineSeconds"] == 1800
+    assert cronjob["spec"]["successfulJobsHistoryLimit"] == 3
+    assert cronjob["spec"]["failedJobsHistoryLimit"] == 3
     assert cronjob["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0
+    assert cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
     assert cron_container["image"] == deployment_container["image"]
     assert cron_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == deployment_pod["volumes"][0]["persistentVolumeClaim"]["claimName"]
+    assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
+    assert cron_container["command"] == [
+        "python",
+        "-m",
+        "src.market_environment.cli",
+        "snapshots",
+        "scheduled-refresh",
+    ]
     assert cron_pod["automountServiceAccountToken"] is False
+    assert cron_pod["securityContext"] == deployment_pod["securityContext"]
     assert cron_pod["securityContext"]["runAsNonRoot"] is True
+    assert cron_pod["securityContext"]["runAsUser"] == 10001
+    assert cron_pod["securityContext"]["runAsGroup"] == 10001
+    assert cron_pod["securityContext"]["fsGroup"] == 10001
+    assert cron_pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    assert cron_container["securityContext"] == deployment_container["securityContext"]
+    assert cron_container["securityContext"]["allowPrivilegeEscalation"] is False
     assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert _environment(cron_container) == _environment(deployment_container)
+    assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
     cron_labels = cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
     assert any(cron_labels.get(key) != value for key, value in service["spec"]["selector"].items())
 
@@ -157,6 +207,8 @@ def test_helm_default_render_matches_dashboard_image_pvc_and_security() -> None:
 def test_helm_render_supports_disabled_suspended_and_custom_native_schedule() -> None:
     disabled = _render_helm("--set", "marketEnvironment.scheduledCollection.enabled=false")
     custom = _render_helm(
+        "--kube-version",
+        "1.27.0",
         "--set",
         "marketEnvironment.scheduledCollection.suspend=true",
         "--set-string",
@@ -202,15 +254,125 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 @pytest.mark.parametrize(
+    ("kube_version", "profile_arguments", "expected_schedule", "expected_timezone"),
+    [
+        (
+            "1.26.6",
+            (
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Etc/UTC",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set-string",
+                "marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5",
+            ),
+            "30 8 * * 1-5",
+            None,
+        ),
+        (
+            "1.26.6",
+            (
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Asia/Shanghai",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+            ),
+            "30 16 * * 1-5",
+            None,
+        ),
+        (
+            "1.27.0",
+            ("--set", "marketEnvironment.scheduledCollection.timezoneStrategy=native"),
+            "30 16 * * 1-5",
+            "Asia/Shanghai",
+        ),
+    ],
+    ids=["controller-utc-126", "controller-shanghai-126", "native-127"],
+)
+@pytest.mark.parametrize(
+    ("state_arguments", "expected_suspend"),
+    [
+        (("--set", "marketEnvironment.scheduledCollection.enabled=false"), None),
+        (("--set", "marketEnvironment.scheduledCollection.suspend=true"), True),
+        (
+            (
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=false",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerCanaryVerified=true",
+            ),
+            False,
+        ),
+    ],
+    ids=["disabled", "suspended", "active"],
+)
+def test_helm_render_matrix_covers_every_profile_and_state(
+    kube_version: str,
+    profile_arguments: tuple[str, ...],
+    expected_schedule: str,
+    expected_timezone: str | None,
+    state_arguments: tuple[str, ...],
+    expected_suspend: bool | None,
+) -> None:
+    documents = _render_helm(
+        "--kube-version",
+        kube_version,
+        *profile_arguments,
+        *state_arguments,
+    )
+
+    cronjobs = [document for document in documents if document.get("kind") == "CronJob"]
+    if expected_suspend is None:
+        assert cronjobs == []
+        return
+
+    assert len(cronjobs) == 1
+    cronjob = cronjobs[0]
+    assert cronjob["spec"]["schedule"] == expected_schedule
+    assert cronjob["spec"]["suspend"] is expected_suspend
+    if expected_timezone is None:
+        assert "timeZone" not in cronjob["spec"]
+    else:
+        assert cronjob["spec"]["timeZone"] == expected_timezone
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+@pytest.mark.parametrize(
     ("arguments", "message"),
     [
         (
+            ("--set", "persistence.enabled=false"),
+            "marketEnvironment.scheduledCollection.enabled requires persistence.enabled=true",
+        ),
+        (
             ("--set", "marketEnvironment.scheduledCollection.timezoneStrategy=unknown"),
-            "timezoneStrategy must be native or controller",
+            "marketEnvironment.scheduledCollection.timezoneStrategy must be native or controller",
         ),
         (
             ("--kube-version", "1.26.6"),
-            "timezoneStrategy=native requires Kubernetes 1.27+",
+            "marketEnvironment.scheduledCollection.timezoneStrategy=native requires Kubernetes 1.27+",
+        ),
+        (
+            (
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=native",
+                "--set",
+                "marketEnvironment.scheduledCollection.timeZone=Etc/UTC",
+            ),
+            "marketEnvironment.scheduledCollection.native strategy requires timeZone=Asia/Shanghai",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.27.0",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+            ),
+            "marketEnvironment.scheduledCollection.timezoneStrategy=controller is limited to Kubernetes 1.26",
         ),
         (
             (
@@ -223,15 +385,58 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
                 "--set-string",
                 "marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5",
             ),
-            "controllerTimeZoneVerified=true is required",
+            "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true is required for controller strategy",
+        ),
+        (
+            ("--set-string", "marketEnvironment.settlementTime=1510"),
+            "marketEnvironment.settlementTime must use numeric H:M",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=60 16 * * 1-5"),
+            "marketEnvironment.scheduledCollection.schedule and settlementTime must contain valid clock values",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=09 15 * * 1-5"),
+            "marketEnvironment.scheduledCollection.schedule must be strictly after settlementTime",
         ),
         (
             ("--set-string", "marketEnvironment.scheduledCollection.schedule=10 15 * * 1-5"),
-            "schedule must be strictly after settlementTime",
+            "marketEnvironment.scheduledCollection.schedule must be strictly after settlementTime",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=15\\,45 17 * * 1-5"),
+            "marketEnvironment.scheduledCollection.schedule must use one numeric M H * * 1-5 trigger",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=15-45 17 * * 1-5"),
+            "marketEnvironment.scheduledCollection.schedule must use one numeric M H * * 1-5 trigger",
+        ),
+        (
+            ("--set-string", "marketEnvironment.scheduledCollection.schedule=*/15 17 * * 1-5"),
+            "marketEnvironment.scheduledCollection.schedule must use one numeric M H * * 1-5 trigger",
         ),
         (
             ("--set-string", "marketEnvironment.scheduledCollection.schedule=15 17\\,18 * * 1-5"),
-            "must use one numeric M H * * 1-5 trigger",
+            "marketEnvironment.scheduledCollection.schedule must use one numeric M H * * 1-5 trigger",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Etc/UTC",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=true",
+                "--set",
+                "marketEnvironment.settlementTime=15:00",
+                "--set-string",
+                "marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5",
+            ),
+            "marketEnvironment.scheduledCollection.controller strategy requires settlementTime=15:10 for Shanghai 16:30 equivalence",
         ),
         (
             (
@@ -246,7 +451,39 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
                 "--set",
                 "marketEnvironment.scheduledCollection.suspend=true",
             ),
-            "controller UTC schedule must equal 30 8 * * 1-5",
+            "marketEnvironment.scheduledCollection.controller UTC schedule must equal 30 8 * * 1-5 for Shanghai 16:30",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Asia/Shanghai",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=true",
+                "--set-string",
+                "marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5",
+            ),
+            "marketEnvironment.scheduledCollection.controller Shanghai schedule must equal 30 16 * * 1-5",
+        ),
+        (
+            (
+                "--kube-version",
+                "1.26.6",
+                "--set",
+                "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZone=Europe/London",
+                "--set",
+                "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=true",
+            ),
+            "marketEnvironment.scheduledCollection.controllerTimeZone must be Etc/UTC or Asia/Shanghai",
         ),
         (
             (
@@ -261,12 +498,12 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
                 "--set",
                 "marketEnvironment.scheduledCollection.suspend=false",
             ),
-            "controllerCanaryVerified=true before suspend=false",
+            "marketEnvironment.scheduledCollection.controller strategy requires controllerCanaryVerified=true before suspend=false",
         ),
     ],
 )
 def test_helm_rejects_invalid_scheduling_profiles(arguments: tuple[str, ...], message: str) -> None:
-    assert message in _render_helm_error(*arguments)
+    assert _render_helm_failure_message(*arguments) == message
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -280,27 +517,20 @@ def test_helm_rejects_invalid_scheduling_profiles(arguments: tuple[str, ...], me
     ],
 )
 def test_helm_rejects_string_scheduling_booleans(field: str) -> None:
-    error = _render_helm_error(
-        "--set-string",
-        f"marketEnvironment.scheduledCollection.{field}=false",
-    )
-
-    assert f"scheduledCollection/{field}" in error
-    assert "got string, want boolean" in error
+    assert _render_helm_schema_failures(
+        "--set-string", f"marketEnvironment.scheduledCollection.{field}=false"
+    ) == [f"- at '/marketEnvironment/scheduledCollection/{field}': got string, want boolean"]
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 @pytest.mark.parametrize("enabled", ["true", "false"])
 def test_helm_rejects_non_shanghai_business_timezone(enabled: str) -> None:
-    error = _render_helm_error(
+    assert _render_helm_schema_failures(
         "--set",
         f"marketEnvironment.scheduledCollection.enabled={enabled}",
         "--set",
         "marketEnvironment.timezone=Etc/UTC",
-    )
-
-    assert "marketEnvironment/timezone" in error
-    assert "value must be 'Asia/Shanghai'" in error
+    ) == ["- at '/marketEnvironment/timezone': value must be 'Asia/Shanghai'"]
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -403,6 +633,44 @@ def test_truenas_scheduling_overlays_only_change_reviewed_scheduling_fields() ->
     assert active_cronjob["spec"]["suspend"] is False
     assert "timeZone" not in suspended_cronjob["spec"]
     assert all(document["kind"] != "CronJob" for document in off)
+
+    for documents in (suspended, active):
+        deployment = _resource(documents, "Deployment")
+        cronjob = _resource(documents, "CronJob")
+        deployment_pod = deployment["spec"]["template"]["spec"]
+        deployment_container = deployment_pod["containers"][0]
+        cron_pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        cron_container = cron_pod["containers"][0]
+
+        assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
+        assert cronjob["spec"]["startingDeadlineSeconds"] == 1800
+        assert cronjob["spec"]["successfulJobsHistoryLimit"] == 3
+        assert cronjob["spec"]["failedJobsHistoryLimit"] == 3
+        assert cronjob["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0
+        assert cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
+        assert cron_container["image"] == deployment_container["image"]
+        assert cron_pod["volumes"][0] == deployment_pod["volumes"][0]
+        assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
+        assert _environment(cron_container) == _environment(deployment_container)
+        assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
+        assert cron_pod["automountServiceAccountToken"] is False
+        assert cron_pod["securityContext"] == deployment_pod["securityContext"]
+        assert cron_pod["securityContext"]["runAsNonRoot"] is True
+        assert cron_pod["securityContext"]["runAsUser"] == 10001
+        assert cron_pod["securityContext"]["runAsGroup"] == 10001
+        assert cron_pod["securityContext"]["fsGroup"] == 10001
+        assert cron_pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+        assert cron_container["securityContext"] == deployment_container["securityContext"]
+        assert cron_container["securityContext"]["allowPrivilegeEscalation"] is False
+        assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
+        assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+        assert cron_container["command"] == [
+            "python",
+            "-m",
+            "src.market_environment.cli",
+            "snapshots",
+            "scheduled-refresh",
+        ]
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
