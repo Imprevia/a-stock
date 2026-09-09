@@ -89,6 +89,95 @@ HELM_GLOBAL_VALUE_OPTIONS = frozenset(
 HELM_GLOBAL_BOOLEAN_OPTIONS = frozenset(
     {"--debug", "--help", "--kube-insecure-skip-tls-verify", "-h"}
 )
+XARGS_LONG_VALUE_OPTIONS = frozenset(
+    {
+        "--arg-file",
+        "--delimiter",
+        "--max-args",
+        "--max-chars",
+        "--max-procs",
+        "--process-slot-var",
+    }
+)
+XARGS_LONG_OPTIONAL_VALUE_OPTIONS = frozenset(
+    {"--eof", "--max-lines", "--replace"}
+)
+XARGS_LONG_BOOLEAN_OPTIONS = frozenset(
+    {
+        "--exit",
+        "--help",
+        "--interactive",
+        "--no-run-if-empty",
+        "--null",
+        "--open-tty",
+        "--show-limits",
+        "--verbose",
+        "--version",
+    }
+)
+XARGS_SHORT_VALUE_OPTIONS = frozenset({"a", "d", "E", "I", "L", "n", "P", "s"})
+XARGS_SHORT_BOOLEAN_OPTIONS = frozenset({"0", "o", "p", "r", "t", "x"})
+SUDO_VALUE_OPTIONS = frozenset(
+    {
+        "-C",
+        "--close-from",
+        "-D",
+        "--chdir",
+        "-g",
+        "--group",
+        "-h",
+        "--host",
+        "-p",
+        "--prompt",
+        "-R",
+        "--chroot",
+        "-r",
+        "--role",
+        "-T",
+        "--command-timeout",
+        "-t",
+        "--type",
+        "-U",
+        "--other-user",
+        "-u",
+        "--user",
+    }
+)
+SUDO_BOOLEAN_OPTIONS = frozenset(
+    {
+        "-A",
+        "--askpass",
+        "-b",
+        "--background",
+        "-E",
+        "--preserve-env",
+        "-e",
+        "--edit",
+        "-H",
+        "--set-home",
+        "-K",
+        "--remove-timestamp",
+        "-k",
+        "--reset-timestamp",
+        "-n",
+        "--non-interactive",
+        "-P",
+        "--preserve-groups",
+        "-S",
+        "--stdin",
+        "-V",
+        "--version",
+        "-v",
+        "--validate",
+    }
+)
+ENV_VALUE_OPTIONS = frozenset({"-C", "--chdir", "-S", "--split-string", "-u", "--unset"})
+ENV_BOOLEAN_OPTIONS = frozenset(
+    {"-0", "--null", "-i", "--ignore-environment", "-v", "--debug"}
+)
+COMMAND_BOOLEAN_OPTIONS = frozenset({"-p"})
+EXEC_VALUE_OPTIONS = frozenset({"-a"})
+EXEC_BOOLEAN_OPTIONS = frozenset({"-c", "-l"})
 SCHEDULING_ENTRYPOINT_MODES = frozenset(
     {
         "--offline-render",
@@ -258,45 +347,89 @@ def _skip_wrapper_options(
         if option == "--":
             break
         name, separator, _ = option.partition("=")
+        has_attached_short_value = not separator and any(
+            len(candidate) == 2
+            and candidate.startswith("-")
+            and not candidate.startswith("--")
+            and option.startswith(candidate)
+            and option != candidate
+            for candidate in value_options
+        )
         if not separator and name in value_options and index < len(command):
             index += 1
+        elif has_attached_short_value:
+            continue
         elif name not in value_options and name not in boolean_options:
             raise HelmAuditAmbiguity(f"unsupported {wrapper} option before Helm executable: {name}")
     return index
-
-
-def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
-    for helm_index, token in enumerate(command):
-        if PurePosixPath(token).name != "helm" and not _is_dynamic_shell_word(token):
-            continue
-        if any(
-            HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
-            for argument in command[helm_index + 1 :]
-        ):
-            return True
-    return False
 
 
 def _is_dynamic_shell_word(token: str) -> bool:
     return "$" in token or "`" in token
 
 
-def _has_xargs_helm_executor(command: tuple[str, ...]) -> bool:
-    for index, token in enumerate(command):
-        if PurePosixPath(token).name != "xargs":
+def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
+    for helm_index, token in enumerate(command):
+        is_literal_helm = PurePosixPath(token).name == "helm"
+        is_dynamic_executable = _is_dynamic_shell_word(token)
+        if not is_literal_helm and not is_dynamic_executable:
             continue
-        return any(
-            PurePosixPath(argument).name == "helm" or _is_dynamic_shell_word(argument)
-            for argument in command[index + 1 :]
-        )
+        arguments = command[helm_index + 1 :]
+        if is_literal_helm and any(
+            _is_dynamic_shell_word(argument)
+            or HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
+            for argument in arguments
+        ):
+            return True
+        if is_dynamic_executable and any(
+            HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
+            for argument in arguments
+        ):
+            return True
     return False
 
 
+def _xargs_executable_index(command: tuple[str, ...], index: int) -> int | None:
+    index += 1
+    while index < len(command) and command[index].startswith("-"):
+        option = command[index]
+        if option == "--":
+            index += 1
+            break
+        if option.startswith("--"):
+            name, separator, _ = option.partition("=")
+            if name in XARGS_LONG_VALUE_OPTIONS:
+                index += 1
+                if not separator:
+                    if index >= len(command):
+                        raise HelmAuditAmbiguity(f"missing value for xargs option: {name}")
+                    index += 1
+                continue
+            if name in XARGS_LONG_OPTIONAL_VALUE_OPTIONS:
+                index += 1
+                continue
+            if name in XARGS_LONG_BOOLEAN_OPTIONS and not separator:
+                index += 1
+                continue
+            raise HelmAuditAmbiguity(f"unsupported xargs option: {name}")
+
+        requires_next_value = False
+        for option_index, short_option in enumerate(option[1:]):
+            if short_option in XARGS_SHORT_BOOLEAN_OPTIONS:
+                continue
+            if short_option in XARGS_SHORT_VALUE_OPTIONS:
+                requires_next_value = option_index == len(option[1:]) - 1
+                break
+            raise HelmAuditAmbiguity(f"unsupported xargs option: -{short_option}")
+        index += 1
+        if requires_next_value:
+            if index >= len(command):
+                raise HelmAuditAmbiguity(f"missing value for xargs option: {option}")
+            index += 1
+    return index if index < len(command) else None
+
+
 def _helm_executable_index(command: tuple[str, ...]) -> int | None:
-    if _has_xargs_helm_executor(command):
-        raise HelmAuditAmbiguity("xargs Helm executable is unsupported")
-    if not _has_potential_helm_write(command):
-        return None
     index = 0
     while index < len(command):
         executable = PurePosixPath(command[index]).name
@@ -309,72 +442,12 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
         index += 1
         if executable == "sudo":
             index = _skip_wrapper_options(
-                command,
-                index,
-                frozenset(
-                    {
-                        "-C",
-                        "--close-from",
-                        "-D",
-                        "--chdir",
-                        "-g",
-                        "--group",
-                        "-h",
-                        "--host",
-                        "-p",
-                        "--prompt",
-                        "-R",
-                        "--chroot",
-                        "-r",
-                        "--role",
-                        "-T",
-                        "--command-timeout",
-                        "-t",
-                        "--type",
-                        "-U",
-                        "--other-user",
-                        "-u",
-                        "--user",
-                    }
-                ),
-                frozenset(
-                    {
-                        "-A",
-                        "--askpass",
-                        "-b",
-                        "--background",
-                        "-E",
-                        "--preserve-env",
-                        "-e",
-                        "--edit",
-                        "-H",
-                        "--set-home",
-                        "-K",
-                        "--remove-timestamp",
-                        "-k",
-                        "--reset-timestamp",
-                        "-n",
-                        "--non-interactive",
-                        "-P",
-                        "--preserve-groups",
-                        "-S",
-                        "--stdin",
-                        "-V",
-                        "--version",
-                        "-v",
-                        "--validate",
-                    }
-                ),
-                "sudo",
+                command, index, SUDO_VALUE_OPTIONS, SUDO_BOOLEAN_OPTIONS, "sudo"
             )
             continue
         if executable == "env":
             index = _skip_wrapper_options(
-                command,
-                index,
-                frozenset({"-C", "--chdir", "-S", "--split-string", "-u", "--unset"}),
-                frozenset({"-0", "--null", "-i", "--ignore-environment", "-v", "--debug"}),
-                "env",
+                command, index, ENV_VALUE_OPTIONS, ENV_BOOLEAN_OPTIONS, "env"
             )
             while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
                 index += 1
@@ -383,14 +456,19 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
             if index < len(command) and command[index] in {"-v", "-V"}:
                 return None
             index = _skip_wrapper_options(
-                command, index, frozenset(), frozenset({"-p"}), "command"
+                command, index, frozenset(), COMMAND_BOOLEAN_OPTIONS, "command"
             )
             continue
         if executable == "exec":
             index = _skip_wrapper_options(
-                command, index, frozenset({"-a"}), frozenset({"-c", "-l"}), "exec"
+                command, index, EXEC_VALUE_OPTIONS, EXEC_BOOLEAN_OPTIONS, "exec"
             )
             continue
+        if executable == "xargs":
+            xargs_executable_index = _xargs_executable_index(command, index - 1)
+            if xargs_executable_index is None:
+                return None
+            raise HelmAuditAmbiguity("explicit xargs executable is unsupported")
         if _has_potential_helm_write(command[index:]):
             raise HelmAuditAmbiguity(f"unsupported command before Helm executable: {executable}")
         return None
@@ -426,7 +504,12 @@ def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | 
         raise HelmAuditAmbiguity(f"unsupported Helm global option before action: {name}")
     if action_index >= len(helm_arguments):
         return None
-    action = HELM_ACTION_ALIASES.get(helm_arguments[action_index], helm_arguments[action_index])
+    action_argument = helm_arguments[action_index]
+    if _is_dynamic_shell_word(action_argument):
+        raise HelmAuditAmbiguity(
+            f"dynamic Helm action is unsupported: {action_argument}"
+        )
+    action = HELM_ACTION_ALIASES.get(action_argument, action_argument)
     if action in HELM_READ_ACTIONS:
         return None
     if action in HELM_WRITE_ACTIONS:
@@ -1433,12 +1516,60 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
             "dynamic Helm executable is unsupported",
         ),
         (
+            "```bash\nACTION=rollback; helm \"$ACTION\" a-stock 7\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
+            "```bash\nACTION=uninstall; helm ${ACTION} a-stock\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
+            "```bash\nhelm ${ACTION:-uninstall} a-stock\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
+            "```bash\nhelm \"$(printf uninstall)\" a-stock\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
             "```bash\nprintf 'uninstall a-stock\\n' | xargs helm\n```",
-            "xargs Helm executable is unsupported",
+            "explicit xargs executable is unsupported",
         ),
         (
             "```bash\nprintf 'uninstall a-stock\\n' | xargs -n 3 helm\n```",
-            "xargs Helm executable is unsupported",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs --eof helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs --max-lines helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs --replace helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'safe\\n' | xargs echo\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs env helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs ionice helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs watch helm\n```",
+            "explicit xargs executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'rollback a-stock 7\\n' | xargs chrt -p 0 helm\n```",
+            "explicit xargs executable is unsupported",
         ),
         ("```bash\nhelm test a-stock\n```", "helm test is forbidden"),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
@@ -1497,8 +1628,20 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "dynamic-helm-executable",
         "renamed-dynamic-helm-executable",
         "braced-renamed-dynamic-helm-executable",
+        "variable-helm-action",
+        "braced-variable-helm-action",
+        "defaulted-variable-helm-action",
+        "substituted-helm-action",
         "xargs-helm-executable",
         "xargs-option-helm-executable",
+        "xargs-optional-eof-helm-executable",
+        "xargs-optional-max-lines-helm-executable",
+        "xargs-optional-replace-helm-executable",
+        "xargs-explicit-echo-executable",
+        "xargs-env-helm-executable",
+        "xargs-ionice-helm-executable",
+        "xargs-watch-helm-executable",
+        "xargs-chrt-pid-helm-executable",
         "helm-test-hooks",
         "dollar-command-substitution",
         "backtick-command-substitution",
@@ -1526,6 +1669,13 @@ def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: 
         "```bash\necho '$(helm uninstall a-stock)'\n```",
         "```bash\nbash -c 'printf safe' -c 'helm uninstall a-stock'\n```",
         "```bash\nbash -c 'printf %s \"$1\"' _ -c 'helm rollback a-stock 7'\n```",
+        "```bash\nprintf 'safe\\n' | xargs\n```",
+        "```bash\nxargs -a helm\n```",
+        "```bash\nenv xargs --arg-file helm\n```",
+        "```bash\nxargs --eof=helm\n```",
+        "```bash\nxargs --max-lines=1\n```",
+        "```bash\nxargs --replace=helm\n```",
+        "```bash\nhelm --namespace \"$NAMESPACE\" status a-stock\n```",
         "```text\n```bash\nhelm rollback a-stock 7\n```\n```",
         "    ```bash\n    helm rollback a-stock 7\n    ```",
     ],
@@ -1538,6 +1688,13 @@ def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: 
         "quoted-substitution",
         "shell-command-positional-option",
         "shell-command-positional-argument",
+        "xargs-default-echo",
+        "xargs-short-option-value-with-default-echo",
+        "wrapped-xargs-long-option-value-with-default-echo",
+        "xargs-attached-optional-eof-with-default-echo",
+        "xargs-attached-optional-max-lines-with-default-echo",
+        "xargs-attached-optional-replace-with-default-echo",
+        "dynamic-global-option-value",
         "shell-fence-inside-text-fence",
         "indented-code-displaying-fence",
     ],
