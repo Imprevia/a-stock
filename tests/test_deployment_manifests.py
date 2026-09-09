@@ -186,20 +186,58 @@ def _walk_bash_nodes(value: object):
             yield from _walk_bash_nodes(child)
 
 
+def _embedded_shell_sources(command: tuple[str, ...]) -> list[str]:
+    sources: list[str] = []
+    for index, token in enumerate(command):
+        executable = PurePosixPath(token).name
+        if executable == "env":
+            for option_index in range(index + 1, len(command)):
+                option = command[option_index]
+                if option in {"-S", "--split-string"} and option_index + 1 < len(command):
+                    sources.append(command[option_index + 1])
+                elif option.startswith("-S") and option != "-S":
+                    sources.append(option[2:])
+                elif option.startswith("--split-string="):
+                    sources.append(option.partition("=")[2])
+        if executable in {"bash", "sh"}:
+            for option_index in range(index + 1, len(command)):
+                option = command[option_index]
+                if option == "-c" and option_index + 1 < len(command):
+                    sources.append(command[option_index + 1])
+                elif option.startswith("-c") and option != "-c":
+                    sources.append(option[2:])
+                elif option.startswith("-") and not option.startswith("--") and "c" in option[1:]:
+                    if option_index + 1 < len(command):
+                        sources.append(command[option_index + 1])
+    return sources
+
+
+def _parse_shell_commands(source: str) -> list[tuple[str, ...]]:
+    try:
+        roots = bashlex.parse(source)
+    except bashlex.errors.ParsingError as error:
+        raise AssertionError(f"shell command cannot be audited: {error}") from error
+    commands: list[tuple[str, ...]] = []
+    for node in _walk_bash_nodes(roots):
+        if node.kind != "command":
+            continue
+        words = tuple(part.word for part in node.parts if part.kind == "word")
+        if not words:
+            continue
+        commands.append(words)
+        for embedded_source in _embedded_shell_sources(words):
+            commands.extend(_parse_shell_commands(embedded_source))
+    return commands
+
+
 def _shell_commands(content: str) -> list[tuple[str, ...]]:
     commands: list[tuple[str, ...]] = []
     for language in SHELL_FENCE_LANGUAGES:
         for block in _fenced_blocks(content, language):
             try:
-                roots = bashlex.parse(block)
-            except bashlex.errors.ParsingError as error:
-                raise AssertionError(f"shell fence cannot be audited: {error}") from error
-            for node in _walk_bash_nodes(roots):
-                if node.kind != "command":
-                    continue
-                words = tuple(part.word for part in node.parts if part.kind == "word")
-                if words:
-                    commands.append(words)
+                commands.extend(_parse_shell_commands(block))
+            except AssertionError as error:
+                raise AssertionError(str(error).replace("shell command", "shell fence", 1)) from error
     return commands
 
 
@@ -227,8 +265,20 @@ def _skip_wrapper_options(
     return index
 
 
+def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
+    for helm_index, token in enumerate(command):
+        if PurePosixPath(token).name != "helm":
+            continue
+        if any(
+            HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
+            for argument in command[helm_index + 1 :]
+        ):
+            return True
+    return False
+
+
 def _helm_executable_index(command: tuple[str, ...]) -> int | None:
-    if not any(PurePosixPath(token).name == "helm" for token in command):
+    if not _has_potential_helm_write(command):
         return None
     index = 0
     while index < len(command):
@@ -320,6 +370,8 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
                 command, index, frozenset({"-a"}), frozenset({"-c", "-l"}), "exec"
             )
             continue
+        if _has_potential_helm_write(command[index:]):
+            raise HelmAuditAmbiguity(f"unsupported command before Helm executable: {executable}")
         return None
     return None
 
@@ -332,9 +384,14 @@ def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | 
     action_index = 0
     while action_index < len(helm_arguments) and helm_arguments[action_index].startswith("-"):
         option = helm_arguments[action_index]
-        name, separator, _ = option.partition("=")
+        name, separator, value = option.partition("=")
         if name in {"-h", "--help"}:
-            return None
+            if not separator or value.lower() == "true":
+                return None
+            if value.lower() != "false":
+                raise HelmAuditAmbiguity(f"unsupported value for Helm help option: {value}")
+            action_index += 1
+            continue
         if name in HELM_GLOBAL_VALUE_OPTIONS:
             action_index += 1
             if not separator:
@@ -1325,6 +1382,21 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
             "```bash\nsudo --future-option opaque helm uninstall a-stock\n```",
             "unsupported sudo option before Helm executable: --future-option",
         ),
+        ("```bash\nhelm --help=false rollback a-stock 7\n```", "helm rollback is forbidden"),
+        ("```bash\nhelm -h=false uninstall a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nenv -S 'helm rollback a-stock 7'\n```", "helm rollback is forbidden"),
+        (
+            "```bash\nenv --split-string='helm uninstall a-stock'\n```",
+            "helm uninstall is forbidden",
+        ),
+        ("```bash\nenv '-Shelm rollback a-stock 7'\n```", "helm rollback is forbidden"),
+        ("```bash\nsh -c 'helm rollback a-stock 7'\n```", "helm rollback is forbidden"),
+        ("```bash\nbash -c 'helm uninstall a-stock'\n```", "helm uninstall is forbidden"),
+        ("```bash\nbash -lc 'helm uninstall a-stock'\n```", "helm uninstall is forbidden"),
+        (
+            "```bash\nnohup helm uninstall a-stock\n```",
+            "unsupported command before Helm executable: nohup",
+        ),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
         ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
         ("```bash\n{ helm rollback a-stock 7; }\n```", "helm rollback is forbidden"),
@@ -1367,6 +1439,15 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "absolute-helm-path",
         "sudo-long-value-option",
         "unknown-sudo-value-option",
+        "false-long-help",
+        "false-short-help",
+        "env-split-string-short",
+        "env-split-string-long",
+        "env-split-string-attached",
+        "sh-command-string",
+        "bash-command-string",
+        "bash-login-command-string",
+        "unknown-executable-wrapper",
         "dollar-command-substitution",
         "backtick-command-substitution",
         "brace-group",
