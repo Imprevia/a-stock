@@ -49,12 +49,15 @@ HELM_READ_ACTIONS = frozenset(
         "dependency",
         "env",
         "get",
+        "help",
         "history",
         "lint",
         "list",
         "package",
         "plugin",
         "pull",
+        "push",
+        "registry",
         "repo",
         "search",
         "show",
@@ -64,6 +67,28 @@ HELM_READ_ACTIONS = frozenset(
         "verify",
         "version",
     }
+)
+HELM_GLOBAL_VALUE_OPTIONS = frozenset(
+    {
+        "--burst-limit",
+        "--kube-apiserver",
+        "--kube-as-group",
+        "--kube-as-user",
+        "--kube-ca-file",
+        "--kube-context",
+        "--kube-tls-server-name",
+        "--kube-token",
+        "--kubeconfig",
+        "--namespace",
+        "--qps",
+        "--registry-config",
+        "--repository-cache",
+        "--repository-config",
+        "-n",
+    }
+)
+HELM_GLOBAL_BOOLEAN_OPTIONS = frozenset(
+    {"--debug", "--help", "--kube-insecure-skip-tls-verify", "-h"}
 )
 SCHEDULING_ENTRYPOINT_MODES = frozenset(
     {
@@ -178,8 +203,16 @@ def _shell_commands(content: str) -> list[tuple[str, ...]]:
     return commands
 
 
+class HelmAuditAmbiguity(ValueError):
+    pass
+
+
 def _skip_wrapper_options(
-    command: tuple[str, ...], index: int, value_options: frozenset[str]
+    command: tuple[str, ...],
+    index: int,
+    value_options: frozenset[str],
+    boolean_options: frozenset[str],
+    wrapper: str,
 ) -> int:
     while index < len(command) and command[index].startswith("-"):
         option = command[index]
@@ -189,10 +222,14 @@ def _skip_wrapper_options(
         name, separator, _ = option.partition("=")
         if not separator and name in value_options and index < len(command):
             index += 1
+        elif name not in value_options and name not in boolean_options:
+            raise HelmAuditAmbiguity(f"unsupported {wrapper} option before Helm executable: {name}")
     return index
 
 
 def _helm_executable_index(command: tuple[str, ...]) -> int | None:
+    if not any(PurePosixPath(token).name == "helm" for token in command):
+        return None
     index = 0
     while index < len(command):
         executable = PurePosixPath(command[index]).name
@@ -229,6 +266,35 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
                         "--user",
                     }
                 ),
+                frozenset(
+                    {
+                        "-A",
+                        "--askpass",
+                        "-b",
+                        "--background",
+                        "-E",
+                        "--preserve-env",
+                        "-e",
+                        "--edit",
+                        "-H",
+                        "--set-home",
+                        "-K",
+                        "--remove-timestamp",
+                        "-k",
+                        "--reset-timestamp",
+                        "-n",
+                        "--non-interactive",
+                        "-P",
+                        "--preserve-groups",
+                        "-S",
+                        "--stdin",
+                        "-V",
+                        "--version",
+                        "-v",
+                        "--validate",
+                    }
+                ),
+                "sudo",
             )
             continue
         if executable == "env":
@@ -236,6 +302,8 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
                 command,
                 index,
                 frozenset({"-C", "--chdir", "-S", "--split-string", "-u", "--unset"}),
+                frozenset({"-0", "--null", "-i", "--ignore-environment", "-v", "--debug"}),
+                "env",
             )
             while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
                 index += 1
@@ -243,10 +311,14 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
         if executable == "command":
             if index < len(command) and command[index] in {"-v", "-V"}:
                 return None
-            index = _skip_wrapper_options(command, index, frozenset())
+            index = _skip_wrapper_options(
+                command, index, frozenset(), frozenset({"-p"}), "command"
+            )
             continue
         if executable == "exec":
-            index = _skip_wrapper_options(command, index, frozenset({"-a"}))
+            index = _skip_wrapper_options(
+                command, index, frozenset({"-a"}), frozenset({"-c", "-l"}), "exec"
+            )
             continue
         return None
     return None
@@ -257,14 +329,30 @@ def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | 
     if helm_index is None:
         return None
     helm_arguments = command[helm_index + 1 :]
-    if {"-h", "--help"}.intersection(helm_arguments):
-        return None
-    for action_index, token in enumerate(helm_arguments):
-        action = HELM_ACTION_ALIASES.get(token, token)
-        if action in HELM_READ_ACTIONS:
+    action_index = 0
+    while action_index < len(helm_arguments) and helm_arguments[action_index].startswith("-"):
+        option = helm_arguments[action_index]
+        name, separator, _ = option.partition("=")
+        if name in {"-h", "--help"}:
             return None
-        if action in HELM_WRITE_ACTIONS:
-            return action, (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :])
+        if name in HELM_GLOBAL_VALUE_OPTIONS:
+            action_index += 1
+            if not separator:
+                if action_index >= len(helm_arguments):
+                    raise HelmAuditAmbiguity(f"missing value for Helm global option: {name}")
+                action_index += 1
+            continue
+        if name in HELM_GLOBAL_BOOLEAN_OPTIONS:
+            action_index += 1
+            continue
+        raise HelmAuditAmbiguity(f"unsupported Helm global option before action: {name}")
+    if action_index >= len(helm_arguments):
+        return None
+    action = HELM_ACTION_ALIASES.get(helm_arguments[action_index], helm_arguments[action_index])
+    if action in HELM_READ_ACTIONS:
+        return None
+    if action in HELM_WRITE_ACTIONS:
+        return action, (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :])
     return None
 
 
@@ -316,11 +404,15 @@ def _helm_write_violations(content: str) -> tuple[int, list[str]]:
     write_count = 0
     violations: list[str] = []
     for command in _shell_commands(content):
-        invocation = _helm_invocation(command)
+        rendered_command = shlex.join(command)
+        try:
+            invocation = _helm_invocation(command)
+        except HelmAuditAmbiguity as error:
+            violations.append(f"{rendered_command}: {error}")
+            continue
         if invocation is None:
             continue
         action, arguments = invocation
-        rendered_command = shlex.join(command)
 
         if _has_flag(arguments, "--reuse-values"):
             violations.append(f"{rendered_command}: --reuse-values is forbidden")
@@ -1216,7 +1308,11 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         ),
         (
             "```bash\nhelm --future-value opaque upgrade a-stock deploy/helm/a-stock\n```",
-            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+            "unsupported Helm global option before action: --future-value",
+        ),
+        (
+            "```bash\nhelm --future-value status upgrade a-stock deploy/helm/a-stock\n```",
+            "unsupported Helm global option before action: --future-value",
         ),
         ("```bash\nhelm delete a-stock\n```", "helm uninstall is forbidden"),
         ("```bash\nhelm del a-stock\n```", "helm uninstall is forbidden"),
@@ -1225,6 +1321,10 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         ("```bash\nexec -a release helm uninstall a-stock\n```", "helm uninstall is forbidden"),
         ("```bash\n/usr/local/bin/helm delete a-stock\n```", "helm uninstall is forbidden"),
         ("```bash\nsudo --user root helm uninstall a-stock\n```", "helm uninstall is forbidden"),
+        (
+            "```bash\nsudo --future-option opaque helm uninstall a-stock\n```",
+            "unsupported sudo option before Helm executable: --future-option",
+        ),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
         ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
         ("```bash\n{ helm rollback a-stock 7; }\n```", "helm rollback is forbidden"),
@@ -1258,6 +1358,7 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "later-boolean-flag-wins",
         "unknown-global-value-option",
         "future-global-value-option",
+        "future-global-value-option-read-action-value",
         "delete-alias",
         "del-alias",
         "un-alias",
@@ -1265,6 +1366,7 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "exec-wrapper-with-name",
         "absolute-helm-path",
         "sudo-long-value-option",
+        "unknown-sudo-value-option",
         "dollar-command-substitution",
         "backtick-command-substitution",
         "brace-group",
