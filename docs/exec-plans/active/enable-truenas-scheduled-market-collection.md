@@ -126,6 +126,8 @@ Gate A / Stage 3 离线全矩阵验证与评审包。Gate B/Gate C 的推进授�
 - 2026-09-09：deployment/validator/guard 专项 `138 passed`；全库固定离线测试单次运行 `279 passed, 2 warnings`，warnings 为既有 FastAPI/Starlette deprecation。`bash -n scripts/deploy-truenas-k3s.sh` 与调度脚本/测试 `py_compile` 通过。
 - 2026-09-09：Helm 3.21.4 对 native 1.27、controller-UTC 1.26 suspended/active/off、controller-Shanghai 1.26 均完成 `lint --strict`（每项 `1 chart(s) linted, 0 failed`）和 `template`（exit 0）；`kubectl kustomize deploy/k3s` 与受门禁的 native `scripts/render-k3s.py --kube-version 1.27.0` 均 exit 0。裸 Helm 会规范化 prerelease capabilities，native prerelease 的 fail-closed 证据只取受支持部署入口及其自动化 guard，不把裸 Helm render 误记为边界证明。
 - 2026-09-09：proposal/design/tasks、`docs/status.md`、runbook 验证矩阵、active plan index 已同步 GYT-47 terminal 与 GYT-48 Stage 3 状态；architecture、repository guide 和 capability spec 经审计无契约变化，因此未做无关修改。
+- 2026-09-09：GYT-48 review candidate 为 `552fc4b4aa883ea2e482877de33e42fb8a33d641`。在该提交上，`openspec validate enable-truenas-scheduled-market-collection --strict --json` 为 1/1，`PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-docs-contract.py --mode=full` 通过（代码 1 / 文档 4 / plan 1），native/controller Helm lint/template 与 `git diff --check dd1277b86d04ed3a5d2cabe41c558d6de9049c09..HEAD` 均通过。环境没有 `python` 命令（原写法 exit 127），因此使用仓库支持的 `python3` 执行同一 gate 脚本。
+- 2026-09-09：`git diff --name-status dd1277b86d04ed3a5d2cabe41c558d6de9049c09..552fc4b4aa883ea2e482877de33e42fb8a33d641` 仅包含 `tests/test_deployment_manifests.py`、OpenSpec planning artifacts、active plan/index、runbook 与 status 共 8 个文件；`git diff --name-only bb0de075c4336e6a4532b38f221b043d9859f590..552fc4b4aa883ea2e482877de33e42fb8a33d641 -- src apps trading-rules` 为空，不含 application API、provider、dataset、SQLite schema、frontend 或生产状态变更。
 
 ## Remaining Gaps（剩余缺口）
 
