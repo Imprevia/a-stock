@@ -41,7 +41,7 @@ HELM_ACTION_ALIASES = {
     "delete": "uninstall",
     "un": "uninstall",
 }
-HELM_WRITE_ACTIONS = frozenset({"install", "rollback", "uninstall", "upgrade"})
+HELM_WRITE_ACTIONS = frozenset({"install", "rollback", "test", "uninstall", "upgrade"})
 HELM_READ_ACTIONS = frozenset(
     {
         "completion",
@@ -63,7 +63,6 @@ HELM_READ_ACTIONS = frozenset(
         "show",
         "status",
         "template",
-        "test",
         "verify",
         "version",
     }
@@ -206,9 +205,10 @@ def _embedded_shell_sources(command: tuple[str, ...]) -> list[str]:
                     option.startswith("-")
                     and not option.startswith("--")
                     and "c" in option[1:]
-                    and option_index + 1 < len(command)
                 ):
-                    sources.append(command[option_index + 1])
+                    if option_index + 1 < len(command):
+                        sources.append(command[option_index + 1])
+                    break
     return sources
 
 
@@ -267,9 +267,7 @@ def _skip_wrapper_options(
 
 def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
     for helm_index, token in enumerate(command):
-        if PurePosixPath(token).name != "helm" and not (
-            "$" in token and "helm" in token.lower()
-        ):
+        if PurePosixPath(token).name != "helm" and not _is_dynamic_shell_word(token):
             continue
         if any(
             HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
@@ -279,7 +277,24 @@ def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
     return False
 
 
+def _is_dynamic_shell_word(token: str) -> bool:
+    return "$" in token or "`" in token
+
+
+def _has_xargs_helm_executor(command: tuple[str, ...]) -> bool:
+    for index, token in enumerate(command):
+        if PurePosixPath(token).name != "xargs":
+            continue
+        return any(
+            PurePosixPath(argument).name == "helm" or _is_dynamic_shell_word(argument)
+            for argument in command[index + 1 :]
+        )
+    return False
+
+
 def _helm_executable_index(command: tuple[str, ...]) -> int | None:
+    if _has_xargs_helm_executor(command):
+        raise HelmAuditAmbiguity("xargs Helm executable is unsupported")
     if not _has_potential_helm_write(command):
         return None
     index = 0
@@ -287,7 +302,7 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
         executable = PurePosixPath(command[index]).name
         if executable == "helm":
             return index
-        if "$" in command[index] and "helm" in command[index].lower():
+        if _is_dynamic_shell_word(command[index]):
             raise HelmAuditAmbiguity(
                 f"dynamic Helm executable is unsupported: {command[index]}"
             )
@@ -479,7 +494,7 @@ def _helm_write_violations(content: str) -> tuple[int, list[str]]:
 
         if _has_flag(arguments, "--reuse-values"):
             violations.append(f"{rendered_command}: --reuse-values is forbidden")
-        if action in {"rollback", "uninstall"}:
+        if action in {"rollback", "test", "uninstall"}:
             violations.append(f"{rendered_command}: helm {action} is forbidden")
             continue
         if action not in {"install", "upgrade"}:
@@ -1409,6 +1424,23 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
             "```bash\n${HELM_BINARY:-helm} rollback a-stock 7\n```",
             "dynamic Helm executable is unsupported",
         ),
+        (
+            "```bash\nCMD=helm; $CMD rollback a-stock 7\n```",
+            "dynamic Helm executable is unsupported",
+        ),
+        (
+            "```bash\nTOOL=helm; ${TOOL} uninstall a-stock\n```",
+            "dynamic Helm executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs helm\n```",
+            "xargs Helm executable is unsupported",
+        ),
+        (
+            "```bash\nprintf 'uninstall a-stock\\n' | xargs -n 3 helm\n```",
+            "xargs Helm executable is unsupported",
+        ),
+        ("```bash\nhelm test a-stock\n```", "helm test is forbidden"),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
         ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
         ("```bash\n{ helm rollback a-stock 7; }\n```", "helm rollback is forbidden"),
@@ -1463,6 +1495,11 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "bash-clustered-command-string",
         "unknown-executable-wrapper",
         "dynamic-helm-executable",
+        "renamed-dynamic-helm-executable",
+        "braced-renamed-dynamic-helm-executable",
+        "xargs-helm-executable",
+        "xargs-option-helm-executable",
+        "helm-test-hooks",
         "dollar-command-substitution",
         "backtick-command-substitution",
         "brace-group",
@@ -1487,6 +1524,8 @@ def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: 
         "```bash\nsudo -u helm printf rollback\n```",
         "```bash\nprintf '%s' 'helm rollback a-stock 7'\n```",
         "```bash\necho '$(helm uninstall a-stock)'\n```",
+        "```bash\nbash -c 'printf safe' -c 'helm uninstall a-stock'\n```",
+        "```bash\nbash -c 'printf %s \"$1\"' _ -c 'helm rollback a-stock 7'\n```",
         "```text\n```bash\nhelm rollback a-stock 7\n```\n```",
         "    ```bash\n    helm rollback a-stock 7\n    ```",
     ],
@@ -1497,6 +1536,8 @@ def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: 
         "wrapper-option-value",
         "quoted-literal",
         "quoted-substitution",
+        "shell-command-positional-option",
+        "shell-command-positional-argument",
         "shell-fence-inside-text-fence",
         "indented-code-displaying-fence",
     ],
