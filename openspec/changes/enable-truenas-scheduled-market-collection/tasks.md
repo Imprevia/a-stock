@@ -3,9 +3,10 @@
 | Multica stage | OpenSpec tasks | Owner | Dependency | Activation state | Required evidence |
 |---|---|---|---|---|---|
 | Stage 1 - planning | 1.1-1.2 | Senior project manager | Gate A approval | Accepted; clean-baseline staged gate completed in Stage 2 | Approval trace, active plan registration, strict OpenSpec validation |
-| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.7 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Exact candidate `0cd9b31` received three independent GO verdicts; issue acceptance pending | Documentation baseline, focused tests, reviewable implementation diff |
-| Stage 3 - offline verification (`GYT-48`) | 3.1-3.7 | Senior backend engineer | `GYT-47` terminal and reviewed | Backlog; prior packet rejected by Stage 4 review | Render matrix, manifest invariants, generic release negatives, fake-provider tests, full offline gates |
-| Gate B preparation and validation | 4.1-5.7 | Unassigned | GYT-47 independent GO, Stage 3 accepted, exact packet reviewed and exact Gate B action authorized | Progression/read-only permission recorded; prerequisites not met | Target preflight, frozen packet, exact action authorization, bounded validation evidence |
+| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.7 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Approved remediation range rebased onto `origin/main=b6d3942`; local-main integration gates pass | Documentation baseline, focused tests, reviewable implementation diff |
+| Stage 3 - offline verification (`GYT-48`) | 3.1-3.7 | Senior backend engineer | `GYT-47` reviewed | Accepted delivery integrated; rebased fake-provider/full offline gates pass | Render matrix, manifest invariants, generic release negatives, fake-provider tests, full offline gates |
+| Stage 4 - independent Gate A verification (`GYT-52`) | 1.1-3.7 evidence | Independent test engineer | Final pushed main contains GYT-47/GYT-48 | Pending exact-main revalidation | Command-audit negatives, full offline gates, exact clean SHA |
+| Gate B preparation and validation | 4.1-5.7 | Unassigned | Stage 4 GO, exact packet reviewed and exact Gate B action authorized | Progression/read-only permission recorded; prerequisites not met | Target preflight, frozen packet, exact action authorization, bounded validation evidence |
 | Gate C activation | 6.1-6.3 | Unassigned | Gate B evidence accepted, explicit catch-up choice, exact Gate C operation authorized | Progression authorized; prerequisites not met | Operation authorization record and suspend-only live diff |
 | Closeout | 7.1-7.3 | Assigned only after the preceding authorized stage | Applicable production evidence | Not started | Rollback, final facts, gates, and handoff |
 

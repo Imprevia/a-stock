@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修复通用发布路径；Gate B/Gate C 的推进授权不授权本任务访问生产、调用真实 provider，或绕过重新验证及后续精确发布门禁。
+Gate A / Stage 4 local-main-first 整合与独立复验。GYT-47 的通用发布修复和 GYT-48 的已批准离线证据已在最新主线基线上重放；GYT-52 仍须对新的精确主线 SHA 独立验收。Gate B/Gate C 的推进授权不授权本任务访问生产、调用真实 provider，或绕过重新验证及后续精确发布门禁。
 
 ## Status（状态）
 
-`stage-2-fourth-successor-reviewed`：独立测试 GYT-52 对 Stage 3 clean HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO；此前 Stage 4 candidates 均因通用发布或命令审计缺口被拒绝。第四轮最终 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 已将命令审计收敛为结构化 CommonMark/Bash AST 解析，并在解析 xargs options 后拒绝任何显式 utility，仅允许无显式 utility 的默认 echo 形式；文档、测试严谨性和发布安全三路 exact-SHA 独立复审均为 GO，无 blocking finding。GYT-47 仓库交付已完成并等待人工验收；GYT-48/GYT-52 均保持 `backlog`，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
+`local-main-integrated-awaiting-stage-4-revalidation`：以最新 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为基线，按原顺序重放 `99a625a..4a2a617` 的 23 个 GYT-47/GYT-48 提交，明确排除 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 已 fast-forward 到本地 `main`，focused `243 passed`、fake-provider `7 passed, 10 deselected`、全量 `384 passed, 2 warnings` 及纯离线 Helm/Kustomize/OpenSpec/docs 门禁通过。GYT-47 和已批准的 GYT-48 Stage 3 交付已进入本地主线；GYT-52 必须对最终推送 SHA 重验，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
 
 ## Context（上下文）
 
@@ -47,9 +47,9 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 |---|---|---|---|---|---|
 | Stage 1 / D0 | Gate A 计划与分配 | 资深项目经理 | Gate A approval | approval trace、OpenSpec/active plan、串行 backlog、strict validation | accepted |
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
-| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.7；focused render/deployment tests；无应用/前端/生产 diff | exact candidate `0cd9b31` received three independent GO verdicts; issue acceptance pending |
-| Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` terminal + reviewed | tasks 3.1-3.7；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | backlog; prior evidence rejected by GYT-52 NO-GO |
-| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | remediated GYT-47 + rerun GYT-48 evidence | 通用发布负例、全量离线门禁、exact clean HEAD | backlog pending GYT-48 rerun and acceptance |
+| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.7；focused render/deployment tests；无应用/前端/生产 diff | approved range integrated into local `main` from `b6d3942` |
+| Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` reviewed | tasks 3.1-3.7；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | accepted delivery integrated; rebased offline gates pass |
+| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | final pushed `main` contains GYT-47/GYT-48 | 通用发布负例、全量离线门禁、exact clean HEAD | pending exact-main revalidation |
 | Gate B | 生产验证 | 未分配 | GYT-47 independent GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | progression/read-only permission recorded; blocked by prerequisites |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
 
@@ -74,7 +74,7 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 ## Acceptance（验收）
 
 - OpenSpec 和本 plan 可追溯记录 Gate A 批准、里程碑、依赖、风险、负责人、验收证据和下一检查点。
-- 实际仓库研发只分配给现有资深后端工程师，没有新建 specialist。Stage 2 曾完成并获验收、Stage 3 曾在冻结 clean HEAD 派生的独立 worktree 中串行执行，但这些状态已被 Stage 4 NO-GO 作废；当前 GYT-47 remediation 已交付并取得三路独立 GO，等待人工验收，GYT-48/GYT-52 保持 `backlog`。
+- 实际仓库研发只分配给现有资深后端工程师，没有新建 specialist。GYT-47 remediation 与 GYT-48 已批准 Stage 3 提交均已在隔离 worktree 中重放到最新 `origin/main` 基线并 fast-forward 进入本地 `main`；GYT-21 与其他 issue 的提交未进入该 23-commit 范围。新的完整主线 SHA 仍须由 GYT-52 独立复验。
 - 显式记录“无前端范围”及依据，没有向资深前端工程师创建无效任务。
 - 八项 NO-GO 阻塞均有修复位置、负例、离线命令和输出摘要，并绑定新的完整 clean HEAD；rejected HEAD 不作为 Stage 3 基线。
 - 部署入口在网络、构建或写操作前，以最终合并后的 typed Helm values 校验授权、`enabled`、`suspend`、业务时区和目标 release/namespace；离线非法输入不得读取 env、发起 SSH 或调用目标 API。
@@ -165,16 +165,18 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 - 2026-09-09：replacement 工作树将 xargs required-value 与 optional-value options 分开解析，`--eof`、`--max-lines`、`--replace` 未带 `=` 时不会吞掉后续 utility；任意显式 utility 均 fail closed，仅无 utility 的 default echo 允许。两路独立脏树对抗预检均为 GO；command-audit subset `82 passed`，deployment/guard focused suite `191 passed`，fake-provider scheduled-refresh `7 passed, 10 deselected`，全库固定离线测试 `384 passed, 2 warnings`。`uv pip check` 确认 52 个包兼容；Bash/Python syntax、五组 native/controller/off Helm strict lint/template、Kustomize base/native render、OpenSpec strict 1/1、staged fast docs-contract（代码 1 / 文档 2 / plan 1）、full docs-contract（代码 8 / 文档 10 / plan 2）、scope 与 `git diff --check` 均通过。该证据已绑定下述 exact clean candidate。
 - 2026-09-09：fourth-successor exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 已提交、推送，`HEAD == @{upstream}` 且 worktree clean。文档/规格、测试严谨性和发布安全三路只读复审均对 baseline `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 到该 candidate 给出 GO，无 blocking finding；两路独立复跑 deployment/guard 均为 `191 passed`，full docs-contract 为代码 8 / 文档 10 / plan 2，OpenSpec strict 为 1/1。文档审阅者额外全库复跑为 `383 passed, 1 failed, 2 warnings`；唯一失败是本 plan 已记录且 baseline-identical 的跨 service 冷加载 TOCTOU，candidate 未修改 `src/` 或该测试，作为残余风险保留，不以重试或放宽断言掩盖。
 - 2026-09-09：三路 GO 后已同步 proposal、design、tasks、active plan 与 `docs/status.md` 的当前状态；evidence-only staged fast docs-contract 通过（代码 0 / 文档 2 / plan 1），full docs-contract 通过（代码 8 / 文档 10 / plan 2），OpenSpec strict 仍为 1/1，`git diff --cached --check` 通过；无代码、部署或生产状态变更。
+- 2026-09-09：用户授权以最新 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 解除主线分叉，并要求纳入 GYT-48、排除 GYT-21。新隔离 worktree 按原顺序重放 `99a625a..4a2a617` 的 23 个提交；`git range-diff` 显示 21 个 patch 完全一致，两个 active-plan index patch 只删除 GYT-21 的 `fix-refresh-stale-regressions` 行并保留 GYT-47 日期更新。相对 `origin/main` 的 `src/`、`apps/`、`trading-rules/`、GYT-21 专属 plan 和两份 refresh/service 测试差异均为空，主线新增的两份 completed plan 也保持不变。
+- 2026-09-09：pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 已通过 `git merge --ff-only` 进入本地 `main`。该提交上 deployment/validator/guard focused suite 为 `243 passed`，fake-provider scheduled-refresh 为 `7 passed, 10 deselected`，全库为 `384 passed, 2 warnings`；五组 Helm strict lint/template、controller suspended/off offline render、Kustomize base/native、Bash/Python syntax、OpenSpec strict 1/1、docs-contract full、52-package dependency check 与 `git diff --check` 全部通过。所有验证均使用本地 render、fixture 和 fake provider，未访问生产或真实 provider。
 
 ## Remaining Gaps（剩余缺口）
 
-- 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
-- Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流均已在 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；GYT-47 仓库交付完成，尚待人工验收。
+- 共享 worktree 仍不是 clean implementation baseline；本次整合只在新隔离 worktree 和临时本地 `main` worktree 中执行，未 stash/reset/覆盖共享树改动。
+- Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流已在原 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；其获准内容与 GYT-48 已批准提交现已重放到新主线 lineage。由于提交 SHA 改写，GYT-52 仍须绑定最终 `origin/main` SHA 重验，旧 SHA 的 GO 不自动迁移。
 - baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
-- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均已被独立复审拒绝，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 是当前三路 GO 的 replacement candidate。
-- GYT-48 与 GYT-52 均保持 `backlog`；必须在 GYT-47 人工验收后依次重验。
+- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均是被替代的历史候选，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；原 lineage 中仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 取得三路 GO，本次重放后的 SHA 必须重新绑定验收。
+- GYT-48 已完成且其四个 Stage 3 提交已整合；剩余仓库门槛是 GYT-52 对最终推送主线的 Stage 4 独立复验。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
 ## Next Step（下一步）
 
-人工验收 GYT-47 后，依次提升 GYT-48 重跑 Stage 3 离线证据，再由 GYT-52 执行 Stage 4 独立验收。两者验收前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
+完成最终 evidence-only commit、在其精确 SHA 上重跑适用离线门禁并确认本地 `main == origin/main` 后，由 GYT-52 对该 SHA 执行 Stage 4 独立验收。GYT-52 明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
