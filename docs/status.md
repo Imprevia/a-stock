@@ -29,8 +29,8 @@
   - 容量方向已支持 `push2` 到 `push2delay` 的统一 Top-N 校验和可审计降级；当前市场日真实 smoke 在主域断连后保存 `eastmoney-clist-delay` / `fallback` 的 30 个观察样本，双端点失败继续使用精确日期的 `failed-retained` / `failed-missing`。
   - 数据采集管理已通过 124 个 Python 测试、11 个前端测试和生产构建；当前市场日行业真实 smoke 在主域断连后由 `eastmoney-clist-delay` 成功返回 100 条记录。
   - 已提供单镜像 k3s 部署配置：`deploy/k3s/` 提供原生 Kustomize 清单，`deploy/helm/a-stock/` 提供可覆盖镜像、Ingress/TLS、PVC、资源与调度参数的 Helm Chart；两者均保持单副本非 root 运行、健康探针和 SQLite 持久化。
-  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已完成 Gate A Stage 3 离线评审包并等待验收，支持关闭、暂停和受限调度覆盖。
-  - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。Stage 3 新增 3 profile x 3 state Helm render、非法输入精确消息和 CronJob 不变量测试；deployment/validator/guard 专项 `138 passed`，scheduled-refresh 固定 fake-provider 回归 `7 passed`，全库离线测试 `279 passed, 2 warnings`。
+  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现，但冻结 Stage 3 packet 已被 Stage 4 拒绝，当前仍在 successor remediation，未获生产启用资格。
+  - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。第二轮 Stage 4 successor 已加入 generic deploy 的 stored/live schedule 双重前置检查、受审 `--disable-schedule` 顺序、首次安装、写前重检、成功后 absent 以及 Helm/rollout/read/comparison/signal 失败补偿负例；deployment/validator/guard 专项 `165 passed`，全库固定离线测试 `306 passed, 2 warnings`。
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 在 Stage 4 独立验收中回流：GYT-52 对冻结 Stage 3 HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO，因为 Chart 默认值及 README/TrueNAS 通用 install、upgrade、rollback 可在 Gate B/Gate C 外创建或恢复 active CronJob。GYT-47 已重新打开并从该 clean HEAD 修复；GYT-48/GYT-52 回到 `backlog`，GYT-50/GYT-51 不得启动。Gate B/Gate C 推进授权仍不能替代重新验收和精确 packet；当前不访问目标环境且 CronJob 保持关闭。
+- `enable-truenas-scheduled-market-collection` 在 Stage 4 独立验收中回流：GYT-52 对冻结 Stage 3 HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO，因为 Chart 默认值及通用发布路径可绕过 Gate B/Gate C；首轮 successor `9478ff0fd946993ae582b75dbb3287cf3a818aea` 又因原始 Helm write 的 atomic rollback 风险、未检查 stored/live schedule、归档可执行历史回滚和命令审计缺口收到三路 NO-GO。第二轮 successor 已完成 OpenSpec 2.7/3.7 与候选冻结前离线门禁，待 exact clean candidate 独立复审；GYT-48/GYT-52 保持 `backlog`，GYT-50/GYT-51 不得启动。Gate B/Gate C 推进授权仍不能替代重新验收和精确 packet；当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
@@ -65,7 +65,7 @@
 ## 下一步
 
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集下一检查点是 GYT-47 完成通用 Helm 发布 fail-closed 返工并提交新的 clean HEAD，再由 GYT-48 与 GYT-52 依次重验。只有重新 GO 后才可使用已记录 permission 执行只读 preflight、冻结 exact packet 并取得覆盖该 packet 的 Gate B action authorization；Gate B 证据接受后，还须形成明确 `next-schedule` 或 `immediate catch-up` 的 Gate C operation authorization，且 live diff 仅允许已审阅的 `spec.suspend: true -> false`。
+- 定时采集下一检查点是提交第二轮 successor 的 exact clean HEAD 并取得独立 GO，再由 backlog 中的 GYT-48 与 GYT-52 依次重验。只有重新 GO 后才可使用已记录 permission 执行只读 preflight、冻结 exact packet 并取得覆盖该 packet 的 Gate B action authorization；Gate B 证据接受后，还须形成明确 `next-schedule` 或 `immediate catch-up` 的 Gate C operation authorization，且 live diff 仅允许已审阅的 `spec.suspend: true -> false`。
 - 后续评估交易所节假日日历、认证和多节点协调；当前版本保持单机 SQLite、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。

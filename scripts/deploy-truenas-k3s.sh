@@ -204,6 +204,101 @@ inspect_scheduling_packet() {
     --require-state "$required_state"
 }
 
+helm_release_presence() {
+  local releases
+  releases="$(helm list --all --namespace "$NAMESPACE" --filter "^${RELEASE_NAME}$" --output json)" || return 1
+  printf '%s\n' "$releases" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+if not isinstance(payload, list):
+    raise SystemExit("Helm release list must be a JSON array")
+matches = [item for item in payload if isinstance(item, dict) and item.get("name") == sys.argv[1]]
+if len(matches) > 1:
+    raise SystemExit("Helm returned duplicate release records")
+print("present" if matches else "absent")
+' "$RELEASE_NAME"
+}
+
+capture_live_cronjobs() {
+  local payload
+  payload="$(kubectl get cronjob --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json)" || return 1
+  printf '%s\n' "$payload" | python3 -c '
+import json, sys, yaml
+payload = json.load(sys.stdin)
+items = payload.get("items") if isinstance(payload, dict) else None
+if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+    raise SystemExit("live CronJob response must contain an items array")
+yaml.safe_dump_all(items, sys.stdout, sort_keys=False)
+'
+}
+
+require_generic_schedule_disabled() {
+  local source="$1"
+  local manifests="$2"
+  if ! inspect_scheduling_packet "$manifests" disabled "$TARGET_KUBERNETES_VERSION" >/dev/null; then
+    die "generic deployment requires $source scheduling to be off/absent; run the reviewed --disable-schedule mode first"
+  fi
+}
+
+verify_generic_deploy_precondition() {
+  local presence stored_manifest live_cronjobs
+  if ! presence="$(helm_release_presence)"; then
+    die 'could not determine whether the target Helm release already exists'
+  fi
+  if [[ "$presence" == present ]]; then
+    if ! stored_manifest="$(helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE")"; then
+      die 'could not read the existing Helm release manifest'
+    fi
+    require_generic_schedule_disabled 'stored Helm release' "$stored_manifest"
+  elif [[ "$presence" != absent ]]; then
+    die "unexpected Helm release presence result: $presence"
+  fi
+
+  if ! live_cronjobs="$(capture_live_cronjobs)"; then
+    die 'could not read live release CronJobs before generic deployment'
+  fi
+  require_generic_schedule_disabled 'live release' "$live_cronjobs"
+  log 'generic deployment precondition: stored and live scheduling are off/absent'
+}
+
+recover_generic_deploy_schedule() {
+  local phase="$1"
+  local live_cronjobs inspection state cronjob_name verified
+  if ! live_cronjobs="$(capture_live_cronjobs)"; then
+    warn "$phase: could not read live CronJobs; scheduling state is uncertain"
+    return 1
+  fi
+  if ! inspection="$(inspect_scheduling_packet "$live_cronjobs" any "$TARGET_KUBERNETES_VERSION")"; then
+    warn "$phase: live CronJobs could not be validated; scheduling state is uncertain"
+    return 1
+  fi
+  state="$(printf '%s\n' "$inspection" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" || return 1
+  if [[ "$state" == active ]]; then
+    cronjob_name="$(printf '%s\n' "$inspection" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')" || return 1
+    warn "$phase: forcing $cronjob_name to suspend=true"
+    if ! kubectl patch cronjob "$cronjob_name" --namespace "$NAMESPACE" \
+      --type=merge --patch '{"spec":{"suspend":true}}'; then
+      warn "$phase: emergency suspend failed; scheduling state is uncertain"
+      return 1
+    fi
+    if ! live_cronjobs="$(capture_live_cronjobs)"; then
+      warn "$phase: could not verify the emergency suspend; scheduling state is uncertain"
+      return 1
+    fi
+    if ! verified="$(inspect_scheduling_packet "$live_cronjobs" suspended "$TARGET_KUBERNETES_VERSION")"; then
+      warn "$phase: emergency suspend postcondition failed; scheduling state is uncertain"
+      return 1
+    fi
+    state="$(printf '%s\n' "$verified" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" || return 1
+  fi
+  if [[ "$state" != disabled && "$state" != suspended ]]; then
+    warn "$phase: expected scheduling to be absent or suspended, got $state"
+    return 1
+  fi
+  log "$phase: scheduling is $state"
+}
+
 if [[ "$OPERATION" == offline-render ]]; then
   REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
@@ -515,11 +610,15 @@ SMOKE_CREATED=false
 K3S_TUNNEL_PID=''
 ACTIVATION_IN_FLIGHT=false
 ACTIVATION_CRONJOB_NAME=''
+GENERIC_DEPLOY_IN_FLIGHT=false
 cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM HUP
   if [[ "$ACTIVATION_IN_FLIGHT" == true ]]; then
     suspend_after_uncertain_activation "$ACTIVATION_CRONJOB_NAME"
+  fi
+  if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
+    recover_generic_deploy_schedule 'generic deployment failure recovery' || true
   fi
   if [[ "$SMOKE_CREATED" == true ]]; then
     podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
@@ -541,7 +640,7 @@ OPERATION_CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 OPERATION_SCHEDULING_OVERLAY="$SCHEDULING_OVERLAY_FILE"
 case "$OPERATION" in
-  server-dry-run|release-suspended|activate-schedule|disable-schedule)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule)
     command -v flock >/dev/null 2>&1 || die 'required command not found: flock'
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
     if [[ "$COMMON_GIT_DIR" != /* ]]; then
@@ -549,6 +648,10 @@ case "$OPERATION" in
     fi
     exec 9>"$COMMON_GIT_DIR/a-stock-scheduling-release.lock"
     flock -n 9 || die 'another reviewed scheduling operation holds the release lock'
+    ;;
+esac
+case "$OPERATION" in
+  server-dry-run|release-suspended|activate-schedule|disable-schedule)
     SNAPSHOT_DIR="$TMP_DIR/reviewed-packet"
     mkdir -p "$SNAPSHOT_DIR"
     cp -R "$REPO_DIR/deploy/helm/a-stock" "$SNAPSHOT_DIR/chart"
@@ -621,6 +724,10 @@ fi
 TARGET_KUBERNETES_VERSION="$ACTUAL_KUBERNETES_VERSION"
 if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
+fi
+
+if [[ "$OPERATION" == deploy ]]; then
+  verify_generic_deploy_precondition
 fi
 
 if [[ "$OPERATION" == read-only-discovery ]]; then
@@ -847,18 +954,22 @@ sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
 sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
 
+verify_generic_deploy_precondition
+
 HELM_VALUES_ARGS=(--values "$VALUES_FILE")
 if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
   HELM_VALUES_ARGS+=(--values "$SCHEDULING_OVERLAY_FILE")
 fi
 
 log "installing Helm release $RELEASE_NAME/$NAMESPACE"
+GENERIC_DEPLOY_IN_FLIGHT=true
 helm upgrade --install "$RELEASE_NAME" "$REPO_DIR/deploy/helm/a-stock" \
   --namespace "$NAMESPACE" \
   --create-namespace \
   "${HELM_VALUES_ARGS[@]}" \
   --set "image.repository=$IMAGE_REPOSITORY" \
   --set "image.tag=$IMAGE_TAG" \
+  --atomic \
   --wait \
   --timeout "$HELM_TIMEOUT"
 
@@ -874,6 +985,11 @@ curl --fail --show-error --silent \
   --max-time 15 \
   --header "Host: $INGRESS_HOST" \
   "http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/api/health" >/dev/null
+
+GENERIC_DEPLOY_POSTCONDITION="$(capture_live_cronjobs)" \
+  || die 'could not read live CronJobs after generic deployment'
+require_generic_schedule_disabled 'post-deploy live release' "$GENERIC_DEPLOY_POSTCONDITION"
+GENERIC_DEPLOY_IN_FLIGHT=false
 
 log 'deployment completed'
 log "internal URL: http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/"

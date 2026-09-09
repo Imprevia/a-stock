@@ -483,6 +483,324 @@ def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path:
     assert not marker.exists()
 
 
+def _cronjob_list(rendered: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [
+            document
+            for document in yaml.safe_load_all(rendered)
+            if document and document.get("kind") == "CronJob"
+        ],
+    }
+
+
+def _run_generic_deploy(
+    tmp_path: Path,
+    *,
+    stored_overlay: Path,
+    live_overlay: Path,
+    outcome: str = "off",
+    release_present: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], str, dict]:
+    repo, baseline, suspended, active, off, _ = _prepare_reviewed_repo(tmp_path)
+    overlays = {path.name: path for path in (suspended, active, off)}
+    stored_manifest = tmp_path / "generic-stored.yaml"
+    stored_manifest.write_text(
+        _render_reviewed(
+            repo,
+            baseline,
+            overlays[stored_overlay.name],
+            release_name="a-stock",
+            namespace="a-stock",
+        ),
+        encoding="utf-8",
+    )
+    live_state = tmp_path / "generic-live.json"
+    live_state.write_text(
+        json.dumps(
+            _cronjob_list(
+                _render_reviewed(
+                    repo,
+                    baseline,
+                    overlays[live_overlay.name],
+                    release_name="a-stock",
+                    namespace="a-stock",
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+    off_state = tmp_path / "generic-off.json"
+    off_state.write_text(
+        json.dumps(
+            _cronjob_list(
+                _render_reviewed(
+                    repo, baseline, off, release_name="a-stock", namespace="a-stock"
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+    suspended_state = tmp_path / "generic-suspended.json"
+    suspended_state.write_text(
+        json.dumps(
+            _cronjob_list(
+                _render_reviewed(
+                    repo,
+                    baseline,
+                    suspended,
+                    release_name="a-stock",
+                    namespace="a-stock",
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+    active_state = tmp_path / "generic-active.json"
+    active_state.write_text(
+        json.dumps(
+            _cronjob_list(
+                _render_reviewed(
+                    repo, baseline, active, release_name="a-stock", namespace="a-stock"
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "generic-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "generic-calls"
+    released = tmp_path / "generic-released"
+    post_read_failed = tmp_path / "generic-post-read-failed"
+    helm_wrapper = fake_bin / "helm"
+    helm_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'helm %s\\n' \"$*\" >> {calls}\n"
+        "case \"$1\" in\n"
+        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
+        "  list) if [[ \"$GENERIC_RELEASE_PRESENT\" == true ]]; then printf '[{\"name\":\"a-stock\"}]\\n'; else printf '[]\\n'; fi ;;\n"
+        f"  get) [[ \"$GENERIC_RELEASE_PRESENT\" == true ]] || exit 96; cat {stored_manifest} ;;\n"
+        "  upgrade)\n"
+        "    case \"$GENERIC_UPGRADE_OUTCOME\" in\n"
+        f"      fail-active) cp {active_state} {live_state}; exit 95 ;;\n"
+        f"      signal-active) cp {active_state} {live_state}; touch {released}; kill -TERM \"$PPID\"; sleep 0.1 ;;\n"
+        f"      post-read-active|rollout-active|postcondition-active) cp {active_state} {live_state}; touch {released} ;;\n"
+        f"      off) cp {off_state} {live_state}; touch {released} ;;\n"
+        "      *) exit 98 ;;\n"
+        "    esac\n"
+        "    ;;\n"
+        "  *) exit 97 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm_wrapper.chmod(0o755)
+
+    kubectl_wrapper = fake_bin / "kubectl"
+    kubectl_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
+        "if [[ \"$*\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
+        f"if [[ \"$1\" == get && \"$2\" == cronjob ]]; then cat {live_state}; exit 0; fi\n"
+        "if [[ \"$1\" == patch && \"$2\" == cronjob ]]; then\n"
+        f"  cp {suspended_state} {live_state}\n"
+        "  exit 0\n"
+        "fi\n"
+        f"if [[ \"$*\" == *\"get deployment\"* && -f {released} && \"$GENERIC_UPGRADE_OUTCOME\" == post-read-active && ! -f {post_read_failed} ]]; then touch {post_read_failed}; exit 96; fi\n"
+        "if [[ \"$*\" == *\"get deployment\"* ]]; then printf a-stock; exit 0; fi\n"
+        "if [[ \"$*\" == *\"rollout status\"* ]]; then [[ \"$GENERIC_UPGRADE_OUTCOME\" != rollout-active ]] || exit 93; exit 0; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    kubectl_wrapper.chmod(0o755)
+
+    podman_wrapper = fake_bin / "podman"
+    podman_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'podman %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$1\" == save ]]; then\n"
+        "  while (($#)); do\n"
+        "    if [[ \"$1\" == --output ]]; then : > \"$2\"; exit 0; fi\n"
+        "    shift\n"
+        "  done\n"
+        "  exit 99\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    podman_wrapper.chmod(0o755)
+    ssh_wrapper = fake_bin / "ssh"
+    ssh_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$GENERIC_UPGRADE_OUTCOME\" == pre-write-active && \"$*\" == *\"images import\"* ]]; then\n"
+        f"  cp {active_state} {live_state}\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ssh_wrapper.chmod(0o755)
+    for name in ("nc", "scp", "curl"):
+        executable = fake_bin / name
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '{name} %s\\n' \"$*\" >> {calls}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+
+    kubeconfig = tmp_path / "generic-kubeconfig"
+    kubeconfig.write_text("fixture", encoding="utf-8")
+    env_file = tmp_path / "generic.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                "REMOTE_IMAGE_DIR=/unreachable",
+                f"KUBECONFIG={kubeconfig}",
+                f"HELM_VALUES_FILE={baseline}",
+                "IMAGE_TAG=test-generic",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM or "helm",
+            "GENERIC_UPGRADE_OUTCOME": outcome,
+            "GENERIC_RELEASE_PRESENT": str(release_present).lower(),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    call_log = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    return completed, call_log, json.loads(live_state.read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize("blocked_overlay", [ACTIVE, SUSPENDED], ids=["active", "suspended"])
+@pytest.mark.parametrize("blocked_source", ["stored", "live"])
+def test_generic_deploy_requires_reviewed_disable_for_existing_schedule(
+    tmp_path: Path, blocked_overlay: Path, blocked_source: str
+) -> None:
+    stored_overlay = blocked_overlay if blocked_source == "stored" else OFF
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=stored_overlay,
+        live_overlay=blocked_overlay,
+    )
+
+    assert completed.returncode != 0
+    assert f"{blocked_source} Helm release scheduling" in completed.stderr or (
+        blocked_source == "live" and "live release scheduling" in completed.stderr
+    )
+    assert "reviewed --disable-schedule mode first" in completed.stderr
+    assert "helm upgrade" not in calls
+    assert "podman build" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_rechecks_live_schedule_immediately_before_helm(tmp_path: Path) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        outcome="pre-write-active",
+    )
+
+    assert completed.returncode != 0
+    assert "live release scheduling to be off/absent" in completed.stderr
+    assert "reviewed --disable-schedule mode first" in completed.stderr
+    assert calls.count("helm list --all --namespace a-stock") == 2
+    assert "podman build" in calls
+    assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("outcome", "expected_returncode"),
+    [
+        ("fail-active", 95),
+        ("signal-active", 143),
+        ("post-read-active", 96),
+        ("rollout-active", 93),
+        ("postcondition-active", 1),
+    ],
+)
+def test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active(
+    tmp_path: Path, outcome: str, expected_returncode: int
+) -> None:
+    completed, calls, live = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        outcome=outcome,
+    )
+
+    assert completed.returncode == expected_returncode
+    assert completed.stdout.count(
+        "generic deployment precondition: stored and live scheduling are off/absent"
+    ) == 2
+    assert "helm upgrade" in calls
+    assert "--atomic" in next(line for line in calls.splitlines() if line.startswith("helm upgrade"))
+    assert calls.count("kubectl patch cronjob a-stock-data-collection") == 1
+    upgrade_index = calls.splitlines().index(
+        next(line for line in calls.splitlines() if line.startswith("helm upgrade"))
+    )
+    assert sum(
+        line.startswith("kubectl get cronjob")
+        for line in calls.splitlines()[upgrade_index + 1 :]
+    ) >= 2
+    cronjob = live["items"][0]
+    assert cronjob["spec"]["suspend"] is True
+    assert "generic deployment failure recovery: scheduling is suspended" in completed.stdout
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -> None:
+    completed, calls, live = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.count(
+        "generic deployment precondition: stored and live scheduling are off/absent"
+    ) == 2
+    assert calls.count("helm list --all --namespace a-stock") == 2
+    assert live["items"] == []
+    assert "patch cronjob" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_allows_new_release_only_when_live_schedule_is_absent(
+    tmp_path: Path,
+) -> None:
+    completed, calls, live = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        release_present=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert calls.count("helm list --all --namespace a-stock") == 2
+    assert "helm get manifest" not in calls
+    assert "helm upgrade --install" in calls
+    assert live["items"] == []
+
+
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Path) -> None:
     repo, _, _, _, _, head = _prepare_reviewed_repo(tmp_path)
@@ -554,16 +872,23 @@ def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Pat
     assert "podman" not in calls.read_text(encoding="utf-8")
 
 
-def _render_reviewed(repo: Path, baseline: Path, overlay: Path) -> str:
+def _render_reviewed(
+    repo: Path,
+    baseline: Path,
+    overlay: Path,
+    *,
+    release_name: str = "research",
+    namespace: str = "market-data",
+) -> str:
     assert HELM is not None
     return subprocess.run(
         [
             HELM,
             "template",
-            "research",
+            release_name,
             str(repo / "deploy" / "helm" / "a-stock"),
             "--namespace",
-            "market-data",
+            namespace,
             "--kube-version",
             "1.26.6+k3s1",
             "--values",

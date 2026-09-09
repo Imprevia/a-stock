@@ -31,39 +31,32 @@ npm run dev --prefix apps/market-environment-dashboard
 
 打开 `http://localhost:5173` 查看上证、深证、创业板、沪深 300 和中证 500 的趋势、区间位置与成交额分析。市场广度指标暂未接入。
 
-## Helm 部署到 k3s
+## TrueNAS k3s 部署
 
-先构建镜像并推送到 k3s 节点可访问的镜像仓库：
-
-```bash
-docker build -t registry.example.com/a-stock/market-environment:2026.09.02-1 .
-docker push registry.example.com/a-stock/market-environment:2026.09.02-1
-```
-
-首次安装或幂等部署：
+生产写操作只使用仓库的 fail-closed 入口。先从示例创建私有环境文件，至少核对目标、镜像、完整 baseline values、`SCHEDULED_COLLECTION_ENABLED=false` 和 `SCHEDULED_COLLECTION_SUSPEND=true`：
 
 ```bash
-helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --atomic --wait --timeout 3m
+cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
+editor deploy/truenas/deploy.env
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-后续发布新镜像时使用新 tag，并重新提交受版本控制的完整环境 values；不得继承 release 中无法由当前命令审阅的历史 values：
+后续发布在审阅后的 clean commit 上设置新的不可变 `IMAGE_TAG`，再执行同一入口；不得直接调用 Helm write、继承 release values 或恢复历史 revision。入口必须在构建、导入或发布前确认 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次证明 live CronJob 仍不存在。
+
+若只读发现显示 release 已有 active 或 suspended application CronJob，普通发布和应用回退都必须停止。先冻结并审核 exact off packet，在授权后通过受控调度入口删除 exact CronJob；只有 `--disable-schedule` 的 server-observed postcondition 成功后，才能重新执行普通发布：
 
 ```bash
-docker build -t registry.example.com/a-stock/market-environment:2026.09.02-2 .
-docker push registry.example.com/a-stock/market-environment:2026.09.02-2
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=2026.09.02-2 --atomic --wait --timeout 3m
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-only-discovery \
+  --release-name a-stock --namespace a-stock
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
+  --baseline-values deploy/truenas/values-secure-manual-collection.yaml \
+  --scheduling-overlay deploy/truenas/values-scheduled-off.yaml \
+  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-查看状态和受控回滚：
+应用回退不恢复历史 Helm revision。检出已审阅的回退 commit，使用新的不可变 rollback image tag 和同一普通入口重建 disabled 状态。写入、rollout 或写后读取失败时，入口必须返回非零，并将意外 active CronJob 精确补偿为 suspended 后验证 absent/suspended；无法验证时状态为 uncertain/NO-GO。失败后仍须返回审核后的 `--disable-schedule` 流程，不能直接重试普通发布。
 
-```bash
-helm status a-stock --namespace a-stock
-helm history a-stock --namespace a-stock
-git checkout <REVIEWED_ROLLBACK_COMMIT_OR_TAG>
-helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=<PREVIOUS_IMMUTABLE_TAG> --atomic --wait --timeout 3m
-```
-
-Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。所有通用 install、upgrade 和应用回滚都必须像上例一样重交完整环境 values，并显式保持 disabled/suspended；历史 release revision 只可用于审计，不可直接恢复。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；只有受控 Gate B/Gate C 入口可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用 baseline 加 `scheduled-off`；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
+Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；只有受控 Gate B/Gate C 入口可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用完整 baseline 且不带 scheduling overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
 
 ## 交易规则平台
 

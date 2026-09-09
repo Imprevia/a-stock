@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,19 @@ TRUENAS_SCHEDULED_ACTIVE_VALUES = ROOT / "deploy" / "truenas" / "values-schedule
 TRUENAS_SCHEDULED_OFF_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
 HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
+SHELL_FENCE_LANGUAGES = ("bash", "sh", "shell")
+SHELL_CONTROL_CHARACTERS = frozenset(";&|")
+SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+SCHEDULING_ENTRYPOINT_MODES = frozenset(
+    {
+        "--offline-render",
+        "--read-only-discovery",
+        "--server-dry-run",
+        "--release-suspended",
+        "--activate-schedule",
+        "--disable-schedule",
+    }
+)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -91,26 +105,135 @@ def _environment(container: dict) -> dict[str, str]:
 
 
 def _fenced_blocks(content: str, language: str) -> list[str]:
-    return re.findall(rf"```{re.escape(language)}\n(.*?)\n```", content, flags=re.DOTALL)
+    pattern = re.compile(
+        rf"^[ \t]{{0,3}}(?P<fence>`{{3,}}|~{{3,}})[ \t]*"
+        rf"{re.escape(language)}[ \t]*\r?\n"
+        rf"(?P<body>.*?)^[ \t]{{0,3}}(?P=fence)[ \t]*$",
+        flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+    return [match.group("body") for match in pattern.finditer(content)]
 
 
-def _shell_commands(content: str) -> list[str]:
-    commands: list[str] = []
-    for block in _fenced_blocks(content, "bash"):
-        pending = ""
-        for raw_line in block.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            pending = f"{pending} {line}".strip()
-            if pending.endswith("\\"):
-                pending = pending[:-1].rstrip()
-                continue
-            commands.append(pending)
-            pending = ""
-        if pending:
-            commands.append(pending)
+def _shell_commands(content: str) -> list[tuple[str, ...]]:
+    commands: list[tuple[str, ...]] = []
+    for language in SHELL_FENCE_LANGUAGES:
+        for block in _fenced_blocks(content, language):
+            # Bash removes escaped newlines before tokenization. Tokenizing each
+            # remaining line preserves ordinary newlines as command boundaries.
+            logical_block = re.sub(r"\\\r?\n", "", block)
+            for line in logical_block.splitlines():
+                lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+                lexer.whitespace_split = True
+                lexer.commenters = "#"
+                current: list[str] = []
+                for token in lexer:
+                    if token and all(character in SHELL_CONTROL_CHARACTERS for character in token):
+                        if current:
+                            commands.append(tuple(current))
+                            current = []
+                        continue
+                    current.append(token)
+                if current:
+                    commands.append(tuple(current))
     return commands
+
+
+def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
+    index = 0
+    while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
+        index += 1
+    if index < len(command) and command[index] == "sudo":
+        index += 1
+        if index < len(command) and command[index] == "--":
+            index += 1
+    if index + 1 >= len(command) or command[index] != "helm":
+        return None
+    return command[index + 1], command[index + 2 :]
+
+
+def _option_values(arguments: tuple[str, ...], *options: str) -> list[str]:
+    values: list[str] = []
+    for index, argument in enumerate(arguments):
+        if (
+            argument in options
+            and index + 1 < len(arguments)
+            and not arguments[index + 1].startswith("-")
+        ):
+            values.append(arguments[index + 1])
+            continue
+        for option in options:
+            prefix = f"{option}="
+            if argument.startswith(prefix) and argument != prefix:
+                values.append(argument[len(prefix) :])
+                break
+    return values
+
+
+def _has_flag(arguments: tuple[str, ...], flag: str) -> bool:
+    return any(argument == flag or argument.startswith(f"{flag}=") for argument in arguments)
+
+
+def _effective_set_values(arguments: tuple[str, ...]) -> dict[str, str]:
+    effective: dict[str, str] = {}
+    for value in _option_values(arguments, "--set"):
+        for assignment in value.split(","):
+            key, separator, assigned_value = assignment.partition("=")
+            if separator:
+                effective[key] = assigned_value
+    return effective
+
+
+def _effective_bool_flag(arguments: tuple[str, ...], flag: str) -> bool | None:
+    effective: bool | None = None
+    for argument in arguments:
+        if argument == flag:
+            effective = True
+        elif argument == f"{flag}=true":
+            effective = True
+        elif argument.startswith(f"{flag}="):
+            effective = False
+    return effective
+
+
+def _helm_write_violations(content: str) -> tuple[int, list[str]]:
+    write_count = 0
+    violations: list[str] = []
+    for command in _shell_commands(content):
+        invocation = _helm_invocation(command)
+        if invocation is None:
+            continue
+        action, arguments = invocation
+        rendered_command = shlex.join(command)
+
+        if _has_flag(arguments, "--reuse-values"):
+            violations.append(f"{rendered_command}: --reuse-values is forbidden")
+        if action == "rollback":
+            violations.append(f"{rendered_command}: helm rollback is forbidden")
+            continue
+        if action not in {"install", "upgrade"}:
+            continue
+
+        write_count += 1
+        set_values = _effective_set_values(arguments)
+        for key, required_value in (
+            ("marketEnvironment.scheduledCollection.enabled", "false"),
+            ("marketEnvironment.scheduledCollection.suspend", "true"),
+        ):
+            if set_values.get(key) != required_value:
+                violations.append(f"{rendered_command}: missing effective --set {key}={required_value}")
+        if not _option_values(arguments, "--values", "-f"):
+            violations.append(f"{rendered_command}: missing complete values file")
+        if _effective_bool_flag(arguments, "--atomic") is not True:
+            violations.append(f"{rendered_command}: missing --atomic")
+
+    return write_count, violations
+
+
+def _is_generic_deploy_entrypoint(command: tuple[str, ...]) -> bool:
+    return (
+        command[:2] == ("bash", "scripts/deploy-truenas-k3s.sh")
+        and not SCHEDULING_ENTRYPOINT_MODES.intersection(command[2:])
+    )
 
 
 def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary() -> None:
@@ -844,18 +967,111 @@ def test_checked_native_kustomize_rejects_invalid_or_prerelease_version_before_k
 
 @pytest.mark.parametrize("guide", GENERIC_RELEASE_GUIDES, ids=lambda path: path.name)
 def test_documented_generic_helm_writes_are_fail_closed(guide: Path) -> None:
-    commands = _shell_commands(guide.read_text(encoding="utf-8"))
-    helm_commands = [command for command in commands if re.match(r"^(?:sudo\s+)?helm\s+", command)]
-    helm_upgrades = [command for command in helm_commands if re.match(r"^helm\s+upgrade(?:\s|$)", command)]
+    content = guide.read_text(encoding="utf-8")
+    commands = _shell_commands(content)
+    write_count, violations = _helm_write_violations(content)
+    raw_rollbacks = [
+        command
+        for command in commands
+        if (invocation := _helm_invocation(command)) is not None and invocation[0] == "rollback"
+    ]
+    generic_entrypoints = [command for command in commands if _is_generic_deploy_entrypoint(command)]
 
-    assert helm_upgrades
-    for command in helm_upgrades:
-        assert "marketEnvironment.scheduledCollection.enabled=false" in command
-        assert "marketEnvironment.scheduledCollection.suspend=true" in command
-        assert "--values " in command or " -f " in command
-        assert "--atomic" in command
-    assert all("--reuse-values" not in command for command in helm_commands)
-    assert all(not re.match(r"^(?:sudo\s+)?helm\s+rollback(?:\s|$)", command) for command in commands)
+    assert write_count == 0
+    assert raw_rollbacks == []
+    assert generic_entrypoints
+    assert violations == []
+
+
+def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -> None:
+    content = (
+        "```bash\n"
+        "sudo helm upgrade release chart \\\n"
+        "  --values values-production.yaml \\\n"
+        "  --set marketEnvironment.scheduledCollection.enabled=false \\\n"
+        "  --set marketEnvironment.scheduledCollection.suspend=true \\\n"
+        "  --atomic\n"
+        "```\n"
+        "~~~~sh\n"
+        "helm install release chart -f values-production.yaml "
+        "--set=marketEnvironment.scheduledCollection.enabled=false "
+        "--set=marketEnvironment.scheduledCollection.suspend=true --atomic=true\n"
+        "~~~~\n"
+        "````shell\nhelm status release\n````\n"
+    )
+
+    write_count, violations = _helm_write_violations(content)
+
+    assert write_count == 2
+    assert violations == []
+    assert _fenced_blocks("````bash\nhelm rollback release 7\n```", "bash") == []
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "```bash\nsudo helm upgrade release chart -f active.yaml --atomic\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        (
+            "````sh\nhelm install release chart -f values.yaml "
+            "--set marketEnvironment.scheduledCollection.enabled=false --atomic\n````",
+            "missing effective --set marketEnvironment.scheduledCollection.suspend=true",
+        ),
+        (
+            "```shell\nhelm upgrade release chart --reuse-values "
+            "--set marketEnvironment.scheduledCollection.enabled=false "
+            "--set marketEnvironment.scheduledCollection.suspend=true --atomic\n```",
+            "--reuse-values is forbidden",
+        ),
+        (
+            "~~~shell\nhelm rollback release 7 --namespace a-stock\n~~~",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash\ntrue && helm upgrade release chart \\\n"
+            "  --atomic; printf '%s' '--values values.yaml "
+            "--set marketEnvironment.scheduledCollection.enabled=false "
+            "--set marketEnvironment.scheduledCollection.suspend=true'\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        (
+            "```bash\nhelm upgrade release chart # --values values.yaml "
+            "--set marketEnvironment.scheduledCollection.enabled=false "
+            "--set marketEnvironment.scheduledCollection.suspend=true --atomic\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        (
+            "```bash\nhelm upgrade release chart -f values.yaml "
+            "--set marketEnvironment.scheduledCollection.enabled=false "
+            "--set marketEnvironment.scheduledCollection.suspend=true "
+            "--set marketEnvironment.scheduledCollection.enabled=true --atomic\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        (
+            "```bash\nhelm upgrade release chart -f values.yaml "
+            "--set marketEnvironment.scheduledCollection.enabled=false "
+            "--set marketEnvironment.scheduledCollection.suspend=true "
+            "--atomic --atomic=false\n```",
+            "missing --atomic",
+        ),
+    ],
+    ids=[
+        "sudo-upgrade",
+        "standalone-install",
+        "reuse-values",
+        "rollback",
+        "and-semicolon-boundaries",
+        "inline-comment",
+        "later-set-wins",
+        "later-boolean-flag-wins",
+    ],
+)
+def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: str) -> None:
+    _, violations = _helm_write_violations(content)
+
+    assert any(expected in violation for violation in violations)
 
 
 def test_truenas_guide_values_example_is_fail_closed() -> None:
@@ -875,5 +1091,5 @@ def test_runbook_does_not_offer_direct_schedule_mutations() -> None:
     content = RUNBOOK.read_text(encoding="utf-8")
     commands = _shell_commands(content)
 
-    assert all(not command.startswith("kubectl patch cronjob") for command in commands)
+    assert all(command[:3] != ("kubectl", "patch", "cronjob") for command in commands)
     assert "kubectl create job -n a-stock --from=cronjob" not in content
