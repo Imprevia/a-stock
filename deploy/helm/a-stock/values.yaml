@@ -64,8 +64,8 @@ marketEnvironment:
   persistentCache: true
   settlementTime: "15:10"
   scheduledCollection:
-    enabled: true
-    suspend: false
+    enabled: false
+    suspend: true
     schedule: "30 16 * * 1-5"
     timezoneStrategy: native
     timeZone: Asia/Shanghai

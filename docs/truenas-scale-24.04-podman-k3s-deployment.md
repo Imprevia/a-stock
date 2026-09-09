@@ -335,6 +335,9 @@ marketEnvironment:
   timezone: Asia/Shanghai
   snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
+  scheduledCollection:
+    enabled: false
+    suspend: true
 ```
 
 按第 10 节的实际输出替换 `storageClass` 和 `className`，按本次构建替换 tag。为 `<APP_HOST>` 创建指向 `<TRUENAS_IP>` 的 DNS A/AAAA 记录；没有内部 DNS 时，可先在访问电脑的 hosts 文件中添加映射。
@@ -361,6 +364,9 @@ helm upgrade --install a-stock deploy/helm/a-stock \
   --namespace a-stock \
   --create-namespace \
   --values values-truenas.yaml \
+  --set marketEnvironment.scheduledCollection.enabled=false \
+  --set marketEnvironment.scheduledCollection.suspend=true \
+  --atomic \
   --wait \
   --timeout 5m
 ```
@@ -430,14 +436,17 @@ sudo k3s ctr --namespace k8s.io images list | \
   grep "localhost/a-stock-market-environment:${IMAGE_TAG}"
 ```
 
-回到 VM 更新 release。只更新镜像时使用 `--reuse-values`：
+回到 VM 更新 release。即使只更新镜像，也必须重新提交受版本控制的完整 `values-truenas.yaml`，并显式保持 scheduled collection disabled/suspended；不得继承 release 中无法由当前命令审阅的历史 values：
 
 ```bash
 export KUBECONFIG="$HOME/.kube/truenas-k3s.yaml"
 helm upgrade a-stock deploy/helm/a-stock \
   --namespace a-stock \
-  --reuse-values \
+  --values values-truenas.yaml \
+  --set marketEnvironment.scheduledCollection.enabled=false \
+  --set marketEnvironment.scheduledCollection.suspend=true \
   --set-string "image.tag=${IMAGE_TAG}" \
+  --atomic \
   --wait \
   --timeout 5m
 
@@ -445,13 +454,16 @@ kubectl --namespace a-stock rollout status deployment/a-stock --timeout=180s
 kubectl --namespace a-stock get pods -o wide
 ```
 
-当 Chart 默认值或 `values-truenas.yaml` 也发生变化时，不使用 `--reuse-values`，而是重新传入完整环境 values：
+当 Chart 默认值或 `values-truenas.yaml` 也发生变化时，使用同一完整值路径：
 
 ```bash
 helm upgrade a-stock deploy/helm/a-stock \
   --namespace a-stock \
   --values values-truenas.yaml \
+  --set marketEnvironment.scheduledCollection.enabled=false \
+  --set marketEnvironment.scheduledCollection.suspend=true \
   --set-string "image.tag=${IMAGE_TAG}" \
+  --atomic \
   --wait \
   --timeout 5m
 ```
@@ -464,23 +476,30 @@ helm upgrade a-stock deploy/helm/a-stock \
 helm history a-stock --namespace a-stock
 ```
 
-回滚到指定 revision：
+历史 revision 只用于审计，不能直接恢复，因为其 values 可能包含未经当前命令审阅的 active schedule。应用回滚必须检出已审阅的回退 commit/chart，使用先前不可变镜像 tag、完整环境 values 和显式 disabled/suspended 状态执行新的 atomic upgrade：
 
 ```bash
-helm rollback a-stock <REVISION> \
+git checkout <REVIEWED_ROLLBACK_COMMIT_OR_TAG>
+export IMAGE_TAG=<PREVIOUS_IMMUTABLE_TAG>
+helm upgrade --install a-stock deploy/helm/a-stock \
   --namespace a-stock \
+  --values values-truenas.yaml \
+  --set marketEnvironment.scheduledCollection.enabled=false \
+  --set marketEnvironment.scheduledCollection.suspend=true \
+  --set-string "image.tag=${IMAGE_TAG}" \
+  --atomic \
   --wait \
   --timeout 5m
 ```
 
-本地镜像模式下，回滚 revision 引用的旧镜像必须仍存在于 k3s containerd。至少保留当前版本和上一个稳定版本。确认不再需要回滚后，才删除旧镜像：
+本地镜像模式下，回退目标引用的旧镜像必须仍存在于 k3s containerd。至少保留当前版本和上一个稳定版本。确认不再需要回退后，才删除旧镜像：
 
 ```bash
 sudo k3s ctr --namespace k8s.io images remove \
   "localhost/a-stock-market-environment:<OLD_TAG>"
 ```
 
-删除前再次运行 `helm history`，确认没有计划回滚到该 tag。
+删除前核对受审回退包，确认不再需要该 tag。
 
 ## 16. SQLite 备份与恢复
 
@@ -611,8 +630,8 @@ sudo k3s kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.
 - [ ] 镜像已进入 containerd `k8s.io` namespace，名称与 Helm values 一致。
 - [ ] StorageClass 和 IngressClass 来自目标集群实际输出。
 - [ ] `helm lint` 和 `helm template` 通过。
-- [ ] `helm upgrade --install` 或 `helm upgrade` 完成。
+- [ ] 通用 Helm write 使用完整受版本控制的环境 values，显式设置 `enabled=false`、`suspend=true`，且未继承历史 values 或恢复历史 revision。
+- [ ] 发布后 `kubectl --namespace a-stock get cronjob` 不包含应用 CronJob；只有另行授权的受控调度路径可保留 `suspend=true` 的资源。
 - [ ] Deployment rollout、Pod、PVC、Ingress 和 `/api/health` 正常。
 - [ ] SQLite 已备份，旧稳定镜像尚未删除。
 - [ ] 临时 kubeconfig 导出副本已从 TrueNAS 数据集删除。
-

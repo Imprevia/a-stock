@@ -3,8 +3,8 @@
 | Multica stage | OpenSpec tasks | Owner | Dependency | Activation state | Required evidence |
 |---|---|---|---|---|---|
 | Stage 1 - planning | 1.1-1.2 | Senior project manager | Gate A approval | Accepted; clean-baseline staged gate completed in Stage 2 | Approval trace, active plan registration, strict OpenSpec validation |
-| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.5 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Accepted / terminal | Documentation baseline, focused tests, reviewable implementation diff |
-| Stage 3 - offline verification (`GYT-48`) | 3.1-3.5 | Senior backend engineer | `GYT-47` terminal and reviewed | Complete; review branch submitted through evidence commit `95af911` | Render matrix, manifest invariants, fake-provider tests, full offline gates |
+| Stage 2 - implementation (`GYT-47`) | 1.3, 2.1-2.6 | Senior backend engineer | Stage 1 accepted; reviewed clean commit/worktree | Reopened after GYT-52 NO-GO on `b231ef4` | Documentation baseline, focused tests, reviewable implementation diff |
+| Stage 3 - offline verification (`GYT-48`) | 3.1-3.6 | Senior backend engineer | `GYT-47` terminal and reviewed | Backlog; prior packet rejected by Stage 4 review | Render matrix, manifest invariants, generic release negatives, fake-provider tests, full offline gates |
 | Gate B preparation and validation | 4.1-5.7 | Unassigned | GYT-47 independent GO, Stage 3 accepted, exact packet reviewed and exact Gate B action authorized | Progression/read-only permission recorded; prerequisites not met | Target preflight, frozen packet, exact action authorization, bounded validation evidence |
 | Gate C activation | 6.1-6.3 | Unassigned | Gate B evidence accepted, explicit catch-up choice, exact Gate C operation authorized | Progression authorized; prerequisites not met | Operation authorization record and suspend-only live diff |
 | Closeout | 7.1-7.3 | Assigned only after the preceding authorized stage | Applicable production evidence | Not started | Rollback, final facts, gates, and handoff |
@@ -24,6 +24,7 @@ There is **no frontend scope** in the approved change: no Dashboard UI, browser 
 - [x] 2.3 Add ordered TrueNAS overlays for suspended, active, and off scheduling while preserving the baseline image, NodePort, manual-refresh setting, PVC, snapshot path, replica count, and security values; validate the final merged typed values before any network, build, or write operation.
 - [x] 2.4 Extend the TrueNAS deployment entry point to bind the actual release/namespace/Kubernetes version, limit server dry-run to the exact suspended CronJob and necessary verb, and provide clean/frozen-image suspended release plus Gate C suspend-only activation paths without automatically creating canary/validation Jobs. Remediation repeats activation-window validation immediately before the Helm write so an earlier decision cannot age across its deadline or safety-buffer boundary.
 - [x] 2.5 Isolate the native-timezone Kustomize CronJob from the Dashboard base, enforce the Kubernetes 1.27+ boundary before invoking kubectl, and verify no implementation path presents the native overlay as k3s 1.26 compatibility evidence. The successor remediation rejects malformed SemVer and native prereleases below 1.27.0 before kubectl or target access.
+- [x] 2.6 Default Helm scheduling to `enabled=false`, `suspend=true`, and make README, TrueNAS, and runbook generic install/upgrade/application-rollback paths re-submit complete reviewed values plus the explicit disabled state. Remove release-value inheritance and historical-revision rollback paths that could create or restore `enabled=true`, `suspend=false` outside the exact Gate B/Gate C entry point.
 
 ## 3. Offline Verification
 
@@ -32,6 +33,7 @@ There is **no frontend scope** in the approved change: no Dashboard UI, browser 
 - [x] 3.3 Run the existing fake-provider scheduled-refresh success, partial, failed, skipped, settlement, and lease-conflict tests and verify no real provider, production SQLite/PVC, or cluster is accessed.
 - [x] 3.4 Run Helm lint/template, the deployment test suite, strict OpenSpec validation, `python scripts/check-docs-contract.py --mode=full`, and `git diff --check`; record exact results and confirm the implementation diff contains no application API, provider, dataset, SQLite schema, frontend, or production-state change.
 - [x] 3.5 Submit the clean implementation diff and offline evidence for review and verify no production command is scheduled or run until the actual-version packet is reviewed and its exact Gate B actions are authorized.
+- [x] 3.6 Add documentation/deployment safety tests that parse executable Helm commands in README, the TrueNAS guide, and runbook; verify every generic write explicitly keeps scheduling disabled/suspended, no command inherits stored values or invokes historical Helm rollback, default Helm render contains no CronJob, and the documented TrueNAS values example carries the same fail-closed defaults.
 
 ## 4. Read-Only Production Preflight
 

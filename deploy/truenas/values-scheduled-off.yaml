@@ -3,3 +3,4 @@
 marketEnvironment:
   scheduledCollection:
     enabled: false
+    suspend: true

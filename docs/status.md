@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 的 Gate A Stage 2 仓库实现已完成并获验收：独立审阅拒绝旧 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969`、`e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 和 `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 后，successor `5672c2a147e8975ac0de218fa0605ce83882aadf` 已关闭全部阻塞并取得三路独立 GO，GYT-47 为 terminal `done`。GYT-48 已从 exact clean HEAD `dd1277b86d04ed3a5d2cabe41c558d6de9049c09` 完成并推送 Stage 3 离线评审包，等待人工验收。Gate B/Gate C 推进授权已记录，但 Stage 3 验收和精确 packet 前置条件未满足；当前不访问目标环境且 CronJob 保持关闭。
+- `enable-truenas-scheduled-market-collection` 在 Stage 4 独立验收中回流：GYT-52 对冻结 Stage 3 HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO，因为 Chart 默认值及 README/TrueNAS 通用 install、upgrade、rollback 可在 Gate B/Gate C 外创建或恢复 active CronJob。GYT-47 已重新打开并从该 clean HEAD 修复；GYT-48/GYT-52 回到 `backlog`，GYT-50/GYT-51 不得启动。Gate B/Gate C 推进授权仍不能替代重新验收和精确 packet；当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
@@ -65,7 +65,7 @@
 ## 下一步
 
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集下一检查点是人工验收 GYT-48 离线评审包；通过后才可使用已记录 permission 执行只读 preflight、冻结 exact packet 并取得覆盖该 packet 的 Gate B action authorization、精确 suspended CronJob admission probe、no-provider controller canary、非覆盖 SQLite 备份、suspended release 和一次性 provider-backed Job。Gate B 证据接受后，还须形成明确 `next-schedule` 或 `immediate catch-up` 的 Gate C operation authorization，且 live diff 仅允许已审阅的 `spec.suspend: true -> false`。
+- 定时采集下一检查点是 GYT-47 完成通用 Helm 发布 fail-closed 返工并提交新的 clean HEAD，再由 GYT-48 与 GYT-52 依次重验。只有重新 GO 后才可使用已记录 permission 执行只读 preflight、冻结 exact packet 并取得覆盖该 packet 的 Gate B action authorization；Gate B 证据接受后，还须形成明确 `next-schedule` 或 `immediate catch-up` 的 Gate C operation authorization，且 live diff 仅允许已审阅的 `spec.suspend: true -> false`。
 - 后续评估交易所节假日日历、认证和多节点协调；当前版本保持单机 SQLite、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。

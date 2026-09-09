@@ -43,26 +43,27 @@ docker push registry.example.com/a-stock/market-environment:2026.09.02-1
 首次安装或幂等部署：
 
 ```bash
-helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --atomic --wait --timeout 3m
 ```
 
-后续发布新镜像时使用新 tag，并保留上次部署参数：
+后续发布新镜像时使用新 tag，并重新提交受版本控制的完整环境 values；不得继承 release 中无法由当前命令审阅的历史 values：
 
 ```bash
 docker build -t registry.example.com/a-stock/market-environment:2026.09.02-2 .
 docker push registry.example.com/a-stock/market-environment:2026.09.02-2
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --reuse-values --set image.tag=2026.09.02-2 --wait --timeout 3m
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=2026.09.02-2 --atomic --wait --timeout 3m
 ```
 
-查看状态和回滚：
+查看状态和受控回滚：
 
 ```bash
 helm status a-stock --namespace a-stock
 helm history a-stock --namespace a-stock
-helm rollback a-stock <revision> --namespace a-stock --wait --timeout 3m
+git checkout <REVIEWED_ROLLBACK_COMMIT_OR_TAG>
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --values values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=<PREVIOUS_IMMUTABLE_TAG> --atomic --wait --timeout 3m
 ```
 
-Chart 的 Dashboard 支持 Kubernetes 1.26+。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；可关闭或暂停，但 controller 策略在获授权 canary 证明触发前必须保持暂停。TrueNAS 使用受版本控制的 baseline 加 `scheduled-suspended`、`scheduled-active` 或 `scheduled-off` overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
+Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。所有通用 install、upgrade 和应用回滚都必须像上例一样重交完整环境 values，并显式保持 disabled/suspended；历史 release revision 只可用于审计，不可直接恢复。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PVC，采集五类市场环境数据；只有受控 Gate B/Gate C 入口可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用 baseline 加 `scheduled-off`；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时可引用预先创建的静态 PVC。
 
 ## 交易规则平台
 

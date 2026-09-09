@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,9 @@ K3S_NATIVE_OVERLAY = ROOT / "deploy" / "k3s-native-scheduled"
 K3S_RENDER_POLICY = K3S_NATIVE_OVERLAY / "render-policy.yaml"
 K3S_RENDER_SCRIPT = ROOT / "scripts" / "render-k3s.py"
 RUNBOOK = ROOT / "docs" / "runbooks.md"
+README = ROOT / "README.md"
+TRUENAS_GUIDE = ROOT / "docs" / "truenas-scale-24.04-podman-k3s-deployment.md"
+GENERIC_RELEASE_GUIDES = (README, TRUENAS_GUIDE, RUNBOOK)
 CHART_DIR = ROOT / "deploy" / "helm" / "a-stock"
 TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
 TRUENAS_SCHEDULED_SUSPENDED_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
@@ -86,6 +90,29 @@ def _environment(container: dict) -> dict[str, str]:
     return {item["name"]: item["value"] for item in container["env"]}
 
 
+def _fenced_blocks(content: str, language: str) -> list[str]:
+    return re.findall(rf"```{re.escape(language)}\n(.*?)\n```", content, flags=re.DOTALL)
+
+
+def _shell_commands(content: str) -> list[str]:
+    commands: list[str] = []
+    for block in _fenced_blocks(content, "bash"):
+        pending = ""
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            pending = f"{pending} {line}".strip()
+            if pending.endswith("\\"):
+                pending = pending[:-1].rstrip()
+                continue
+            commands.append(pending)
+            pending = ""
+        if pending:
+            commands.append(pending)
+    return commands
+
+
 def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary() -> None:
     kustomization = _load_yaml(K3S_DIR / "kustomization.yaml")
     native_kustomization = _load_yaml(K3S_NATIVE_OVERLAY / "kustomization.yaml")
@@ -137,15 +164,15 @@ def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary
     )
 
 
-def test_helm_values_define_enabled_configurable_scheduled_collection() -> None:
+def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> None:
     chart = _load_yaml(CHART_DIR / "Chart.yaml")
     values = _load_yaml(CHART_DIR / "values.yaml")
     scheduled = values["marketEnvironment"]["scheduledCollection"]
 
     assert chart["kubeVersion"] == ">=1.26.0-0"
     assert values["marketEnvironment"]["timezone"] == "Asia/Shanghai"
-    assert scheduled["enabled"] is True
-    assert scheduled["suspend"] is False
+    assert scheduled["enabled"] is False
+    assert scheduled["suspend"] is True
     assert scheduled["schedule"] == "30 16 * * 1-5"
     assert scheduled["timezoneStrategy"] == "native"
     assert scheduled["timeZone"] == "Asia/Shanghai"
@@ -157,50 +184,12 @@ def test_helm_values_define_enabled_configurable_scheduled_collection() -> None:
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
-def test_helm_default_render_matches_dashboard_image_pvc_and_security() -> None:
+def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     documents = _render_helm()
-    deployment = _resource(documents, "Deployment")
-    service = _resource(documents, "Service")
-    cronjob = _resource(documents, "CronJob")
-    deployment_pod = deployment["spec"]["template"]["spec"]
-    deployment_container = deployment_pod["containers"][0]
-    cron_pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-    cron_container = cron_pod["containers"][0]
 
-    assert cronjob["spec"]["schedule"] == "30 16 * * 1-5"
-    assert cronjob["spec"]["timeZone"] == "Asia/Shanghai"
-    assert cronjob["spec"]["suspend"] is False
-    assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
-    assert cronjob["spec"]["startingDeadlineSeconds"] == 1800
-    assert cronjob["spec"]["successfulJobsHistoryLimit"] == 3
-    assert cronjob["spec"]["failedJobsHistoryLimit"] == 3
-    assert cronjob["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0
-    assert cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
-    assert cron_container["image"] == deployment_container["image"]
-    assert cron_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == deployment_pod["volumes"][0]["persistentVolumeClaim"]["claimName"]
-    assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
-    assert cron_container["command"] == [
-        "python",
-        "-m",
-        "src.market_environment.cli",
-        "snapshots",
-        "scheduled-refresh",
-    ]
-    assert cron_pod["automountServiceAccountToken"] is False
-    assert cron_pod["securityContext"] == deployment_pod["securityContext"]
-    assert cron_pod["securityContext"]["runAsNonRoot"] is True
-    assert cron_pod["securityContext"]["runAsUser"] == 10001
-    assert cron_pod["securityContext"]["runAsGroup"] == 10001
-    assert cron_pod["securityContext"]["fsGroup"] == 10001
-    assert cron_pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
-    assert cron_container["securityContext"] == deployment_container["securityContext"]
-    assert cron_container["securityContext"]["allowPrivilegeEscalation"] is False
-    assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
-    assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
-    assert _environment(cron_container) == _environment(deployment_container)
-    assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
-    cron_labels = cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
-    assert any(cron_labels.get(key) != value for key, value in service["spec"]["selector"].items())
+    assert _resource(documents, "Deployment")
+    assert _resource(documents, "Service")
+    assert all(document.get("kind") != "CronJob" for document in documents)
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -209,6 +198,8 @@ def test_helm_render_supports_disabled_suspended_and_custom_native_schedule() ->
     custom = _render_helm(
         "--kube-version",
         "1.27.0",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=true",
         "--set",
         "marketEnvironment.scheduledCollection.suspend=true",
         "--set-string",
@@ -234,6 +225,8 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
     documents = _render_helm(
         "--kube-version",
         "1.26.6",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=true",
         "--set",
         "marketEnvironment.scheduledCollection.timezoneStrategy=controller",
         "--set",
@@ -297,9 +290,19 @@ def test_helm_render_supports_verified_controller_profiles_on_kubernetes_126(
     ("state_arguments", "expected_suspend"),
     [
         (("--set", "marketEnvironment.scheduledCollection.enabled=false"), None),
-        (("--set", "marketEnvironment.scheduledCollection.suspend=true"), True),
         (
             (
+                "--set",
+                "marketEnvironment.scheduledCollection.enabled=true",
+                "--set",
+                "marketEnvironment.scheduledCollection.suspend=true",
+            ),
+            True,
+        ),
+        (
+            (
+                "--set",
+                "marketEnvironment.scheduledCollection.enabled=true",
                 "--set",
                 "marketEnvironment.scheduledCollection.suspend=false",
                 "--set",
@@ -503,7 +506,9 @@ def test_helm_render_matrix_covers_every_profile_and_state(
     ],
 )
 def test_helm_rejects_invalid_scheduling_profiles(arguments: tuple[str, ...], message: str) -> None:
-    assert _render_helm_failure_message(*arguments) == message
+    assert _render_helm_failure_message(
+        "--set", "marketEnvironment.scheduledCollection.enabled=true", *arguments
+    ) == message
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -586,6 +591,31 @@ def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() 
     assert service["spec"]["ports"][0]["nodePort"] == 32001
     assert manual_refresh == [{"name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "value": "1"}]
     assert all(document.get("kind") not in {"Ingress", "CronJob", "PersistentVolumeClaim"} for document in documents)
+
+
+def test_truenas_disabled_profiles_explicitly_lock_both_safety_booleans() -> None:
+    for path in (TRUENAS_DIRECT_ACCESS_VALUES, TRUENAS_SCHEDULED_OFF_VALUES):
+        scheduled = _load_yaml(path)["marketEnvironment"]["scheduledCollection"]
+        assert scheduled["enabled"] is False
+        assert scheduled["suspend"] is True
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_generic_overrides_disable_a_previously_active_values_stack() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+        "--values",
+        str(TRUENAS_SCHEDULED_ACTIVE_VALUES),
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=false",
+        "--set",
+        "marketEnvironment.scheduledCollection.suspend=true",
+    )
+
+    assert all(document.get("kind") != "CronJob" for document in documents)
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -812,15 +842,38 @@ def test_checked_native_kustomize_rejects_invalid_or_prerelease_version_before_k
     assert not marker.exists()
 
 
-def test_runbook_does_not_offer_unguarded_schedule_write_commands() -> None:
-    content = RUNBOOK.read_text(encoding="utf-8")
-    helm_upgrades = [line for line in content.splitlines() if line.startswith("helm upgrade")]
-    kubectl_cronjob_patches = [
-        line for line in content.splitlines() if line.startswith("kubectl patch cronjob")
-    ]
+@pytest.mark.parametrize("guide", GENERIC_RELEASE_GUIDES, ids=lambda path: path.name)
+def test_documented_generic_helm_writes_are_fail_closed(guide: Path) -> None:
+    commands = _shell_commands(guide.read_text(encoding="utf-8"))
+    helm_commands = [command for command in commands if re.match(r"^(?:sudo\s+)?helm\s+", command)]
+    helm_upgrades = [command for command in helm_commands if re.match(r"^helm\s+upgrade(?:\s|$)", command)]
 
     assert helm_upgrades
-    assert all("marketEnvironment.scheduledCollection.enabled=false" in line for line in helm_upgrades)
-    assert all("--reuse-values" not in line for line in helm_upgrades)
-    assert not kubectl_cronjob_patches
+    for command in helm_upgrades:
+        assert "marketEnvironment.scheduledCollection.enabled=false" in command
+        assert "marketEnvironment.scheduledCollection.suspend=true" in command
+        assert "--values " in command or " -f " in command
+        assert "--atomic" in command
+    assert all("--reuse-values" not in command for command in helm_commands)
+    assert all(not re.match(r"^(?:sudo\s+)?helm\s+rollback(?:\s|$)", command) for command in commands)
+
+
+def test_truenas_guide_values_example_is_fail_closed() -> None:
+    content = TRUENAS_GUIDE.read_text(encoding="utf-8")
+    values = next(
+        yaml.safe_load(block)
+        for block in _fenced_blocks(content, "yaml")
+        if "marketEnvironment:" in block
+    )
+    scheduled = values["marketEnvironment"]["scheduledCollection"]
+
+    assert scheduled["enabled"] is False
+    assert scheduled["suspend"] is True
+
+
+def test_runbook_does_not_offer_direct_schedule_mutations() -> None:
+    content = RUNBOOK.read_text(encoding="utf-8")
+    commands = _shell_commands(content)
+
+    assert all(not command.startswith("kubectl patch cronjob") for command in commands)
     assert "kubectl create job -n a-stock --from=cronjob" not in content

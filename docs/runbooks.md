@@ -81,28 +81,28 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart。首次发布：
 
 ```bash
-helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace --set marketEnvironment.scheduledCollection.enabled=false --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --wait --timeout 3m
+helm upgrade --install a-stock ./deploy/helm/a-stock --namespace a-stock --create-namespace -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.repository=registry.example.com/a-stock/market-environment --set image.tag=2026.09.02-1 --atomic --wait --timeout 3m
 ```
 
 Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
 
-所有通用 Helm 发布都必须显式保持 scheduled collection 关闭。不要使用 `--reuse-values`，因为它会继承目标上无法从当前命令审阅的调度状态；每次都重新传入受版本控制的完整环境 values，并显式覆盖 `enabled=false`：
+所有通用 Helm 发布都必须显式保持 scheduled collection 关闭并暂停。不得继承目标上无法从当前命令审阅的调度状态；每次都重新传入受版本控制的完整环境 values，并显式覆盖 `enabled=false`、`suspend=true`：
 
 ```bash
 # 仅更新镜像，仍重新提交完整环境 values
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set image.tag=2026.09.02-2 --wait --timeout 3m
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=2026.09.02-2 --atomic --wait --timeout 3m
 
 # 同时应用新的 Chart 默认值和环境覆盖
-helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set image.tag=2026.09.02-2 --wait --timeout 3m
+helm upgrade a-stock ./deploy/helm/a-stock --namespace a-stock -f values-production.yaml --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true --set image.tag=2026.09.02-2 --atomic --wait --timeout 3m
 ```
 
 渲染和检查：
 
 ```bash
 helm lint deploy/helm/a-stock
-helm template a-stock deploy/helm/a-stock --namespace a-stock --set marketEnvironment.scheduledCollection.enabled=false
+helm template a-stock deploy/helm/a-stock --namespace a-stock --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true
 helm get values a-stock --namespace a-stock
 helm history a-stock --namespace a-stock
 ```
@@ -131,7 +131,7 @@ bash scripts/deploy-truenas-k3s.sh
 
 普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再运行 `helm upgrade --install` 并等待 Dashboard rollout。调度发布不得复用这条构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 Gate C activation 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values 和对应授权。入口不会自动创建 canary/Job；Gate C 还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。
 
-后续更新只需在 1.21 拉取代码并重新执行同一命令；如需明确指定版本，可在环境文件设置新的 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档，旧 tag 可用于 Helm 回滚。
+后续更新只需在 1.21 拉取代码并重新执行同一命令；如需明确指定版本，可在环境文件设置新的 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。旧 tag 只通过受审 chart、完整环境 values、`enabled=false`、`suspend=true` 的新 atomic upgrade 用于应用回退，不直接恢复历史 Helm revision。
 
 一键发布完成后，1.21 NGINX 建议新增独立 TLS 端口，例如 `8443`，反代到 1.20 的 Traefik HTTP 入口（若 Traefik 是 NodePort，使用其实际 HTTP NodePort）：
 
@@ -166,7 +166,7 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock \
 
 发布只能在单独批准的维护窗口执行一次 Helm upgrade 并等待单个 Deployment ready。随后从预期 LAN 客户端验证 `/api/health`、`/data-collection` 和 provider-free 状态 GET，再提交一次上海市场当天的受支持数据集并验证 202 和合法终态；历史不支持请求仍须返回 422。观察 collection run/task、provider warning/限流、SQLite lock、任务时长与 PVC 增长，并记录实际可达边界和最终 revision。
 
-若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步按现场捕获的 pre-release values 或对应 Helm revision 回退，确认 Service 语义符合该现场基线；不得 uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
+若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步从现场捕获的 pre-release chart、完整 values 与不可变镜像 tag 执行新的 atomic upgrade，并显式保持 scheduled collection disabled/suspended；不得恢复含未知 values 的历史 revision、uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
 
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
@@ -213,7 +213,7 @@ kubectl logs -n a-stock job/<job-name>
 
 业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
-Helm 通过 `marketEnvironment.scheduledCollection` 配置：`enabled=false` 不渲染 CronJob，`suspend=true` 保留资源但不创建新 Job，`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC；Gate A 不创建 Job 或解除暂停。
+Helm 通过 `marketEnvironment.scheduledCollection` 配置，Chart 默认 `enabled=false`、`suspend=true` 且不渲染 CronJob；`suspend=true` 在显式启用时保留资源但不创建新 Job。通用 install/upgrade/application rollback 必须重交完整受控 values 和这两个安全覆盖，不得继承历史 values 或恢复历史 revision。`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC；Gate A 不创建 Job 或解除暂停。
 
 仓库入口的离线与后续目标模式如下；目标命令只可在对应前置证据和精确环境变量已冻结时运行：
 

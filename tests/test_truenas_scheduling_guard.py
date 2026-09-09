@@ -22,6 +22,18 @@ OFF = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
 HELM = shutil.which("helm")
 
 
+def _write_native_overlay(path: Path, *, schedule: str = "30 16 * * 1-5") -> None:
+    path.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        "    enabled: true\n"
+        "    suspend: true\n"
+        "    timezoneStrategy: native\n"
+        f"    schedule: \"{schedule}\"\n",
+        encoding="utf-8",
+    )
+
+
 def _run_validator(command: str, payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["python3", str(VALIDATOR), command, *arguments],
@@ -64,7 +76,9 @@ def test_version_parser_rejects_malformed_or_missing_git_version(payload: str) -
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
-def test_native_offline_render_exits_without_loading_environment() -> None:
+def test_native_offline_render_exits_without_loading_environment(tmp_path: Path) -> None:
+    overlay = tmp_path / "native-suspended.yaml"
+    _write_native_overlay(overlay)
     completed = subprocess.run(
         [
             "bash",
@@ -73,7 +87,7 @@ def test_native_offline_render_exits_without_loading_environment() -> None:
             "--baseline-values",
             str(CHART / "values.yaml"),
             "--scheduling-overlay",
-            str(CHART / "values.yaml"),
+            str(overlay),
             "--kube-version",
             "1.27.0",
         ],
@@ -90,7 +104,9 @@ def test_native_offline_render_exits_without_loading_environment() -> None:
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
-def test_native_offline_render_rejects_kubernetes_prerelease_boundary() -> None:
+def test_native_offline_render_rejects_kubernetes_prerelease_boundary(tmp_path: Path) -> None:
+    overlay = tmp_path / "native-suspended.yaml"
+    _write_native_overlay(overlay)
     completed = subprocess.run(
         [
             "bash",
@@ -99,7 +115,7 @@ def test_native_offline_render_rejects_kubernetes_prerelease_boundary() -> None:
             "--baseline-values",
             str(CHART / "values.yaml"),
             "--scheduling-overlay",
-            str(CHART / "values.yaml"),
+            str(overlay),
             "--kube-version",
             "1.27.0-rc.1",
         ],
@@ -118,10 +134,7 @@ def test_native_offline_render_rejects_kubernetes_prerelease_boundary() -> None:
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_invalid_offline_cron_stops_before_environment_or_target_access(tmp_path: Path) -> None:
     overlay = tmp_path / "invalid-schedule.yaml"
-    overlay.write_text(
-        "marketEnvironment:\n  scheduledCollection:\n    schedule: invalid\n",
-        encoding="utf-8",
-    )
+    _write_native_overlay(overlay, schedule="invalid")
     completed = subprocess.run(
         [
             "bash",
@@ -201,8 +214,17 @@ def test_active_packet_is_rejected_before_server_dry_run_target_access(tmp_path:
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_ordinary_deploy_rejects_enabled_schedule_before_target_access(tmp_path: Path) -> None:
     fake_bin, marker = _write_target_spies(tmp_path)
+    active_values = tmp_path / "active-native.yaml"
+    active_values.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        "    enabled: true\n"
+        "    suspend: false\n"
+        "    timezoneStrategy: native\n",
+        encoding="utf-8",
+    )
     env_file = tmp_path / "deploy.env"
-    _write_env(env_file, ROOT, CHART / "values.yaml", None)
+    _write_env(env_file, ROOT, active_values, None)
     completed = subprocess.run(
         ["bash", str(SCRIPT), "--env-file", str(env_file)],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
@@ -435,10 +457,7 @@ def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Pa
 def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path: Path) -> None:
     fake_bin, marker = _write_target_spies(tmp_path)
     overlay = tmp_path / "native-suspended.yaml"
-    overlay.write_text(
-        "marketEnvironment:\n  scheduledCollection:\n    suspend: true\n",
-        encoding="utf-8",
-    )
+    _write_native_overlay(overlay)
     env_file = tmp_path / "deploy.env"
     _write_env(env_file, ROOT, CHART / "values.yaml", overlay)
 
