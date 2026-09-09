@@ -12,6 +12,8 @@
 
 There is **no frontend scope** in the approved change: no Dashboard UI, browser workflow, or frontend-facing API contract changes are planned. The existing senior frontend engineer therefore receives no child issue. Any later frontend need is a scope change and must be reviewed before assignment.
 
+The local-main-first repository closeout replayed the approved GYT-47/GYT-48 range onto `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6`, excluded GYT-21, pushed clean `main` without force, verified local and remote SHA equality, and removed the four task worktrees. This repository delivery does not complete production closeout tasks 7.1-7.3; those remain gated by the later authorized stages.
+
 ## 1. Approval And Documentation Baseline
 
 - [x] 1.1 Obtain explicit Gate A approval for this OpenSpec change and verify the approval states that repository implementation is allowed but production access, provider calls, and production mutations are not. Approved on 2026-09-08 (Asia/Shanghai); evidence: `GYT-45` comments `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` and `01a07e3d-5a77-7972-a9cd-360c9d41dc84`.
