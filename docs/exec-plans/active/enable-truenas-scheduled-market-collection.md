@@ -6,7 +6,7 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 
 ## Status（状态）
 
-`stage-2-fourth-successor-candidate-preparation-complete`：独立测试 GYT-52 对 Stage 3 clean HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO；前三轮 Stage 4 candidates `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213` 和 `3c4d2dc056b9f70e3966407fda18f976841475db` 又先后被独立复审拒绝。第四轮已用历史限定修复旧 terminal/completed 事实，并以 CommonMark/Bash AST 结构化解析关闭未知 Helm 全局参数、uninstall 官方别名、wrapper/substitution/compound command 及 EOF/list/blockquote fence 漏检；完整离线测试已通过，待 docs-contract、exact clean candidate 提交推送和三路复审。GYT-48/GYT-52 均保持 `backlog`，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
+`stage-2-fourth-successor-candidate-preparation-complete`：独立测试 GYT-52 对 Stage 3 clean HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO；前三轮 Stage 4 candidates `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213` 和 `3c4d2dc056b9f70e3966407fda18f976841475db` 又先后被独立复审拒绝。第四轮已用历史限定修复旧 terminal/completed 事实，以 CommonMark/Bash AST 结构化解析关闭 Helm option/wrapper/substitution/compound command 与 CommonMark fence 漏检，并同步 `docs/status.md` 当前状态；完整离线测试已通过，待 docs-contract、新 exact clean candidate 提交推送和三路复审。GYT-48/GYT-52 均保持 `backlog`，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
 
 ## Context（上下文）
 
@@ -158,13 +158,14 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 - 2026-09-09：第四轮 candidate 提交前 staged fast docs-contract 通过（代码 1 / 文档 4 / plan 1），full docs-contract 通过（代码 8 / 文档 10 / plan 2）；`git diff --cached --check` 通过，Stage 4 baseline 到工作树在 `src/`、`apps/`、`trading-rules/` 下差异为空。
 - 2026-09-09：中间 candidate `0ab44479923ca461c0fe000865f26cc56a7ef2be` 曾提交、推送且 clean/upstream 一致，但本地对抗审查在正式复审完成前发现未知 Helm option 的值可伪装为 read action 并遮蔽后续 write action；三路复审已立即中止。未知 Helm 与 wrapper 前置 option 现在一律产生明确审计 violation，该 SHA 不作为最终证据。
 - 2026-09-09：candidate `437b03989ddf279757c7c5e92580493c65eca62d` 已提交、推送且 clean/upstream 一致，但测试复审为 NO-GO，其余两路随即中止：`--help=false` 被误当作纯帮助，`env -S/--split-string` 与 `bash/sh -c` 可执行字符串未递归审计，未知 `nohup` wrapper 也可跳过。当前修复只让 bare/true help 停止 action 解析，将 split-string 与 shell `-c/-lc` 内容递归交给 Bash AST，并对仍含 exact Helm write 的未知 wrapper fail closed；该 SHA 不作为最终证据。
+- 2026-09-09：candidate `18062563728da8409cac9c38d5238286ece79370` 已提交、推送且 clean/upstream 一致；文档复审确认此前六处 stale terminal/completed finding 均已关闭，但因 `docs/status.md` 三处仍把第三 successor 与 `178/319` 写为当前证据而给出 NO-GO，其余两路随即中止。当前已将第三 candidate 历史化、同步第四 successor 的 `214/355` 证据与新检查点；该 SHA 不作为最终证据。
 
 ## Remaining Gaps（剩余缺口）
 
 - 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
 - Stage 2 既往八项阻塞已在 candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 关闭，但 Stage 4 随后发现通用发布绕过；generic release 安全缺口已在第三轮 candidate 关闭并获发布复审 GO，剩余事实源冲突和命令审计假阴性已在第四轮工作树关闭，但尚未绑定 exact clean candidate SHA 或取得独立 GO，GYT-47 尚未满足最终验收。
 - baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
-- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213` 与 `3c4d2dc056b9f70e3966407fda18f976841475db` 均已被独立复审拒绝；需关闭第三轮发现后再绑定第四轮 clean candidate SHA，并重新取得三路 exact-SHA 独立 GO。
+- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d` 与 `18062563728da8409cac9c38d5238286ece79370` 均已被独立复审拒绝，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；需绑定新的第四轮 clean candidate SHA，并重新取得三路 exact-SHA 独立 GO。
 - GYT-48 与 GYT-52 均保持 `backlog`；必须在新 clean HEAD 独立 GO 后依次重验。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
