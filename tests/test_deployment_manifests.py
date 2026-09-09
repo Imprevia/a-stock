@@ -21,6 +21,10 @@ RUNBOOK = ROOT / "docs" / "runbooks.md"
 README = ROOT / "README.md"
 TRUENAS_GUIDE = ROOT / "docs" / "truenas-scale-24.04-podman-k3s-deployment.md"
 GENERIC_RELEASE_GUIDES = (README, TRUENAS_GUIDE, RUNBOOK)
+ARCHIVED_RELEASE_GUIDES = (
+    ROOT / "openspec" / "changes" / "archive" / "2026-09-05-secure-manual-collection-on-truenas" / "design.md",
+)
+HELM_COMMAND_AUDIT_GUIDES = (*GENERIC_RELEASE_GUIDES, *ARCHIVED_RELEASE_GUIDES)
 CHART_DIR = ROOT / "deploy" / "helm" / "a-stock"
 TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
 TRUENAS_SCHEDULED_SUSPENDED_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
@@ -105,24 +109,80 @@ def _environment(container: dict) -> dict[str, str]:
 
 
 def _fenced_blocks(content: str, language: str) -> list[str]:
-    pattern = re.compile(
-        rf"^[ \t]{{0,3}}(?P<fence>`{{3,}}|~{{3,}})[ \t]*"
-        rf"{re.escape(language)}[ \t]*\r?\n"
-        rf"(?P<body>.*?)^[ \t]{{0,3}}(?P=fence)[ \t]*$",
-        flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
-    )
-    return [match.group("body") for match in pattern.finditer(content)]
+    lines = content.splitlines(keepends=True)
+    blocks: list[str] = []
+    index = 0
+    opening_pattern = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[ \t]*(?P<info>[^\r\n]*)")
+    while index < len(lines):
+        match = opening_pattern.match(lines[index])
+        info_language = match.group("info").split(maxsplit=1)[0:1] if match is not None else []
+        if match is None or [item.lower() for item in info_language] != [language.lower()]:
+            index += 1
+            continue
+        fence = match.group("fence")
+        closing_pattern = re.compile(
+            rf"^[ \t]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*(?:\r?\n)?$"
+        )
+        body_start = index + 1
+        index = body_start
+        while index < len(lines) and closing_pattern.match(lines[index]) is None:
+            index += 1
+        if index < len(lines):
+            blocks.append("".join(lines[body_start:index]))
+        index += 1
+    return blocks
+
+
+def _shell_comment_start(line: str) -> int | None:
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            continue
+        if (
+            character == "#"
+            and not single_quoted
+            and not double_quoted
+            and (index == 0 or line[index - 1].isspace() or line[index - 1] in ";|&()")
+        ):
+            return index
+    return None
+
+
+def _logical_shell_lines(block: str) -> list[str]:
+    logical_lines: list[str] = []
+    pending = ""
+    for physical_line in block.splitlines():
+        comment_start = _shell_comment_start(physical_line)
+        executable = physical_line if comment_start is None else physical_line[:comment_start]
+        trailing = len(executable) - len(executable.rstrip("\\"))
+        if trailing % 2 == 1:
+            pending += physical_line[: len(executable) - 1]
+            continue
+        logical_lines.append(pending + physical_line)
+        pending = ""
+    if pending:
+        logical_lines.append(pending)
+    return logical_lines
 
 
 def _shell_commands(content: str) -> list[tuple[str, ...]]:
     commands: list[tuple[str, ...]] = []
     for language in SHELL_FENCE_LANGUAGES:
         for block in _fenced_blocks(content, language):
-            # Bash removes escaped newlines before tokenization. Tokenizing each
-            # remaining line preserves ordinary newlines as command boundaries.
-            logical_block = re.sub(r"\\\r?\n", "", block)
-            for line in logical_block.splitlines():
-                lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+            for line in _logical_shell_lines(block):
+                lexer = shlex.shlex(line, posix=True, punctuation_chars="();&|")
                 lexer.whitespace_split = True
                 lexer.commenters = "#"
                 current: list[str] = []
@@ -140,15 +200,97 @@ def _shell_commands(content: str) -> list[tuple[str, ...]]:
 
 def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
     index = 0
-    while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
+    while index < len(command) and command[index] in {
+        "!",
+        "(",
+        "if",
+        "then",
+        "elif",
+        "else",
+        "while",
+        "until",
+        "do",
+    }:
         index += 1
-    if index < len(command) and command[index] == "sudo":
-        index += 1
-        if index < len(command) and command[index] == "--":
+    while index < len(command):
+        while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
             index += 1
-    if index + 1 >= len(command) or command[index] != "helm":
+        if index >= len(command):
+            return None
+        wrapper = command[index]
+        if wrapper == "sudo":
+            index += 1
+            sudo_value_options = {"-C", "-D", "-g", "-h", "-p", "-R", "-T", "-u"}
+            while index < len(command) and command[index].startswith("-"):
+                option = command[index]
+                index += 1
+                if option == "--":
+                    break
+                if option in sudo_value_options and index < len(command):
+                    index += 1
+            continue
+        if wrapper == "env":
+            index += 1
+            env_value_options = {"-C", "--chdir", "-S", "--split-string", "-u", "--unset"}
+            while index < len(command):
+                option = command[index]
+                if SHELL_ASSIGNMENT.match(option):
+                    index += 1
+                elif option == "--":
+                    index += 1
+                    break
+                elif option.startswith("-"):
+                    index += 1
+                    if option in env_value_options and index < len(command):
+                        index += 1
+                else:
+                    break
+            continue
+        if wrapper == "command":
+            index += 1
+            if index < len(command) and command[index] in {"-v", "-V"}:
+                return None
+            while index < len(command) and command[index] in {"-p", "--"}:
+                index += 1
+            continue
+        break
+    if index >= len(command) or command[index] != "helm":
         return None
-    return command[index + 1], command[index + 2 :]
+    helm_arguments = command[index + 1 :]
+    value_options = {
+        "--burst-limit",
+        "--kube-apiserver",
+        "--kube-as-group",
+        "--kube-as-user",
+        "--kube-ca-file",
+        "--kube-context",
+        "--kube-token",
+        "--kubeconfig",
+        "--namespace",
+        "--qps",
+        "--registry-config",
+        "--repository-cache",
+        "--repository-config",
+        "-n",
+    }
+    action_index = 0
+    while action_index < len(helm_arguments):
+        argument = helm_arguments[action_index]
+        if argument == "--":
+            action_index += 1
+            break
+        if argument.startswith("-"):
+            action_index += 1
+            if "=" not in argument and argument in value_options and action_index < len(helm_arguments):
+                action_index += 1
+            continue
+        break
+    if action_index >= len(helm_arguments):
+        return None
+    return (
+        helm_arguments[action_index],
+        (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :]),
+    )
 
 
 def _option_values(arguments: tuple[str, ...], *options: str) -> list[str]:
@@ -207,8 +349,8 @@ def _helm_write_violations(content: str) -> tuple[int, list[str]]:
 
         if _has_flag(arguments, "--reuse-values"):
             violations.append(f"{rendered_command}: --reuse-values is forbidden")
-        if action == "rollback":
-            violations.append(f"{rendered_command}: helm rollback is forbidden")
+        if action in {"rollback", "uninstall"}:
+            violations.append(f"{rendered_command}: helm {action} is forbidden")
             continue
         if action not in {"install", "upgrade"}:
             continue
@@ -965,21 +1107,23 @@ def test_checked_native_kustomize_rejects_invalid_or_prerelease_version_before_k
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("guide", GENERIC_RELEASE_GUIDES, ids=lambda path: path.name)
+@pytest.mark.parametrize("guide", HELM_COMMAND_AUDIT_GUIDES, ids=lambda path: path.name)
 def test_documented_generic_helm_writes_are_fail_closed(guide: Path) -> None:
     content = guide.read_text(encoding="utf-8")
     commands = _shell_commands(content)
     write_count, violations = _helm_write_violations(content)
-    raw_rollbacks = [
+    raw_retirement_commands = [
         command
         for command in commands
-        if (invocation := _helm_invocation(command)) is not None and invocation[0] == "rollback"
+        if (invocation := _helm_invocation(command)) is not None
+        and invocation[0] in {"rollback", "uninstall"}
     ]
     generic_entrypoints = [command for command in commands if _is_generic_deploy_entrypoint(command)]
 
     assert write_count == 0
-    assert raw_rollbacks == []
-    assert generic_entrypoints
+    assert raw_retirement_commands == []
+    if guide in GENERIC_RELEASE_GUIDES:
+        assert generic_entrypoints
     assert violations == []
 
 
@@ -998,6 +1142,7 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "--set=marketEnvironment.scheduledCollection.suspend=true --atomic=true\n"
         "~~~~\n"
         "````shell\nhelm status release\n````\n"
+        "```bash title=read-only\nhelm --namespace a-stock status release\n````\n"
     )
 
     write_count, violations = _helm_write_violations(content)
@@ -1028,6 +1173,38 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         (
             "~~~shell\nhelm rollback release 7 --namespace a-stock\n~~~",
             "helm rollback is forbidden",
+        ),
+        (
+            "```bash\nhelm uninstall release --namespace a-stock\n```",
+            "helm uninstall is forbidden",
+        ),
+        (
+            "```bash\nhelm --namespace a-stock rollback release 7\n````",
+            "helm rollback is forbidden",
+        ),
+        (
+            "~~~shell\nsudo -n helm rollback release 7\n~~~~",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash\nenv RELEASE=a-stock helm rollback release 7\n```",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash title=retirement\ncommand helm uninstall release\n```",
+            "helm uninstall is forbidden",
+        ),
+        (
+            "```bash\nif true; then helm rollback release 7; fi\n```",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash\ntrue # comment \\\nhelm rollback release 7\n```",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash\nprintf ready | helm uninstall release\n```",
+            "helm uninstall is forbidden",
         ),
         (
             "```bash\ntrue && helm upgrade release chart \\\n"
@@ -1062,6 +1239,14 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "standalone-install",
         "reuse-values",
         "rollback",
+        "uninstall",
+        "global-flag-before-rollback",
+        "sudo-option",
+        "env-wrapper",
+        "command-wrapper-and-info-attrs",
+        "if-then",
+        "comment-backslash-does-not-continue",
+        "pipe-boundary",
         "and-semicolon-boundaries",
         "inline-comment",
         "later-set-wins",

@@ -478,15 +478,11 @@ kubectl --namespace a-stock scale deployment/a-stock --replicas=0
 
 恢复属于破坏性操作。确认 namespace、release、PVC 和备份文件无误后，使用挂载同一 PVC 的临时维护 Pod 写回，完成后再把 Deployment 恢复为 1。不要直接编辑 SQLite 二进制文件，也不要在 Pod 运行时用普通文件复制覆盖数据库。
 
-## 17. 卸载
+## 17. 退役
 
-卸载 release：
+仓库当前不提供通用 release 退役入口。不得直接执行原始 `helm uninstall`：它会绕过 release lock、stored/live CronJob 前置检查和失败补偿。退役必须另建受审操作包，先冻结 namespace、release、exact CronJob、完整 Helm values、PVC/PV 身份及恢复路径，再由覆盖精确动作的授权执行。
 
-```bash
-helm uninstall a-stock --namespace a-stock
-```
-
-默认 `persistence.keep=true`，Helm 会保留 Chart 创建的 PVC。检查：
+默认 `persistence.keep=true`，受审退役流程应先检查 Chart 创建的 PVC：
 
 ```bash
 kubectl --namespace a-stock get pvc

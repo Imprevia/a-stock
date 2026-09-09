@@ -221,16 +221,58 @@ print("present" if matches else "absent")
 
 capture_live_cronjobs() {
   local payload
-  payload="$(kubectl get cronjob --namespace "$NAMESPACE" \
-    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json)" || return 1
+  [[ -n "$GENERIC_CRONJOB_NAME" ]] || return 1
+  payload="$(kubectl get cronjob "$GENERIC_CRONJOB_NAME" --namespace "$NAMESPACE" \
+    --ignore-not-found -o yaml)" || return 1
   printf '%s\n' "$payload" | python3 -c '
-import json, sys, yaml
-payload = json.load(sys.stdin)
-items = payload.get("items") if isinstance(payload, dict) else None
-if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-    raise SystemExit("live CronJob response must contain an items array")
+import sys, yaml
+items = [item for item in yaml.safe_load_all(sys.stdin) if item is not None]
+if len(items) > 1 or not all(isinstance(item, dict) for item in items):
+    raise SystemExit("exact live CronJob response must contain at most one object")
+if items:
+    item = items[0]
+    metadata = item.get("metadata")
+    if item.get("kind") != "CronJob" or not isinstance(metadata, dict):
+        raise SystemExit("exact live CronJob response must be a CronJob")
+    if metadata.get("name") != sys.argv[1]:
+        raise SystemExit(f"live CronJob name must equal {sys.argv[1]}")
 yaml.safe_dump_all(items, sys.stdout, sort_keys=False)
-'
+' "$GENERIC_CRONJOB_NAME"
+}
+
+resolve_generic_cronjob_name() {
+  local kube_version="$1"
+  local identity_render inspection name
+  local identity_args=(
+    --set 'persistence.enabled=true'
+    --set 'marketEnvironment.timezone=Asia/Shanghai'
+    --set 'marketEnvironment.settlementTime=15:10'
+    --set 'marketEnvironment.scheduledCollection.enabled=true'
+    --set 'marketEnvironment.scheduledCollection.suspend=true'
+    --set 'marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true'
+    --set 'marketEnvironment.scheduledCollection.controllerCanaryVerified=false'
+    --set 'marketEnvironment.scheduledCollection.timeZone=Asia/Shanghai'
+  )
+  if [[ "$kube_version" == 1.26.* ]]; then
+    identity_args+=(
+      --set 'marketEnvironment.scheduledCollection.timezoneStrategy=controller'
+      --set 'marketEnvironment.scheduledCollection.controllerTimeZone=Etc/UTC'
+      --set-string 'marketEnvironment.scheduledCollection.schedule=30 8 * * 1-5'
+    )
+  else
+    identity_args+=(
+      --set 'marketEnvironment.scheduledCollection.timezoneStrategy=native'
+      --set-string 'marketEnvironment.scheduledCollection.schedule=30 16 * * 1-5'
+    )
+  fi
+  identity_render="$(render_scheduling_packet \
+    "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" \
+    "$kube_version" "$RELEASE_NAME" "$NAMESPACE" \
+    "${EARLY_RENDER_ARGS[@]}" "${identity_args[@]}")" || return 1
+  inspection="$(inspect_scheduling_packet "$identity_render" suspended "$kube_version")" || return 1
+  name="$(printf '%s\n' "$inspection" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')" || return 1
+  [[ -n "$name" ]] || return 1
+  printf '%s\n' "$name"
 }
 
 require_generic_schedule_disabled() {
@@ -611,6 +653,7 @@ K3S_TUNNEL_PID=''
 ACTIVATION_IN_FLIGHT=false
 ACTIVATION_CRONJOB_NAME=''
 GENERIC_DEPLOY_IN_FLIGHT=false
+GENERIC_CRONJOB_NAME=''
 cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM HUP
@@ -636,7 +679,8 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-OPERATION_CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
+SOURCE_CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
+OPERATION_CHART_DIR="$SOURCE_CHART_DIR"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 OPERATION_SCHEDULING_OVERLAY="$SCHEDULING_OVERLAY_FILE"
 case "$OPERATION" in
@@ -651,25 +695,37 @@ case "$OPERATION" in
     ;;
 esac
 case "$OPERATION" in
-  server-dry-run|release-suspended|activate-schedule|disable-schedule)
-    SNAPSHOT_DIR="$TMP_DIR/reviewed-packet"
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule)
+    SNAPSHOT_DIR="$TMP_DIR/release-packet"
     mkdir -p "$SNAPSHOT_DIR"
-    cp -R "$REPO_DIR/deploy/helm/a-stock" "$SNAPSHOT_DIR/chart"
-    cp "$HELM_VALUES_FILE" "$SNAPSHOT_DIR/baseline.yaml"
-    cp "$SCHEDULING_OVERLAY_FILE" "$SNAPSHOT_DIR/overlay.yaml"
-    diff -qr "$REPO_DIR/deploy/helm/a-stock" "$SNAPSHOT_DIR/chart" >/dev/null || die 'chart changed while freezing the reviewed packet'
-    verify_hash baseline "$REVIEWED_BASELINE_SHA256" "$(sha256sum "$SNAPSHOT_DIR/baseline.yaml" | awk '{print $1}')"
-    verify_hash overlay "$REVIEWED_OVERLAY_SHA256" "$(sha256sum "$SNAPSHOT_DIR/overlay.yaml" | awk '{print $1}')"
-    if ! SNAPSHOT_RENDER="$(render_scheduling_packet "$SNAPSHOT_DIR/chart" "$SNAPSHOT_DIR/baseline.yaml" "$SNAPSHOT_DIR/overlay.yaml" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
-      die 'frozen scheduling packet render failed'
+    cp -R "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart"
+    diff -qr "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart" >/dev/null || die 'chart changed while freezing the release packet'
+    OPERATION_CHART_DIR="$SNAPSHOT_DIR/chart"
+    if [[ -n "$HELM_VALUES_FILE" ]]; then
+      cp "$HELM_VALUES_FILE" "$SNAPSHOT_DIR/baseline.yaml"
+      OPERATION_BASELINE_VALUES="$SNAPSHOT_DIR/baseline.yaml"
     fi
-    verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$SNAPSHOT_RENDER")"
+    if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
+      cp "$SCHEDULING_OVERLAY_FILE" "$SNAPSHOT_DIR/overlay.yaml"
+      OPERATION_SCHEDULING_OVERLAY="$SNAPSHOT_DIR/overlay.yaml"
+    fi
+    if ! SNAPSHOT_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+      die 'frozen release packet render failed'
+    fi
+    if [[ "$(sha256_text "$SNAPSHOT_RENDER")" != "$(sha256_text "$RENDERED_PACKET")" ]]; then
+      die 'release packet changed while freezing its sources'
+    fi
+    if ! inspect_scheduling_packet "$SNAPSHOT_RENDER" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION" >/dev/null; then
+      die 'frozen release packet failed scheduling validation'
+    fi
+    if [[ "$OPERATION" != deploy ]]; then
+      verify_hash baseline "$REVIEWED_BASELINE_SHA256" "$(sha256sum "$OPERATION_BASELINE_VALUES" | awk '{print $1}')"
+      verify_hash overlay "$REVIEWED_OVERLAY_SHA256" "$(sha256sum "$OPERATION_SCHEDULING_OVERLAY" | awk '{print $1}')"
+      verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$SNAPSHOT_RENDER")"
+      log "reviewed packet binding: head=$REVIEWED_GIT_HEAD chart=$REVIEWED_CHART_SHA256 baseline=$REVIEWED_BASELINE_SHA256 overlay=$REVIEWED_OVERLAY_SHA256 render=$REVIEWED_RENDER_SHA256"
+    fi
     chmod -R a-w "$SNAPSHOT_DIR"
     RENDERED_PACKET="$SNAPSHOT_RENDER"
-    OPERATION_CHART_DIR="$SNAPSHOT_DIR/chart"
-    OPERATION_BASELINE_VALUES="$SNAPSHOT_DIR/baseline.yaml"
-    OPERATION_SCHEDULING_OVERLAY="$SNAPSHOT_DIR/overlay.yaml"
-    log "reviewed packet binding: head=$REVIEWED_GIT_HEAD chart=$REVIEWED_CHART_SHA256 baseline=$REVIEWED_BASELINE_SHA256 overlay=$REVIEWED_OVERLAY_SHA256 render=$REVIEWED_RENDER_SHA256"
     ;;
 esac
 
@@ -727,6 +783,9 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
 fi
 
 if [[ "$OPERATION" == deploy ]]; then
+  if ! GENERIC_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
+    die 'could not resolve the release-derived application CronJob name'
+  fi
   verify_generic_deploy_precondition
 fi
 
@@ -898,18 +957,20 @@ if [[ -z "$HELM_VALUES_FILE" ]]; then
   fi
   } > "$VALUES_FILE"
 else
-  cp "$HELM_VALUES_FILE" "$VALUES_FILE"
+  cp "$OPERATION_BASELINE_VALUES" "$VALUES_FILE"
 fi
 
-if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
+if ! RENDERED_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
   die 'final deployment values failed target-version rendering before build'
 fi
 if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" disabled "$TARGET_KUBERNETES_VERSION")"; then
   die 'normal deployment cannot create or activate scheduled collection'
 fi
+GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
+chmod a-w "$VALUES_FILE"
 
 log "building $IMAGE"
-helm lint --strict "$REPO_DIR/deploy/helm/a-stock"
+helm lint --strict "$OPERATION_CHART_DIR"
 podman build \
   --platform "$BUILD_PLATFORM" \
   --format docker \
@@ -955,15 +1016,24 @@ sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
 
 verify_generic_deploy_precondition
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
+  die 'frozen generic release packet failed immediately before Helm write'
+fi
+if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
+  die 'frozen generic release packet drifted before Helm write'
+fi
+if ! inspect_scheduling_packet "$PRE_WRITE_RENDER" disabled "$TARGET_KUBERNETES_VERSION" >/dev/null; then
+  die 'frozen generic release packet could create or activate scheduled collection'
+fi
 
 HELM_VALUES_ARGS=(--values "$VALUES_FILE")
-if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
-  HELM_VALUES_ARGS+=(--values "$SCHEDULING_OVERLAY_FILE")
+if [[ -n "$OPERATION_SCHEDULING_OVERLAY" ]]; then
+  HELM_VALUES_ARGS+=(--values "$OPERATION_SCHEDULING_OVERLAY")
 fi
 
 log "installing Helm release $RELEASE_NAME/$NAMESPACE"
 GENERIC_DEPLOY_IN_FLIGHT=true
-helm upgrade --install "$RELEASE_NAME" "$REPO_DIR/deploy/helm/a-stock" \
+helm upgrade --install "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
   --namespace "$NAMESPACE" \
   --create-namespace \
   "${HELM_VALUES_ARGS[@]}" \

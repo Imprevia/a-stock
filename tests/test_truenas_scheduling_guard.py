@@ -502,6 +502,7 @@ def _run_generic_deploy(
     live_overlay: Path,
     outcome: str = "off",
     release_present: bool = True,
+    live_label_drift: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str, dict]:
     repo, baseline, suspended, active, off, _ = _prepare_reviewed_repo(tmp_path)
     overlays = {path.name: path for path in (suspended, active, off)}
@@ -531,6 +532,11 @@ def _run_generic_deploy(
         ),
         encoding="utf-8",
     )
+    if live_label_drift:
+        payload = json.loads(live_state.read_text(encoding="utf-8"))
+        for item in payload["items"]:
+            item["metadata"]["labels"].pop("app.kubernetes.io/instance", None)
+        live_state.write_text(json.dumps(payload), encoding="utf-8")
     off_state = tmp_path / "generic-off.json"
     off_state.write_text(
         json.dumps(
@@ -587,7 +593,7 @@ def _run_generic_deploy(
         f"      fail-active) cp {active_state} {live_state}; exit 95 ;;\n"
         f"      signal-active) cp {active_state} {live_state}; touch {released}; kill -TERM \"$PPID\"; sleep 0.1 ;;\n"
         f"      post-read-active|rollout-active|postcondition-active) cp {active_state} {live_state}; touch {released} ;;\n"
-        f"      off) cp {off_state} {live_state}; touch {released} ;;\n"
+        f"      off|chart-drift) cp {off_state} {live_state}; touch {released} ;;\n"
         "      *) exit 98 ;;\n"
         "    esac\n"
         "    ;;\n"
@@ -603,8 +609,18 @@ def _run_generic_deploy(
         f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
         "if [[ \"$*\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
         "if [[ \"$*\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
-        f"if [[ \"$1\" == get && \"$2\" == cronjob ]]; then cat {live_state}; exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == cronjob ]]; then\n"
+        "  if [[ \"$*\" == *\" -l app.kubernetes.io/instance=\"* ]]; then\n"
+        "    if [[ \"$GENERIC_LIVE_LABEL_DRIFT\" == true ]]; then printf '{\"apiVersion\":\"v1\",\"kind\":\"List\",\"items\":[]}'; else "
+        f"cat {live_state}; fi\n"
+        "  else\n"
+        "    [[ \"$3\" == a-stock-data-collection ]] || exit 92\n"
+        f"    python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(json.dumps(p[\"items\"][0])) if p[\"items\"] else None' {live_state}\n"
+        "  fi\n"
+        "  exit 0\n"
+        "fi\n"
         "if [[ \"$1\" == patch && \"$2\" == cronjob ]]; then\n"
+        "  [[ \"$3\" == a-stock-data-collection && \"$*\" == *\"--namespace a-stock\"* && \"$*\" == *\"--patch {\\\"spec\\\":{\\\"suspend\\\":true}}\"* ]] || exit 91\n"
         f"  cp {suspended_state} {live_state}\n"
         "  exit 0\n"
         "fi\n"
@@ -637,6 +653,9 @@ def _run_generic_deploy(
         f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
         "if [[ \"$GENERIC_UPGRADE_OUTCOME\" == pre-write-active && \"$*\" == *\"images import\"* ]]; then\n"
         f"  cp {active_state} {live_state}\n"
+        "fi\n"
+        "if [[ \"$GENERIC_UPGRADE_OUTCOME\" == chart-drift && \"$*\" == *\"images import\"* ]]; then\n"
+        f"  printf '\\n{{{{ fail \"SOURCE_CHART_DRIFT\" }}}}\\n' >> {repo / 'deploy' / 'helm' / 'a-stock' / 'templates' / 'market-data-collection-cronjob.yaml'}\n"
         "fi\n"
         "exit 0\n",
         encoding="utf-8",
@@ -678,6 +697,7 @@ def _run_generic_deploy(
             "REAL_HELM": HELM or "helm",
             "GENERIC_UPGRADE_OUTCOME": outcome,
             "GENERIC_RELEASE_PRESENT": str(release_present).lower(),
+            "GENERIC_LIVE_LABEL_DRIFT": str(live_label_drift).lower(),
         },
         capture_output=True,
         text=True,
@@ -724,6 +744,40 @@ def test_generic_deploy_rechecks_live_schedule_immediately_before_helm(tmp_path:
     assert calls.count("helm list --all --namespace a-stock") == 2
     assert "podman build" in calls
     assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_exact_name_lookup_cannot_miss_label_drift(tmp_path: Path) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=ACTIVE,
+        live_label_drift=True,
+    )
+
+    assert completed.returncode != 0
+    assert "CronJob release label must equal a-stock" in completed.stderr
+    assert "live release scheduling to be off/absent" in completed.stderr
+    assert "kubectl get cronjob a-stock-data-collection --namespace a-stock" in calls
+    assert " -l app.kubernetes.io/instance=" not in calls
+    assert "podman build" not in calls
+    assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_uses_frozen_chart_after_source_drift(tmp_path: Path) -> None:
+    completed, calls, live = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        outcome="chart-drift",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    upgrade = next(line for line in calls.splitlines() if line.startswith("helm upgrade"))
+    assert "/release-packet/chart" in upgrade
+    assert "/repo/deploy/helm/a-stock" not in upgrade
+    assert live["items"] == []
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -799,6 +853,26 @@ def test_generic_deploy_allows_new_release_only_when_live_schedule_is_absent(
     assert "helm get manifest" not in calls
     assert "helm upgrade --install" in calls
     assert live["items"] == []
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize("live_overlay", [ACTIVE, SUSPENDED], ids=["active", "suspended"])
+def test_generic_deploy_rejects_live_schedule_for_new_release(
+    tmp_path: Path, live_overlay: Path
+) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=live_overlay,
+        release_present=False,
+    )
+
+    assert completed.returncode != 0
+    assert "live release scheduling to be off/absent" in completed.stderr
+    assert "reviewed --disable-schedule mode first" in completed.stderr
+    assert "helm get manifest" not in calls
+    assert "podman build" not in calls
+    assert "helm upgrade" not in calls
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")

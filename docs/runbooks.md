@@ -78,7 +78,7 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 
 ### Helm Chart 与受控发布入口
 
-`deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：
+`deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；仓库没有通用 uninstall 入口，退役必须另建受审 exact-resource 操作包。先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：
 
 ```bash
 cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
@@ -90,7 +90,7 @@ Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
 
-普通入口在任何构建、镜像传输/导入或 release write 前，必须同时证明 Helm stored manifest 与 live state 均无 application CronJob；候选 baseline 仍须为 `enabled=false`、`suspend=true` 且不得带 scheduling overlay。成功写入后必须重新读取 server-observed 状态并证明 CronJob 仍不存在。不得继承目标上的历史值、恢复历史 revision 或绕过入口直接执行 Helm write。
+普通入口在任何网络前把 chart、调用方 values 和 overlay 复制到本次运行的只读 packet；它从 packet render 解析 release-derived exact CronJob 名称，并按该名称读取 live state，不使用可能因 label drift 漏报资源的 selector。任何构建、镜像传输/导入或 release write 前，必须同时证明 Helm stored manifest 与 exact live CronJob 均 absent；候选 baseline 仍须为 `enabled=false`、`suspend=true` 且不得带 scheduling overlay。最终 values 验证后记录 disabled render hash，Helm write 前从同一只读 packet 重渲染并比对，实际 Helm 调用也只读取该 packet。成功写入后必须重新读取 exact server-observed 状态并证明 CronJob 仍不存在。不得继承目标上的历史值、恢复历史 revision、执行原始 uninstall 或绕过入口直接执行 Helm write。
 
 如果只读发现显示已有 active 或 suspended application CronJob，普通应用发布和回退必须停止。先用实际版本冻结 baseline + off overlay 和 hashes，取得 exact rollback authorization，再执行受审的调度关闭入口：
 
@@ -101,7 +101,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
   --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。任何 write、rollout 或写后状态读取失败都不得报告成功；失败恢复会将意外 active CronJob 精确补偿为 suspended，并验证状态至少为 absent/suspended。无法完成该验证时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
+只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。instance label 缺失或漂移不是“资源不存在”的证据：exact-name 读取仍会发现资源并因 ownership/label 不一致而 fail closed。任何 write、rollout 或写后状态读取失败都不得报告成功；失败恢复会将意外 active CronJob 精确补偿为 suspended，并验证状态至少为 absent/suspended。无法完成该验证时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
 
 渲染和检查：
 
@@ -112,7 +112,7 @@ helm get values a-stock --namespace a-stock
 helm history a-stock --namespace a-stock
 ```
 
-启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，卸载 release 后仍保留；确认无需数据后再手工删除，或显式设置 `persistence.keep=false`。Chart 的 Dashboard 支持 Kubernetes 1.26+，但 CronJob timezone 需显式选择：`native` 仅支持 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；1.26 只能选 `controller`，省略该字段并要求已验证的 `Etc/UTC` 或 `Asia/Shanghai` controller timezone 和精确 16:30 上海映射。`deploy/k3s/` base 只渲染 Dashboard；native CronJob 位于同级 `deploy/k3s-native-scheduled/`，只允许通过 `python scripts/render-k3s.py --kube-version <actual-version>` 检查渲染，1.26 会在启动 kubectl 前失败。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
+启用 `persistence.existingClaim` 时 Helm 不创建或删除该 PVC。Chart 创建的 PVC 默认设置 `helm.sh/resource-policy: keep`，但 keep policy 不能把原始 uninstall 变成受支持操作；退役必须先冻结 release、CronJob、PVC/PV 和恢复证据。Chart 的 Dashboard 支持 Kubernetes 1.26+，但 CronJob timezone 需显式选择：`native` 仅支持 1.27+ 并输出 `spec.timeZone: Asia/Shanghai`；1.26 只能选 `controller`，省略该字段并要求已验证的 `Etc/UTC` 或 `Asia/Shanghai` controller timezone 和精确 16:30 上海映射。`deploy/k3s/` base 只渲染 Dashboard；native CronJob 位于同级 `deploy/k3s-native-scheduled/`，只允许通过 `python scripts/render-k3s.py --kube-version <actual-version>` 检查渲染，1.26 会在启动 kubectl 前失败。原生 Kustomize 与 Helm 的 catch-all Ingress 会发生冲突，单个环境只选择一条发布路径。
 
 ### TrueNAS 1.20 + VM 1.21 一键发布
 
@@ -134,7 +134,7 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh
 ```
 
-普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再由脚本完成 release write 并等待 Dashboard rollout。普通模式还会在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，并在写后验证同一 postcondition。调度发布不得复用这条构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 Gate C activation 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values 和对应授权。入口不会自动创建 canary/Job；Gate C 还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。
+普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再由脚本完成 release write 并等待 Dashboard rollout。普通模式会冻结已验证的 chart/values，按 release-derived exact name 在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，在 Helm write 前重验 live state 与 frozen render hash，并在写后验证同一 postcondition。调度发布不得复用这条构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 Gate C activation 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values 和对应授权。入口不会自动创建 canary/Job；Gate C 还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。
 
 后续更新只需在 1.21 检出审阅后的 clean commit 并重新执行同一命令；如需明确指定版本，可在环境文件设置新的唯一 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。应用回退检出受审 rollback commit，并使用新的不可变 rollback tag 运行同一普通入口；不直接恢复历史 Helm revision。若 release 中存在 active/suspended schedule，必须先按上文完成受审 `--disable-schedule`。
 
