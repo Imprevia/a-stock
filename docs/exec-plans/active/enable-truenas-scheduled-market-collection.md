@@ -6,7 +6,7 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 
 ## Status（状态）
 
-`stage-2-fourth-successor-candidate-preparation-complete`：独立测试 GYT-52 对 Stage 3 clean HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO；前三轮 Stage 4 candidates `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213` 和 `3c4d2dc056b9f70e3966407fda18f976841475db` 又先后被独立复审拒绝。第四轮已用历史限定修复旧 terminal/completed 事实并改用 CommonMark/Bash AST 结构化解析；candidate `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 的 dynamic action 缺口已关闭，但预候选审查证明 xargs wrapper allowlist 无法覆盖开放式 executable 链。当前工作树已改为解析 xargs options 后拒绝任何显式 utility，仅允许无显式 utility 的默认 echo 形式，并在修正 optional-option 边界后取得两路脏树对抗预检 GO；完整离线门禁通过，待提交推送新的 exact clean candidate 和三路独立复审。GYT-48/GYT-52 均保持 `backlog`，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
+`stage-2-fourth-successor-reviewed`：独立测试 GYT-52 对 Stage 3 clean HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 NO-GO；此前 Stage 4 candidates 均因通用发布或命令审计缺口被拒绝。第四轮最终 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 已将命令审计收敛为结构化 CommonMark/Bash AST 解析，并在解析 xargs options 后拒绝任何显式 utility，仅允许无显式 utility 的默认 echo 形式；文档、测试严谨性和发布安全三路 exact-SHA 独立复审均为 GO，无 blocking finding。GYT-47 仓库交付已完成并等待人工验收；GYT-48/GYT-52 均保持 `backlog`，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
 
 ## Context（上下文）
 
@@ -47,9 +47,9 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 |---|---|---|---|---|---|
 | Stage 1 / D0 | Gate A 计划与分配 | 资深项目经理 | Gate A approval | approval trace、OpenSpec/active plan、串行 backlog、strict validation | accepted |
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
-| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.7；focused render/deployment tests；无应用/前端/生产 diff | fourth successor candidate preparation complete; review pending |
+| Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.7；focused render/deployment tests；无应用/前端/生产 diff | exact candidate `0cd9b31` received three independent GO verdicts; issue acceptance pending |
 | Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` terminal + reviewed | tasks 3.1-3.7；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | backlog; prior evidence rejected by GYT-52 NO-GO |
-| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | remediated GYT-47 + rerun GYT-48 evidence | 通用发布负例、全量离线门禁、exact clean HEAD | backlog pending remediation |
+| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | remediated GYT-47 + rerun GYT-48 evidence | 通用发布负例、全量离线门禁、exact clean HEAD | backlog pending GYT-48 rerun and acceptance |
 | Gate B | 生产验证 | 未分配 | GYT-47 independent GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | progression/read-only permission recorded; blocked by prerequisites |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
 
@@ -74,7 +74,7 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 ## Acceptance（验收）
 
 - OpenSpec 和本 plan 可追溯记录 Gate A 批准、里程碑、依赖、风险、负责人、验收证据和下一检查点。
-- 实际仓库研发只分配给现有资深后端工程师，没有新建 specialist。Stage 2 曾完成并获验收、Stage 3 曾在冻结 clean HEAD 派生的独立 worktree 中串行执行，但这些状态已被 Stage 4 NO-GO 作废；当前 GYT-47 已重新打开，GYT-48/GYT-52 保持 `backlog`。
+- 实际仓库研发只分配给现有资深后端工程师，没有新建 specialist。Stage 2 曾完成并获验收、Stage 3 曾在冻结 clean HEAD 派生的独立 worktree 中串行执行，但这些状态已被 Stage 4 NO-GO 作废；当前 GYT-47 remediation 已交付并取得三路独立 GO，等待人工验收，GYT-48/GYT-52 保持 `backlog`。
 - 显式记录“无前端范围”及依据，没有向资深前端工程师创建无效任务。
 - 八项 NO-GO 阻塞均有修复位置、负例、离线命令和输出摘要，并绑定新的完整 clean HEAD；rejected HEAD 不作为 Stage 3 基线。
 - 部署入口在网络、构建或写操作前，以最终合并后的 typed Helm values 校验授权、`enabled`、`suspend`、业务时区和目标 release/namespace；离线非法输入不得读取 env、发起 SSH 或调用目标 API。
@@ -162,17 +162,19 @@ Gate A / Stage 4 独立验收 NO-GO 回流。GYT-47 从冻结 Stage 3 HEAD 修�
 - 2026-09-09：candidate `f3fb0203f7bd97e434836ef9bfe209b31720e625` 已提交、推送且 clean/upstream 一致；文档复审为 GO，但测试复审发现 `bash -cu 'helm rollback ...'` 与 `sh -cu 'helm uninstall ...'` 会执行却逃过审计，随后的本地对抗检查还确认 `${HELM_BINARY:-helm} rollback ...` 动态 executable 可绕过，发布复审因此中止。当前解析会把任意包含 `c` 的短 `bash/sh` option cluster 的下一 argv 作为 command string 递归审计，并对含 Helm expansion 的动态 executable fail closed；该 SHA 不作为最终证据。
 - 2026-09-09：candidate `09e29c59bee3bce2720b14d0636281a186577840` 已提交、推送且 clean/upstream 一致；文档复审为 GO，测试与发布安全复审为 NO-GO。`CMD=helm; $CMD rollback ...` 可绕过基于变量名含 `helm` 的动态 executable 启发式，`bash -c COMMAND [ARG...]` 的后续定位参数会被误解析为额外 command string，`printf 'uninstall ...' | xargs helm` 可从 stdin 注入写 action，且 `helm test` 会创建 hook 资源却仍被归为 read action。当前返工要求任意动态 executable 加 Helm write action fail closed、shell `-c` 只消费一个 command string、`xargs` 不得动态构造 Helm argv，并将 `helm test` 归为禁止的 release 写操作；该 SHA 不作为最终证据。
 - 2026-09-09：candidate `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 已提交、推送且 clean/upstream 一致；文档复审为 GO，测试与发布安全复审为 NO-GO。`ACTION=rollback; helm $ACTION ...`、`${ACTION}` 与 `$(printf uninstall)` action substitution 仍返回无 violation；`xargs echo helm` 和 `xargs -a helm echo safe` 又会把 data/option value 误判为 executor。后续预候选审查进一步证明 wrapper allowlist 会在 `ionice`/`watch` 等未列举 executable 上继续漏检，并在 wrapper 数据参数上误报；当前返工改为解析 xargs options 后拒绝任意显式 utility。该 SHA 不作为最终证据。
-- 2026-09-09：replacement 工作树将 xargs required-value 与 optional-value options 分开解析，`--eof`、`--max-lines`、`--replace` 未带 `=` 时不会吞掉后续 utility；任意显式 utility 均 fail closed，仅无 utility 的 default echo 允许。两路独立脏树对抗预检均为 GO；command-audit subset `82 passed`，deployment/guard focused suite `191 passed`，fake-provider scheduled-refresh `7 passed, 10 deselected`，全库固定离线测试 `384 passed, 2 warnings`。`uv pip check` 确认 52 个包兼容；Bash/Python syntax、五组 native/controller/off Helm strict lint/template、Kustomize base/native render、OpenSpec strict 1/1、staged fast docs-contract（代码 1 / 文档 2 / plan 1）、full docs-contract（代码 8 / 文档 10 / plan 2）、scope 与 `git diff --check` 均通过。该证据尚未绑定 clean SHA，不替代下一步 exact-SHA 三路复审。
+- 2026-09-09：replacement 工作树将 xargs required-value 与 optional-value options 分开解析，`--eof`、`--max-lines`、`--replace` 未带 `=` 时不会吞掉后续 utility；任意显式 utility 均 fail closed，仅无 utility 的 default echo 允许。两路独立脏树对抗预检均为 GO；command-audit subset `82 passed`，deployment/guard focused suite `191 passed`，fake-provider scheduled-refresh `7 passed, 10 deselected`，全库固定离线测试 `384 passed, 2 warnings`。`uv pip check` 确认 52 个包兼容；Bash/Python syntax、五组 native/controller/off Helm strict lint/template、Kustomize base/native render、OpenSpec strict 1/1、staged fast docs-contract（代码 1 / 文档 2 / plan 1）、full docs-contract（代码 8 / 文档 10 / plan 2）、scope 与 `git diff --check` 均通过。该证据已绑定下述 exact clean candidate。
+- 2026-09-09：fourth-successor exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 已提交、推送，`HEAD == @{upstream}` 且 worktree clean。文档/规格、测试严谨性和发布安全三路只读复审均对 baseline `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 到该 candidate 给出 GO，无 blocking finding；两路独立复跑 deployment/guard 均为 `191 passed`，full docs-contract 为代码 8 / 文档 10 / plan 2，OpenSpec strict 为 1/1。文档审阅者额外全库复跑为 `383 passed, 1 failed, 2 warnings`；唯一失败是本 plan 已记录且 baseline-identical 的跨 service 冷加载 TOCTOU，candidate 未修改 `src/` 或该测试，作为残余风险保留，不以重试或放宽断言掩盖。
+- 2026-09-09：三路 GO 后已同步 proposal、design、tasks、active plan 与 `docs/status.md` 的当前状态；evidence-only staged fast docs-contract 通过（代码 0 / 文档 2 / plan 1），full docs-contract 通过（代码 8 / 文档 10 / plan 2），OpenSpec strict 仍为 1/1，`git diff --cached --check` 通过；无代码、部署或生产状态变更。
 
 ## Remaining Gaps（剩余缺口）
 
 - 当前共享 worktree 不是 clean implementation baseline，但 Stage 2 已在记录的隔离 worktree 中执行；不得把共享树的改动带入本 issue。
-- Stage 2 既往八项阻塞已在 candidate `5672c2a147e8975ac0de218fa0605ce83882aadf` 关闭，但 Stage 4 随后发现通用发布绕过；generic release 安全缺口已在第三轮 candidate 关闭并获发布复审 GO，剩余事实源冲突和命令审计假阴性已在第四轮工作树关闭，但尚未绑定 exact clean candidate SHA 或取得独立 GO，GYT-47 尚未满足最终验收。
+- Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流均已在 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；GYT-47 仓库交付完成，尚待人工验收。
 - baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
-- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均已被独立复审拒绝，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；需绑定新的第四轮 clean candidate SHA，并重新取得三路 exact-SHA 独立 GO。
-- GYT-48 与 GYT-52 均保持 `backlog`；必须在新 clean HEAD 独立 GO 后依次重验。
+- `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均已被独立复审拒绝，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 是当前三路 GO 的 replacement candidate。
+- GYT-48 与 GYT-52 均保持 `backlog`；必须在 GYT-47 人工验收后依次重验。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
 ## Next Step（下一步）
 
-运行 staged fast/full docs-contract 与最终 scope/diff 检查，提交推送第四轮 clean candidate，并对 `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75..successor` 重新执行三路独立复审。只有三路明确 GO 后才提交最终证据 HEAD 并回交 GYT-48/GYT-52 依次重验；不得启动 GYT-50/GYT-51 或任何生产动作。
+人工验收 GYT-47 后，依次提升 GYT-48 重跑 Stage 3 离线证据，再由 GYT-52 执行 Stage 4 独立验收。两者验收前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
