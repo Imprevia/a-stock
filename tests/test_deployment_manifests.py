@@ -202,13 +202,13 @@ def _embedded_shell_sources(command: tuple[str, ...]) -> list[str]:
         if executable in {"bash", "sh"}:
             for option_index in range(index + 1, len(command)):
                 option = command[option_index]
-                if option == "-c" and option_index + 1 < len(command):
+                if (
+                    option.startswith("-")
+                    and not option.startswith("--")
+                    and "c" in option[1:]
+                    and option_index + 1 < len(command)
+                ):
                     sources.append(command[option_index + 1])
-                elif option.startswith("-c") and option != "-c":
-                    sources.append(option[2:])
-                elif option.startswith("-") and not option.startswith("--") and "c" in option[1:]:
-                    if option_index + 1 < len(command):
-                        sources.append(command[option_index + 1])
     return sources
 
 
@@ -267,7 +267,9 @@ def _skip_wrapper_options(
 
 def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
     for helm_index, token in enumerate(command):
-        if PurePosixPath(token).name != "helm":
+        if PurePosixPath(token).name != "helm" and not (
+            "$" in token and "helm" in token.lower()
+        ):
             continue
         if any(
             HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
@@ -285,6 +287,10 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
         executable = PurePosixPath(command[index]).name
         if executable == "helm":
             return index
+        if "$" in command[index] and "helm" in command[index].lower():
+            raise HelmAuditAmbiguity(
+                f"dynamic Helm executable is unsupported: {command[index]}"
+            )
         index += 1
         if executable == "sudo":
             index = _skip_wrapper_options(
@@ -1391,11 +1397,17 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         ),
         ("```bash\nenv '-Shelm rollback a-stock 7'\n```", "helm rollback is forbidden"),
         ("```bash\nsh -c 'helm rollback a-stock 7'\n```", "helm rollback is forbidden"),
+        ("```bash\nsh -cu 'helm uninstall a-stock'\n```", "helm uninstall is forbidden"),
         ("```bash\nbash -c 'helm uninstall a-stock'\n```", "helm uninstall is forbidden"),
         ("```bash\nbash -lc 'helm uninstall a-stock'\n```", "helm uninstall is forbidden"),
+        ("```bash\nbash -cu 'helm rollback a-stock 7'\n```", "helm rollback is forbidden"),
         (
             "```bash\nnohup helm uninstall a-stock\n```",
             "unsupported command before Helm executable: nohup",
+        ),
+        (
+            "```bash\n${HELM_BINARY:-helm} rollback a-stock 7\n```",
+            "dynamic Helm executable is unsupported",
         ),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
         ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
@@ -1445,9 +1457,12 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "env-split-string-long",
         "env-split-string-attached",
         "sh-command-string",
+        "sh-clustered-command-string",
         "bash-command-string",
         "bash-login-command-string",
+        "bash-clustered-command-string",
         "unknown-executable-wrapper",
+        "dynamic-helm-executable",
         "dollar-command-substitution",
         "backtick-command-substitution",
         "brace-group",
