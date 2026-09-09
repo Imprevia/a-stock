@@ -6,10 +6,12 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+import bashlex
 import pytest
 import yaml
+from markdown_it import MarkdownIt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +35,36 @@ TRUENAS_SCHEDULED_OFF_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-o
 HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
 SHELL_FENCE_LANGUAGES = ("bash", "sh", "shell")
-SHELL_CONTROL_CHARACTERS = frozenset(";&|")
 SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+HELM_ACTION_ALIASES = {
+    "del": "uninstall",
+    "delete": "uninstall",
+    "un": "uninstall",
+}
+HELM_WRITE_ACTIONS = frozenset({"install", "rollback", "uninstall", "upgrade"})
+HELM_READ_ACTIONS = frozenset(
+    {
+        "completion",
+        "create",
+        "dependency",
+        "env",
+        "get",
+        "history",
+        "lint",
+        "list",
+        "package",
+        "plugin",
+        "pull",
+        "repo",
+        "search",
+        "show",
+        "status",
+        "template",
+        "test",
+        "verify",
+        "version",
+    }
+)
 SCHEDULING_ENTRYPOINT_MODES = frozenset(
     {
         "--offline-render",
@@ -109,188 +139,133 @@ def _environment(container: dict) -> dict[str, str]:
 
 
 def _fenced_blocks(content: str, language: str) -> list[str]:
-    lines = content.splitlines(keepends=True)
-    blocks: list[str] = []
-    index = 0
-    opening_pattern = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[ \t]*(?P<info>[^\r\n]*)")
-    while index < len(lines):
-        match = opening_pattern.match(lines[index])
-        info_language = match.group("info").split(maxsplit=1)[0:1] if match is not None else []
-        if match is None or [item.lower() for item in info_language] != [language.lower()]:
-            index += 1
-            continue
-        fence = match.group("fence")
-        closing_pattern = re.compile(
-            rf"^[ \t]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*(?:\r?\n)?$"
-        )
-        body_start = index + 1
-        index = body_start
-        while index < len(lines) and closing_pattern.match(lines[index]) is None:
-            index += 1
-        if index < len(lines):
-            blocks.append("".join(lines[body_start:index]))
-        index += 1
-    return blocks
+    markdown = MarkdownIt("commonmark")
+    return [
+        token.content
+        for token in markdown.parse(content)
+        if token.type == "fence"
+        and [item.lower() for item in token.info.split(maxsplit=1)[0:1]] == [language.lower()]
+    ]
 
 
-def _shell_comment_start(line: str) -> int | None:
-    single_quoted = False
-    double_quoted = False
-    escaped = False
-    for index, character in enumerate(line):
-        if escaped:
-            escaped = False
-            continue
-        if character == "\\" and not single_quoted:
-            escaped = True
-            continue
-        if character == "'" and not double_quoted:
-            single_quoted = not single_quoted
-            continue
-        if character == '"' and not single_quoted:
-            double_quoted = not double_quoted
-            continue
-        if (
-            character == "#"
-            and not single_quoted
-            and not double_quoted
-            and (index == 0 or line[index - 1].isspace() or line[index - 1] in ";|&()")
-        ):
-            return index
-    return None
-
-
-def _logical_shell_lines(block: str) -> list[str]:
-    logical_lines: list[str] = []
-    pending = ""
-    for physical_line in block.splitlines():
-        comment_start = _shell_comment_start(physical_line)
-        executable = physical_line if comment_start is None else physical_line[:comment_start]
-        trailing = len(executable) - len(executable.rstrip("\\"))
-        if trailing % 2 == 1:
-            pending += physical_line[: len(executable) - 1]
-            continue
-        logical_lines.append(pending + physical_line)
-        pending = ""
-    if pending:
-        logical_lines.append(pending)
-    return logical_lines
+def _walk_bash_nodes(value: object):
+    if isinstance(value, list):
+        for item in value:
+            yield from _walk_bash_nodes(item)
+        return
+    if not hasattr(value, "kind"):
+        return
+    yield value
+    for attribute, child in vars(value).items():
+        if attribute not in {"kind", "pos"}:
+            yield from _walk_bash_nodes(child)
 
 
 def _shell_commands(content: str) -> list[tuple[str, ...]]:
     commands: list[tuple[str, ...]] = []
     for language in SHELL_FENCE_LANGUAGES:
         for block in _fenced_blocks(content, language):
-            for line in _logical_shell_lines(block):
-                lexer = shlex.shlex(line, posix=True, punctuation_chars="();&|")
-                lexer.whitespace_split = True
-                lexer.commenters = "#"
-                current: list[str] = []
-                for token in lexer:
-                    if token and all(character in SHELL_CONTROL_CHARACTERS for character in token):
-                        if current:
-                            commands.append(tuple(current))
-                            current = []
-                        continue
-                    current.append(token)
-                if current:
-                    commands.append(tuple(current))
+            try:
+                roots = bashlex.parse(block)
+            except bashlex.errors.ParsingError as error:
+                raise AssertionError(f"shell fence cannot be audited: {error}") from error
+            for node in _walk_bash_nodes(roots):
+                if node.kind != "command":
+                    continue
+                words = tuple(part.word for part in node.parts if part.kind == "word")
+                if words:
+                    commands.append(words)
     return commands
 
 
-def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
-    index = 0
-    while index < len(command) and command[index] in {
-        "!",
-        "(",
-        "if",
-        "then",
-        "elif",
-        "else",
-        "while",
-        "until",
-        "do",
-    }:
+def _skip_wrapper_options(
+    command: tuple[str, ...], index: int, value_options: frozenset[str]
+) -> int:
+    while index < len(command) and command[index].startswith("-"):
+        option = command[index]
         index += 1
+        if option == "--":
+            break
+        name, separator, _ = option.partition("=")
+        if not separator and name in value_options and index < len(command):
+            index += 1
+    return index
+
+
+def _helm_executable_index(command: tuple[str, ...]) -> int | None:
+    index = 0
     while index < len(command):
-        while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
-            index += 1
-        if index >= len(command):
-            return None
-        wrapper = command[index]
-        if wrapper == "sudo":
-            index += 1
-            sudo_value_options = {"-C", "-D", "-g", "-h", "-p", "-R", "-T", "-u"}
-            while index < len(command) and command[index].startswith("-"):
-                option = command[index]
+        executable = PurePosixPath(command[index]).name
+        if executable == "helm":
+            return index
+        index += 1
+        if executable == "sudo":
+            index = _skip_wrapper_options(
+                command,
+                index,
+                frozenset(
+                    {
+                        "-C",
+                        "--close-from",
+                        "-D",
+                        "--chdir",
+                        "-g",
+                        "--group",
+                        "-h",
+                        "--host",
+                        "-p",
+                        "--prompt",
+                        "-R",
+                        "--chroot",
+                        "-r",
+                        "--role",
+                        "-T",
+                        "--command-timeout",
+                        "-t",
+                        "--type",
+                        "-U",
+                        "--other-user",
+                        "-u",
+                        "--user",
+                    }
+                ),
+            )
+            continue
+        if executable == "env":
+            index = _skip_wrapper_options(
+                command,
+                index,
+                frozenset({"-C", "--chdir", "-S", "--split-string", "-u", "--unset"}),
+            )
+            while index < len(command) and SHELL_ASSIGNMENT.match(command[index]):
                 index += 1
-                if option == "--":
-                    break
-                if option in sudo_value_options and index < len(command):
-                    index += 1
             continue
-        if wrapper == "env":
-            index += 1
-            env_value_options = {"-C", "--chdir", "-S", "--split-string", "-u", "--unset"}
-            while index < len(command):
-                option = command[index]
-                if SHELL_ASSIGNMENT.match(option):
-                    index += 1
-                elif option == "--":
-                    index += 1
-                    break
-                elif option.startswith("-"):
-                    index += 1
-                    if option in env_value_options and index < len(command):
-                        index += 1
-                else:
-                    break
-            continue
-        if wrapper == "command":
-            index += 1
+        if executable == "command":
             if index < len(command) and command[index] in {"-v", "-V"}:
                 return None
-            while index < len(command) and command[index] in {"-p", "--"}:
-                index += 1
+            index = _skip_wrapper_options(command, index, frozenset())
             continue
-        break
-    if index >= len(command) or command[index] != "helm":
-        return None
-    helm_arguments = command[index + 1 :]
-    value_options = {
-        "--burst-limit",
-        "--kube-apiserver",
-        "--kube-as-group",
-        "--kube-as-user",
-        "--kube-ca-file",
-        "--kube-context",
-        "--kube-token",
-        "--kubeconfig",
-        "--namespace",
-        "--qps",
-        "--registry-config",
-        "--repository-cache",
-        "--repository-config",
-        "-n",
-    }
-    action_index = 0
-    while action_index < len(helm_arguments):
-        argument = helm_arguments[action_index]
-        if argument == "--":
-            action_index += 1
-            break
-        if argument.startswith("-"):
-            action_index += 1
-            if "=" not in argument and argument in value_options and action_index < len(helm_arguments):
-                action_index += 1
+        if executable == "exec":
+            index = _skip_wrapper_options(command, index, frozenset({"-a"}))
             continue
-        break
-    if action_index >= len(helm_arguments):
         return None
-    return (
-        helm_arguments[action_index],
-        (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :]),
-    )
+    return None
+
+
+def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
+    helm_index = _helm_executable_index(command)
+    if helm_index is None:
+        return None
+    helm_arguments = command[helm_index + 1 :]
+    if {"-h", "--help"}.intersection(helm_arguments):
+        return None
+    for action_index, token in enumerate(helm_arguments):
+        action = HELM_ACTION_ALIASES.get(token, token)
+        if action in HELM_READ_ACTIONS:
+            return None
+        if action in HELM_WRITE_ACTIONS:
+            return action, (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :])
+    return None
 
 
 def _option_values(arguments: tuple[str, ...], *options: str) -> list[str]:
@@ -1149,7 +1124,9 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
 
     assert write_count == 2
     assert violations == []
-    assert _fenced_blocks("````bash\nhelm rollback release 7\n```", "bash") == []
+    assert _fenced_blocks("````bash\nhelm rollback release 7\n```", "bash") == [
+        "helm rollback release 7\n```"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1233,6 +1210,34 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
             "--atomic --atomic=false\n```",
             "missing --atomic",
         ),
+        (
+            "```bash\nhelm --kube-tls-server-name truenas.local install a-stock deploy/helm/a-stock\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        (
+            "```bash\nhelm --future-value opaque upgrade a-stock deploy/helm/a-stock\n```",
+            "missing effective --set marketEnvironment.scheduledCollection.enabled=false",
+        ),
+        ("```bash\nhelm delete a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nhelm del a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nhelm un a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nexec helm rollback a-stock 7\n```", "helm rollback is forbidden"),
+        ("```bash\nexec -a release helm uninstall a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\n/usr/local/bin/helm delete a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nsudo --user root helm uninstall a-stock\n```", "helm uninstall is forbidden"),
+        ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
+        ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
+        ("```bash\n{ helm rollback a-stock 7; }\n```", "helm rollback is forbidden"),
+        ("```bash\n(helm delete a-stock)\n```", "helm uninstall is forbidden"),
+        ("```bash\nhelm uninstall a-stock", "helm uninstall is forbidden"),
+        (
+            "1. Audit command:\n\n    ```bash\n    helm delete a-stock\n    ```",
+            "helm uninstall is forbidden",
+        ),
+        (
+            "> > ```bash\n> > helm rollback a-stock 7\n> > ```",
+            "helm rollback is forbidden",
+        ),
     ],
     ids=[
         "sudo-upgrade",
@@ -1251,12 +1256,60 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "inline-comment",
         "later-set-wins",
         "later-boolean-flag-wins",
+        "unknown-global-value-option",
+        "future-global-value-option",
+        "delete-alias",
+        "del-alias",
+        "un-alias",
+        "exec-wrapper",
+        "exec-wrapper-with-name",
+        "absolute-helm-path",
+        "sudo-long-value-option",
+        "dollar-command-substitution",
+        "backtick-command-substitution",
+        "brace-group",
+        "subshell",
+        "implicit-eof-closing-fence",
+        "ordered-list-fence",
+        "blockquote-fence",
     ],
 )
 def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: str) -> None:
     _, violations = _helm_write_violations(content)
 
     assert any(expected in violation for violation in violations)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "```bash\nhelm status rollback\n```",
+        "```bash\nhelm --help rollback\n```",
+        "```bash\ncommand -v helm\n```",
+        "```bash\nsudo -u helm printf rollback\n```",
+        "```bash\nprintf '%s' 'helm rollback a-stock 7'\n```",
+        "```bash\necho '$(helm uninstall a-stock)'\n```",
+        "```text\n```bash\nhelm rollback a-stock 7\n```\n```",
+        "    ```bash\n    helm rollback a-stock 7\n    ```",
+    ],
+    ids=[
+        "read-action-argument",
+        "global-help",
+        "command-lookup",
+        "wrapper-option-value",
+        "quoted-literal",
+        "quoted-substitution",
+        "shell-fence-inside-text-fence",
+        "indented-code-displaying-fence",
+    ],
+)
+def test_helm_write_audit_ignores_non_executable_examples(content: str) -> None:
+    assert _helm_write_violations(content) == (0, [])
+
+
+def test_helm_write_audit_fails_closed_on_unparseable_shell_fence() -> None:
+    with pytest.raises(AssertionError, match="shell fence cannot be audited"):
+        _helm_write_violations("```bash\nif true; then\n```")
 
 
 def test_truenas_guide_values_example_is_fail_closed() -> None:

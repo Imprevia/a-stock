@@ -122,7 +122,7 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock >/dev/null
 
 ```bash
 git fetch --all --tags
-git checkout <COMMIT_OR_TAG>
+git checkout '<COMMIT_OR_TAG>'
 git rev-parse HEAD
 ```
 
@@ -402,7 +402,7 @@ curl --fail --show-error \
 
 ```bash
 git fetch --all --tags
-git checkout <NEW_COMMIT_OR_TAG>
+git checkout '<NEW_COMMIT_OR_TAG>'
 editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
@@ -430,7 +430,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
 只有 `--disable-schedule` 的 server-observed postcondition 证明 exact CronJob 已删除后，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口重建应用：
 
 ```bash
-git checkout <REVIEWED_ROLLBACK_COMMIT_OR_TAG>
+git checkout '<REVIEWED_ROLLBACK_COMMIT_OR_TAG>'
 editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```

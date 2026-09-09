@@ -29,6 +29,8 @@ npm install --prefix apps/market-environment-dashboard
 npm run dev --prefix apps/market-environment-dashboard
 ```
 
+完整 Python 依赖也包含部署文档安全测试所需的 CommonMark 与 Bash AST 解析器；只安装运行时依赖的环境不能生成该命令审计的发布证据。
+
 打开 `http://localhost:5173` 查看上证、深证、创业板、沪深 300 和中证 500 的趋势、区间位置与成交额分析。市场广度指标暂未接入。
 
 ## TrueNAS k3s 部署

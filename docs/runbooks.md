@@ -17,6 +17,8 @@ python -m venv .venv
 npm install --prefix apps/market-environment-dashboard
 ```
 
+`requirements.txt` 同时安装部署文档安全测试使用的 CommonMark 与 Bash AST 解析器；不要在只安装部分依赖的环境中把命令审计结果作为发布证据。
+
 ## 启动命令
 
 启动后端 API：
@@ -211,7 +213,7 @@ python -m src.market_environment.cli snapshots scheduled-refresh
 
 # 查看 CronJob、最近 Job 和结构化日志
 kubectl get cronjob,job -n a-stock
-kubectl logs -n a-stock job/<job-name>
+kubectl logs -n a-stock 'job/<job-name>'
 ```
 
 不得使用裸 `kubectl patch` 暂停或恢复周期调度；TrueNAS 的正常激活、回退和激活失败补偿都必须走下文受控入口，由入口绑定实际 release-derived CronJob、clean/upstream、冻结 hashes、授权与 live state。紧急停止新调度使用 `--disable-schedule`；若目标状态不确定则保持 NO-GO 并按已审核的 exact-resource incident packet 处置。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由 4.4 冻结的 Gate B packet 给出 exact name/resource/日期，并由覆盖该精确操作的 Gate B authorization 执行。
