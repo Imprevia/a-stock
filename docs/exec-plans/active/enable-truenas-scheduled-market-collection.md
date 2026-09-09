@@ -6,7 +6,7 @@ Gate A / Stage 4 local-main-first 整合与独立复验。GYT-47 的通用发布
 
 ## Status（状态）
 
-`local-main-integrated-awaiting-stage-4-revalidation`：以最新 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为基线，按原顺序重放 `99a625a..4a2a617` 的 23 个 GYT-47/GYT-48 提交，明确排除 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 已 fast-forward 到本地 `main`，focused `243 passed`、fake-provider `7 passed, 10 deselected`、全量 `384 passed, 2 warnings` 及纯离线 Helm/Kustomize/OpenSpec/docs 门禁通过。GYT-47 和已批准的 GYT-48 Stage 3 交付已进入本地主线；GYT-52 必须对最终推送 SHA 重验，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
+`local-main-integrated-awaiting-stage-4-revalidation`：以最新 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为基线，按原顺序重放 `99a625a..4a2a617` 的 23 个 GYT-47/GYT-48 提交，明确排除 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 已 fast-forward 到本地 `main`，focused `243 passed`、fake-provider `7 passed, 10 deselected` 及纯离线 Helm/Kustomize/OpenSpec/docs 门禁通过；该提交的首次全量为 `384 passed, 2 warnings`。事实源提交 `296f62aabadafe0f3aff9197f5089e819d723231` 上的最终全量复跑保留两项 baseline-identical 失败（`382 passed, 2 failed, 2 warnings`），未重试掩盖。GYT-47 和已批准的 GYT-48 Stage 3 交付已进入本地主线；GYT-52 必须对最终推送 SHA 重验，Gate B/Gate C 保持阻塞，未访问生产或真实 provider。
 
 ## Context（上下文）
 
@@ -167,16 +167,17 @@ Gate A / Stage 4 local-main-first 整合与独立复验。GYT-47 的通用发布
 - 2026-09-09：三路 GO 后已同步 proposal、design、tasks、active plan 与 `docs/status.md` 的当前状态；evidence-only staged fast docs-contract 通过（代码 0 / 文档 2 / plan 1），full docs-contract 通过（代码 8 / 文档 10 / plan 2），OpenSpec strict 仍为 1/1，`git diff --cached --check` 通过；无代码、部署或生产状态变更。
 - 2026-09-09：用户授权以最新 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 解除主线分叉，并要求纳入 GYT-48、排除 GYT-21。新隔离 worktree 按原顺序重放 `99a625a..4a2a617` 的 23 个提交；`git range-diff` 显示 21 个 patch 完全一致，两个 active-plan index patch 只删除 GYT-21 的 `fix-refresh-stale-regressions` 行并保留 GYT-47 日期更新。相对 `origin/main` 的 `src/`、`apps/`、`trading-rules/`、GYT-21 专属 plan 和两份 refresh/service 测试差异均为空，主线新增的两份 completed plan 也保持不变。
 - 2026-09-09：pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 已通过 `git merge --ff-only` 进入本地 `main`。该提交上 deployment/validator/guard focused suite 为 `243 passed`，fake-provider scheduled-refresh 为 `7 passed, 10 deselected`，全库为 `384 passed, 2 warnings`；五组 Helm strict lint/template、controller suspended/off offline render、Kustomize base/native、Bash/Python syntax、OpenSpec strict 1/1、docs-contract full、52-package dependency check 与 `git diff --check` 全部通过。所有验证均使用本地 render、fixture 和 fake provider，未访问生产或真实 provider。
+- 2026-09-09：事实源提交 `296f62aabadafe0f3aff9197f5089e819d723231` 上重新执行同一门禁。focused suite 仍为 `243 passed`，fake-provider 仍为 `7 passed, 10 deselected`；五组 Helm lint/template、两组 offline render、Kustomize base/native、Bash/Python syntax、OpenSpec strict 1/1、docs-contract full（代码 5 / 文档 9 / plan 1）、52-package dependency check、scope 和 `git diff --check` 均通过。全库为 `382 passed, 2 failed, 2 warnings`：已知 `test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU 再现，`test_materialized_local_read_is_provider_free_fast_and_non_blocking` 实测 `0.877854s` 超过 `0.5s` 阈值。`src/market_environment/` 与两项测试相对 `origin/main` 均无差异，本次未重试、放宽断言或纳入被明确排除的 GYT-21 修复；两项结果留给 GYT-52 独立判定。
 
 ## Remaining Gaps（剩余缺口）
 
 - 共享 worktree 仍不是 clean implementation baseline；本次整合只在新隔离 worktree 和临时本地 `main` worktree 中执行，未 stash/reset/覆盖共享树改动。
 - Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流已在原 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；其获准内容与 GYT-48 已批准提交现已重放到新主线 lineage。由于提交 SHA 改写，GYT-52 仍须绑定最终 `origin/main` SHA 重验，旧 SHA 的 GO 不自动迁移。
-- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU；它不由 GYT-47 引入，需另行修复并用确定性 Event 栅栏测试，不影响本 issue 的 deployment-only diff 归属。
+- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU，materialized local read 也在最终并行全量门禁中出现一次 `0.877854s > 0.5s` 的性能断言失败；两项源文件和测试均与 `origin/main` 相同，不由 GYT-47 引入。GYT-21 已按授权排除，因此本 issue 不越界修复或通过重跑掩盖，GYT-52 必须在 exact-main 审阅中评估。
 - `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均是被替代的历史候选，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；原 lineage 中仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 取得三路 GO，本次重放后的 SHA 必须重新绑定验收。
 - GYT-48 已完成且其四个 Stage 3 提交已整合；剩余仓库门槛是 GYT-52 对最终推送主线的 Stage 4 独立复验。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 
 ## Next Step（下一步）
 
-完成最终 evidence-only commit、在其精确 SHA 上重跑适用离线门禁并确认本地 `main == origin/main` 后，由 GYT-52 对该 SHA 执行 Stage 4 独立验收。GYT-52 明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
+由 GYT-52 对最终推送的 `origin/main` SHA 执行 Stage 4 独立验收，并显式评估已记录的两项 baseline-identical 全量测试失败。GYT-52 明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
