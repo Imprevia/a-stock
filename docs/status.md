@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 的 Stage 4 NO-GO 回流实现已完成：final candidate `cd26dff3e6bebe012198dcd38074c354c1a9afac` 关闭 rollback authorization binding、active-to-off fail-safe、文档 shell 审计与 ordinary typed-value 前置拒绝，focused suite `323 passed`、全库离线 `464 passed, 2 warnings`。GYT-52 等待对该新 clean successor 的独立复验；GYT-50/GYT-51 不得启动。Gate B/Gate C 保持冻结，当前不访问目标环境且 CronJob 保持关闭。
+  - `enable-truenas-scheduled-market-collection` 的 Stage 4 NO-GO 回流实现已完成：implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 关闭 rollback authorization binding、active-to-off fail-safe、文档 shell 审计与 ordinary typed-value 前置拒绝；`b13ed06fb729cc3a2c52908ba45136717bf18bed` 及后续仅为 docs-only evidence wrappers。focused suite `323 passed`、全库离线 `464 passed, 2 warnings`。GYT-52 等待对该 implementation/evidence review packet 的独立复验；GYT-50/GYT-51 不得启动。Gate B/Gate C 保持冻结，当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现
