@@ -29,8 +29,8 @@
   - 容量方向已支持 `push2` 到 `push2delay` 的统一 Top-N 校验和可审计降级；当前市场日真实 smoke 在主域断连后保存 `eastmoney-clist-delay` / `fallback` 的 30 个观察样本，双端点失败继续使用精确日期的 `failed-retained` / `failed-missing`。
   - 数据采集管理已通过 124 个 Python 测试、11 个前端测试和生产构建；当前市场日行业真实 smoke 在主域断连后由 `eastmoney-clist-delay` 成功返回 100 条记录。
   - 已提供单镜像 k3s 部署配置：`deploy/k3s/` 提供原生 Kustomize 清单，`deploy/helm/a-stock/` 提供可覆盖镜像、Ingress/TLS、PVC、资源与调度参数的 Helm Chart；两者均保持单副本非 root 运行、健康探针和 SQLite 持久化。
-  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现。GYT-47 remediation 与 GYT-48 已批准 Stage 3 交付已重放到最新 main 基线，GYT-21 明确排除；GYT-52 对新主线 SHA 的独立复验尚未完成，因此仍无生产启用资格。
-  - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。结构化 CommonMark/Bash AST 审计会拒绝动态 Helm action、Helm test 和所有显式 xargs utility。pre-evidence integration commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49` 的 deployment/validator/guard focused suite 为 `243 passed`，fake-provider 为 `7 passed, 10 deselected`，首次 full suite 为 `384 passed, 2 warnings`；五组 Helm、Kustomize、OpenSpec 和 docs-contract 离线门禁通过。事实源提交 `296f62aabadafe0f3aff9197f5089e819d723231` 的最终 full rerun 为 `382 passed, 2 failed, 2 warnings`，两项失败均在与 `origin/main` 相同的 market-service 测试中，已如实保留供 GYT-52 复验。
+  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享镜像、PVC、SQLite task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现。GYT-52 已对 exact `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 给出 NO-GO；GYT-47 当前从该 clean main 后继修复四项 release-safety 缺口，GYT-21 继续明确排除，因此仍无生产启用资格。
+  - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。旧结构化 CommonMark/Bash AST 审计和发布测试结果均为历史证据：它们未覆盖 canonical rollback binding、label/shape drift 下的 active-to-off 补偿，以及 stdin/source/alias 等二次解释路径。本轮新 exact HEAD 的 focused、fake-provider、full、Helm/Kustomize/OpenSpec/docs 结果尚待生成，旧 SHA 结果不作为当前验收。
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
@@ -40,7 +40,7 @@
 ## 进行中
 
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-- `enable-truenas-scheduled-market-collection` 正在完成 Stage 4 local-main-first 收尾：以 `origin/main=b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为基线重放 GYT-47/GYT-48 的 23 个提交，本地 `main` 已 fast-forward 到 pre-evidence commit `c6dd6b799dad3d8a07e17bd60f004d7ba0d5fd49`；`src/`、`apps/`、`trading-rules/` 和 GYT-21 专属路径无差异。GYT-48 已完成，下一门槛是 GYT-52 对最终推送主线的独立复验；GYT-50/GYT-51 不得启动。Gate B/Gate C 推进授权仍不能替代 Stage 4 GO 和精确 packet；当前不访问目标环境且 CronJob 保持关闭。
+- `enable-truenas-scheduled-market-collection` 处于 Stage 4 NO-GO 回流：exact baseline `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 已被 GYT-52 拒绝，GYT-47 在 clean successor 分支修复 rollback authorization binding、active-to-off fail-safe、文档 shell 审计与 ordinary disabled-but-unsuspended 前置拒绝。GYT-48 的历史离线包已失效，GYT-52 等待新的 clean exact HEAD；GYT-50/GYT-51 不得启动。Gate B/Gate C 保持冻结，当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
 
 ## 未实现

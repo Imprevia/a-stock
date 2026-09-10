@@ -31,6 +31,90 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def test_generic_deploy_values_require_disabled_and_suspended_after_merge(
+    tmp_path: Path,
+) -> None:
+    defaults = tmp_path / "defaults.yaml"
+    safe = tmp_path / "safe.yaml"
+    unsafe = tmp_path / "unsafe.yaml"
+    defaults.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        "    enabled: false\n"
+        "    suspend: true\n"
+        "    schedule: '30 16 * * 1-5'\n",
+        encoding="utf-8",
+    )
+    safe.write_text("marketEnvironment:\n  timezone: Asia/Shanghai\n", encoding="utf-8")
+    unsafe.write_text(
+        "marketEnvironment:\n  scheduledCollection:\n    suspend: false\n",
+        encoding="utf-8",
+    )
+
+    accepted = _run(
+        "validate-generic-deploy-values",
+        "",
+        "--values",
+        str(defaults),
+        "--values",
+        str(safe),
+    )
+    rejected = _run(
+        "validate-generic-deploy-values",
+        "",
+        "--values",
+        str(defaults),
+        "--values",
+        str(unsafe),
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert rejected.returncode != 0
+    assert "enabled=false and scheduledCollection.suspend=true" in rejected.stderr
+
+
+@pytest.mark.parametrize("unsafe_value", ["false", "null", "'false'", "0"])
+def test_generic_deploy_values_reject_non_true_suspend(
+    tmp_path: Path, unsafe_value: str
+) -> None:
+    values = tmp_path / "values.yaml"
+    values.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        "    enabled: false\n"
+        f"    suspend: {unsafe_value}\n",
+        encoding="utf-8",
+    )
+
+    completed = _run(
+        "validate-generic-deploy-values", "", "--values", str(values)
+    )
+
+    assert completed.returncode != 0
+    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
+
+
+@pytest.mark.parametrize("unsafe_value", ["true", "null", "'false'", "0"])
+def test_generic_deploy_values_reject_non_false_enabled(
+    tmp_path: Path, unsafe_value: str
+) -> None:
+    values = tmp_path / "values.yaml"
+    values.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        f"    enabled: {unsafe_value}\n"
+        "    suspend: true\n",
+        encoding="utf-8",
+    )
+
+    completed = _run(
+        "validate-generic-deploy-values", "", "--values", str(values)
+    )
+
+    assert completed.returncode != 0
+    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
+
+
 @pytest.mark.parametrize(
     ("version", "normalized"),
     [

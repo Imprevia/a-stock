@@ -9,7 +9,7 @@ The system SHALL provide a scheduled collection job that is disabled and suspend
 
 #### Scenario: Boolean value is supplied as a string
 - **WHEN** any scheduling boolean is supplied as `"true"`, `"false"`, or another non-boolean value
-- **THEN** deployment validation rejects the final merged values before environment loading, network access, image work, or target API access
+- **THEN** deployment validation rejects the final merged values before the first Helm render, build, image work, SSH, or target API access
 
 #### Scenario: Business timezone is changed
 - **WHEN** `marketEnvironment.timezone` is not exactly `Asia/Shanghai`, whether scheduled collection is enabled or disabled
@@ -117,7 +117,7 @@ The production scheduled collection SHALL be activated in stages: remediated imp
 - **THEN** the operator may apply that exact suspend-only change and verify that the next authorized controller trigger corresponds to 16:30 `Asia/Shanghai`
 
 ### Requirement: Non-destructive scheduled-collection rollback
-The production rollback path SHALL stop new scheduled work by suspending or disabling the CronJob, SHALL provide a bounded exact-Job termination procedure for hard-boundary failures, and SHALL preserve the Dashboard Deployment, Service exposure, manual-collection setting, PVC, snapshots, collection audit records, and previously successful data.
+The production rollback path SHALL stop new scheduled work by suspending or disabling the CronJob, SHALL provide a bounded exact-Job termination procedure for hard-boundary failures, and SHALL preserve the Dashboard Deployment, Service exposure, manual-collection setting, PVC, snapshots, collection audit records, and previously successful data. A disable operation MUST require a non-empty, validated rollback-authorization reference that is independent of Gate B and Gate C references and is auditably bound to the exact command, release, namespace, Kubernetes version, reviewed HEAD, and packet hashes; a boolean switch alone MUST NOT authorize the operation. The reference MUST use a rollback-only namespace and MUST carry the SHA-256 of a versioned canonical binding over those fields, so a reference for another operation or packet cannot be replayed. From the moment an active or suspended CronJob can be changed to off until the deletion postcondition is proven, Helm failure, signal, post-write read failure, or comparison failure MUST trigger an exact-resource safety check, suspend an active or unclassifiable CronJob by exact API name, and prove the final state is absent or explicitly `spec.suspend=true`. Mutable labels and non-safety-critical packet-shape drift MUST NOT prevent emergency suspension. An unprovable safety state MUST remain uncertain/NO-GO.
 
 #### Scenario: Scheduled collection breaches an operational threshold
 - **WHEN** the scheduled workload produces unexpected restarts, provider pressure, SQLite lock or integrity errors, lease loss, date mismatch, or unacceptable PVC growth
@@ -126,6 +126,25 @@ The production rollback path SHALL stop new scheduled work by suspending or disa
 #### Scenario: Scheduled collection is rolled back
 - **WHEN** the operator applies the reviewed rollback configuration
 - **THEN** no new CronJob work is created, the Dashboard continues reading prior local data, and the release is not uninstalled and its PVC is not deleted or replaced
+
+#### Scenario: Disable authorization is incomplete
+- **WHEN** an operator supplies only a rollback boolean, omits the rollback-authorization reference, reuses a Gate B or Gate C reference, supplies unsupported reference characters, or supplies a reference whose canonical operation/release/namespace/version/packet binding differs from the current request
+- **THEN** the deployment entry point rejects `--disable-schedule` before SSH, target API access, or release mutation
+
+#### Scenario: Disable write does not complete safely
+- **WHEN** an active-to-off operation fails during Helm write, receives a termination signal, or cannot complete its server-observed postcondition
+- **THEN** the entry point checks the release-derived exact CronJob, patches any existing exact-name resource not proven to have typed `spec.suspend: true`, verifies absent or suspended, exits nonzero, and reports uncertain/NO-GO if that verification cannot be completed
+
+### Requirement: Executable deployment documentation fails closed
+Executable production commands in repository documentation SHALL be parsed as CommonMark shell fences and shell syntax. The gate MUST reject brace or glob executable expansion, `eval`, stdin-fed `bash`/`sh`/`dash`/`zsh`, stdin sourcing through `source` or `.`, shell command-resolution mutation through aliases or `hash -p`, dynamic Helm executable or action construction, and unknown Helm plugins or actions. Parse ambiguity in these audited paths MUST be treated as a violation rather than skipped.
+
+#### Scenario: Shell input is reinterpreted
+- **WHEN** a documented command pipes or sources stdin into a shell, mutates command resolution, or uses brace/glob/`eval` expansion to synthesize a Helm executable or write action
+- **THEN** the documentation safety gate rejects the command even when no literal top-level `helm <write-action>` argv is present
+
+#### Scenario: Helm action is unknown or dynamic
+- **WHEN** a documented command selects a Helm executable or action dynamically, or invokes an unknown Helm plugin/action whose read-only behavior cannot be proven
+- **THEN** the documentation safety gate fails closed
 
 #### Scenario: Active Job crosses a hard stop boundary
 - **WHEN** a uniquely identified active scheduled Job has a wrong trigger date or time, violates the security or storage boundary, loses its lease, or threatens SQLite integrity

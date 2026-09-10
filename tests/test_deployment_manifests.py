@@ -36,6 +36,14 @@ HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
 SHELL_FENCE_LANGUAGES = ("bash", "sh", "shell")
 SHELL_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+SHELL_EXECUTABLES = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
+SHELL_SOURCE_BUILTINS = frozenset({".", "source"})
+SHELL_COMMAND_RESOLUTION_MUTATORS = frozenset({"alias", "hash"})
+SHELL_INTERPRETATION_COMMANDS = SHELL_EXECUTABLES | {"eval"}
+CONTROLLED_SHELL_SCRIPTS = frozenset(
+    {"scripts/deploy-truenas-k3s.sh", "./scripts/deploy-truenas-k3s.sh"}
+)
+SHELL_STDIN_PATHS = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
 HELM_ACTION_ALIASES = {
     "del": "uninstall",
     "delete": "uninstall",
@@ -274,20 +282,33 @@ def _walk_bash_nodes(value: object):
             yield from _walk_bash_nodes(child)
 
 
+def _executable_name(token: str) -> str:
+    return token if token == "." else PurePosixPath(token).name
+
+
 def _embedded_shell_sources(command: tuple[str, ...]) -> list[str]:
     sources: list[str] = []
     for index, token in enumerate(command):
-        executable = PurePosixPath(token).name
+        executable = _executable_name(token)
         if executable == "env":
             for option_index in range(index + 1, len(command)):
                 option = command[option_index]
                 if option in {"-S", "--split-string"} and option_index + 1 < len(command):
-                    sources.append(command[option_index + 1])
+                    split_source = command[option_index + 1]
+                    trailing_arguments = command[option_index + 2 :]
                 elif option.startswith("-S") and option != "-S":
-                    sources.append(option[2:])
+                    split_source = option[2:]
+                    trailing_arguments = command[option_index + 1 :]
                 elif option.startswith("--split-string="):
-                    sources.append(option.partition("=")[2])
-        if executable in {"bash", "sh"}:
+                    split_source = option.partition("=")[2]
+                    trailing_arguments = command[option_index + 1 :]
+                else:
+                    continue
+                sources.append(
+                    " ".join((split_source, *(shlex.quote(item) for item in trailing_arguments)))
+                )
+                break
+        if executable in SHELL_EXECUTABLES:
             for option_index in range(index + 1, len(command)):
                 option = command[option_index]
                 if (
@@ -365,22 +386,57 @@ def _skip_wrapper_options(
 
 
 def _is_dynamic_shell_word(token: str) -> bool:
-    return "$" in token or "`" in token
+    has_brace_expansion = bool(re.search(r"\{[^{}]*(?:,|\.\.)[^{}]*\}", token))
+    has_glob = any(character in token for character in "*?[")
+    return "$" in token or "`" in token or has_brace_expansion or has_glob
+
+
+def _shell_execution_violation(command: tuple[str, ...], index: int) -> str | None:
+    index += 1
+    while index < len(command):
+        argument = command[index]
+        if argument == "--":
+            index += 1
+            break
+        if argument == "-" or argument in SHELL_STDIN_PATHS:
+            return "stdin-fed shell command interpretation is unsupported"
+        if not argument.startswith("-"):
+            break
+        if argument in {"--help", "--version"}:
+            return None
+        if not argument.startswith("--"):
+            options = argument[1:]
+            if "c" in options:
+                return None
+            if "s" in options:
+                return "stdin-fed shell command interpretation is unsupported"
+        index += 1
+    if index >= len(command) or command[index] == "-" or command[index] in SHELL_STDIN_PATHS:
+        return "stdin-fed shell command interpretation is unsupported"
+    if command[index] not in CONTROLLED_SHELL_SCRIPTS:
+        return f"shell script execution is unsupported: {command[index]}"
+    return None
 
 
 def _has_potential_helm_write(command: tuple[str, ...]) -> bool:
     for helm_index, token in enumerate(command):
-        is_literal_helm = PurePosixPath(token).name == "helm"
+        executable = _executable_name(token)
+        if executable in SHELL_INTERPRETATION_COMMANDS:
+            return True
+        is_literal_helm = executable == "helm"
         is_dynamic_executable = _is_dynamic_shell_word(token)
         if not is_literal_helm and not is_dynamic_executable:
             continue
         arguments = command[helm_index + 1 :]
-        if is_literal_helm and any(
-            _is_dynamic_shell_word(argument)
-            or HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
-            for argument in arguments
-        ):
-            return True
+        if is_literal_helm:
+            if any(
+                _is_dynamic_shell_word(argument)
+                or HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
+                for argument in arguments
+            ):
+                return True
+            if helm_index == 0 and arguments:
+                return True
         if is_dynamic_executable and any(
             HELM_ACTION_ALIASES.get(argument, argument) in HELM_WRITE_ACTIONS
             for argument in arguments
@@ -432,13 +488,24 @@ def _xargs_executable_index(command: tuple[str, ...], index: int) -> int | None:
 def _helm_executable_index(command: tuple[str, ...]) -> int | None:
     index = 0
     while index < len(command):
-        executable = PurePosixPath(command[index]).name
-        if executable == "helm":
-            return index
+        executable = _executable_name(command[index])
         if _is_dynamic_shell_word(command[index]):
             raise HelmAuditAmbiguity(
                 f"dynamic Helm executable is unsupported: {command[index]}"
             )
+        if executable == "helm":
+            return index
+        if executable == "eval":
+            raise HelmAuditAmbiguity("eval command interpretation is unsupported")
+        if executable in SHELL_SOURCE_BUILTINS:
+            raise HelmAuditAmbiguity("sourced shell command interpretation is unsupported")
+        if executable in SHELL_COMMAND_RESOLUTION_MUTATORS:
+            raise HelmAuditAmbiguity(
+                f"dynamic command resolution via {executable} is unsupported"
+            )
+        if executable in SHELL_EXECUTABLES:
+            if shell_violation := _shell_execution_violation(command, index):
+                raise HelmAuditAmbiguity(shell_violation)
         index += 1
         if executable == "sudo":
             index = _skip_wrapper_options(
@@ -462,6 +529,20 @@ def _helm_executable_index(command: tuple[str, ...]) -> int | None:
         if executable == "exec":
             index = _skip_wrapper_options(
                 command, index, EXEC_VALUE_OPTIONS, EXEC_BOOLEAN_OPTIONS, "exec"
+            )
+            continue
+        if executable == "builtin":
+            index = _skip_wrapper_options(
+                command, index, frozenset(), frozenset({"-a", "-p"}), "builtin"
+            )
+            continue
+        if executable == "nohup":
+            index = _skip_wrapper_options(
+                command,
+                index,
+                frozenset(),
+                frozenset({"--help", "--version"}),
+                "nohup",
             )
             continue
         if executable == "xargs":
@@ -510,11 +591,13 @@ def _helm_invocation(command: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | 
             f"dynamic Helm action is unsupported: {action_argument}"
         )
     action = HELM_ACTION_ALIASES.get(action_argument, action_argument)
+    if action == "plugin":
+        raise HelmAuditAmbiguity("Helm plugin commands are unsupported")
     if action in HELM_READ_ACTIONS:
         return None
     if action in HELM_WRITE_ACTIONS:
         return action, (*helm_arguments[:action_index], *helm_arguments[action_index + 1 :])
-    return None
+    raise HelmAuditAmbiguity(f"unknown Helm action or plugin is unsupported: {action_argument}")
 
 
 def _option_values(arguments: tuple[str, ...], *options: str) -> list[str]:
@@ -1371,6 +1454,8 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "~~~~\n"
         "````shell\nhelm status release\n````\n"
         "```bash title=read-only\nhelm --namespace a-stock status release\n````\n"
+        "```bash\nbash scripts/deploy-truenas-k3s.sh "
+        "--baseline-values deploy/truenas/values-secure-manual-collection.yaml\n```\n"
     )
 
     write_count, violations = _helm_write_violations(content)
@@ -1501,7 +1586,7 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         ("```bash\nbash -cu 'helm rollback a-stock 7'\n```", "helm rollback is forbidden"),
         (
             "```bash\nnohup helm uninstall a-stock\n```",
-            "unsupported command before Helm executable: nohup",
+            "helm uninstall is forbidden",
         ),
         (
             "```bash\n${HELM_BINARY:-helm} rollback a-stock 7\n```",
@@ -1571,6 +1656,98 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
             "```bash\nprintf 'rollback a-stock 7\\n' | xargs chrt -p 0 helm\n```",
             "explicit xargs executable is unsupported",
         ),
+        (
+            "```bash\nhelm {rollback,} a-stock 7\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
+            "```bash\n{helm,} uninstall a-stock\n```",
+            "dynamic Helm executable is unsupported",
+        ),
+        (
+            "```bash\nhelm */uninstall a-stock\n```",
+            "dynamic Helm action is unsupported",
+        ),
+        (
+            "```bash\n*/helm rollback a-stock 7\n```",
+            "dynamic Helm executable is unsupported",
+        ),
+        (
+            "```bash\neval 'helm rollback a-stock 7'\n```",
+            "eval command interpretation is unsupported",
+        ),
+        (
+            "```bash\nbash -s <<< 'helm rollback a-stock 7'\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nprintf 'helm uninstall a-stock' | bash\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nprintf 'helm uninstall a-stock' | dash\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nprintf 'helm uninstall a-stock' | zsh\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nprintf 'helm rollback a-stock 7' | source /dev/stdin\n```",
+            "sourced shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nprintf 'helm rollback a-stock 7' | . /dev/stdin\n```",
+            "sourced shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nshopt -s expand_aliases\nalias h=helm\nh rollback a-stock 7\n```",
+            "dynamic command resolution via alias is unsupported",
+        ),
+        (
+            "```bash\nhash -p /usr/bin/helm h\nh rollback a-stock 7\n```",
+            "dynamic command resolution via hash is unsupported",
+        ),
+        (
+            "```bash\nbash /dev/stdin <<< 'helm rollback a-stock 7'\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nbash /proc/self/fd/0 <<< 'helm uninstall a-stock'\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nbash unsafe-wrapper.sh\n```",
+            "shell script execution is unsupported: unsafe-wrapper.sh",
+        ),
+        (
+            "```bash\nbuiltin eval 'helm rollback a-stock 7'\n```",
+            "eval command interpretation is unsupported",
+        ),
+        (
+            "```bash\nnohup bash /dev/stdin <<< 'helm rollback a-stock 7'\n```",
+            "stdin-fed shell command interpretation is unsupported",
+        ),
+        (
+            "```bash\nenv -S helm rollback a-stock 7\n```",
+            "helm rollback is forbidden",
+        ),
+        (
+            "```bash\nenv --split-string=helm uninstall a-stock\n```",
+            "helm uninstall is forbidden",
+        ),
+        (
+            "```bash\nhelm secrets uninstall a-stock\n```",
+            "unknown Helm action or plugin is unsupported",
+        ),
+        (
+            "```bash\nhelm plugin list\n```",
+            "Helm plugin commands are unsupported",
+        ),
+        (
+            "```bash\nhelm future-action a-stock\n```",
+            "unknown Helm action or plugin is unsupported",
+        ),
         ("```bash\nhelm test a-stock\n```", "helm test is forbidden"),
         ("```bash\nresult=$(helm uninstall a-stock)\n```", "helm uninstall is forbidden"),
         ("```bash\nresult=`helm rollback a-stock 7`\n```", "helm rollback is forbidden"),
@@ -1624,7 +1801,7 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "bash-command-string",
         "bash-login-command-string",
         "bash-clustered-command-string",
-        "unknown-executable-wrapper",
+        "nohup-wrapper",
         "dynamic-helm-executable",
         "renamed-dynamic-helm-executable",
         "braced-renamed-dynamic-helm-executable",
@@ -1642,6 +1819,29 @@ def test_helm_write_audit_accepts_supported_fences_and_multiline_safe_writes() -
         "xargs-ionice-helm-executable",
         "xargs-watch-helm-executable",
         "xargs-chrt-pid-helm-executable",
+        "brace-expanded-helm-action",
+        "brace-expanded-helm-executable",
+        "globbed-helm-action",
+        "globbed-helm-executable",
+        "eval-command-string",
+        "here-string-fed-shell",
+        "pipe-fed-shell",
+        "pipe-fed-dash",
+        "pipe-fed-zsh",
+        "source-dev-stdin",
+        "dot-dev-stdin",
+        "alias-helm-executable",
+        "hash-helm-executable",
+        "dev-stdin-script",
+        "proc-self-fd-stdin-script",
+        "unknown-shell-script",
+        "builtin-eval-wrapper",
+        "nohup-stdin-shell-wrapper",
+        "env-split-string-with-trailing-argv",
+        "env-attached-split-string-with-trailing-argv",
+        "unknown-helm-plugin-action",
+        "helm-plugin-management",
+        "unknown-helm-action",
         "helm-test-hooks",
         "dollar-command-substitution",
         "backtick-command-substitution",
@@ -1656,6 +1856,19 @@ def test_helm_write_audit_rejects_unsafe_shell_commands(content: str, expected: 
     _, violations = _helm_write_violations(content)
 
     assert any(expected in violation for violation in violations)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env",
+        "bash ./scripts/deploy-truenas-k3s.sh --offline-render --kube-version 1.27.0",
+        "env RELEASE_NAME=a-stock bash scripts/deploy-truenas-k3s.sh --read-only-discovery",
+    ],
+    ids=["documented", "explicit-relative-path", "env-wrapped"],
+)
+def test_helm_write_audit_accepts_controlled_deploy_script(command: str) -> None:
+    assert _helm_write_violations(f"```bash\n{command}\n```") == (0, [])
 
 
 @pytest.mark.parametrize(
@@ -1727,3 +1940,15 @@ def test_runbook_does_not_offer_direct_schedule_mutations() -> None:
 
     assert all(command[:3] != ("kubectl", "patch", "cronjob") for command in commands)
     assert "kubectl create job -n a-stock --from=cronjob" not in content
+
+
+def test_truenas_deploy_script_uses_temporary_loopback_k3s_tunnel() -> None:
+    script = (ROOT / "scripts" / "deploy-truenas-k3s.sh").read_text(encoding="utf-8")
+
+    assert 'K3S_API_SSH_TUNNEL="${K3S_API_SSH_TUNNEL:-true}"' in script
+    assert '-L "127.0.0.1:${K3S_API_LOCAL_PORT}:127.0.0.1:6443"' in script
+    assert 'K3S_TUNNEL_PID=$!' in script
+    assert 'trap cleanup EXIT' in script
+    assert 'kill "$K3S_TUNNEL_PID"' in script
+    assert 'wait "$K3S_TUNNEL_PID"' in script
+    assert 'https://127.0.0.1:${K3S_API_LOCAL_PORT}' in script

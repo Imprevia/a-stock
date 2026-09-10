@@ -364,7 +364,7 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-入口必须在 build/import/release write 前证明 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次验证 live CronJob 仍不存在。若这是对既有 release 的幂等部署，先执行只读 discovery；stored 或 live 状态发现 active/suspended CronJob 时不得继续普通发布，必须先按第 15 节完成受审 `--disable-schedule`。
+入口必须在首个 Helm render、build/import、SSH 或目标 API 访问前证明最终合并的调度值为 typed `enabled=false`、`suspend=true`，随后证明 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次验证 live CronJob 仍不存在。若这是对既有 release 的幂等部署，先执行只读 discovery；stored 或 live 状态发现 active/suspended CronJob 时不得继续普通发布，必须先按第 15 节完成受审 `--disable-schedule`。
 
 检查 release 和 Kubernetes 资源：
 
@@ -418,7 +418,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-o
   --release-name a-stock --namespace a-stock
 ```
 
-若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization 后执行：
+若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>` 后执行。digest 必须绑定 runbook 定义的 canonical payload，包括 `operation=--disable-schedule`、release、namespace、normalized Kubernetes version、reviewed HEAD 与全部 packet hashes；Gate B/C 引用不可复用：
 
 ```bash
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
@@ -427,7 +427,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
   --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-只有 `--disable-schedule` 的 server-observed postcondition 证明 exact CronJob 已删除后，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口重建应用：
+只有 `--disable-schedule` 的 server-observed postcondition 证明 exact CronJob 已删除后，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口重建应用。active-to-off 失败会按 release-derived exact API name 补偿；label/shape drift 不得阻止暂停，读回无法证明 absent 或 typed `spec.suspend=true` 时必须保持 uncertain/NO-GO：
 
 ```bash
 git checkout '<REVIEWED_ROLLBACK_COMMIT_OR_TAG>'
@@ -570,7 +570,7 @@ sudo k3s kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.
 - [ ] StorageClass 和 IngressClass 来自目标集群实际输出。
 - [ ] `helm lint` 和 `helm template` 通过。
 - [ ] 通用写操作只使用 `scripts/deploy-truenas-k3s.sh`，提交完整 baseline values，且未继承历史 values、直接调用 Helm write 或恢复历史 revision。
-- [ ] 写前候选 baseline 为 `enabled=false`、`suspend=true`，Helm stored manifest 与 live state 均无 application CronJob；若此前存在，已先完成受审 `--disable-schedule`。
+- [ ] 首个 Helm render/build/image work/SSH/目标 API 访问前候选 baseline 为 typed `enabled=false`、`suspend=true`，Helm stored manifest 与 live state 均无 application CronJob；若此前存在，已先使用 rollback-only canonical-digest ref 完成受审 `--disable-schedule`。
 - [ ] 发布后 `kubectl --namespace a-stock get cronjob` 不包含应用 CronJob；只有另行授权的受控调度路径可保留 `suspend=true` 的资源。
 - [ ] Deployment rollout、Pod、PVC、Ingress 和 `/api/health` 正常。
 - [ ] SQLite 已备份，旧稳定镜像尚未删除。

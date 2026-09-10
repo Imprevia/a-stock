@@ -52,6 +52,49 @@ def load_path(path: Path) -> list[dict[str, Any]]:
         fail(f"could not read {path}: {exc}")
 
 
+def load_values_path(path: Path) -> dict[str, Any]:
+    documents = load_path(path)
+    if len(documents) != 1:
+        fail(f"Helm values file {path} must contain exactly one YAML mapping")
+    return documents[0]
+
+
+def merge_values(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = merge_values(current, value)
+        elif value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def validate_generic_deploy_values(paths: list[Path]) -> None:
+    merged: dict[str, Any] = {}
+    for path in paths:
+        merged = merge_values(merged, load_values_path(path))
+
+    market_environment = merged.get("marketEnvironment")
+    scheduled = (
+        market_environment.get("scheduledCollection")
+        if isinstance(market_environment, dict)
+        else None
+    )
+    if not isinstance(scheduled, dict):
+        fail("ordinary deployment requires typed scheduledCollection values")
+
+    enabled = scheduled.get("enabled")
+    suspend = scheduled.get("suspend")
+    if enabled is not False or suspend is not True:
+        fail(
+            "ordinary deployment requires scheduledCollection.enabled=false "
+            "and scheduledCollection.suspend=true"
+        )
+
+
 def load_json(stream: Any, description: str) -> dict[str, Any]:
     try:
         payload = json.load(stream)
@@ -1058,6 +1101,8 @@ def main() -> None:
         "--mode", choices=("next-schedule", "immediate-catch-up"), required=True
     )
     activation_window.add_argument("--now")
+    generic_values = subparsers.add_parser("validate-generic-deploy-values")
+    generic_values.add_argument("--values", type=Path, action="append", required=True)
 
     for name in ("inspect", "extract-suspended"):
         child = subparsers.add_parser(name)
@@ -1114,6 +1159,8 @@ def main() -> None:
         )
         json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
         sys.stdout.write("\n")
+    elif args.command == "validate-generic-deploy-values":
+        validate_generic_deploy_values(args.values)
     elif args.command in {"inspect", "extract-suspended"}:
         documents = load_documents(sys.stdin)
         cronjob, result = inspect(

@@ -92,9 +92,24 @@ Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
 
-普通入口在任何网络前把 chart、调用方 values 和 overlay 复制到本次运行的只读 packet；它从 packet render 解析 release-derived exact CronJob 名称，并按该名称读取 live state，不使用可能因 label drift 漏报资源的 selector。任何构建、镜像传输/导入或 release write 前，必须同时证明 Helm stored manifest 与 exact live CronJob 均 absent；候选 baseline 仍须为 `enabled=false`、`suspend=true` 且不得带 scheduling overlay。最终 values 验证后记录 disabled render hash，Helm write 前从同一只读 packet 重渲染并比对，实际 Helm 调用也只读取该 packet。成功写入后必须重新读取 exact server-observed 状态并证明 CronJob 仍不存在。不得继承目标上的历史值、恢复历史 revision、执行原始 uninstall 或绕过入口直接执行 Helm write。
+普通入口在首次 Helm render、构建、镜像传输/导入、SSH 或目标 API 访问前，对 chart defaults 与调用方 baseline 做 typed 深合并校验；最终调度值必须同时为 `enabled=false`、`suspend=true`，`false/false`、字符串布尔值和其他组合一律 fail closed。随后才把 chart、调用方 values 和 overlay 复制到本次运行的只读 packet，并在 packet 首次 render 前重复同一校验。入口从 packet render 解析 release-derived exact CronJob 名称，并按该名称读取 live state，不使用可能因 label drift 漏报资源的 selector。任何构建、镜像传输/导入或 release write 前，必须同时证明 Helm stored manifest 与 exact live CronJob 均 absent；普通部署不得带 scheduling overlay。最终 values 验证后记录 disabled render hash，Helm write 前从同一只读 packet 重渲染并比对，实际 Helm 调用也只读取该 packet。成功写入后必须重新读取 exact server-observed 状态并证明 CronJob 仍不存在。不得继承目标上的历史值、恢复历史 revision、执行原始 uninstall 或绕过入口直接执行 Helm write。
 
-如果只读发现显示已有 active 或 suspended application CronJob，普通应用发布和回退必须停止。先用实际版本冻结 baseline + off overlay 和 hashes，取得 exact rollback authorization，再执行受审的调度关闭入口：
+如果只读发现显示已有 active 或 suspended application CronJob，普通应用发布和回退必须停止。先用实际版本冻结 baseline + off overlay 和 hashes，取得 rollback-only exact authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>`。其中 digest 是下列 UTF-8、逐行 LF 结尾且保持顺序的 canonical payload 的 SHA-256；入口会在 SSH、目标 API 访问或 release mutation 前重算比较。该引用不能复用 Gate B/C namespace：
+
+```text
+schema=rollback-v1
+operation=--disable-schedule
+release=<RELEASE_NAME>
+namespace=<NAMESPACE>
+kubernetesVersion=<normalized TARGET_KUBERNETES_VERSION>
+reviewedHead=<REVIEWED_GIT_HEAD>
+chartSha256=<REVIEWED_CHART_SHA256>
+baselineSha256=<REVIEWED_BASELINE_SHA256>
+overlaySha256=<REVIEWED_OVERLAY_SHA256>
+renderSha256=<REVIEWED_RENDER_SHA256>
+```
+
+随后执行受审的调度关闭入口：
 
 ```bash
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
@@ -103,7 +118,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
   --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。instance label 缺失或漂移不是“资源不存在”的证据：exact-name 读取仍会发现资源并因 ownership/label 不一致而 fail closed。任何 write、rollout 或写后状态读取失败都不得报告成功；失败恢复会将意外 active CronJob 精确补偿为 suspended，并验证状态至少为 absent/suspended。无法完成该验证时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
+只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。instance label 缺失或漂移不是“资源不存在”的证据：normal validation 仍会 fail closed，但 active-to-off 的应急补偿按 release-derived exact API name 工作，不让 label 或非安全关键 shape drift 阻止暂停。任何 write、rollout 或写后状态读取失败都不得报告成功；应急检查把 existing resource 中任何非 typed `spec.suspend=true` 状态视为需补偿，至多一次精确 patch，再按同名读回只接受 absent 或 typed suspended。无法读取、补偿或证明时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
 
 渲染和检查：
 
@@ -252,7 +267,9 @@ bash scripts/deploy-truenas-k3s.sh --disable-schedule \
   --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
 ```
 
-所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。read-only discovery 不要求 baseline/overlay/version/render hash，先从 `/version` JSON 取得真实版本并输出 release 事实；完成该步骤后才用真实 release/namespace/version 冻结 baseline、overlay 与 render。入口把调用者提供的原始版本传入 packet validator；所有版本字符串使用严格 SemVer，非法 identifier、core/numeric-prerelease 前导零和低于 native stable boundary 的 prerelease 都在 kubectl/target access 前拒绝。server dry-run 及后续写模式还必须校验 `REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256` 和 `REVIEWED_RENDER_SHA256`。server dry-run 需 `SERVER_DRY_RUN_AUTHORIZED=true` 和覆盖 exact packet 的 `GATE_B_AUTHORIZATION_REF`；suspended release 需同一 exact Gate B 引用和 `SUSPENDED_RELEASE_AUTHORIZED=true`；Gate C 需 Gate B evidence 被接受后形成的 `GATE_C_AUTHORIZATION_REF`、`SCHEDULE_ACTIVATION_AUTHORIZED=true` 和明确 catch-up mode。入口从 active render 的 schedule/timezone/`startingDeadlineSeconds` 计算 previous/next trigger 并记录 UTC/上海审计值：`next-schedule` 必须已越过上一触发的 1800 秒 deadline 且距下一触发至少 300 秒，`immediate-catch-up` 只允许在上一触发的 deadline window 内。该时间窗在 preflight 校验一次，并在 live/image/diff/re-render/hash 检查后、Helm write 前再次校验；第二次失败时 Helm write 和补偿 patch 都必须为零。第二次校验通过后才启用 fail-safe，Helm、写后读取/比较/最终查询或 HUP/INT/TERM 任一失败都对 release-derived exact CronJob 补偿 `suspend=true`，全部 postcondition 通过才解除。off rollback 需 `SCHEDULE_ROLLBACK_AUTHORIZED=true`。布尔开关只启用本地 guard，不能自行充当授权证据；authorization ref 是对外部人工授权记录的受限字符审计指针，脚本不访问 Multica 校验其正文，packet/operation 约束由本地 typed state、冻结 hashes 与 live diff 独立强制。
+所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。read-only discovery 不要求 baseline/overlay/version/render hash，先从 `/version` JSON 取得真实版本并输出 release 事实；完成该步骤后才用真实 release/namespace/version 冻结 baseline、overlay 与 render。入口把调用者提供的原始版本传入 packet validator；所有版本字符串使用严格 SemVer，非法 identifier、core/numeric-prerelease 前导零和低于 native stable boundary 的 prerelease 都在 kubectl/target access 前拒绝。server dry-run 及后续写模式还必须校验 `REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256` 和 `REVIEWED_RENDER_SHA256`。server dry-run 需 `SERVER_DRY_RUN_AUTHORIZED=true` 和覆盖 exact packet 的 `GATE_B_AUTHORIZATION_REF`；suspended release 需同一 exact Gate B 引用和 `SUSPENDED_RELEASE_AUTHORIZED=true`；Gate C 需 Gate B evidence 被接受后形成的 `GATE_C_AUTHORIZATION_REF`、`SCHEDULE_ACTIVATION_AUTHORIZED=true` 和明确 catch-up mode。入口从 active render 的 schedule/timezone/`startingDeadlineSeconds` 计算 previous/next trigger 并记录 UTC/上海审计值：`next-schedule` 必须已越过上一触发的 1800 秒 deadline 且距下一触发至少 300 秒，`immediate-catch-up` 只允许在上一触发的 deadline window 内。该时间窗在 preflight 校验一次，并在 live/image/diff/re-render/hash 检查后、Helm write 前再次校验；第二次失败时 Helm write 和补偿 patch 都必须为零。第二次校验通过后才启用 fail-safe，Helm、写后读取/比较/最终查询或 HUP/INT/TERM 任一失败都对 release-derived exact CronJob 补偿 `suspend=true`，全部 postcondition 通过才解除。off rollback 需 `SCHEDULE_ROLLBACK_AUTHORIZED=true` 和上述 canonical-digest rollback ref；Gate B/C refs 拒绝 rollback namespace。所有布尔开关只启用本地 guard，不能自行充当授权证据。
+
+部署文档安全测试把 CommonMark shell fence 与 Bash AST 作为发布门禁。brace/glob executable expansion、`eval`、stdin-fed `bash`/`sh`/`dash`/`zsh`、`source`/`.`、`alias`/`hash -p` command-resolution mutation、动态 executable/action 和未知 Helm plugin/action 都必须返回 violation；无法解析或无法证明只读时 fail closed，不能因缺少字面量 `helm` 而跳过。
 
 从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确 imageID digest 和目标 containerd tag→digest；任一 drift 都拒绝。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；Gate C 失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
 

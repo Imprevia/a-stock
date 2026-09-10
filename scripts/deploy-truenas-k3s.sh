@@ -219,10 +219,11 @@ print("present" if matches else "absent")
 ' "$RELEASE_NAME"
 }
 
-capture_live_cronjobs() {
+capture_exact_cronjob() {
+  local cronjob_name="$1"
   local payload
-  [[ -n "$GENERIC_CRONJOB_NAME" ]] || return 1
-  payload="$(kubectl get cronjob "$GENERIC_CRONJOB_NAME" --namespace "$NAMESPACE" \
+  [[ -n "$cronjob_name" ]] || return 1
+  payload="$(kubectl get cronjob "$cronjob_name" --namespace "$NAMESPACE" \
     --ignore-not-found -o yaml)" || return 1
   printf '%s\n' "$payload" | python3 -c '
 import sys, yaml
@@ -236,8 +237,33 @@ if items:
         raise SystemExit("exact live CronJob response must be a CronJob")
     if metadata.get("name") != sys.argv[1]:
         raise SystemExit(f"live CronJob name must equal {sys.argv[1]}")
-yaml.safe_dump_all(items, sys.stdout, sort_keys=False)
-' "$GENERIC_CRONJOB_NAME"
+    if metadata.get("namespace") != sys.argv[2]:
+        raise SystemExit(f"live CronJob namespace must equal {sys.argv[2]}")
+    yaml.safe_dump_all(items, sys.stdout, sort_keys=False)
+' "$cronjob_name" "$NAMESPACE"
+}
+
+exact_cronjob_safety_state() {
+  python3 -c '
+import sys, yaml
+
+items = [item for item in yaml.safe_load_all(sys.stdin) if item is not None]
+if not items:
+    print("absent")
+    raise SystemExit(0)
+if len(items) != 1 or not isinstance(items[0], dict):
+    raise SystemExit("exact CronJob safety response must contain at most one object")
+spec = items[0].get("spec")
+if isinstance(spec, dict) and type(spec.get("suspend")) is bool and spec["suspend"] is True:
+    print("suspended")
+else:
+    print("needs-suspend")
+'
+}
+
+capture_live_cronjobs() {
+  [[ -n "$GENERIC_CRONJOB_NAME" ]] || return 1
+  capture_exact_cronjob "$GENERIC_CRONJOB_NAME"
 }
 
 resolve_generic_cronjob_name() {
@@ -341,6 +367,63 @@ recover_generic_deploy_schedule() {
   log "$phase: scheduling is $state"
 }
 
+ensure_cronjob_suspended_or_absent() {
+  local phase="$1"
+  local cronjob_name="$2"
+  local live_cronjob state patch_succeeded=true
+  if ! live_cronjob="$(capture_exact_cronjob "$cronjob_name")"; then
+    warn "$phase: could not read exact CronJob $cronjob_name; scheduling state is uncertain"
+    return 1
+  fi
+  if ! state="$(printf '%s\n' "$live_cronjob" | exact_cronjob_safety_state)"; then
+    warn "$phase: exact CronJob $cronjob_name safety state could not be determined; scheduling state is uncertain"
+    return 1
+  fi
+  if [[ "$state" == needs-suspend ]]; then
+    warn "$phase: forcing $cronjob_name to suspend=true"
+    if ! kubectl patch cronjob "$cronjob_name" --namespace "$NAMESPACE" \
+      --type=merge --patch '{"spec":{"suspend":true}}'; then
+      patch_succeeded=false
+      warn "$phase: emergency suspend command failed; checking the exact resource state"
+    fi
+    if ! live_cronjob="$(capture_exact_cronjob "$cronjob_name")"; then
+      warn "$phase: could not verify the emergency suspend; scheduling state is uncertain"
+      return 1
+    fi
+    if ! state="$(printf '%s\n' "$live_cronjob" | exact_cronjob_safety_state)"; then
+      warn "$phase: emergency suspend response safety state could not be determined; scheduling state is uncertain"
+      return 1
+    fi
+    if [[ "$patch_succeeded" == false && ( "$state" == absent || "$state" == suspended ) ]]; then
+      warn "$phase: emergency suspend command failed but exact readback proved $state"
+    fi
+  fi
+  if [[ "$state" != absent && "$state" != suspended ]]; then
+    warn "$phase: expected $cronjob_name to be absent or suspended, got $state; scheduling state is uncertain"
+    return 1
+  fi
+  log "$phase: exact CronJob $cronjob_name is $state"
+}
+
+require_exact_cronjob_absent() {
+  local phase="$1"
+  local cronjob_name="$2"
+  local live_cronjob state
+  if ! live_cronjob="$(capture_exact_cronjob "$cronjob_name")"; then
+    warn "$phase: could not read exact CronJob $cronjob_name; deletion is unproven"
+    return 1
+  fi
+  if ! state="$(printf '%s\n' "$live_cronjob" | exact_cronjob_safety_state)"; then
+    warn "$phase: exact CronJob $cronjob_name state could not be determined; deletion is unproven"
+    return 1
+  fi
+  if [[ "$state" != absent ]]; then
+    warn "$phase: exact CronJob $cronjob_name still exists; deletion is unproven"
+    return 1
+  fi
+  log "$phase: exact CronJob $cronjob_name is absent"
+}
+
 if [[ "$OPERATION" == offline-render ]]; then
   REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
@@ -403,6 +486,7 @@ SERVER_DRY_RUN_VERB="${SERVER_DRY_RUN_VERB:-create}"
 SUSPENDED_RELEASE_AUTHORIZED="${SUSPENDED_RELEASE_AUTHORIZED:-false}"
 SCHEDULE_ACTIVATION_AUTHORIZED="${SCHEDULE_ACTIVATION_AUTHORIZED:-false}"
 SCHEDULE_ROLLBACK_AUTHORIZED="${SCHEDULE_ROLLBACK_AUTHORIZED:-false}"
+SCHEDULE_ROLLBACK_AUTHORIZATION_REF="${SCHEDULE_ROLLBACK_AUTHORIZATION_REF:-}"
 GATE_B_AUTHORIZATION_REF="${GATE_B_AUTHORIZATION_REF:-}"
 GATE_C_AUTHORIZATION_REF="${GATE_C_AUTHORIZATION_REF:-}"
 GATE_C_CATCH_UP_MODE="${GATE_C_CATCH_UP_MODE:-}"
@@ -467,6 +551,19 @@ validate_scalar() {
   [[ "$value" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "$name contains unsupported characters: $value"
 }
 
+require_generic_deploy_values() {
+  local chart_dir="$1"
+  local baseline_values="$2"
+  if [[ -n "$baseline_values" ]]; then
+    python3 "$PACKET_VALIDATOR" validate-generic-deploy-values \
+      --values "$chart_dir/values.yaml" \
+      --values "$baseline_values" \
+      || return 1
+  elif [[ "$SCHEDULED_COLLECTION_ENABLED" != false || "$SCHEDULED_COLLECTION_SUSPEND" != true ]]; then
+    return 1
+  fi
+}
+
 validate_identifier RELEASE_NAME "$RELEASE_NAME"
 validate_identifier NAMESPACE "$NAMESPACE"
 validate_scalar IMAGE_REPOSITORY "$IMAGE_REPOSITORY"
@@ -490,9 +587,16 @@ fi
 [[ "$SERVER_DRY_RUN_VERB" == create ]] || die 'SERVER_DRY_RUN_VERB must be create for the absent CronJob admission probe'
 if [[ -n "$GATE_B_AUTHORIZATION_REF" ]]; then
   validate_scalar GATE_B_AUTHORIZATION_REF "$GATE_B_AUTHORIZATION_REF"
+  [[ "$GATE_B_AUTHORIZATION_REF" != rollback-v1:* ]] \
+    || die 'Gate B authorization must not use the rollback-v1 namespace'
 fi
 if [[ -n "$GATE_C_AUTHORIZATION_REF" ]]; then
   validate_scalar GATE_C_AUTHORIZATION_REF "$GATE_C_AUTHORIZATION_REF"
+  [[ "$GATE_C_AUTHORIZATION_REF" != rollback-v1:* ]] \
+    || die 'Gate C authorization must not use the rollback-v1 namespace'
+fi
+if [[ -n "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" ]]; then
+  validate_scalar SCHEDULE_ROLLBACK_AUTHORIZATION_REF "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF"
 fi
 
 case "$OPERATION" in
@@ -504,6 +608,10 @@ case "$OPERATION" in
 esac
 if [[ "$OPERATION" == deploy && -n "$SCHEDULING_OVERLAY_FILE" ]]; then
   die 'ordinary deployment does not accept a scheduling overlay; use an explicit reviewed scheduling mode'
+fi
+if [[ "$OPERATION" == deploy ]]; then
+  require_generic_deploy_values "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" \
+    || die 'ordinary deployment requires scheduledCollection.enabled=false and scheduledCollection.suspend=true before Helm rendering'
 fi
 
 if [[ -n "$TARGET_KUBERNETES_VERSION" ]]; then
@@ -552,6 +660,34 @@ fi
 
 sha256_text() {
   printf '%s\n' "$1" | sha256sum | awk '{print $1}'
+}
+
+rollback_binding_payload() {
+  printf '%s\n' \
+    'schema=rollback-v1' \
+    'operation=--disable-schedule' \
+    "release=$RELEASE_NAME" \
+    "namespace=$NAMESPACE" \
+    "kubernetesVersion=$TARGET_KUBERNETES_VERSION" \
+    "reviewedHead=$REVIEWED_GIT_HEAD" \
+    "chartSha256=$REVIEWED_CHART_SHA256" \
+    "baselineSha256=$REVIEWED_BASELINE_SHA256" \
+    "overlaySha256=$REVIEWED_OVERLAY_SHA256" \
+    "renderSha256=$REVIEWED_RENDER_SHA256"
+}
+
+verify_rollback_authorization_ref() {
+  local reference="$1"
+  local expected_digest supplied_digest approval_id
+  if [[ ! "$reference" =~ ^rollback-v1:([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([0-9a-f]{64})$ ]]; then
+    die 'SCHEDULE_ROLLBACK_AUTHORIZATION_REF must match rollback-v1:<approval-id>:<binding-sha256>'
+  fi
+  approval_id="${BASH_REMATCH[1]}"
+  supplied_digest="${BASH_REMATCH[2]}"
+  expected_digest="$(rollback_binding_payload | sha256sum | awk '{print $1}')"
+  [[ "$supplied_digest" == "$expected_digest" ]] \
+    || die 'schedule rollback authorization binding does not match the exact disable-schedule packet'
+  log "rollback authorization verified: approval=$approval_id binding=$supplied_digest"
 }
 
 chart_sha256() {
@@ -627,6 +763,10 @@ case "$OPERATION" in
     ;;
   disable-schedule)
     [[ "$SCHEDULE_ROLLBACK_AUTHORIZED" == true ]] || die '--disable-schedule requires SCHEDULE_ROLLBACK_AUTHORIZED=true'
+    [[ -n "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" ]] || die '--disable-schedule requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF'
+    [[ -z "$GATE_B_AUTHORIZATION_REF" || "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" != "$GATE_B_AUTHORIZATION_REF" ]] || die 'schedule rollback authorization must be independent of Gate B authorization'
+    [[ -z "$GATE_C_AUTHORIZATION_REF" || "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" != "$GATE_C_AUTHORIZATION_REF" ]] || die 'schedule rollback authorization must be independent of Gate C authorization'
+    verify_rollback_authorization_ref "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF"
     ;;
 esac
 
@@ -652,6 +792,8 @@ SMOKE_CREATED=false
 K3S_TUNNEL_PID=''
 ACTIVATION_IN_FLIGHT=false
 ACTIVATION_CRONJOB_NAME=''
+DISABLE_IN_FLIGHT=false
+DISABLE_CRONJOB_NAME=''
 GENERIC_DEPLOY_IN_FLIGHT=false
 GENERIC_CRONJOB_NAME=''
 cleanup() {
@@ -659,6 +801,12 @@ cleanup() {
   trap - EXIT INT TERM HUP
   if [[ "$ACTIVATION_IN_FLIGHT" == true ]]; then
     suspend_after_uncertain_activation "$ACTIVATION_CRONJOB_NAME"
+  fi
+  if [[ "$DISABLE_IN_FLIGHT" == true ]]; then
+    DISABLE_IN_FLIGHT=false
+    if ! ensure_cronjob_suspended_or_absent 'disable-schedule failure recovery' "$DISABLE_CRONJOB_NAME"; then
+      warn 'disable-schedule failed closed but the exact CronJob state remains uncertain; operator intervention is required'
+    fi
   fi
   if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
     recover_generic_deploy_schedule 'generic deployment failure recovery' || true
@@ -708,6 +856,10 @@ case "$OPERATION" in
     if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
       cp "$SCHEDULING_OVERLAY_FILE" "$SNAPSHOT_DIR/overlay.yaml"
       OPERATION_SCHEDULING_OVERLAY="$SNAPSHOT_DIR/overlay.yaml"
+    fi
+    if [[ "$OPERATION" == deploy ]]; then
+      require_generic_deploy_values "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" \
+        || die 'frozen ordinary deployment packet requires scheduledCollection.enabled=false and scheduledCollection.suspend=true before Helm rendering'
     fi
     if ! SNAPSHOT_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
       die 'frozen release packet render failed'
@@ -782,11 +934,16 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
 fi
 
-if [[ "$OPERATION" == deploy ]]; then
-  if ! GENERIC_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
+if [[ "$OPERATION" == deploy || "$OPERATION" == disable-schedule ]]; then
+  if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
     die 'could not resolve the release-derived application CronJob name'
   fi
-  verify_generic_deploy_precondition
+  if [[ "$OPERATION" == deploy ]]; then
+    GENERIC_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
+    verify_generic_deploy_precondition
+  else
+    DISABLE_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
+  fi
 fi
 
 if [[ "$OPERATION" == read-only-discovery ]]; then
@@ -858,6 +1015,15 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     python3 "$PACKET_VALIDATOR" compare-remove-cronjob \
       --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
       --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST"
+    CURRENT_PACKET_INSPECTION="$(inspect_scheduling_packet "$(cat "$CURRENT_MANIFEST")" any "$TARGET_KUBERNETES_VERSION")" \
+      || die 'could not identify the current scheduling state for disable-schedule'
+    CURRENT_SCHEDULING_STATE="$(printf '%s\n' "$CURRENT_PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
+    if [[ "$CURRENT_SCHEDULING_STATE" == active || "$CURRENT_SCHEDULING_STATE" == suspended ]]; then
+      CURRENT_CRONJOB_NAME="$(printf '%s\n' "$CURRENT_PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+      [[ -n "$CURRENT_CRONJOB_NAME" ]] || die 'disable-schedule current CronJob name is missing'
+      [[ "$CURRENT_CRONJOB_NAME" == "$DISABLE_CRONJOB_NAME" ]] \
+        || die 'disable-schedule stored and release-derived CronJob names differ'
+    fi
   fi
   capture_live_release "$LIVE_BEFORE_MANIFEST"
   python3 "$PACKET_VALIDATOR" compare-live-desired \
@@ -878,6 +1044,8 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     [[ -n "$ACTIVATION_CRONJOB_NAME" ]] || die 'activation CronJob name is missing'
     validate_activation_window pre-write
     ACTIVATION_IN_FLIGHT=true
+  elif [[ "$OPERATION" == disable-schedule ]]; then
+    DISABLE_IN_FLIGHT=true
   fi
   log "applying reviewed $OPERATION packet to $RELEASE_NAME/$NAMESPACE without building or importing an image"
   if ! helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
@@ -901,8 +1069,13 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   if [[ "$REQUIRED_SCHEDULING_STATE" != disabled ]]; then
     CRONJOB_NAME="$(printf '%s\n' "$PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
     kubectl get cronjob "$CRONJOB_NAME" --namespace "$NAMESPACE" -o yaml
+  elif [[ "$OPERATION" == disable-schedule ]]; then
+    if ! require_exact_cronjob_absent 'disable-schedule postcondition' "$DISABLE_CRONJOB_NAME"; then
+      die 'disable-schedule could not prove exact CronJob deletion'
+    fi
   fi
   ACTIVATION_IN_FLIGHT=false
+  DISABLE_IN_FLIGHT=false
   log "$OPERATION completed; no canary or provider-backed Job was created"
   exit 0
 fi

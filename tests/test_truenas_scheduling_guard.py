@@ -169,6 +169,16 @@ def _write_target_spies(tmp_path: Path) -> tuple[Path, Path]:
             encoding="utf-8",
         )
         executable.chmod(0o755)
+    helm = fake_bin / "helm"
+    helm.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        f"  lint|template) exec {HELM or '/definitely/missing/helm'} \"$@\" ;;\n"
+        f"  *) printf 'helm %s\\n' \"$*\" >> {marker!s}; exit 97 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm.chmod(0o755)
     return fake_bin, marker
 
 
@@ -234,8 +244,120 @@ def test_ordinary_deploy_rejects_enabled_schedule_before_target_access(tmp_path:
     )
 
     assert completed.returncode != 0
-    assert "must be disabled, got active" in completed.stderr
+    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
     assert not marker.exists()
+
+
+def test_ordinary_deploy_rejects_disabled_unsuspended_values_before_render_or_access(
+    tmp_path: Path,
+) -> None:
+    fake_bin, marker = _write_target_spies(tmp_path)
+    helm = fake_bin / "helm"
+    helm.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' helm >> {marker!s}\nexit 97\n",
+        encoding="utf-8",
+    )
+    helm.chmod(0o755)
+    unsafe_values = tmp_path / "disabled-unsuspended.yaml"
+    unsafe_values.write_text(
+        "marketEnvironment:\n"
+        "  scheduledCollection:\n"
+        "    enabled: false\n"
+        "    suspend: false\n",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "deploy.env"
+    _write_env(env_file, ROOT, unsafe_values, None)
+
+    completed = subprocess.run(
+        ["bash", str(SCRIPT), "--env-file", str(env_file)],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
+    assert "before Helm rendering" in completed.stderr
+    assert not marker.exists()
+
+
+def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_access(
+    tmp_path: Path,
+) -> None:
+    fake_bin, marker = _write_target_spies(tmp_path)
+    helm = fake_bin / "helm"
+    helm.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' helm >> {marker!s}\nexit 97\n",
+        encoding="utf-8",
+    )
+    helm.chmod(0o755)
+    env_file = tmp_path / "deploy.env"
+    env_file.write_text(
+        f"REPO_DIR={ROOT}\n"
+        "TRUENAS_HOST=192.0.2.10\n"
+        "TRUENAS_SSH_USER=tester\n"
+        "HELM_VALUES_FILE=\n"
+        "REMOTE_IMAGE_DIR=/unreachable\n"
+        "SCHEDULED_COLLECTION_ENABLED=false\n"
+        "SCHEDULED_COLLECTION_SUSPEND=false\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", str(SCRIPT), "--env-file", str(env_file)],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
+    assert "before Helm rendering" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
+    tmp_path: Path,
+) -> None:
+    repo, baseline, _, _, _, _ = _prepare_reviewed_repo(tmp_path)
+    fake_bin, target_marker = _write_target_spies(tmp_path)
+    helm_calls = tmp_path / "helm-calls"
+    drifted = tmp_path / "baseline-drifted"
+    helm = fake_bin / "helm"
+    helm.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$1\" >> {helm_calls!s}\n"
+        f"if [[ \"$1\" == lint && ! -e {drifted!s} ]]; then\n"
+        f"  sed -i 's/    suspend: true/    suspend: false/' {baseline!s}\n"
+        f"  touch {drifted!s}\n"
+        "fi\n"
+        "exec \"$REAL_HELM\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    helm.chmod(0o755)
+    env_file = tmp_path / "deploy.env"
+    _write_env(env_file, repo, baseline, None)
+
+    completed = subprocess.run(
+        ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "frozen ordinary deployment packet requires" in completed.stderr
+    assert helm_calls.read_text(encoding="utf-8").splitlines() == ["lint", "template"]
+    assert not target_marker.exists()
 
 
 def _render(chart: Path, baseline: Path, overlay: Path, state: str) -> str:
@@ -980,6 +1102,48 @@ def _render_reviewed(
     ).stdout.rstrip("\n") + "\n"
 
 
+def _rollback_authorization_ref(
+    *,
+    head: str,
+    chart_sha256: str,
+    baseline_sha256: str,
+    overlay_sha256: str,
+    render_sha256: str,
+    operation: str = "--disable-schedule",
+    release: str = "research",
+    namespace: str = "market-data",
+    kubernetes_version: str = "1.26.6+k3s1",
+    approval_id: str = "gyt-47-disable",
+) -> str:
+    payload = "\n".join(
+        [
+            "schema=rollback-v1",
+            f"operation={operation}",
+            f"release={release}",
+            f"namespace={namespace}",
+            f"kubernetesVersion={kubernetes_version}",
+            f"reviewedHead={head}",
+            f"chartSha256={chart_sha256}",
+            f"baselineSha256={baseline_sha256}",
+            f"overlaySha256={overlay_sha256}",
+            f"renderSha256={render_sha256}",
+            "",
+        ]
+    )
+    return f"rollback-v1:{approval_id}:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+def test_rollback_authorization_ref_matches_documented_golden_payload() -> None:
+    assert _rollback_authorization_ref(
+        head="0123456789abcdef0123456789abcdef01234567",
+        chart_sha256="1" * 64,
+        baseline_sha256="2" * 64,
+        overlay_sha256="3" * 64,
+        render_sha256="4" * 64,
+        approval_id="approval-123",
+    ) == "rollback-v1:approval-123:6a46c1c703733a00372afab37f455913c5bb730a47c5788b7039fe450c15c764"
+
+
 def _live_list(rendered: str, namespace: str) -> str:
     items = [item for item in yaml.safe_load_all(rendered) if item]
     for item in items:
@@ -1228,6 +1392,186 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(
+    ("operation", "overlay", "authorization", "expected_error"),
+    [
+        (
+            "--server-dry-run",
+            SUSPENDED,
+            "SERVER_DRY_RUN_AUTHORIZED=true\n"
+            "GATE_B_AUTHORIZATION_REF=rollback-v1:other-approval:"
+            f"{'1' * 64}",
+            "Gate B authorization must not use the rollback-v1 namespace",
+        ),
+        (
+            "--activate-schedule",
+            ACTIVE,
+            "SCHEDULE_ACTIVATION_AUTHORIZED=true\n"
+            "GATE_C_AUTHORIZATION_REF=rollback-v1:other-approval:"
+            f"{'2' * 64}\n"
+            "GATE_C_CATCH_UP_MODE=next-schedule",
+            "Gate C authorization must not use the rollback-v1 namespace",
+        ),
+    ],
+    ids=("gate-b-server-dry-run", "gate-c-activate"),
+)
+def test_gate_authorizations_reject_rollback_namespace_before_target_access(
+    tmp_path: Path,
+    operation: str,
+    overlay: Path,
+    authorization: str,
+    expected_error: str,
+) -> None:
+    fake_bin, target_calls = _write_target_spies(tmp_path)
+    env_file = tmp_path / "gate.env"
+    _write_env(env_file, ROOT, BASELINE, overlay)
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"{authorization}\n")
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--env-file",
+            str(env_file),
+            operation,
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not target_calls.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("missing", "requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF"),
+        ("empty", "requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF"),
+        ("invalid", "must match rollback-v1:<approval-id>:<binding-sha256>"),
+        ("unsupported-characters", "contains unsupported characters"),
+        ("gate-b-rollback-namespace", "Gate B authorization must not use the rollback-v1 namespace"),
+        ("gate-c-rollback-namespace", "Gate C authorization must not use the rollback-v1 namespace"),
+        ("operation", "binding does not match the exact disable-schedule packet"),
+        ("release", "binding does not match the exact disable-schedule packet"),
+        ("namespace", "binding does not match the exact disable-schedule packet"),
+        ("kubernetes-version", "binding does not match the exact disable-schedule packet"),
+        ("head", "binding does not match the exact disable-schedule packet"),
+        ("chart", "binding does not match the exact disable-schedule packet"),
+        ("baseline", "binding does not match the exact disable-schedule packet"),
+        ("overlay", "binding does not match the exact disable-schedule packet"),
+        ("render", "binding does not match the exact disable-schedule packet"),
+    ],
+)
+def test_disable_schedule_requires_independent_exact_authorization_before_target_access(
+    tmp_path: Path, case: str, expected_error: str
+) -> None:
+    repo, baseline, _, _, off, head = _prepare_reviewed_repo(tmp_path)
+    desired_render = _render_reviewed(repo, baseline, off)
+    hashes = {
+        "head": head,
+        "chart_sha256": _chart_hash(repo),
+        "baseline_sha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
+        "overlay_sha256": hashlib.sha256(off.read_bytes()).hexdigest(),
+        "render_sha256": hashlib.sha256(desired_render.encode()).hexdigest(),
+    }
+    override_names = {
+        "operation": ("operation", "--activate-schedule"),
+        "release": ("release", "other-release"),
+        "namespace": ("namespace", "other-namespace"),
+        "kubernetes-version": ("kubernetes_version", "1.27.0"),
+        "head": ("head", "0" * 40),
+        "chart": ("chart_sha256", "1" * 64),
+        "baseline": ("baseline_sha256", "2" * 64),
+        "overlay": ("overlay_sha256", "3" * 64),
+        "render": ("render_sha256", "4" * 64),
+    }
+    binding_inputs = dict(hashes)
+    if case in override_names:
+        name, value = override_names[case]
+        binding_inputs[name] = value
+    rollback_ref = _rollback_authorization_ref(**binding_inputs)
+    authorization_lines = ["SCHEDULE_ROLLBACK_AUTHORIZED=true"]
+    if case == "empty":
+        authorization_lines.append("SCHEDULE_ROLLBACK_AUTHORIZATION_REF=")
+    elif case == "invalid":
+        authorization_lines.append("SCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet")
+    elif case == "unsupported-characters":
+        authorization_lines.append(
+            f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF='rollback-v1:bad id:{'5' * 64}'"
+        )
+    elif case != "missing":
+        authorization_lines.append(f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF={rollback_ref}")
+    if case == "gate-b-rollback-namespace":
+        authorization_lines.append(f"GATE_B_AUTHORIZATION_REF={rollback_ref}")
+    if case == "gate-c-rollback-namespace":
+        authorization_lines.append(f"GATE_C_AUTHORIZATION_REF={rollback_ref}")
+    fake_bin, target_calls = _write_target_spies(tmp_path)
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("fixture", encoding="utf-8")
+    digest = f"sha256:{'a' * 64}"
+    env_file = tmp_path / "release.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"KUBECONFIG={kubeconfig}",
+                f"HELM_VALUES_FILE={baseline}",
+                f"SCHEDULING_OVERLAY_FILE={off}",
+                *authorization_lines,
+                f"REVIEWED_GIT_HEAD={head}",
+                f"REVIEWED_CHART_SHA256={hashes['chart_sha256']}",
+                f"REVIEWED_BASELINE_SHA256={hashes['baseline_sha256']}",
+                f"REVIEWED_OVERLAY_SHA256={hashes['overlay_sha256']}",
+                f"REVIEWED_RENDER_SHA256={hashes['render_sha256']}",
+                "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment",
+                "FROZEN_IMAGE_TAG=20260905-1904b66",
+                f"FROZEN_IMAGE_DIGEST={digest}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / SCRIPT.name),
+            "--env-file",
+            str(env_file),
+            "--disable-schedule",
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not target_calls.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
     (
         "operation",
         "current_name",
@@ -1257,9 +1601,104 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "--disable-schedule",
             "values-scheduled-suspended.yaml",
             "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
             None,
             True,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "helm-failure",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "signal-after-helm",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "post-live-capture-failure",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "disable-recovery-read-failure",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "disable-patch-failure",
+            False,
+        ),
+        *[
+            (
+                "--disable-schedule",
+                "values-scheduled-active.yaml",
+                "values-scheduled-off.yaml",
+                "SCHEDULE_ROLLBACK_AUTHORIZED=true",
+                recovery_case,
+                False,
+            )
+            for recovery_case in (
+                "exact-label-missing",
+                "exact-label-wrong",
+                "exact-shape-drift",
+                "exact-spec-missing",
+                "exact-suspend-null",
+                "exact-suspend-string",
+                "exact-suspend-zero",
+                "exact-suspend-one",
+                "exact-response-malformed",
+                "disable-readback-malformed",
+                "disable-readback-wrong-name",
+            )
+        ],
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "disable-verify-failure",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true",
+            "post-exact-active-survives",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "post-label-drift-exact-suspended",
+            False,
+        ),
+        (
+            "--disable-schedule",
+            "values-scheduled-active.yaml",
+            "values-scheduled-off.yaml",
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
+            "stored-name-drift",
+            False,
         ),
         (
             "--activate-schedule",
@@ -1330,6 +1769,26 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         "release-suspended",
         "activate",
         "disable",
+        "disable-helm-failure",
+        "disable-signal-after-helm",
+        "disable-post-live-capture-failure",
+        "disable-recovery-read-failure",
+        "disable-patch-failure",
+        "disable-exact-label-missing",
+        "disable-exact-label-wrong",
+        "disable-exact-shape-drift",
+        "disable-exact-spec-missing",
+        "disable-exact-suspend-null",
+        "disable-exact-suspend-string",
+        "disable-exact-suspend-zero",
+        "disable-exact-suspend-one",
+        "disable-exact-response-malformed",
+        "disable-readback-malformed",
+        "disable-readback-wrong-name",
+        "disable-verify-failure",
+        "disable-post-exact-active-survives",
+        "disable-label-drift-exact-suspended",
+        "disable-stored-name-drift",
         "pre-live-drift",
         "post-live-drift",
         "activation-window-failure",
@@ -1352,9 +1811,31 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     repo, baseline, suspended, active, off, head = _prepare_reviewed_repo(tmp_path)
     overlays = {path.name: path for path in (suspended, active, off)}
     current_render = _render_reviewed(repo, baseline, overlays[current_name])
+    if failure_mode == "stored-name-drift":
+        current_documents = list(yaml.safe_load_all(current_render))
+        current_cronjob = next(
+            item for item in current_documents if item["kind"] == "CronJob"
+        )
+        current_cronjob["metadata"]["name"] = "research-unreviewed-data-collection"
+        current_render = yaml.safe_dump_all(current_documents, sort_keys=False)
     desired_render = _render_reviewed(repo, baseline, overlays[selected_name])
     selected = overlays[selected_name]
+    chart_sha256 = _chart_hash(repo)
+    baseline_sha256 = hashlib.sha256(baseline.read_bytes()).hexdigest()
     selected_sha256 = hashlib.sha256(selected.read_bytes()).hexdigest()
+    render_sha256 = hashlib.sha256(desired_render.encode()).hexdigest()
+    rollback_ref = _rollback_authorization_ref(
+        head=head,
+        chart_sha256=chart_sha256,
+        baseline_sha256=baseline_sha256,
+        overlay_sha256=selected_sha256,
+        render_sha256=render_sha256,
+    )
+    if operation == "--disable-schedule":
+        authorization = (
+            "SCHEDULE_ROLLBACK_AUTHORIZED=true\n"
+            f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF={rollback_ref}"
+        )
     digest = f"sha256:{'a' * 64}"
     image = "localhost/a-stock-market-environment:20260905-1904b66"
 
@@ -1376,9 +1857,82 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         cronjob["spec"]["suspend"] = True
     desired_live = tmp_path / "desired-live.yaml"
     desired_live.write_text(yaml.safe_dump(desired_live_payload, sort_keys=False), encoding="utf-8")
+    current_cronjob_payload = next(
+        (item for item in current_live_payload["items"] if item["kind"] == "CronJob"),
+        None,
+    )
+    if current_cronjob_payload is not None:
+        current_cronjob_payload = json.loads(json.dumps(current_cronjob_payload))
+        if failure_mode == "exact-label-missing":
+            current_cronjob_payload["metadata"].pop("labels", None)
+        elif failure_mode == "exact-label-wrong":
+            current_cronjob_payload["metadata"]["labels"][
+                "app.kubernetes.io/instance"
+            ] = "other-release"
+        elif failure_mode == "exact-shape-drift":
+            current_cronjob_payload["spec"]["schedule"] = "not-a-cron"
+            current_cronjob_payload["spec"]["jobTemplate"] = {"unreviewed": True}
+        elif failure_mode == "exact-spec-missing":
+            current_cronjob_payload["spec"] = {}
+        elif failure_mode == "exact-suspend-null":
+            current_cronjob_payload["spec"]["suspend"] = None
+        elif failure_mode == "exact-suspend-string":
+            current_cronjob_payload["spec"]["suspend"] = "true"
+        elif failure_mode == "exact-suspend-zero":
+            current_cronjob_payload["spec"]["suspend"] = 0
+        elif failure_mode == "exact-suspend-one":
+            current_cronjob_payload["spec"]["suspend"] = 1
+    current_cronjob = tmp_path / "current-cronjob.yaml"
+    if failure_mode == "exact-response-malformed":
+        current_cronjob.write_text("spec: [\n", encoding="utf-8")
+    else:
+        current_cronjob.write_text(
+            yaml.safe_dump(current_cronjob_payload, sort_keys=False)
+            if current_cronjob_payload is not None
+            else "",
+            encoding="utf-8",
+        )
+    suspended_cronjob = tmp_path / "suspended-cronjob.yaml"
+    if current_cronjob_payload is not None:
+        suspended_cronjob_payload = json.loads(json.dumps(current_cronjob_payload))
+        suspended_cronjob_payload.setdefault("spec", {})["suspend"] = True
+        if failure_mode == "post-label-drift-exact-suspended":
+            suspended_cronjob_payload["metadata"]["labels"] = {
+                "app.kubernetes.io/instance": "other-release"
+            }
+        suspended_cronjob.write_text(
+            yaml.safe_dump(suspended_cronjob_payload, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        suspended_cronjob.write_text("", encoding="utf-8")
+    desired_cronjob_payload = next(
+        (item for item in desired_live_payload["items"] if item["kind"] == "CronJob"),
+        None,
+    )
+    desired_cronjob = tmp_path / "desired-cronjob.yaml"
+    desired_cronjob.write_text(
+        yaml.safe_dump(desired_cronjob_payload, sort_keys=False)
+        if desired_cronjob_payload is not None
+        else "",
+        encoding="utf-8",
+    )
+    malformed_readback = tmp_path / "malformed-readback.yaml"
+    malformed_readback.write_text("spec: [\n", encoding="utf-8")
+    wrong_name_readback = tmp_path / "wrong-name-readback.yaml"
+    if current_cronjob_payload is not None:
+        wrong_name_payload = json.loads(json.dumps(current_cronjob_payload))
+        wrong_name_payload["metadata"]["name"] = "other-cronjob"
+        wrong_name_payload.setdefault("spec", {})["suspend"] = True
+        wrong_name_readback.write_text(
+            yaml.safe_dump(wrong_name_payload, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        wrong_name_readback.write_text("", encoding="utf-8")
     deployed_manifest = tmp_path / "deployed.yaml"
     deployed_overlay = tmp_path / "deployed-overlay.yaml"
     released = tmp_path / "released"
+    emergency_suspended = tmp_path / "emergency-suspended"
+    exact_get_counter = tmp_path / "exact-get-count"
     deployments, replicasets, pods = _runtime_payloads(current_render, "research", digest)
     deployments_json = tmp_path / "deployments.json"
     replicasets_json = tmp_path / "replicasets.json"
@@ -1444,8 +1998,23 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"if [[ \"$*\" == *\"get deployment\"* ]]; then cat {deployments_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get replicasets\"* ]]; then cat {replicasets_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get pods\"* ]]; then cat {pods_json}; exit 0; fi\n"
+        f"if [[ \"$*\" == *\"get cronjob research-a-stock-data-collection\"* && \"$*\" == *\"--ignore-not-found\"* ]]; then\n"
+        "  if [[ \"${FAIL_DISABLE_RECOVERY_GET:-false}\" == true ]]; then exit 93; fi\n"
+        "  if [[ -f \"$EXACT_GET_COUNTER\" ]]; then count=$(<\"$EXACT_GET_COUNTER\"); else count=0; fi\n"
+        "  printf '%s' $((count + 1)) > \"$EXACT_GET_COUNTER\"\n"
+        f"  if [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_READBACK_MALFORMED:-false}}\" == true ]]; then cat {malformed_readback}\n"
+        f"  elif [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_READBACK_WRONG_NAME:-false}}\" == true ]]; then cat {wrong_name_readback}\n"
+        f"  elif [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_VERIFY:-false}}\" != true ]]; then cat {suspended_cronjob}\n"
+        f"  elif [[ -f {released} && \"${{EXACT_CRONJOB_SURVIVES_HELM:-false}}\" == active ]]; then cat {current_cronjob}\n"
+        f"  elif [[ -f {released} && \"${{EXACT_CRONJOB_SURVIVES_HELM:-false}}\" == suspended ]]; then cat {suspended_cronjob}\n"
+        f"  elif [[ -f {released} ]]; then cat {desired_cronjob}\n"
+        f"  else cat {current_cronjob}; fi\n"
+        "  exit 0\n"
+        "fi\n"
         f"if [[ \"$*\" == *\"get cronjob\"* ]]; then if [[ \"${{FAIL_FINAL_CRONJOB_GET:-false}}\" == true ]]; then exit 94; fi; cat {desired_live}; exit 0; fi\n"
-        "if [[ \"$*\" == *\"patch cronjob\"* ]]; then exit 0; fi\n"
+        "if [[ \"$*\" == 'patch cronjob research-a-stock-data-collection --namespace market-data --type=merge --patch {\"spec\":{\"suspend\":true}}' ]]; then "
+        f"if [[ \"${{FAIL_DISABLE_PATCH:-false}}\" == true ]]; then exit 92; fi; touch {emergency_suspended}; exit 0; fi\n"
+        "if [[ \"$*\" == *\"patch cronjob\"* ]]; then exit 91; fi\n"
         "exit 99\n",
         encoding="utf-8",
     )
@@ -1465,10 +2034,10 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
                 f"SCHEDULING_OVERLAY_FILE={selected}",
                 authorization,
                 f"REVIEWED_GIT_HEAD={head}",
-                f"REVIEWED_CHART_SHA256={_chart_hash(repo)}",
-                f"REVIEWED_BASELINE_SHA256={hashlib.sha256(baseline.read_bytes()).hexdigest()}",
+                f"REVIEWED_CHART_SHA256={chart_sha256}",
+                f"REVIEWED_BASELINE_SHA256={baseline_sha256}",
                 f"REVIEWED_OVERLAY_SHA256={hashlib.sha256(selected.read_bytes()).hexdigest()}",
-                f"REVIEWED_RENDER_SHA256={hashlib.sha256(desired_render.encode()).hexdigest()}",
+                f"REVIEWED_RENDER_SHA256={render_sha256}",
                 "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment",
                 "FROZEN_IMAGE_TAG=20260905-1904b66",
                 f"FROZEN_IMAGE_DIGEST={digest}",
@@ -1503,11 +2072,49 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             "FAKE_ACTIVATION_WINDOW_COUNTER": str(activation_window_counter),
             "FAKE_ACTIVATION_WINDOW_FAIL_ON_CALL": str(activation_window_fail_on_call),
             "FAIL_POST_LIVE_CAPTURE": str(
-                failure_mode == "post-live-capture-failure"
+                failure_mode
+                in {"post-live-capture-failure", "disable-recovery-read-failure"}
             ).lower(),
-            "FAIL_HELM_UPGRADE": str(failure_mode == "helm-failure").lower(),
+            "FAIL_HELM_UPGRADE": str(
+                failure_mode
+                in {
+                    "helm-failure",
+                    "disable-patch-failure",
+                    "disable-verify-failure",
+                    "exact-label-missing",
+                    "exact-label-wrong",
+                    "exact-shape-drift",
+                    "exact-spec-missing",
+                    "exact-suspend-null",
+                    "exact-suspend-string",
+                    "exact-suspend-zero",
+                    "exact-suspend-one",
+                    "exact-response-malformed",
+                    "disable-readback-malformed",
+                    "disable-readback-wrong-name",
+                }
+            ).lower(),
             "FAIL_FINAL_CRONJOB_GET": str(failure_mode == "final-get-failure").lower(),
             "SIGNAL_AFTER_HELM": str(failure_mode == "signal-after-helm").lower(),
+            "FAIL_DISABLE_RECOVERY_GET": str(
+                failure_mode == "disable-recovery-read-failure"
+            ).lower(),
+            "FAIL_DISABLE_PATCH": str(failure_mode == "disable-patch-failure").lower(),
+            "FAIL_DISABLE_VERIFY": str(failure_mode == "disable-verify-failure").lower(),
+            "FAIL_DISABLE_READBACK_MALFORMED": str(
+                failure_mode == "disable-readback-malformed"
+            ).lower(),
+            "FAIL_DISABLE_READBACK_WRONG_NAME": str(
+                failure_mode == "disable-readback-wrong-name"
+            ).lower(),
+            "EXACT_CRONJOB_SURVIVES_HELM": (
+                "active"
+                if failure_mode == "post-exact-active-survives"
+                else "suspended"
+                if failure_mode == "post-label-drift-exact-suspended"
+                else "false"
+            ),
+            "EXACT_GET_COUNTER": str(exact_get_counter),
         },
         capture_output=True,
         text=True,
@@ -1515,6 +2122,11 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     )
 
     calls = target_calls.read_text(encoding="utf-8") if target_calls.exists() else ""
+    exact_get_calls = (
+        int(exact_get_counter.read_text(encoding="utf-8"))
+        if exact_get_counter.exists()
+        else 0
+    )
     activation_window_calls = (
         int(activation_window_counter.read_text(encoding="utf-8"))
         if activation_window_counter.exists()
@@ -1534,7 +2146,87 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     )
     if not expected_success:
         assert completed.returncode != 0
-        if failure_mode == "activation-window-failure":
+        assert "disable-schedule completed" not in completed.stdout
+        assert calls.splitlines().count(exact_suspend_call) <= 1
+        if operation == "--disable-schedule" and failure_mode == "stored-name-drift":
+            assert "stored and release-derived CronJob names differ" in completed.stderr
+            assert "helm-upgrade" not in calls
+            assert "patch cronjob" not in calls
+            assert "disable-schedule failure recovery" not in (
+                completed.stdout + completed.stderr
+            )
+        elif operation == "--disable-schedule":
+            assert "helm-upgrade" in calls
+            assert "disable-schedule failure recovery" in (
+                completed.stdout + completed.stderr
+            )
+            if failure_mode in {
+                "helm-failure",
+                "disable-patch-failure",
+                "disable-verify-failure",
+                "exact-label-missing",
+                "exact-label-wrong",
+                "exact-shape-drift",
+                "exact-spec-missing",
+                "exact-suspend-null",
+                "exact-suspend-string",
+                "exact-suspend-zero",
+                "exact-suspend-one",
+                "disable-readback-malformed",
+                "disable-readback-wrong-name",
+                "post-exact-active-survives",
+            }:
+                assert calls.splitlines().count(exact_suspend_call) == 1
+                expected_exact_get_calls = (
+                    3 if failure_mode == "post-exact-active-survives" else 2
+                )
+                assert exact_get_calls == expected_exact_get_calls
+            else:
+                assert calls.splitlines().count(exact_suspend_call) == 0
+            if failure_mode == "helm-failure":
+                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
+            elif failure_mode == "signal-after-helm":
+                assert completed.returncode == 143
+                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
+            elif failure_mode == "post-live-capture-failure":
+                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
+            elif failure_mode == "disable-recovery-read-failure":
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode == "disable-patch-failure":
+                assert "emergency suspend command failed" in completed.stderr
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode == "disable-verify-failure":
+                assert "expected research-a-stock-data-collection to be absent or suspended, got needs-suspend" in completed.stderr
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode in {
+                "exact-label-missing",
+                "exact-label-wrong",
+                "exact-shape-drift",
+                "exact-spec-missing",
+                "exact-suspend-null",
+                "exact-suspend-string",
+                "exact-suspend-zero",
+                "exact-suspend-one",
+            }:
+                assert "forcing research-a-stock-data-collection to suspend=true" in completed.stderr
+                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
+            elif failure_mode == "exact-response-malformed":
+                assert "could not read exact CronJob" in completed.stderr
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode == "disable-readback-malformed":
+                assert "could not verify the emergency suspend" in completed.stderr
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode == "disable-readback-wrong-name":
+                assert "could not verify the emergency suspend" in completed.stderr
+                assert "exact CronJob state remains uncertain" in completed.stderr
+            elif failure_mode == "post-exact-active-survives":
+                assert "exact CronJob research-a-stock-data-collection still exists" in completed.stderr
+                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
+            elif failure_mode == "post-label-drift-exact-suspended":
+                assert "exact CronJob research-a-stock-data-collection still exists" in completed.stderr
+                assert "could not prove exact CronJob deletion" in completed.stderr
+                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
+        elif failure_mode == "activation-window-failure":
             assert "Gate C preflight activation window validation failed" in completed.stderr
             assert "helm-upgrade" not in calls
             assert "ssh " not in calls and "kubectl " not in calls
@@ -1577,6 +2269,16 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     if operation == "--activate-schedule":
         assert "Gate C activation window (preflight):" in completed.stdout
         assert "Gate C activation window (pre-write):" in completed.stdout
+    elif operation == "--disable-schedule":
+        binding = next(
+            line
+            for line in completed.stdout.splitlines()
+            if "rollback authorization verified:" in line
+        )
+        assert "approval=gyt-47-disable" in binding
+        assert f"binding={rollback_ref.rsplit(':', 1)[1]}" in binding
+        assert calls.splitlines().count(exact_suspend_call) == 0
+        assert exact_get_calls == 1
     assert str(repo / "deploy" / "helm" / "a-stock") not in next(
         line for line in calls.splitlines() if line.startswith("helm-upgrade")
     )
