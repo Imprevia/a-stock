@@ -179,6 +179,7 @@ Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c150
 
 - 2026-09-10：rollback canonical binding、active-to-off recovery 与文档命令审计对抗测试完成；进一步收紧 fake kubectl，只有 exact CronJob/name/namespace/merge payload 才能改变模拟状态，并把成功/失败路径的 exact get 次数由下界改为精确断言。`tests/test_truenas_scheduling_guard.py` + `tests/test_deployment_manifests.py` 为 `254 passed`；packet validator 为 `61 passed`。
 - 2026-09-10：全库固定离线测试为 `456 passed, 2 warnings`，warnings 为既有 FastAPI/Starlette deprecation；Bash/Python syntax、四组 Helm strict lint、Kustomize base/native render、OpenSpec strict 1/1、docs-contract full（代码 4 / 文档 6 / plan 1）与 `git diff --check` 通过。所有验证均为本地 fixture/render/fake target，未访问 TrueNAS、生产 Kubernetes、真实 provider 或生产 SQLite/PVC。
+- 2026-09-10：implementation candidate `4c8532727308d437e66dda5fd990dd8ab3789cfa` 已提交并推送至 `agent/backend/gyt-47-gate-a-remediation-v2`；提交前 staged fast docs-contract 通过（代码 4 / 文档 6 / plan 1），staged diff check 通过，`src/`、`apps/`、`trading-rules/` 范围差异为空。该 candidate 连同本证据提交 GYT-52 独立复验。
 
 ## Remaining Gaps（剩余缺口）
 
