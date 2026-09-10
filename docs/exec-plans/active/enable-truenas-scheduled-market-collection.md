@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；GYT-47 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例，并提交 final clean exact HEAD `cd26dff3e6bebe012198dcd38074c354c1a9afac`。Gate B/Gate C 保持冻结，本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
+Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；GYT-47 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例，implementation parent 为 `cd26dff3e6bebe012198dcd38074c354c1a9afac`，最终 review tip 为 `0717d840d8c2777bef666a208d28ebe4288c77c1`（其后续仅为 docs-only evidence wrapper）。Gate B/Gate C 保持冻结，本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
 
 ## Status（状态）
 
-`implementation-complete-awaiting-independent-review`：当前隔离分支 `agent/backend/gyt-47-gate-a-remediation-v2` 从 exact clean baseline `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 创建；该 baseline 以 `b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为祖先且不包含 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。OpenSpec、plan、architecture、runbook、rollback authorization binding、active-to-off fail-safe recovery、文档 Helm 命令 fail-closed 审计和 ordinary deploy typed-value 前置拒绝均已完成并通过本地离线门禁。最终 exact HEAD `cd26dff3e6bebe012198dcd38074c354c1a9afac` 已提交并推送，仍须 GYT-52 独立复验；旧 HEAD 及其测试结果不作为当前验收证据。
+`implementation-complete-awaiting-independent-review`：当前隔离分支 `agent/backend/gyt-47-gate-a-remediation-v2` 从 exact clean baseline `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 创建；该 baseline 以 `b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为祖先且不包含 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。OpenSpec、plan、architecture、runbook、rollback authorization binding、active-to-off fail-safe recovery、文档 Helm 命令 fail-closed 审计和 ordinary deploy typed-value 前置拒绝均已完成并通过本地离线门禁。implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 已提交，最终 review tip `0717d840d8c2777bef666a208d28ebe4288c77c1` 已推送（其后续仅为 docs-only evidence wrapper），仍须 GYT-52 独立复验；旧 HEAD 及其测试结果不作为当前验收证据。
 
 ## Context（上下文）
 
@@ -49,7 +49,7 @@ Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c150
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
 | Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.8；focused render/deployment tests；无应用/前端/生产 diff | completed at exact `cd26dff3e6bebe012198dcd38074c354c1a9afac` |
 | Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` reviewed | tasks 3.1-3.8；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | fresh evidence complete on exact remediation candidate |
-| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean HEAD | prior NO-GO remediated; awaiting independent review of `cd26dff3e6bebe012198dcd38074c354c1a9afac` |
+| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean review tip | prior NO-GO remediated; awaiting independent review of `0717d840d8c2777bef666a208d28ebe4288c77c1` (implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`) |
 | Gate B | 生产验证 | 未分配 | GYT-47 independent GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | progression/read-only permission recorded; blocked by prerequisites |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
 
@@ -193,4 +193,4 @@ Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c150
 
 ## Next Step（下一步）
 
-exact `cd26dff3e6bebe012198dcd38074c354c1a9afac` 已冻结、推送并绑定本轮离线证据；下一步是由 GYT-52 对该 exact clean HEAD 进行独立复验。明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
+implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only evidence wrappers 已冻结；最终 review tip `0717d840d8c2777bef666a208d28ebe4288c77c1` 已推送并绑定本轮离线证据。下一步是由 GYT-52 对该 exact clean review tip 及其 parent implementation 进行独立复验。明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
