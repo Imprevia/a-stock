@@ -1664,6 +1664,9 @@ def test_disable_schedule_requires_independent_exact_authorization_before_target
                 "exact-suspend-zero",
                 "exact-suspend-one",
                 "exact-response-malformed",
+                "exact-response-multiple",
+                "exact-response-wrong-kind",
+                "exact-response-wrong-namespace",
                 "disable-readback-malformed",
                 "disable-readback-wrong-name",
             )
@@ -1783,6 +1786,9 @@ def test_disable_schedule_requires_independent_exact_authorization_before_target
         "disable-exact-suspend-zero",
         "disable-exact-suspend-one",
         "disable-exact-response-malformed",
+        "disable-exact-response-multiple",
+        "disable-exact-response-wrong-kind",
+        "disable-exact-response-wrong-namespace",
         "disable-readback-malformed",
         "disable-readback-wrong-name",
         "disable-verify-failure",
@@ -1882,9 +1888,20 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             current_cronjob_payload["spec"]["suspend"] = 0
         elif failure_mode == "exact-suspend-one":
             current_cronjob_payload["spec"]["suspend"] = 1
+        elif failure_mode == "exact-response-wrong-kind":
+            current_cronjob_payload["kind"] = "ConfigMap"
+        elif failure_mode == "exact-response-wrong-namespace":
+            current_cronjob_payload["metadata"]["namespace"] = "other-namespace"
     current_cronjob = tmp_path / "current-cronjob.yaml"
     if failure_mode == "exact-response-malformed":
         current_cronjob.write_text("spec: [\n", encoding="utf-8")
+    elif failure_mode == "exact-response-multiple":
+        current_cronjob.write_text(
+            yaml.safe_dump_all(
+                [current_cronjob_payload, current_cronjob_payload], sort_keys=False
+            ),
+            encoding="utf-8",
+        )
     else:
         current_cronjob.write_text(
             yaml.safe_dump(current_cronjob_payload, sort_keys=False)
@@ -1998,7 +2015,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"if [[ \"$*\" == *\"get deployment\"* ]]; then cat {deployments_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get replicasets\"* ]]; then cat {replicasets_json}; exit 0; fi\n"
         f"if [[ \"$*\" == *\"get pods\"* ]]; then cat {pods_json}; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get cronjob research-a-stock-data-collection\"* && \"$*\" == *\"--ignore-not-found\"* ]]; then\n"
+        "if [[ \"$*\" == \"get cronjob research-a-stock-data-collection --namespace market-data --ignore-not-found -o yaml\" ]]; then\n"
         "  if [[ \"${FAIL_DISABLE_RECOVERY_GET:-false}\" == true ]]; then exit 93; fi\n"
         "  if [[ -f \"$EXACT_GET_COUNTER\" ]]; then count=$(<\"$EXACT_GET_COUNTER\"); else count=0; fi\n"
         "  printf '%s' $((count + 1)) > \"$EXACT_GET_COUNTER\"\n"
@@ -2011,6 +2028,7 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         f"  else cat {current_cronjob}; fi\n"
         "  exit 0\n"
         "fi\n"
+        "if [[ \"$1\" == get && \"$2\" == cronjob && \"$*\" == *\"--ignore-not-found\"* ]]; then exit 91; fi\n"
         f"if [[ \"$*\" == *\"get cronjob\"* ]]; then if [[ \"${{FAIL_FINAL_CRONJOB_GET:-false}}\" == true ]]; then exit 94; fi; cat {desired_live}; exit 0; fi\n"
         "if [[ \"$*\" == 'patch cronjob research-a-stock-data-collection --namespace market-data --type=merge --patch {\"spec\":{\"suspend\":true}}' ]]; then "
         f"if [[ \"${{FAIL_DISABLE_PATCH:-false}}\" == true ]]; then exit 92; fi; touch {emergency_suspended}; exit 0; fi\n"
@@ -2090,6 +2108,9 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
                     "exact-suspend-zero",
                     "exact-suspend-one",
                     "exact-response-malformed",
+                    "exact-response-multiple",
+                    "exact-response-wrong-kind",
+                    "exact-response-wrong-namespace",
                     "disable-readback-malformed",
                     "disable-readback-wrong-name",
                 }
@@ -2144,10 +2165,26 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         "kubectl patch cronjob research-a-stock-data-collection --namespace market-data "
         '--type=merge --patch {"spec":{"suspend":true}}'
     )
+    exact_get_call = (
+        "kubectl get cronjob research-a-stock-data-collection --namespace market-data "
+        "--ignore-not-found -o yaml"
+    )
+    patch_calls = [
+        line for line in calls.splitlines() if line.startswith("kubectl patch cronjob")
+    ]
+    if operation == "--disable-schedule":
+        exact_name_get_calls = [
+            line
+            for line in calls.splitlines()
+            if line.startswith(
+                "kubectl get cronjob research-a-stock-data-collection"
+            )
+        ]
+        assert all(line == exact_get_call for line in exact_name_get_calls)
     if not expected_success:
         assert completed.returncode != 0
         assert "disable-schedule completed" not in completed.stdout
-        assert calls.splitlines().count(exact_suspend_call) <= 1
+        assert len(patch_calls) <= 1
         if operation == "--disable-schedule" and failure_mode == "stored-name-drift":
             assert "stored and release-derived CronJob names differ" in completed.stderr
             assert "helm-upgrade" not in calls
@@ -2176,13 +2213,16 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
                 "disable-readback-wrong-name",
                 "post-exact-active-survives",
             }:
-                assert calls.splitlines().count(exact_suspend_call) == 1
+                assert patch_calls == [exact_suspend_call]
+                call_lines = calls.splitlines()
+                patch_index = call_lines.index(exact_suspend_call)
+                assert call_lines[patch_index + 1 :].count(exact_get_call) == 1
                 expected_exact_get_calls = (
                     3 if failure_mode == "post-exact-active-survives" else 2
                 )
                 assert exact_get_calls == expected_exact_get_calls
             else:
-                assert calls.splitlines().count(exact_suspend_call) == 0
+                assert patch_calls == []
             if failure_mode == "helm-failure":
                 assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
             elif failure_mode == "signal-after-helm":
@@ -2210,7 +2250,12 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             }:
                 assert "forcing research-a-stock-data-collection to suspend=true" in completed.stderr
                 assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
-            elif failure_mode == "exact-response-malformed":
+            elif failure_mode in {
+                "exact-response-malformed",
+                "exact-response-multiple",
+                "exact-response-wrong-kind",
+                "exact-response-wrong-namespace",
+            }:
                 assert "could not read exact CronJob" in completed.stderr
                 assert "exact CronJob state remains uncertain" in completed.stderr
             elif failure_mode == "disable-readback-malformed":
@@ -2270,6 +2315,8 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         assert "Gate C activation window (preflight):" in completed.stdout
         assert "Gate C activation window (pre-write):" in completed.stdout
     elif operation == "--disable-schedule":
+        assert calls.splitlines().count(exact_get_call) == 1
+        assert exact_get_calls == 1
         binding = next(
             line
             for line in completed.stdout.splitlines()
