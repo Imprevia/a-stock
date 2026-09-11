@@ -78,6 +78,15 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 
 `/api/health` 不访问外部行情源，只用于容器启动、就绪和存活检查。健康检查成功但行情接口返回 503 时，应继续按 provider 网络和降级 warning 排查，而不是重启 Pod。删除工作负载可使用 `kubectl delete -k deploy/k3s`，但该命令也会删除 PVC；需要保留快照时先移除 `persistent-volume-claim.yaml`，或先导出数据再删除。
 
+### 生产定时任务契约（fail-closed 默认）
+
+截至当前，TrueNAS k3s 集群中**观察不到任何 application CronJob**，也**没有 controller 创建的 collection Job**。这不是部署缺陷、不是漏配、也不是 Chart 没渲染对；这是因为生产 CronJob 创建与激活分别要求 **Gate B action authorization** 与 **Gate C operation authorization** 两份独立授权作为 canonical change artifact 记录在案。**仅记录 Gate B / Gate C progression authorization 不构成生产执行授权**——当前状态是"进度授权已记录、操作授权待记录"，不是"永久 off-by-design"决策。完整契约见 `openspec/changes/surface-scheduled-collection-failclosed-contract/specs/after-market-data-collection-scheduling/spec.md` 的 `Fail-closed production scheduling default` requirement。运维与排错请以本契约为准：
+
+- `deploy/helm/a-stock/values.yaml`、`deploy/truenas/values-secure-manual-collection.yaml` 以及 `scheduled-off` / `scheduled-suspended` / `scheduled-active` 三个 overlay，未应用额外覆盖时均为 `scheduledCollection.enabled=false / suspend=true`；`market-data-collection-cronjob.yaml` 模板在该默认值下根本不会渲染 CronJob 资源。
+- `scripts/deploy-truenas-k3s.sh` 的通用 install / upgrade / application-rollback 入口在首次 Helm render、image 工作、SSH 或目标 API 访问前，会强制 typed values 等于 `enabled=false / suspend=true`；任何偏离（包括 `enabled=true` 但 `suspend=false`、或空字符串布尔值）都会让入口 `die` 并阻断所有后续写入，不会留下 active 或 identity-drifted 的 CronJob。
+- 只有当 **Gate B action authorization**（覆盖 exact packet 的 admission probe、no-provider canary、suspended application release 与一次 named provider-backed Job）和 **Gate C operation authorization**（覆盖 exact active-overlay apply 与所选 catch-up 行为）**均**作为 canonical change artifact 记录在案后，才能分别创建 suspended 应用 CronJob、执行一次 no-provider canary 与一次 named provider-backed Job，并在显式 catch-up 决策下把 `/spec/suspend` 由 `true` 翻成 `false`。在两份操作授权都尚未记录前，**禁止**用 `kubectl apply`、`helm install/upgrade`、`kubectl patch` 或 `kubectl edit` 直接对 CronJob 资源做改动；任何绕过入口的写入都应被视为偏离契约并立即回退。
+- 排错动作顺序：先用 `helm get values <release> -n <namespace>` 与 `kubectl get cronjob -n <namespace>` 双源核实是否真的没有 application CronJob；若两侧都为空，按"待 Gate B action + Gate C operation 双授权"处理；若有 active 或 suspended 应用 CronJob，必须立即按 `enable-truenas-scheduled-market-collection/tasks.md` 4.x 与 7.x 流程停用、记录证据，不得继续排错为正常状态。
+
 ### Helm Chart 与受控发布入口
 
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；仓库没有通用 uninstall 入口，退役必须另建受审 exact-resource 操作包。先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：
@@ -372,6 +381,44 @@ python -m src.trading_system.cli backtest --rule-set market-environment --snapsh
 ```
 
 PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部网络。盘后 workflow 可访问真实数据；任何 provider 失败必须写入 snapshot 的质量状态，并上传 `degraded` 或 `insufficient` 证据，不能用 0 填充缺失数据。
+
+### Native CronJob 直接 apply（operator override 路径）
+
+适用：当 `enable-truenas-scheduled-market-collection` GYT 链路仍是半成品、且需要在 TrueNAS k3s 上立刻看到一个 application CronJob 跑一次采集时。**该路径绕过 Helm 升级、`scripts/deploy-truenas-k3s.sh` 与 fail-closed 入口，绕过后果由 operator 承担；与 GYT-* 链路并存，冲突由 GYT-52 后续复验裁决。**
+
+**前置约束：**
+
+- 镜像 tag 必须写死为节点上已确认存在的 `localhost/a-stock-market-environment:20260906-005226-2075b6e`（digest `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`）。**不要打 `latest` tag**，会污染既有 helm release 的镜像解析。
+- k3s 1.26.6 的 CronJob 不支持 `spec.timeZone`，调度字段必须用 UTC：盘后 16:30 上海对应 `30 8 * * 1-5`。
+- PVC 必须独立：`market-environment-data`（2Gi RWO，StorageClass `manual-local`），不和 helm 装的 `a-stock-data` 共享挂载，避免与 Deployment 抢锁。
+- 不使用 `kubectl apply -k deploy/k3s-native-scheduled/`，因为该 kustomization 引用 `../k3s`，会把 Dashboard base 全部 apply 进来与 helm release 冲突。改用 `kubectl apply -f` 单文件。
+- 不动 helm 装的 `a-stock` Deployment / Service / Ingress / `a-stock-data` PVC。
+
+**部署步骤（ssh 到 TrueNAS admin@192.168.1.20 后）：**
+
+```bash
+# 1. 确认当前没有 application CronJob（必须空）
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl get cronjob -A
+
+# 2. apply PVC + CronJob 到目标 namespace
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f deploy/k3s-native-scheduled/persistent-volume-claim.yaml
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl apply -f deploy/k3s-native-scheduled/market-data-collection-cronjob.yaml
+
+# 3. 验证 CronJob 与 PVC 状态
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob,pvc
+
+# 4. 手动触发一次（不等下个 cron 窗口）
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock create job manual-collect-$(date +%s) --from=cronjob/market-data-collection
+
+# 5. 等 Job 完成后看日志
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock wait --for=condition=complete --timeout=30m job -l job-name=manual-collect
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock logs -l job-name=manual-collect --tail=200
+
+# 6. 在节点上验证 PVC 目录里有 snapshot 产物（PVC 实际路径在节点文件系统上）
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get pvc market-environment-data -o jsonpath='{.spec.volumeName}'
+```
+
+**回滚：** `kubectl delete -f` 对应 yaml 即可，PVC 删除会同时释放底层 PV；该路径创建的 PVC 与 helm release 解耦，可单独清理。
 
 ## 验证矩阵
 

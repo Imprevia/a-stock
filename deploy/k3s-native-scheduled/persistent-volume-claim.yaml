@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-environment-data
+  namespace: a-stock
+  labels:
+    app.kubernetes.io/name: market-environment-data
+    app.kubernetes.io/part-of: a-stock
+    app.kubernetes.io/component: data-collection
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: manual-local
+  volumeName: a-stock-market-environment-data
