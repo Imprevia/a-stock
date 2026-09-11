@@ -42,10 +42,12 @@
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
   - `enable-truenas-scheduled-market-collection` 的 Stage 4 NO-GO 回流实现已完成：implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 关闭 rollback authorization binding、active-to-off fail-safe、文档 shell 审计与 ordinary typed-value 前置拒绝；`b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 及冻结 tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 仅为 docs-only evidence wrappers。focused suite `323 passed`、全库离线 `464 passed, 2 warnings`，代码/测试归属 parent，clean/review 归属冻结 tip；后续 local-main 仅记录合入证据。GYT-52 等待对该 implementation/evidence review packet 的独立复验；GYT-50/GYT-51 不得启动。Gate B/Gate C 保持冻结，当前不访问目标环境且 CronJob 保持关闭。
 - 市场环境看板书面记录为部署到 `192.168.1.20` 的 TrueNAS k3s 1.26，问题报告为 Helm revision 7（此前文档中的 revision 6 与 image tag 不再作为事实）；revision、镜像 digest、PVC identity、controller runtime timezone 与资源状态均待后续只读 preflight 确认。现有书面基线保持固定 `NodePort:32001`、单副本非 root Deployment、静态 Retain PV、开启手工采集、Ingress 与盘后定时采集关闭；没有本次生产访问或变更。1.21 到 1.20 的路由按既有记录经受限 SSH 回环隧道管理 k3s API；公网映射/路由器 ACL 尚无独立证据，实际边界按所有可路由网络记录。
+- `complete-limit-ecosystem-dashboard-parity` 的第 03 页完整涨跌停生态看板实现与受控验证已完成：契约、事实表迁移、严格 provider、相邻交易日晋级、梯队/制度/交易所分层、近 5 日与 60/250 日覆盖、前端状态和离线门禁均已落地；2026-09-11 隔离真实 smoke 因 provider 缺少顶层交易日字段而 `failed-missing`，`promotionQuality=insufficient`，未写生产 SQLite/PVC。limits detail/V1 开关默认关闭，旧五字段仍是兼容基线。
 
 ## 未实现
 
 - 高位股、中位股和低位股的分层亏钱效应尚未形成独立可追溯数据集。
+- 第 03 页 limits detail 的真实 provider 日期、证券制度、ST/上市窗口、板块和收盘状态覆盖仍未完成证明；已授权的隔离 smoke 证明当前 provider 缺少顶层交易日字段，在数据源修复并重新验证前，晋级率、梯队/分层和 250 日分位必须保持 `insufficient` / `degraded`，不视为 `validated`。
 - 公告、政策、外围和突发事件仍需结构化来源、发布时间、有效期与失效条件；当前保持 `unverified`。
 - 第 02 至 11 章 281 条规则仍为 `documented-only`。
 - 尚未积累 500–750 日历史快照，没有规则可晋级为 `validated`。
@@ -74,4 +76,4 @@
 
 ## 最后更新
 
-2026-09-09
+2026-09-11

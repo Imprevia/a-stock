@@ -75,6 +75,26 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 
 SQLite 还保存 collection run/task 和 materialized market-environment aggregate。每个成功 task 提交后，从同日期最新成功数据重建完整响应并经 Pydantic 契约验证后原子替换聚合记录；聚合允许明确的 `partial` / `degraded`。当前日盘中结果标记 provisional，结算后成功结果标记 settled。SQLite lease 和 provider limiter 仍是单机边界，多主机共享不在当前范围。
 
+### 第 03 页 limits 事实与聚合边界
+
+涨跌停生态使用 additive SQLite 迁移，不删除或改写既有 `snapshot_entries`、`collection_tasks` 和旧五字段聚合。迁移版本记录、`PRAGMA quick_check` 和数据集校验和是发布前置条件。表职责如下：
+
+| 表 | 主键/关键字段 | 约束 |
+|---|---|---|
+| `trading_sessions` | `as_of`；`previous_as_of`、`actual_as_of`、`is_session`、`source`、`checksum`、`fetched_at`、`warnings_json` | 只保存已证明的真实交易日和精确前一交易日；请求/实际日期不一致时不可用于晋级 |
+| `limit_security_datasets` | `as_of`；`actual_as_of`、`source_revision`、`rule_version`、`complete`、`excluded`、`dataset_checksum` | 保存每个 limits detail 数据集的完整性、排除数和 checksum；重复采集同日期/版本必须幂等 |
+| `limit_security_facts` | `(as_of, security_id, pool_type)`；交易所、板块、ST/上市窗口、制度、收盘状态、连板天数、`eligible`、`invalid_reason`、行/数据集 checksum | 仅规范证券身份可进入晋级和分层；缺少制度、上市窗口或收盘状态的行保留审计原因但不进入分母 |
+
+`limit_security_facts` 的事实字段包括 `code`、`exchange`、`name`、`board`、`is_st`、`listing_date`/`listing_days`、`limit_regime`、`close_price`/`previous_close`/`change_pct`、`touched_limit_up`、`closed_limit_up`、`failed_limit_up`、`streak_days` 和 `actual_as_of`。证券名称不是身份键，provider 也不得推断固定 10% 制度。`limit_security_facts_date_security_idx`、`limit_security_facts_eligible_idx` 和 `limit_security_facts_pool_idx` 支持跨日 join、晋级、梯队与制度/板块分层。
+
+晋级聚合只读取本地当前日和 `trading_sessions.previous_as_of` 指向的前一真实交易日：昨日 `eligible && closed_limit_up` 集合为分母，同一 `security_id` 在今日收盘涨停集合中的交集为分子。两日 detail manifest 的 `actual_as_of`、`rule_version`、`dataset_checksum` 必须匹配 limits 聚合中的 `_detailDatasetChecksum`，否则 `promotionQuality` 为 `insufficient`/`failed`。普通历史 GET 不调用 provider，不向更早日期回退；分母为 0 时 `promotionRatio` 为 `null`。
+
+近 5 日序列只接受精确日期快照；250 日分位、风险扩散和规则证据要求至少 60 个有效观测且日期连续，覆盖不足返回有效数、缺口和 `insufficient`，不能把缺失视为零风险。`QTS-01-03-01` 至 `QTS-01-03-05` 的 ID、权重和 `needs-backtest` 状态由 `trading-rules/` 维护，页面可展示经验分位/置信度/触发与失效条件，但不得标记为 `validated`。
+
+新 detail/V1 写入由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时继续提供旧五字段和本地快照读取；开启前须通过迁移、幂等、事务、generation fencing、lease/CAS、provider-free warm GET 和失败保留验证。刷新失败只写 collection attempt，保留同日期最后成功快照并返回 `failed-retained`；无旧值返回 `failed-missing`。回滚先关闭该开关，再恢复应用版本，保留 PVC、旧聚合、事实表、session 和 checksum，不删除或跨日期替代。
+
+严格 limits provider 必须同时验证顶层/逐行实际日期、规范身份、交易所/板块、ST/新股窗口、适用制度和收盘涨停状态；完整性不足时可以保留旧五字段，但不得生成晋级、梯队、分层或历史结论。真实 provider smoke 只在获授权的盘后窗口使用隔离 SQLite 执行，记录请求预算、两日日期、来源、排除计数和 checksum；字段无法证明时质量必须为 `failed`、`degraded` 或 `insufficient`，不写生产 PVC。
+
 同步性广度变化的读取流为：核心指数历史确定 `as_of` 前一个真实交易日 → `SnapshotStore.get("breadth", previous_trading_date)` 精确日期读取 → 计算上涨占比与涨跌幅中位数变化。精确日期记录不存在时比较维度为 `insufficient`，不得继续向更早日期搜索，也不得在普通 GET 中触发 provider。materialized aggregate 重建复用同一只读路径；后补上一日快照不会自动回填所有后续历史聚合，需要通过既有重建路径显式刷新。
 
 规则平台运行流分为两个阶段：provider 获取数据并创建规范化 snapshot；执行器加载指定规则集和 snapshot，输出确定性 trace 与聚合结果。相同 snapshot、规则版本和 Git 版本必须产生相同 canonical result。完整证据通过 manifest 关联输入哈希、规则版本、Git SHA、provider 降级和结果哈希。

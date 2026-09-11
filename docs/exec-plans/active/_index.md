@@ -16,6 +16,7 @@
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 | `local-development-port-8001` | Codex | completed | 2026-09-04 |
 | `enable-truenas-scheduled-market-collection` | 资深项目经理 + 资深后端工程师 | in-progress | 2026-09-09 |
+| `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
 
 ## 说明
 

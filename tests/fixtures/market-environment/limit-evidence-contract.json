@@ -1,0 +1,588 @@
+{
+  "contractVersion": "limits-promotion-v1",
+  "sampleRule": "previous eligible close-limit-up -> current close-limit-up",
+  "newFields": [
+    "todayPromoted",
+    "yesterdayLimitUpEligible",
+    "promotionRatio",
+    "promotionSampleAsOf",
+    "promotionPreviousAsOf",
+    "promotionSampleRule",
+    "promotionRuleVersion",
+    "promotionQuality",
+    "fieldQuality"
+  ],
+  "qualityDomains": {
+    "field": ["ok", "insufficient", "degraded", "failed"],
+    "dataset": ["ok", "partial", "fallback", "failed", "missing", "degraded", "insufficient"],
+    "cache": ["fresh", "stale", "missing"]
+  },
+  "outOfScope": {
+    "continuousStrengthExtension": {
+      "status": "insufficient",
+      "reason": "eligibility-rule-not-versioned"
+    },
+      "absentFields": [
+        "continuousStrengthCount",
+        "continuousStrengthRatio",
+        "score",
+        "percentile",
+        "veto"
+    ]
+  },
+  "cases": {
+    "legacyOmitted": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "observed",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-v1",
+        "provider": "fixture-v1",
+        "status": "ok",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": null,
+        "warnings": []
+      }
+    },
+    "explicitNull": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "observed",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-v1",
+        "provider": "fixture-v1",
+        "status": "ok",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": null,
+        "warnings": [],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": null,
+      "yesterdayLimitUpEligible": null,
+      "promotionRatio": null,
+      "promotionSampleAsOf": null,
+      "promotionPreviousAsOf": null,
+      "promotionSampleRule": null,
+      "promotionRuleVersion": null,
+      "promotionQuality": null,
+      "fieldQuality": null
+    },
+    "promotion20Of8": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "observed",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-adjacent-sessions",
+        "provider": "fixture-adjacent-sessions",
+        "status": "ok",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": null,
+        "warnings": [],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": 8,
+      "yesterdayLimitUpEligible": 20,
+      "promotionRatio": 0.4,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": "2026-09-03",
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "ok",
+        "reason": "complete-adjacent-session-sample",
+        "observations": 20,
+        "asOf": "2026-09-04",
+        "source": "fixture-adjacent-sessions",
+        "warnings": []
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "ok",
+          "reason": "matched-close-limit-up-members",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-adjacent-sessions",
+          "warnings": []
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "ok",
+          "reason": "complete-eligible-previous-session-set",
+          "observations": 20,
+          "asOf": "2026-09-03",
+          "source": "fixture-adjacent-sessions",
+          "warnings": []
+        },
+        "promotionRatio": {
+          "status": "ok",
+          "reason": "non-zero-complete-denominator",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-adjacent-sessions",
+          "warnings": []
+        }
+      }
+    },
+    "zeroDenominator": {
+      "limitUpCount": 0,
+      "limitDownCount": 0,
+      "failedLimitUpCount": 0,
+      "failedLimitUpRatio": null,
+      "maxStreak": null,
+      "state": "empty-observed-pools",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-empty-sessions",
+        "provider": "fixture-empty-sessions",
+        "status": "ok",
+        "observations": 0,
+        "asOf": "2026-09-04",
+        "warning": null,
+        "warnings": [],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": 0,
+      "yesterdayLimitUpEligible": 0,
+      "promotionRatio": null,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": "2026-09-03",
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "insufficient",
+        "reason": "zero-denominator",
+        "observations": 0,
+        "asOf": "2026-09-04",
+        "source": "fixture-empty-sessions",
+        "warnings": ["promotion ratio requires a non-zero eligible previous-session sample"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "ok",
+          "reason": "complete-empty-eligible-set",
+          "observations": 0,
+          "asOf": "2026-09-04",
+          "source": "fixture-empty-sessions",
+          "warnings": []
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "ok",
+          "reason": "complete-empty-eligible-set",
+          "observations": 0,
+          "asOf": "2026-09-03",
+          "source": "fixture-empty-sessions",
+          "warnings": []
+        },
+        "promotionRatio": {
+          "status": "insufficient",
+          "reason": "zero-denominator",
+          "observations": 0,
+          "asOf": "2026-09-04",
+          "source": "fixture-empty-sessions",
+          "warnings": ["promotion ratio requires a non-zero eligible previous-session sample"]
+        }
+      }
+    },
+    "datasetMissing": {
+      "limitUpCount": null,
+      "limitDownCount": null,
+      "failedLimitUpCount": null,
+      "failedLimitUpRatio": null,
+      "maxStreak": null,
+      "state": "insufficient",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "none",
+        "provider": "none",
+        "status": "missing",
+        "observations": 0,
+        "asOf": "2026-09-04",
+        "warning": "exact-date limits snapshot is missing",
+        "warnings": ["exact-date limits snapshot is missing"],
+        "cacheState": "missing",
+        "snapshotFetchedAt": null,
+        "refreshing": false,
+        "refreshWarning": "exact-date limits snapshot is missing"
+      },
+      "todayPromoted": null,
+      "yesterdayLimitUpEligible": null,
+      "promotionRatio": null,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": null,
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "insufficient",
+        "reason": "missing-limits-dataset",
+        "observations": null,
+        "asOf": "2026-09-04",
+        "source": null,
+        "warnings": ["exact-date limits snapshot is missing"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "insufficient",
+          "reason": "missing-current-session",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": null,
+          "warnings": ["exact-date limits snapshot is missing"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "insufficient",
+          "reason": "missing-previous-session",
+          "observations": null,
+          "asOf": null,
+          "source": null,
+          "warnings": ["previous exact trading session is unavailable"]
+        },
+        "promotionRatio": {
+          "status": "insufficient",
+          "reason": "missing-adjacent-session-input",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": null,
+          "warnings": ["promotion ratio dependencies are unavailable"]
+        }
+      }
+    },
+    "datasetPartial": {
+      "limitUpCount": 10,
+      "limitDownCount": null,
+      "failedLimitUpCount": 2,
+      "failedLimitUpRatio": 0.1667,
+      "maxStreak": 2,
+      "state": "partial",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-partial",
+        "provider": "fixture-partial",
+        "status": "partial",
+        "observations": 12,
+        "asOf": "2026-09-04",
+        "warning": "limit-down pool failed",
+        "warnings": ["limit-down pool failed"],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": null,
+      "yesterdayLimitUpEligible": null,
+      "promotionRatio": null,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": null,
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "insufficient",
+        "reason": "incomplete-pool-input",
+        "observations": null,
+        "asOf": "2026-09-04",
+        "source": "fixture-partial",
+        "warnings": ["promotion dependencies are incomplete"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "insufficient",
+          "reason": "incomplete-current-session",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-partial",
+          "warnings": ["promotion dependencies are incomplete"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "insufficient",
+          "reason": "missing-previous-session",
+          "observations": null,
+          "asOf": null,
+          "source": null,
+          "warnings": ["previous exact trading session is unavailable"]
+        },
+        "promotionRatio": {
+          "status": "insufficient",
+          "reason": "incomplete-adjacent-session-input",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-partial",
+          "warnings": ["promotion dependencies are incomplete"]
+        }
+      }
+    },
+    "datasetFailed": {
+      "limitUpCount": null,
+      "limitDownCount": null,
+      "failedLimitUpCount": null,
+      "failedLimitUpRatio": null,
+      "maxStreak": null,
+      "state": "insufficient",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-failed",
+        "provider": "fixture-failed",
+        "status": "failed",
+        "observations": 0,
+        "asOf": "2026-09-04",
+        "warning": "all limit pools failed",
+        "warnings": ["all limit pools failed"],
+        "cacheState": "missing",
+        "snapshotFetchedAt": null,
+        "refreshing": false,
+        "refreshWarning": "all limit pools failed"
+      },
+      "todayPromoted": null,
+      "yesterdayLimitUpEligible": null,
+      "promotionRatio": null,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": "2026-09-03",
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "failed",
+        "reason": "promotion-calculation-failed",
+        "observations": null,
+        "asOf": "2026-09-04",
+        "source": "fixture-failed",
+        "warnings": ["all limit pools failed"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "failed",
+          "reason": "current-session-processing-failed",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-failed",
+          "warnings": ["all limit pools failed"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "failed",
+          "reason": "previous-session-processing-failed",
+          "observations": null,
+          "asOf": "2026-09-03",
+          "source": "fixture-failed",
+          "warnings": ["all limit pools failed"]
+        },
+        "promotionRatio": {
+          "status": "failed",
+          "reason": "promotion-calculation-failed",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-failed",
+          "warnings": ["all limit pools failed"]
+        }
+      }
+    },
+    "datasetFallback": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "observed",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-fallback",
+        "provider": "fixture-fallback",
+        "status": "fallback",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": "primary provider failed; declared fallback used",
+        "warnings": ["primary provider failed; declared fallback used"],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": 8,
+      "yesterdayLimitUpEligible": 20,
+      "promotionRatio": 0.4,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": "2026-09-03",
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "degraded",
+        "reason": "declared-provider-fallback",
+        "observations": 20,
+        "asOf": "2026-09-04",
+        "source": "fixture-fallback",
+        "warnings": ["primary provider failed; declared fallback used"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "degraded",
+          "reason": "declared-provider-fallback",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-fallback",
+          "warnings": ["primary provider failed; declared fallback used"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "degraded",
+          "reason": "declared-provider-fallback",
+          "observations": 20,
+          "asOf": "2026-09-03",
+          "source": "fixture-fallback",
+          "warnings": ["primary provider failed; declared fallback used"]
+        },
+        "promotionRatio": {
+          "status": "degraded",
+          "reason": "declared-provider-fallback",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-fallback",
+          "warnings": ["primary provider failed; declared fallback used"]
+        }
+      }
+    },
+    "datasetDegraded": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "observed-retained",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-retained",
+        "provider": "fixture-retained",
+        "status": "degraded",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": "same-date retained snapshot after refresh failure",
+        "warnings": ["same-date retained snapshot after refresh failure"],
+        "cacheState": "stale",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": "refresh failed; same-date snapshot retained"
+      },
+      "todayPromoted": 8,
+      "yesterdayLimitUpEligible": 20,
+      "promotionRatio": 0.4,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": "2026-09-03",
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "degraded",
+        "reason": "same-date-retained-snapshot",
+        "observations": 20,
+        "asOf": "2026-09-04",
+        "source": "fixture-retained",
+        "warnings": ["refresh failed; same-date snapshot retained"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "degraded",
+          "reason": "same-date-retained-snapshot",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-retained",
+          "warnings": ["refresh failed; same-date snapshot retained"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "degraded",
+          "reason": "same-date-retained-snapshot",
+          "observations": 20,
+          "asOf": "2026-09-03",
+          "source": "fixture-retained",
+          "warnings": ["refresh failed; same-date snapshot retained"]
+        },
+        "promotionRatio": {
+          "status": "degraded",
+          "reason": "same-date-retained-snapshot",
+          "observations": 20,
+          "asOf": "2026-09-04",
+          "source": "fixture-retained",
+          "warnings": ["refresh failed; same-date snapshot retained"]
+        }
+      }
+    },
+    "datasetInsufficient": {
+      "limitUpCount": 37,
+      "limitDownCount": 2,
+      "failedLimitUpCount": 5,
+      "failedLimitUpRatio": 0.119,
+      "maxStreak": 3,
+      "state": "insufficient",
+      "quality": {
+        "dataset": "limit-pools",
+        "source": "fixture-current-session-only",
+        "provider": "fixture-current-session-only",
+        "status": "insufficient",
+        "observations": 44,
+        "asOf": "2026-09-04",
+        "warning": "previous exact trading session is unavailable",
+        "warnings": ["previous exact trading session is unavailable"],
+        "cacheState": "fresh",
+        "snapshotFetchedAt": "2026-09-04T15:30:00+08:00",
+        "refreshing": false,
+        "refreshWarning": null
+      },
+      "todayPromoted": null,
+      "yesterdayLimitUpEligible": null,
+      "promotionRatio": null,
+      "promotionSampleAsOf": "2026-09-04",
+      "promotionPreviousAsOf": null,
+      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
+      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionQuality": {
+        "status": "insufficient",
+        "reason": "missing-previous-session",
+        "observations": null,
+        "asOf": "2026-09-04",
+        "source": "fixture-current-session-only",
+        "warnings": ["previous exact trading session is unavailable"]
+      },
+      "fieldQuality": {
+        "todayPromoted": {
+          "status": "insufficient",
+          "reason": "missing-previous-session",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-current-session-only",
+          "warnings": ["previous exact trading session is unavailable"]
+        },
+        "yesterdayLimitUpEligible": {
+          "status": "insufficient",
+          "reason": "missing-previous-session",
+          "observations": null,
+          "asOf": null,
+          "source": null,
+          "warnings": ["previous exact trading session is unavailable"]
+        },
+        "promotionRatio": {
+          "status": "insufficient",
+          "reason": "missing-previous-session",
+          "observations": null,
+          "asOf": "2026-09-04",
+          "source": "fixture-current-session-only",
+          "warnings": ["previous exact trading session is unavailable"]
+        }
+      }
+    }
+  }
+}

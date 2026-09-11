@@ -220,6 +220,28 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
 
+### 第 03 页 limits 生态采集与验证
+
+limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时只提供既有 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak` 和本地快照读取；开启前必须在固定 fixture 上通过契约、迁移、幂等、lease/CAS、失败保留、`PRAGMA quick_check` 和 provider-free GET 验证。
+
+严格 provider 必须验证顶层及逐行实际日期、规范证券身份（交易所限定的 `security_id`）、板块、ST/上市窗口、适用涨跌幅制度、盘中触板与收盘涨停状态。缺少这些字段时，行保留 `invalid_reason` 与排除计数，但不得进入晋级分子/分母、梯队、制度/板块分层或 250 日结论；不得使用证券名称匹配或固定 10% 推断。采集应先解析请求日对应的真实交易日和精确 `previous_as_of`，在两个日期分别保存 `trading_sessions`、`limit_security_datasets`、`limit_security_facts` 与 checksum；不使用自然日减一或其他日期回填。
+
+状态排查应同时查看 `/api/market-environment/data-collection?as_of=<date>` 和 limits snapshot：状态 GET 只读 SQLite、provider 调用数为 0；每个 limits task 显示当前/前一样本日期、实际日期、observations、排除数、checksum、晋级依赖和 warning。单项重试只启动 limits task，不重跑 `core`、`breadth`、`sectors` 或 `activeDirection`。刷新失败只记录 attempt，并保留同日期最后成功值为 `failed-retained` / `degraded`；没有旧值才为 `failed-missing`。
+
+晋级验证必须能审计昨日合资格收盘涨停集合与今日同 `security_id` 的交集。分母为 0 时晋级率为 `null`、质量为 `insufficient`，不得显示 `0%`。近 5 日趋势只读取连续精确快照；有效观测不足 60 或历史不连续时，250 日分位、连续风险、断板/修复和规则周期结论保持 `insufficient` 并显示缺口。`QTS-01-03-01` 至 `QTS-01-03-05` 继续为 `needs-backtest`，页面可展示经验阈值和置信度但不能输出 `validated`。
+
+真实 provider smoke 不属于普通测试，只能在获得明确授权的盘后窗口、隔离 SQLite（例如 `.artifacts/market-environment/limits-smoke.sqlite3`）和本地命令中执行。示例命令必须替换为获批的两日参数，并记录 provider 请求预算、实际/前一交易日、来源、字段覆盖、排除数、warning、dataset/row checksum、耗时和最终 `ok`/`degraded`/`insufficient`/`failed` 质量；禁止写生产 PVC、复用生产数据库或将失败转成成功。
+
+```bash
+# 仅限已授权的盘后隔离 smoke；普通离线/PR 验证不得执行真实 provider
+MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=1 \
+MARKET_ENVIRONMENT_SNAPSHOT_PATH=.artifacts/market-environment/limits-smoke.sqlite3 \
+.venv/bin/python -m src.market_environment.cli snapshots refresh \
+  --as-of <获批当前交易日> --dataset limits --force
+```
+
+回滚时先将 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0` 并重启 API/采集进程，再恢复应用版本。保留 PVC、旧五字段快照、`trading_sessions`、`limit_security_datasets`、`limit_security_facts` 和 checksum；不删除数据库、不回填其他日期，也不因回滚修改规则 ID、权重或校准状态。
+
 部署内盘后定时采集：
 
 ```bash
@@ -290,6 +312,7 @@ Gate B/Gate C 的推进授权已经记录，但执行仍须严格按以下前置
 - `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
 - `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再按现场捕获的回退基线决定网络入口。
+- `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0`：关闭 limits detail/V1 事实写入和晋级扩展，继续服务旧五字段与本地快照；开启前须完成离线门禁，真实 smoke 只能写隔离 SQLite。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
 

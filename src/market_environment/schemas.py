@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 CollectionDataset = Literal["core", "breadth", "limits", "sectors", "activeDirection"]
 CollectionRunState = Literal["queued", "collecting", "success", "partial", "failed"]
@@ -18,6 +18,16 @@ CollectionTaskState = Literal[
     "failed-missing",
     "busy",
 ]
+EvidenceQualityStatus = Literal[
+    "ok", "partial", "fallback", "failed", "missing", "degraded", "insufficient"
+]
+CacheState = Literal["fresh", "stale", "missing"]
+MetricQualityStatus = Literal["ok", "insufficient", "degraded", "failed"]
+LimitMetricField = Literal["todayPromoted", "yesterdayLimitUpEligible", "promotionRatio"]
+PromotionSampleRule = Literal["previous eligible close-limit-up -> current close-limit-up"]
+PromotionRuleVersion = Literal["limits-promotion-v1"]
+PROMOTION_SAMPLE_RULE = "previous eligible close-limit-up -> current close-limit-up"
+PROMOTION_RULE_VERSION = "limits-promotion-v1"
 SynchronizationAssessmentStatus = Literal["confirmed", "unconfirmed", "contradicted", "insufficient"]
 SynchronizationDimensionStatus = Literal["confirming", "neutral", "contradicting", "insufficient"]
 SynchronizationConclusionCode = Literal[
@@ -183,15 +193,111 @@ class EvidenceQuality(BaseModel):
     dataset: str
     source: str
     provider: str
-    status: str
+    status: EvidenceQualityStatus
     observations: int
     asOf: str | None = None
     warning: str | None = None
     warnings: list[str]
-    cacheState: str | None = None
+    cacheState: CacheState | None = None
     snapshotFetchedAt: str | None = None
     refreshing: bool | None = None
     refreshWarning: str | None = None
+
+
+def _validate_iso_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("date must use valid YYYY-MM-DD form") from exc
+    if parsed.isoformat() != value:
+        raise ValueError("date must use valid YYYY-MM-DD form")
+    return value
+
+
+class MetricQuality(BaseModel):
+    status: MetricQualityStatus
+    reason: str | None
+    observations: int | None = Field(default=None, ge=0)
+    asOf: str | None
+    source: str | None
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_as_of(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+
+class LimitTierEvidence(BaseModel):
+    tier: Literal["first", "second", "third", "four_plus"]
+    label: str
+    count: int | None = Field(default=None, ge=0)
+    observations: int = Field(default=0, ge=0)
+    quality: MetricQuality
+
+
+class LimitStratificationEvidence(BaseModel):
+    dimension: Literal["regime", "board", "exchange", "sector", "risk_tier"]
+    key: str
+    label: str
+    count: int | None = Field(default=None, ge=0)
+    observations: int = Field(default=0, ge=0)
+    quality: MetricQuality
+
+
+class LimitHistoryPoint(BaseModel):
+    asOf: str
+    limitUpCount: int | None = Field(default=None, ge=0)
+    limitDownCount: int | None = Field(default=None, ge=0)
+    failedLimitUpRatio: float | None = Field(default=None, ge=0, le=1)
+    promotionRatio: float | None = Field(default=None, ge=0, le=1)
+    maxStreak: int | None = Field(default=None, ge=0)
+    quality: MetricQuality
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_date(cls, value: str) -> str:
+        return _validate_iso_date(value) or value
+
+
+class LimitHistoryEvidence(BaseModel):
+    points: list[LimitHistoryPoint] = Field(default_factory=list)
+    validObservations: int = Field(default=0, ge=0)
+    requiredObservations: int = Field(default=60, ge=0)
+    windowDays: int = Field(default=250, ge=0)
+    coverage: float | None = Field(default=None, ge=0, le=1)
+    percentile250: dict[str, float | None] = Field(default_factory=dict)
+    quality: MetricQuality
+
+
+class LimitRuleEvidence(BaseModel):
+    ruleId: str
+    status: Literal["ok", "insufficient", "degraded", "failed", "needs-backtest"]
+    value: float | int | None = None
+    score: float | int | None = None
+    weight: float | None = Field(default=None, ge=0, le=1)
+    thresholdProvenance: str | None = None
+    missingInputs: list[str] = Field(default_factory=list)
+    vetoes: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    calibrationStatus: Literal["needs-backtest", "validated"] | None = None
+
+
+class LimitRiskEvidence(BaseModel):
+    code: str
+    label: str
+    status: Literal["ok", "insufficient", "degraded", "failed"]
+    value: float | int | bool | str | None = None
+    asOf: str | None = None
+    quality: MetricQuality | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
 
 
 class ChapterDocument(BaseModel):
@@ -221,6 +327,93 @@ class LimitEvidence(BaseModel):
     maxStreak: int | None
     state: str
     quality: EvidenceQuality
+    todayPromoted: int | None = Field(default=None, ge=0)
+    yesterdayLimitUpEligible: int | None = Field(default=None, ge=0)
+    promotionRatio: float | None = Field(default=None, ge=0, le=1)
+    promotionSampleAsOf: str | None = None
+    promotionPreviousAsOf: str | None = None
+    promotionSampleRule: PromotionSampleRule | None = None
+    promotionRuleVersion: PromotionRuleVersion | None = None
+    promotionQuality: MetricQuality | None = None
+    fieldQuality: dict[LimitMetricField, MetricQuality] | None = None
+    ladder: list[LimitTierEvidence] = Field(default_factory=list)
+    stratifications: list[LimitStratificationEvidence] = Field(default_factory=list)
+    history: LimitHistoryEvidence | None = None
+    ruleEvidence: list[LimitRuleEvidence] = Field(default_factory=list)
+    riskEvidence: list[LimitRiskEvidence] = Field(default_factory=list)
+    confirmation: str | None = None
+    invalidation: str | None = None
+    ecosystemCoverage: float | None = Field(default=None, ge=0, le=1)
+    confidence: Literal["high", "medium", "low", "insufficient"] | None = None
+
+    @field_validator("promotionSampleAsOf", "promotionPreviousAsOf")
+    @classmethod
+    def validate_sample_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_promotion_evidence(self) -> "LimitEvidence":
+        numerator = self.todayPromoted
+        denominator = self.yesterdayLimitUpEligible
+        ratio = self.promotionRatio
+        if numerator is not None and denominator is not None and numerator > denominator:
+            raise ValueError("todayPromoted cannot exceed yesterdayLimitUpEligible")
+        if denominator in (None, 0) and ratio is not None:
+            raise ValueError("promotionRatio requires a non-zero denominator")
+        if ratio is not None:
+            if numerator is None or denominator is None:
+                raise ValueError("promotionRatio requires numerator and denominator")
+            if abs(ratio - round(numerator / denominator, 4)) > 1e-9:
+                raise ValueError("promotionRatio must equal the four-decimal promotion fraction")
+        if self.promotionSampleAsOf and self.promotionPreviousAsOf:
+            if date.fromisoformat(self.promotionPreviousAsOf) >= date.fromisoformat(self.promotionSampleAsOf):
+                raise ValueError("promotionPreviousAsOf must precede promotionSampleAsOf")
+        scalar = (numerator, denominator, ratio, self.promotionSampleAsOf,
+                  self.promotionPreviousAsOf, self.promotionSampleRule, self.promotionRuleVersion)
+        if any(value is not None for value in scalar) and self.promotionQuality is None:
+            raise ValueError("promotion metadata requires promotionQuality")
+        if self.promotionQuality is None:
+            return self
+        if self.promotionQuality.status in {"insufficient", "failed"}:
+            if ratio is not None:
+                raise ValueError("insufficient or failed promotion quality requires a null ratio")
+            return self
+        if numerator is None or denominator is None or denominator == 0 or ratio is None:
+            raise ValueError("ok or degraded promotion quality requires complete non-zero values")
+        if not self.promotionSampleAsOf or not self.promotionPreviousAsOf:
+            raise ValueError("ok or degraded promotion quality requires both sample dates")
+        if self.promotionSampleRule is None or self.promotionRuleVersion is None:
+            raise ValueError("ok or degraded promotion quality requires fixed rule metadata")
+        if self.promotionQuality.asOf != self.promotionSampleAsOf:
+            raise ValueError("promotionQuality.asOf must match promotionSampleAsOf")
+        if self.promotionQuality.observations != denominator:
+            raise ValueError("promotionQuality.observations must equal the denominator")
+        if not self.promotionQuality.reason or not self.promotionQuality.source:
+            raise ValueError("ok or degraded promotion quality requires reason and source")
+        required = {"todayPromoted", "yesterdayLimitUpEligible", "promotionRatio"}
+        if self.fieldQuality is None or set(self.fieldQuality) != required:
+            raise ValueError("ok or degraded promotion quality requires all fieldQuality entries")
+        expected_dates = {
+            "todayPromoted": self.promotionSampleAsOf,
+            "yesterdayLimitUpEligible": self.promotionPreviousAsOf,
+            "promotionRatio": self.promotionSampleAsOf,
+        }
+        for field, quality in self.fieldQuality.items():
+            if quality.observations != denominator or quality.asOf != expected_dates[field]:
+                raise ValueError("fieldQuality sample metadata must match the promotion sample")
+            if not quality.reason or not quality.source:
+                raise ValueError("ok or degraded field quality requires reason and source")
+        statuses = {quality.status for quality in self.fieldQuality.values()}
+        if self.promotionQuality.status == "ok" and statuses != {"ok"}:
+            raise ValueError("ok promotion quality requires ok field quality")
+        if self.promotionQuality.status == "degraded":
+            if not statuses <= {"ok", "degraded"} or "degraded" not in statuses:
+                raise ValueError("degraded promotion quality requires at least one degraded field")
+            if not (self.quality.status in {"fallback", "degraded"}
+                    or self.quality.cacheState == "stale"
+                    or self.quality.refreshWarning is not None):
+                raise ValueError("degraded promotion quality requires fallback or retained evidence")
+        return self
 
 
 class SectorRow(BaseModel):
@@ -256,6 +449,17 @@ class ActiveDirectionEvidence(BaseModel):
     summary: str | None
     topStocks: list[ActiveStock]
     quality: EvidenceQuality
+
+
+class LimitsCollectionDetail(BaseModel):
+    sampleAsOf: date | None = None
+    previousAsOf: date | None = None
+    excludedCount: int | None = Field(default=None, ge=0)
+    promotionRequired: bool | None = None
+    promotionQuality: str | None = None
+    promotionDependency: str | None = None
+    detailChecksum: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class EventEvidence(BaseModel):
@@ -342,6 +546,7 @@ class CollectionTaskResponse(BaseModel):
     durationMs: float | None
     settled: bool
     coreIndices: list[CoreIndexCollectionResult] = Field(default_factory=list)
+    detail: LimitsCollectionDetail | None = None
 
 
 class CollectionRunResponse(BaseModel):
@@ -369,6 +574,12 @@ class CollectionAttemptSummary(BaseModel):
     completedAt: datetime | None
     durationMs: float | None
     settled: bool
+    sampleAsOf: date | None = None
+    previousAsOf: date | None = None
+    excludedCount: int | None = Field(default=None, ge=0)
+    promotionQuality: str | None = None
+    promotionDependency: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DatasetCollectionStatus(BaseModel):
@@ -384,6 +595,7 @@ class DatasetCollectionStatus(BaseModel):
     collectionAllowed: bool
     restriction: str | None
     coreIndices: list[CoreIndexCollectionResult]
+    detail: LimitsCollectionDetail | None = None
 
 
 class CollectionStatusResponse(BaseModel):

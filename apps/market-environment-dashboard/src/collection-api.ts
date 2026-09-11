@@ -24,6 +24,22 @@ export interface CollectionAttempt {
   completedAt: string | null
   durationMs: number | null
   settled: boolean
+  sampleAsOf?: string | null
+  previousAsOf?: string | null
+  excludedCount?: number | null
+  promotionQuality?: string | null
+  promotionDependency?: string | null
+  promotionRequired?: boolean | null
+}
+
+export interface LimitsCollectionDetail {
+  sampleAsOf?: string | null
+  previousAsOf?: string | null
+  excludedCount?: number | null
+  promotionQuality?: string | null
+  promotionDependency?: string | null
+  promotionRequired?: boolean | null
+  warnings?: string[]
 }
 
 export interface DatasetCollectionStatus {
@@ -39,6 +55,7 @@ export interface DatasetCollectionStatus {
   collectionAllowed: boolean
   restriction: string | null
   coreIndices: CoreIndexCollectionResult[]
+  detail?: LimitsCollectionDetail | null
 }
 
 export interface CollectionStatusResponse {

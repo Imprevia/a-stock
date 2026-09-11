@@ -6,9 +6,9 @@ import json
 import logging
 import math
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import date, timedelta
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any
 
@@ -49,6 +49,28 @@ class ProviderResult:
     source: str
     warning: str | None = None
     is_stale: bool = False
+
+
+@dataclass(frozen=True)
+class LimitProviderDatasetResult:
+    payload: dict[str, Any]
+    normalization: Any
+    pool_evidence: dict[str, dict[str, Any]] | None = None
+
+
+class LimitPoolRows(list):
+    """List-compatible pool rows carrying the provider's group date evidence."""
+
+    def __init__(
+        self,
+        rows: list[Any],
+        *,
+        actual_as_of: date | None,
+        date_warning: str | None = None,
+    ) -> None:
+        super().__init__(rows)
+        self.actual_as_of = actual_as_of
+        self.date_warning = date_warning
 
 
 class MarketDataProvider:
@@ -228,7 +250,179 @@ class MarketDataProvider:
             return self._missing_active_direction(as_of, f"东方财富容量方向不可用：{exc}", status="failed")
 
     def fetch_chapter01_limits(self, as_of: date) -> dict[str, Any]:
-        return self._fetch_limit_evidence(as_of)
+        return self.fetch_chapter01_limit_dataset(as_of).payload
+
+    def fetch_chapter01_limit_dataset(self, as_of: date) -> LimitProviderDatasetResult:
+        """Return the aggregate and normalized rows from one provider call chain."""
+
+        return self._fetch_chapter01_limit_dataset(as_of, strict=False)
+
+    def fetch_chapter01_limit_dataset_strict(
+        self,
+        as_of: date,
+        *,
+        on_pool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> LimitProviderDatasetResult:
+        """Fetch one exact session and stop before another wire call on any pool failure."""
+
+        return self._fetch_chapter01_limit_dataset(as_of, strict=True, on_pool=on_pool)
+
+    def _fetch_chapter01_limit_dataset(
+        self,
+        as_of: date,
+        *,
+        strict: bool,
+        on_pool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> LimitProviderDatasetResult:
+
+        definitions = {
+            "limit_up": ("getTopicZTPool", "fbt:asc"),
+            "failed_limit_up": ("getTopicZBPool", "fbt:asc"),
+            "limit_down": ("getTopicDTPool", "fund:asc"),
+        }
+        pools: dict[str, list[Any] | None] = {}
+        pool_evidence: dict[str, dict[str, Any]] = {}
+        warnings: list[str] = []
+        for key, (endpoint, sort) in definitions.items():
+            try:
+                rows = self._fetch_limit_pool(endpoint, sort, as_of)
+                evidence = {
+                    "source": "eastmoney-push2ex",
+                    "status": "ok",
+                    "actualAsOf": rows.actual_as_of.isoformat() if rows.actual_as_of else None,
+                    "rawCount": len(rows),
+                    "warnings": [rows.date_warning] if rows.date_warning else [],
+                }
+                if strict and (rows.date_warning is not None or rows.actual_as_of != as_of):
+                    evidence["status"] = "failed"
+                    pool_evidence[key] = evidence
+                    if on_pool is not None:
+                        on_pool(key, dict(evidence))
+                    detail = rows.date_warning or (
+                        "limits provider date mismatch: "
+                        f"requested {as_of.isoformat()}, "
+                        f"actual {rows.actual_as_of.isoformat() if rows.actual_as_of else 'missing'}"
+                    )
+                    raise RuntimeError(detail)
+                pools[key] = rows
+                pool_evidence[key] = evidence
+                if on_pool is not None:
+                    on_pool(key, dict(evidence))
+            except Exception as exc:
+                if key not in pool_evidence:
+                    evidence = {
+                        "source": "eastmoney-push2ex",
+                        "status": "failed",
+                        "actualAsOf": None,
+                        "rawCount": None,
+                        "warnings": [str(exc)],
+                    }
+                    pool_evidence[key] = evidence
+                    if on_pool is not None:
+                        on_pool(key, dict(evidence))
+                if strict:
+                    raise RuntimeError(f"{key} pool failed: {exc}") from exc
+                pools[key] = None
+                warnings.append(f"{key}: {exc}")
+        actual_as_of, date_warnings = self._limit_pool_date_evidence(pools)
+        warnings.extend(date_warnings)
+        date_validation_warnings = list(date_warnings)
+        if actual_as_of is not None and actual_as_of != as_of:
+            mismatch_warning = (
+                "limits provider date mismatch: "
+                f"requested {as_of.isoformat()}, actual {actual_as_of.isoformat()}"
+            )
+            warnings.append(mismatch_warning)
+            date_validation_warnings.append(mismatch_warning)
+        payload = self._limit_payload(as_of, pools, warnings)
+        normalization = self.normalize_limit_pools(
+            pools,
+            as_of,
+            actual_as_of=actual_as_of,
+            source="eastmoney-push2ex",
+            source_revision="eastmoney-limit-pools-v1",
+            rule_version="limits-promotion-v1",
+        )
+        if date_validation_warnings:
+            normalization = replace(
+                normalization,
+                warnings=tuple(dict.fromkeys((*normalization.warnings, *date_validation_warnings))),
+            ).normalized()
+        for pool_name, evidence in pool_evidence.items():
+            raw_count = evidence.get("rawCount")
+            facts = [row for row in normalization.rows if row.pool_type == pool_name]
+            validation_reasons = Counter(
+                row.invalid_reason
+                for row in facts
+                if row.invalid_reason not in {None, "not-v1-pool"}
+            )
+            v1_reasons = Counter(row.invalid_reason for row in facts if row.invalid_reason is not None)
+            collapsed = max(int(raw_count) - len(facts), 0) if raw_count is not None else 0
+            if collapsed:
+                validation_reasons["duplicate-security-removed"] += collapsed
+                v1_reasons["duplicate-security-removed"] += collapsed
+            excluded_count = sum(validation_reasons.values())
+            evidence.update(
+                {
+                    "normalizedCount": len(facts),
+                    "validCount": int(raw_count) - excluded_count if raw_count is not None else None,
+                    "excludedCount": excluded_count,
+                    "eligibleCount": sum(row.eligible for row in facts),
+                    "excludedByReason": dict(sorted(validation_reasons.items())),
+                    "v1ExcludedByReason": dict(sorted(v1_reasons.items())),
+                }
+            )
+        return LimitProviderDatasetResult(
+            payload=payload,
+            normalization=normalization,
+            pool_evidence=pool_evidence,
+        )
+
+    @staticmethod
+    def normalize_limit_rows(
+        rows: list[Any],
+        as_of: date,
+        pool_type: str,
+        *,
+        actual_as_of: date | None = None,
+        source: str = "eastmoney-push2ex",
+        source_revision: str | None = None,
+        rule_version: str | None = None,
+    ):
+        """Normalize provider rows without inferring missing security facts."""
+
+        from .limit_facts import normalize_limit_rows
+
+        return normalize_limit_rows(
+            rows,
+            as_of=as_of,
+            actual_as_of=actual_as_of,
+            pool_type=pool_type,
+            source=source,
+            source_revision=source_revision,
+            rule_version=rule_version,
+        )
+
+    @staticmethod
+    def normalize_limit_pools(
+        pools: dict[str, list[Any] | None],
+        as_of: date,
+        *,
+        actual_as_of: date | None = None,
+        source: str = "eastmoney-push2ex",
+        source_revision: str | None = None,
+        rule_version: str | None = None,
+    ):
+        from .limit_facts import normalize_limit_pools
+
+        return normalize_limit_pools(
+            pools,
+            as_of=as_of,
+            actual_as_of=actual_as_of,
+            source=source,
+            source_revision=source_revision,
+            rule_version=rule_version,
+        )
 
     def fetch_chapter01_sectors(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
         if not allow_current_snapshot:
@@ -369,80 +563,19 @@ class MarketDataProvider:
 
         _, total = fetch_page(1)
         page_count = math.ceil(total / page_size)
-
-        def last_page_with_positive() -> int | None:
-            low, high, result = 1, page_count, None
-            while low <= high:
-                middle_page = (low + high) // 2
-                values, observed_total = fetch_page(middle_page)
-                if observed_total != total:
-                    raise RuntimeError("延迟行情分页期间总样本数发生变化")
-                if any(value is not None and value > 0 for value in values):
-                    result = middle_page
-                    low = middle_page + 1
-                else:
-                    high = middle_page - 1
-            return result
-
-        def first_page_with_negative() -> int | None:
-            low, high, result = 1, page_count, None
-            while low <= high:
-                middle_page = (low + high) // 2
-                values, observed_total = fetch_page(middle_page)
-                if observed_total != total:
-                    raise RuntimeError("延迟行情分页期间总样本数发生变化")
-                if any(value is not None and value < 0 for value in values):
-                    result = middle_page
-                    high = middle_page - 1
-                else:
-                    low = middle_page + 1
-            return result
-
-        positive_page = last_page_with_positive()
-        negative_page = first_page_with_negative()
-        if positive_page is None or negative_page is None or positive_page > negative_page:
-            raise RuntimeError("延迟行情无法定位涨跌分界")
-
-        positive_values, _ = fetch_page(positive_page)
-        advance_count = (positive_page - 1) * page_size + sum(
-            value is not None and value > 0 for value in positive_values
-        )
-        negative_values, _ = fetch_page(negative_page)
-        first_negative_offset = next(
-            (index for index, value in enumerate(negative_values) if value is not None and value < 0),
-            None,
-        )
-        if first_negative_offset is None:
-            raise RuntimeError("延迟行情跌幅边界页缺少负值")
-        negative_start = (negative_page - 1) * page_size + first_negative_offset
-        decline_count = total - negative_start
-
-        boundary_values: list[float | None] = []
-        for page_number in range(positive_page, negative_page + 1):
-            values, _ = fetch_page(page_number)
-            boundary_values.extend(values)
-        flat_count = sum(value == 0 for value in boundary_values if value is not None)
-        invalid_count = sum(value is None for value in boundary_values)
-        valid_count = advance_count + flat_count + decline_count
-        if valid_count + invalid_count != total:
-            raise RuntimeError("延迟行情排序边界不连续，无法保证统计口径")
-
-        def value_at_valid_rank(rank: int) -> float:
-            if rank < advance_count:
-                raw_index = rank
-            elif rank < advance_count + flat_count:
-                return 0.0
-            else:
-                raw_index = negative_start + rank - advance_count - flat_count
-            values, _ = fetch_page(raw_index // page_size + 1)
-            value = values[raw_index % page_size]
-            if value is None:
-                raise RuntimeError("延迟行情中位数位置缺少有效涨跌幅")
-            return value
-
-        lower_rank = (valid_count - 1) // 2
-        upper_rank = valid_count // 2
-        middle = (value_at_valid_rank(lower_rank) + value_at_valid_rank(upper_rank)) / 2
+        all_values: list[float] = []
+        for page_number in range(1, page_count + 1):
+            values, observed_total = fetch_page(page_number)
+            if observed_total != total:
+                raise RuntimeError("延迟行情分页期间总样本数发生变化")
+            all_values.extend(value for value in values if value is not None and math.isfinite(value))
+        if not all_values:
+            raise RuntimeError("延迟行情缺少有效涨跌幅")
+        advance_count = sum(value > 0 for value in all_values)
+        decline_count = sum(value < 0 for value in all_values)
+        flat_count = sum(value == 0 for value in all_values)
+        valid_count = len(all_values)
+        middle = median(all_values)
         return self._breadth_result(
             advance_count,
             decline_count,
@@ -505,7 +638,7 @@ class MarketDataProvider:
             raise RuntimeError("行业排名未返回有效板块")
         return valid_rows
 
-    def _fetch_limit_pool(self, endpoint: str, sort: str, as_of: date) -> list[dict[str, Any]]:
+    def _fetch_limit_pool(self, endpoint: str, sort: str, as_of: date) -> LimitPoolRows:
         url = f"https://push2ex.eastmoney.com/{endpoint}"
         params = {
             "ut": "7eea3edcaed734bea9cbfc24409ed989",
@@ -522,37 +655,79 @@ class MarketDataProvider:
         rows = data.get("pool")
         if not isinstance(rows, list):
             raise RuntimeError("响应缺少 pool")
-        return rows
+        raw_date = data.get("date")
+        actual_as_of = self._parse_limit_date(raw_date)
+        if raw_date in (None, "", "-"):
+            date_warning = "provider response missing top-level session date"
+        elif actual_as_of is None:
+            date_warning = f"provider response has invalid top-level session date: {raw_date!r}"
+        else:
+            date_warning = None
+        return LimitPoolRows(rows, actual_as_of=actual_as_of, date_warning=date_warning)
 
     def _fetch_limit_evidence(self, as_of: date) -> dict[str, Any]:
-        definitions = {
-            "limit_up": ("getTopicZTPool", "fbt:asc"),
-            "failed_limit_up": ("getTopicZBPool", "fbt:asc"),
-            "limit_down": ("getTopicDTPool", "fund:asc"),
-        }
-        pools: dict[str, list[dict[str, Any]] | None] = {}
-        warnings: list[str] = []
-        for key, (endpoint, sort) in definitions.items():
-            try:
-                pools[key] = self._fetch_limit_pool(endpoint, sort, as_of)
-            except Exception as exc:
-                pools[key] = None
-                warnings.append(f"{key}: {exc}")
+        return self.fetch_chapter01_limit_dataset(as_of).payload
 
-        limit_up_count = len(pools["limit_up"]) if pools["limit_up"] is not None else None
-        failed_count = len(pools["failed_limit_up"]) if pools["failed_limit_up"] is not None else None
-        limit_down_count = len(pools["limit_down"]) if pools["limit_down"] is not None else None
+    def _limit_payload(
+        self,
+        as_of: date,
+        pools: Mapping[str, list[Any] | None],
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        malformed_by_pool = {
+            pool_name: sum(not isinstance(item, Mapping) for item in rows)
+            for pool_name, rows in pools.items()
+            if rows is not None
+        }
+
+        def exact_count(pool_name: str) -> int | None:
+            rows = pools[pool_name]
+            if rows is None or malformed_by_pool.get(pool_name, 0):
+                return None
+            return len(rows)
+
+        limit_up_count = exact_count("limit_up")
+        failed_count = exact_count("failed_limit_up")
+        limit_down_count = exact_count("limit_down")
         failed_ratio = None
         if limit_up_count is not None and failed_count is not None and limit_up_count + failed_count > 0:
             failed_ratio = failed_count / (limit_up_count + failed_count)
-        streaks = [
-            value
-            for item in pools["limit_up"] or []
-            if (value := self._optional_int(item.get("lbc"))) is not None
-        ]
+        streaks = (
+            [
+                value
+                for item in pools["limit_up"] or []
+                if isinstance(item, Mapping) and (value := self._optional_int(item.get("lbc"))) is not None
+            ]
+            if limit_up_count is not None
+            else []
+        )
         max_streak = max(streaks) if streaks else None
-        observed = sum(len(rows) for rows in pools.values() if rows is not None)
-        if len(warnings) == len(definitions):
+        observed = sum(
+            isinstance(item, Mapping)
+            for rows in pools.values()
+            if rows is not None
+            for item in rows
+        )
+        malformed_count = sum(malformed_by_pool.values())
+        if malformed_count:
+            details = ", ".join(
+                f"{pool_name}={count}" for pool_name, count in malformed_by_pool.items() if count
+            )
+            warnings.append(f"malformed-row limit pool entries excluded: {malformed_count} ({details})")
+        date_evidence_failed = any(
+            "top-level session date" in warning
+            or "provider pools disagree on top-level dates" in warning
+            or "provider date mismatch" in warning
+            or "provider row date" in warning
+            for warning in warnings
+        )
+        usable_pool_count = sum(
+            rows is not None and malformed_by_pool.get(pool_name, 0) == 0
+            for pool_name, rows in pools.items()
+        )
+        if date_evidence_failed:
+            status, state = "failed", "insufficient"
+        elif usable_pool_count == 0:
             status, state = "failed", "insufficient"
         elif warnings:
             status, state = "partial", "partial"
@@ -569,6 +744,175 @@ class MarketDataProvider:
             "state": state,
             "quality": self._quality("limit-pools", "eastmoney-push2ex", status, observed, as_of, warnings),
         }
+
+    @staticmethod
+    def _parse_limit_date(value: Any) -> date | None:
+        if isinstance(value, datetime):
+            return None
+        if isinstance(value, date):
+            return value
+        if value in (None, "", "-"):
+            return None
+        text = str(value).strip().replace("/", "-")
+        try:
+            if len(text) == 8 and text.isdigit():
+                return datetime.strptime(text, "%Y%m%d").date()
+            return date.fromisoformat(text)
+        except (TypeError, ValueError):
+            return None
+    @classmethod
+    def _limit_pool_date_evidence(
+        cls,
+        pools: Mapping[str, list[Any] | None],
+    ) -> tuple[date | None, list[str]]:
+        """Resolve group dates first, then validate any explicit row dates."""
+
+        warnings: list[str] = []
+        wrapped = [rows for rows in pools.values() if isinstance(rows, LimitPoolRows)]
+        if wrapped:
+            dates: list[date] = []
+            missing_group_date = False
+            for pool_name, rows in pools.items():
+                if rows is None:
+                    continue
+                if not isinstance(rows, LimitPoolRows):
+                    warnings.append(f"{pool_name}: provider response missing top-level session date")
+                    missing_group_date = True
+                    continue
+                if rows.date_warning:
+                    warnings.append(f"{pool_name}: {rows.date_warning}")
+                    missing_group_date = True
+                if rows.actual_as_of is not None:
+                    dates.append(rows.actual_as_of)
+            unique_dates = set(dates)
+            if len(unique_dates) > 1:
+                rendered = ", ".join(sorted(value.isoformat() for value in unique_dates))
+                warnings.append(f"provider pools disagree on top-level dates: {rendered}")
+                return None, warnings
+            actual_as_of = next(iter(unique_dates), None)
+            if actual_as_of is None and all(
+                isinstance(rows, LimitPoolRows)
+                and rows.date_warning == "provider response missing top-level session date"
+                for rows in pools.values()
+                if rows is not None
+            ):
+                # Preserve the older explicit row-date path when a provider
+                # omits the group date but every row still carries one.
+                row_dates: set[date] = set()
+                complete_row_dates = True
+                for rows in pools.values():
+                    if rows is None:
+                        continue
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            continue
+                        raw = next(
+                            (
+                                row[key]
+                                for key in (
+                                    "actual_as_of",
+                                    "actualAsOf",
+                                    "trade_date",
+                                    "tradeDate",
+                                    "as_of",
+                                    "asOf",
+                                    "date",
+                                )
+                                if row.get(key) not in (None, "", "-")
+                            ),
+                            None,
+                        )
+                        value = cls._parse_limit_date(raw)
+                        if value is None:
+                            complete_row_dates = False
+                            break
+                        row_dates.add(value)
+                    if not complete_row_dates:
+                        break
+                if complete_row_dates and len(row_dates) == 1:
+                    warnings = [
+                        warning
+                        for warning in warnings
+                        if "provider response missing top-level session date" not in warning
+                    ]
+                    warnings.append("top-level pool date missing; explicit row dates used")
+                    return next(iter(row_dates)), warnings
+            row_date_issue = False
+            if actual_as_of is not None:
+                for pool_name, rows in pools.items():
+                    if rows is None:
+                        continue
+                    for index, row in enumerate(rows):
+                        if not isinstance(row, Mapping):
+                            continue
+                        raw = next(
+                            (
+                                row[key]
+                                for key in (
+                                    "actual_as_of",
+                                    "actualAsOf",
+                                    "trade_date",
+                                    "tradeDate",
+                                    "as_of",
+                                    "asOf",
+                                    "date",
+                                )
+                                if row.get(key) not in (None, "", "-")
+                            ),
+                            None,
+                        )
+                        if raw is None:
+                            continue
+                        row_date = cls._parse_limit_date(raw)
+                        if row_date is None:
+                            row_date_issue = True
+                            warnings.append(f"{pool_name}[{index}]: invalid provider row date")
+                        elif row_date != actual_as_of:
+                            row_date_issue = True
+                            warnings.append(
+                                f"provider row date mismatch: {pool_name}[{index}] "
+                                f"actual {row_date.isoformat()} vs top-level {actual_as_of.isoformat()}"
+                            )
+            if missing_group_date or row_date_issue:
+                return None, warnings
+            return actual_as_of, warnings
+
+        # Backward-compatible fallback for callers that provide row dates but no
+        # response wrapper. Missing row dates remain insufficient in this path.
+        observed_dates: set[date] = set()
+        observed_rows = 0
+        for rows in pools.values():
+            if rows is None:
+                return None, warnings
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                observed_rows += 1
+                raw = next(
+                    (
+                        row[key]
+                        for key in ("actual_as_of", "actualAsOf", "trade_date", "tradeDate", "as_of", "asOf", "date")
+                        if row.get(key) not in (None, "", "-")
+                    ),
+                    None,
+                )
+                value = cls._parse_limit_date(raw)
+                if value is None:
+                    return None, warnings
+                observed_dates.add(value)
+        if observed_rows == 0 or len(observed_dates) != 1:
+            return None, warnings
+        return next(iter(observed_dates)), warnings
+
+    @classmethod
+    def _limit_pool_actual_as_of(
+        cls,
+        pools: Mapping[str, list[Any] | None],
+    ) -> date | None:
+        """Return the single explicit date shared by all limit pools."""
+
+        actual_as_of, _warnings = cls._limit_pool_date_evidence(pools)
+        return actual_as_of
 
     def _build_breadth(self, rows: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
         returns = [value for row in rows if (value := self._optional_float(row.get("f3"))) is not None]

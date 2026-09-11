@@ -2,7 +2,7 @@
 
 ## Status
 
-`active` · 版本 `0.10`
+`active` · 版本 `0.11`
 
 ## 目标
 
@@ -45,6 +45,29 @@
 - 通用部署必须在首个 render、build、image、环境或目标访问前校验最终合并值是 typed `enabled=false,suspend=true`。`--disable-schedule` 必须使用 rollback-only canonical-digest authorization ref，且 active-to-off 的失败补偿按 release-derived exact API name 工作：label/shape drift 不能阻止紧急暂停，读回无法证明 absent/typed suspended 时保持 uncertain/NO-GO。
 - 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
 
+### 第 03 页涨跌停生态完整矩阵
+
+第 01 章第 03 页“涨停、跌停、炸板和连板晋级”采用证据优先顺序。以下内容是页面必须对齐的产品矩阵；每一行都要带实际交易日、来源、抓取时间、观察数、`quality.status`、缓存状态和 warning。前端只格式化后端字段，不从分子/分母补算业务指标。
+
+| 证据层 | 页面内容 | 数据口径与不足语义 |
+|---|---|---|
+| 证据条 | `asOf`、实际/样本日期、来源、抓取时间、observations、cache state、quality、warning | 只接受精确交易日；缺失显示 `missing` / `insufficient`，不得用其他日期或零值回填 |
+| 当日事实 | 涨停家数、跌停家数、炸板数、炸板率、最高连板 | 继续兼容旧五字段 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak`；只有 provider 明确返回空池时计数才可为 0 |
+| 晋级证据 | 今日晋级数、昨日合资格样本数、晋级率、当前/前一相邻交易日、样本规则与固定版本 | 分母仅为前一真实交易日有效且收盘涨停集合；20/8 返回 `0.4`，分母为 0 时比例必须为 `null` 且质量为 `insufficient` |
+| 证券事实与梯队 | 首板、二板、三板、四板以上；交易所/主板/创业板/科创板、ST、新股窗口、板块分层；排除数和排除原因 | 使用规范 `security_id`、实际制度和收盘状态；身份、制度、上市窗口或收盘状态无法证明的行不进入晋级分子/分母或分层分母 |
+| 历史与风险 | 至少近 5 个精确交易日的涨停、跌停、炸板率、晋级率、最高板；连续跌停、断板/修复、板块集中、昨日强势股次日反馈 | 少于 60 个有效观测或日期不连续时，250 日分位及其周期结论为 `insufficient`，展示有效数/缺口，不向更早日期搜索 |
+| 规则证据 | `QTS-01-03-01` 至 `QTS-01-03-05` 的输入、经验分位、分项/总状态、置信度、风险否决、触发/缺失/确认/失效条件 | 规则 ID、权重和 `needs-backtest` 不变；即使输入完整也只能标注“经验阈值 · 待回测”，不输出 `validated` 或自动交易建议 |
+
+本页必须覆盖 `ready`、`partial`、`refreshing`、`missing`、`failed-retained`、`failed-missing`、`degraded` 和 `insufficient` 状态。刷新失败时保留同日期最后一次成功证据并标记刷新 warning；没有保留值才显示 `failed-missing`。普通 GET 只读取本地快照/materialized aggregate，provider 调用数必须为 0。
+
+### 第 03 页数据与发布边界
+
+- limits detail/V1 写入开关 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 默认关闭；关闭时旧五字段路径和本地快照继续可读，开启前须通过迁移、幂等、lease/CAS、`PRAGMA quick_check`、provider-free GET、失败保留和前端状态验证。
+- 严格 provider 必须证明顶层/逐行实际日期、规范证券身份、交易所/板块、ST/上市窗口、适用涨跌幅制度及收盘涨停状态；不完整字段只能保留旧事实，不能生成晋级、梯队、分层或 250 日结论。
+- 当前日与前一日由精确相邻交易日解析器确定，不使用自然日减一、跨日期回填或浏览器端重新抓取。失败采集只记录审计 warning，不覆盖成功快照。
+- 真实 provider smoke 仅在显式授权的隔离 SQLite 和盘后命令执行，记录来源、两日实际日期、覆盖率、排除数、checksum 和质量；证明不足时保持 `failed` / `degraded` / `insufficient`，不改变规则校准状态。
+- 回滚顺序为先关闭 limits detail/V1 写入，再恢复应用版本；保留 PVC、旧聚合、`trading_sessions`、`limit_security_facts` 和校验和，不删除数据库或用其他日期替代。
+
 不包含自动下单、主体意图推断、未经来源核实的事件评分，也不宣称经验阈值已经通过 500 至 750 个交易日回测。高/中/低位亏钱效应在形成独立可追溯样本前保持数据不足。
 
 ## 验收
@@ -84,3 +107,4 @@
 - 禁用或暂停定时采集不影响 Dashboard、本地快照读取、手工 CLI 或开发期开关控制的 HTTP 采集。
 - 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过 Gate B/Gate C 恢复 active schedule。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
+- 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
