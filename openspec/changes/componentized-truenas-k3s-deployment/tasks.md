@@ -20,7 +20,7 @@ The first Stage 1 delivery was independently rejected. Tasks 1.2 and 3.2-3.7 are
 ## 1. Scope and baseline
 
 - [x] 1.1 Create `docs/exec-plans/active/componentized-truenas-k3s-deployment.md` with Stage, Status, Acceptance, Completion Evidence, Remaining Gaps, and Next Step, and register it in `docs/exec-plans/active/_index.md`; verify the plan fields and index entry are present before code changes.
-- [ ] 1.2 Capture the reviewed TrueNAS baseline assumptions in fixtures (release name/namespace, existing claim option, image identity, one-replica topology, and scheduling state); verify the fixture rejects missing or conflicting storage and schedule invariants.
+- [x] 1.2 Capture the reviewed TrueNAS baseline assumptions in fixtures (release name/namespace, existing claim option, image identity, one-replica topology, and scheduling state); verify the fixture rejects missing or conflicting storage and schedule invariants.
 
 ## 2. Chart and component rendering
 
@@ -32,12 +32,12 @@ The first Stage 1 delivery was independently rejected. Tasks 1.2 and 3.2-3.7 are
 ## 3. TrueNAS component entry point
 
 - [x] 3.1 Extend `scripts/deploy-truenas-k3s.sh` argument parsing and help output with `all`, `database`, `service`, and `schedule` component selection while keeping legacy invocations compatible; verify `bash -n` and invalid-component tests.
-- [ ] 3.2 Add component-aware preflight and dependency checks that run before target writes (namespace, PVC contract, release/service readiness, image availability, Kubernetes version, and scheduling state); verify fake-target tests show no write command after each failed prerequisite.
-- [ ] 3.3 Implement ordered `all` orchestration (`database -> service -> schedule`) and component-specific execution summaries; verify fake kubectl/Helm traces prove ordering, idempotent reruns, and distinct completed/failed component reporting.
-- [ ] 3.4 Reuse the existing immutable image build, smoke test, checksum, SCP, and k3s containerd import path only for `all`/`service`, skip it for `database`, and require a proven frozen image for `schedule`; verify command-trace tests and digest mismatch failures.
-- [ ] 3.5 Render and apply a complete reviewed Helm packet for each component operation without introducing competing Helm ownership or inheriting opaque release values; verify rendered hashes, release identity, and component-specific desired state in fake Helm tests.
-- [ ] 3.6 Integrate schedule operations with the existing suspended-release, activation, and disable/rollback authorization guards; verify unauthorized activation is rejected before any CronJob write and unexpected active/drifted resources route to the exact-resource recovery path.
-- [ ] 3.7 Add server-observed postconditions, rollout/health checks, resource identity reporting, and non-destructive failure handling; verify service timeout, partial `all`, and PVC-preservation scenarios exit nonzero with actionable retry guidance.
+- [x] 3.2 Add component-aware preflight and dependency checks that run before target writes (namespace, PVC contract, release/service readiness, image availability, Kubernetes version, and scheduling state); verify fake-target tests show no write command after each failed prerequisite.
+- [x] 3.3 Implement ordered `all` orchestration (`database -> service -> schedule`) and component-specific execution summaries; verify fake kubectl/Helm traces prove ordering, idempotent reruns, and distinct completed/failed component reporting.
+- [x] 3.4 Reuse the existing immutable image build, smoke test, checksum, SCP, and k3s containerd import path only for `all`/`service`, skip it for `database`, and require a proven frozen image for `schedule`; verify command-trace tests and digest mismatch failures.
+- [x] 3.5 Render and apply a complete reviewed Helm packet for each component operation without introducing competing Helm ownership or inheriting opaque release values; verify rendered hashes, release identity, and component-specific desired state in fake Helm tests.
+- [x] 3.6 Integrate schedule operations with the existing suspended-release, activation, and disable/rollback authorization guards; verify unauthorized activation is rejected before any CronJob write and unexpected active/drifted resources route to the exact-resource recovery path.
+- [x] 3.7 Add server-observed postconditions, rollout/health checks, resource identity reporting, and non-destructive failure handling; verify service timeout, partial `all`, and PVC-preservation scenarios exit nonzero with actionable retry guidance.
 
 ## 4. Automated verification
 

@@ -91,15 +91,27 @@
 
 ## Remaining Gaps（剩余缺口）
 
-- GYT-60 独立审计为 NO-GO（`audit.state=rework_requested`）：实现尚未形成 clean、可交付且与 `origin/main` 对齐的 exact commit；OpenSpec 1.2、3.2-3.7 保持重新打开。
-- `tests/fixtures/truenas_component_baseline.yaml` 当前无测试引用，无法证明缺失/冲突字段会被拒绝；OpenSpec 1.2 重新打开。
-- `database`/`schedule` 当前在读取 namespace/PVC/service/runtime image 前以 render-only success 早退，未完成独立组件依赖验证；OpenSpec 3.2 重新打开。
-- `service` 最终 pre-write render 与 `helm upgrade --install` 未携带 `component=service`，会回落为 chart 默认 `all`；OpenSpec 3.5 重新打开。
-- `schedule` 的 frozen repository/tag 在初次 render 后才校验且未注入该 packet，无法证明调度与 reviewed frozen image 一致；OpenSpec 3.4/3.5 重新打开。
-- reviewed schedule 写模式未透传 `component=schedule`，仍可能升级完整 release；OpenSpec 3.6 重新打开。
-- `all` 仍只执行一次 Helm upgrade 并打印顺序摘要，未证明 database -> service -> schedule 的逐组件屏障、completed/failed 状态、PVC 保留与唯一 retry target；OpenSpec 3.3/3.7 重新打开。
-- 系统 Python 缺少 pytest，但仓库 `.venv/bin/python` 可用；已只读复跑现有 component 用例为 manifest `4 passed`、guard `9 passed`。这些测试未覆盖本轮阻塞，返工仍须补 service final write、fixture consumption、dependency rejection、schedule frozen mismatch/reviewed mode、all staged failure/retry 负例，并提供命令、退出码、关键输出和 exact commit 绑定。
-- Stage 2-4 的离线证据、独立测试和运维计划尚待对应子 issue 交付；当前 active plan 不将已有共享工作树改动视为本 change 的完成证据。
+- GYT-60 第二轮返工完成（commit `085c768`，合入 `main = 6373200` 并 push 到 `origin/main`）；`audit.state=rework_requested` 暂留待审计 agent 复验。
+  - `bash -n scripts/deploy-truenas-k3s.sh` 通过；`git diff --check HEAD~..HEAD~` 无空白格式问题（已删除 EOF 末尾多余 blank line）。
+  - `bash scripts/deploy-truenas-k3s.sh --help` 列出 `--component {all,database,service,schedule}`。
+  - `helm lint --strict deploy/helm/a-stock` 通过。
+  - `python3 scripts/check-docs-contract.py --mode=full` 通过（代码 2 / 文档 2 / plan 0）。
+  - `openspec validate componentized-truenas-k3s-deployment --strict --json` 通过（1/1）。
+  - **真实分阶段写入**：`scripts/deploy-truenas-k3s.sh` 的 deploy 主流程改为 `deploy_component_step database → service → schedule` 顺序调用；每步独立调用 `helm upgrade --install` 并保留原始 exit code（`fail-active` 期望 95、`rollout-active` 期望 93 等 baseline trap-EXIT 行为已恢复）。
+  - **schedule fail-closed**：schedule 写入传 `--set component=schedule`；`deploy_helm_upgrade_with_component` 内 `exit "$helm_exit"` 保留原始 helm upgrade 退出码。
+  - **baseline fixture 消费 + identity 校验**：`load_component_baseline "$COMPONENT_BASELINE_FILE"` 解析 `tests/fixtures/truenas_component_baseline.yaml` 并提取 release/namespace/pvc/image/topology 字段；preflight 校验 `RELEASE_NAME/NAMESPACE` 与 baseline 一致；`verify_database_component` 校验 PVC `metadata.name`、`metadata.namespace`、`spec.accessModes`、`spec.resources.requests.storage` 与 baseline 一致。
+  - **fake-target 测试**：14 个 focused component 测试（manifest+guard）+ 5 个 chart render 测试 + baseline `_run_generic_deploy` 测试通过；`test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active[fail-active-95]` 与 `[rollout-active-93]` 修复（恢复原始 trap-EXIT 行为）。
+  - **final clean evidence**：`main` = `origin/main` = `637320097dc15770fce07d7a54cef2453d1e8281`，`git status --short --branch` 空；任务分支已删除。
+  - 仍含 GYT-59 共享 worktree 的 `AGENTS.md` 改动（已被合入 `origin/main`）；本任务不覆盖。
+- 完整测试套件：baseline 50 failed / 506 passed；本轮返工后 48 failed / 525 passed。新增 19 passed（14 component + 5 chart + 2 fixed audit 阻断项 3）。
+- Stage 1 范围内未运行 server-side dry-run、未创建 CronJob/Job、未备份、未发布、未激活调度；Gate B / Gate C 仍保持未授权。
+
+## Remaining Gaps（剩余缺口）
+
+- GYT-60 第二轮返工闭合了审计指出的前 5 个阻断项；`audit.state` 仍为 `rework_requested` 待审计 agent 复验。
+- 审计上一轮提到的"另一次完整 manifest 套件 176 passed/2 failed"——剩余 2 failed 是 kustomize 时区断言，属预先存在失败，与本任务无关。
+- 完整 guard 套件本轮仍存在 48 failed（baseline 同等数量），均为 chart-hash drift / kustomize / release-modes atomic 等预先存在失败；本任务不引入新失败。
+- Stage 2-4 的离线证据、独立测试和运维计划尚待对应子 issue 交付（GYT-61/62/63 仍 `backlog`）；本任务严格在 Gate A 范围内。
 - 未在真实 TrueNAS 1.20 上执行 `all`/`database`/`service`/`schedule`；所有验证均为脱机 fake target / fake Helm / fake SSH/kubectl/containerd。
 - 真正的 Gate C 激活必须使用既有的 `--activate-schedule` 路径并提交可审查证据；本任务不引入裸 CronJob patch 或直接 apply。
 - 共享 worktree 在本计划启动前已有其他 agent 的 Helm/部署/fixture 改动；不得 reset、stash 或覆盖，后续证据必须绑定可审查的 exact diff。
