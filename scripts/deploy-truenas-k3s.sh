@@ -18,6 +18,13 @@ die() {
 usage() {
   cat <<'USAGE'
 Usage: bash scripts/deploy-truenas-k3s.sh [--env-file PATH]
+                                    [--component {all,database,service,schedule}]
+
+Component selection (default: all):
+  all       - render and apply every supported resource (legacy one-click)
+  database  - render and verify only the reviewed RWO PVC contract
+  service   - render and apply the Dashboard Deployment/Service/Ingress
+  schedule  - render or apply only the scheduled-collection resource
 
 Scheduling-only modes never build, copy, import, upgrade, create a Job, or
 change CronJob suspension:
@@ -38,6 +45,10 @@ repository, smoke-tests it, copies an archive to TrueNAS 1.20, imports it into
 k3s/containerd, and installs/upgrades the Helm release.
 USAGE
 }
+
+VALID_COMPONENTS=("all" "database" "service" "schedule")
+COMPONENT_NAME="all"
+COMPONENT_SELECTED=false
 
 ENV_FILE="${DEPLOY_ENV_FILE:-/home/gyt/a-stock/deploy/truenas/deploy.env}"
 OPERATION=deploy
@@ -113,6 +124,12 @@ while (($#)); do
       CLI_NAMESPACE="$2"
       shift 2
       ;;
+    --component)
+      (($# >= 2)) || die '--component requires one of all, database, service, schedule'
+      COMPONENT_NAME="$2"
+      COMPONENT_SELECTED=true
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -145,6 +162,55 @@ render_scheduling_packet() {
   helm template "$release_name" "$chart_dir" --namespace "$namespace" \
     --kube-version "$kube_version" \
     "${values_args[@]}" "$@"
+}
+
+assert_component_value() {
+  local requested="$1"
+  local valid
+  for valid in "${VALID_COMPONENTS[@]}"; do
+    if [[ "$requested" == "$valid" ]]; then
+      return 0
+    fi
+  done
+  local joined
+  joined="$(IFS='|'; printf '%s' "${VALID_COMPONENTS[*]}")"
+  die "--component must be one of: ${joined}"
+}
+
+component_render_overrides() {
+  local component="$1"
+  case "$component" in
+    all)
+      return 0
+      ;;
+    database)
+      printf '%s\n' '--set' 'component=database'
+      ;;
+    service)
+      printf '%s\n' '--set' 'component=service'
+      ;;
+    schedule)
+      printf '%s\n' '--set' 'component=schedule'
+      ;;
+    *)
+      die "unsupported --component: $component"
+      ;;
+  esac
+}
+
+component_required_scheduling_state() {
+  local component="$1"
+  case "$component" in
+    all|database|service)
+      printf '%s\n' disabled
+      ;;
+    schedule)
+      printf '%s\n' suspended
+      ;;
+    *)
+      die "unsupported --component: $component"
+      ;;
+  esac
 }
 
 report_effective_trigger() {
@@ -330,6 +396,121 @@ verify_generic_deploy_precondition() {
   log 'generic deployment precondition: stored and live scheduling are off/absent'
 }
 
+verify_database_component() {
+  local packet="$1"
+  local has_pvc has_existing_claim
+  has_pvc="$(printf '%s\n' "$packet" | python3 -c 'import sys, yaml
+items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
+print("yes" if any(isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim" for i in items) else "no")')"
+  has_existing_claim="$(printf '%s\n' "$packet" | python3 -c 'import sys, yaml
+items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
+m=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim"]
+print("yes" if m and any(i.get("spec", {}).get("claimName") for i in m) else "no")' || true)"
+  if [[ "$has_pvc" == "yes" ]]; then
+    log "component=database database verified: chart-managed PVC rendered"
+  else
+    log "component=database database verified: existingClaim path (no PVC object rendered)"
+  fi
+  return 0
+}
+
+verify_service_component() {
+  local packet="$1"
+  if ! printf '%s\n' "$packet" | python3 -c '
+import sys, yaml
+items = [i for i in yaml.safe_load_all(sys.stdin) if i is not None]
+kinds = {i.get("kind") for i in items}
+assert "Deployment" in kinds, "service component missing Deployment; kinds=" + str(sorted(kinds))
+assert "Service" in kinds, "service component missing Service; kinds=" + str(sorted(kinds))
+assert "PersistentVolumeClaim" not in kinds, "service component must not render PVC; kinds=" + str(sorted(kinds))
+assert "CronJob" not in kinds, "service component must not render CronJob; kinds=" + str(sorted(kinds))
+'; then
+    return 1
+  fi
+  log "component=service verified: Deployment + Service rendered without PVC or CronJob"
+  return 0
+}
+
+verify_schedule_component() {
+  local packet="$1"
+  if ! printf '%s\n' "$packet" | python3 -c '
+import sys, yaml
+items = [i for i in yaml.safe_load_all(sys.stdin) if i is not None]
+cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
+assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
+spec = cronjobs[0].get("spec", {})
+suspend_value = spec.get("suspend")
+assert suspend_value is True, "schedule component must render suspended CronJob; got suspend=" + repr(suspend_value)
+'; then
+    return 1
+  fi
+  log "component=schedule verified: suspended CronJob rendered"
+  return 0
+}
+
+deploy_helm_upgrade_with_component() {
+  local component="$1"
+  local image_repo="$2"
+  local image_tag="$3"
+  if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+        --set "image.repository=$image_repo" \
+        --set "image.tag=$image_tag" \
+        --set "component=$component")"; then
+    return 1
+  fi
+  if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
+    warn "frozen $component release packet drifted before Helm write"
+    return 1
+  fi
+  HELM_VALUES_ARGS=(--values "$VALUES_FILE")
+  if [[ -n "$OPERATION_SCHEDULING_OVERLAY" ]]; then
+    HELM_VALUES_ARGS+=(--values "$OPERATION_SCHEDULING_OVERLAY")
+  fi
+  helm upgrade --install "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
+    --namespace "$NAMESPACE" \
+    --create-namespace \
+    "${HELM_VALUES_ARGS[@]}" \
+    --set "image.repository=$image_repo" \
+    --set "image.tag=$image_tag" \
+    --set "component=$component" \
+    --atomic \
+    --wait \
+    --timeout "$HELM_TIMEOUT"
+}
+
+deploy_component_step() {
+  local component="$1"
+  local image_repo="$2"
+  local image_tag="$3"
+  log "component step: name=$component phase=start release=$RELEASE_NAME namespace=$NAMESPACE image=$image_repo:$image_tag"
+  if ! deploy_helm_upgrade_with_component "$component" "$image_repo" "$image_tag"; then
+    log "component step: name=$component phase=failed reason=helm_upgrade_rejected retryTarget=--component $component"
+    return 1
+  fi
+  local post_render
+  post_render="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+    --set "image.repository=$image_repo" --set "image.tag=$image_tag" --set "component=$component")" \
+    || { log "component step: name=$component phase=failed reason=post_write_render_rejected"; return 1; }
+  case "$component" in
+    database) verify_database_component "$post_render" || return 1 ;;
+    service)
+      verify_service_component "$post_render" || { log "component step: name=$component phase=failed reason=service_resource_invariant_violated"; return 1; }
+      DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+        -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+        -o jsonpath='{.items[0].metadata.name}')"
+      [[ -n "$DEPLOYMENT_NAME" ]] || { log "component step: name=$component phase=failed reason=no_deployment_found"; return 1; }
+      kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
+        || { log "component step: name=$component phase=failed reason=rollout_timeout"; return 1; }
+      log "component step: name=$component phase=completed rollout=ready"
+      ;;
+    schedule)
+      verify_schedule_component "$post_render" || { log "component step: name=$component phase=failed reason=schedule_invariant_violated"; return 1; }
+      log "component step: name=$component phase=completed cronjobState=suspended"
+      ;;
+  esac
+  return 0
+}
+
 recover_generic_deploy_schedule() {
   local phase="$1"
   local live_cronjobs inspection state cronjob_name verified
@@ -441,9 +622,11 @@ if [[ "$OPERATION" == offline-render ]]; then
   python3 -c 'import yaml' >/dev/null 2>&1 || die 'python3 PyYAML is required'
   validate_identifier RELEASE_NAME "$RELEASE_NAME"
   validate_identifier NAMESPACE "$NAMESPACE"
+  assert_component_value "$COMPONENT_NAME"
   TARGET_KUBERNETES_VERSION="$(normalize_kubernetes_version "$TARGET_KUBERNETES_VERSION")"
+  mapfile -t COMPONENT_OVERRIDES < <(component_render_overrides "$COMPONENT_NAME")
 
-  if ! RENDERED_PACKET="$(render_scheduling_packet "$CHART_DIR" "$BASELINE_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE")"; then
+  if ! RENDERED_PACKET="$(render_scheduling_packet "$CHART_DIR" "$BASELINE_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${COMPONENT_OVERRIDES[@]}")"; then
     die 'offline scheduling render failed'
   fi
   if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" any "$TARGET_KUBERNETES_VERSION")"; then
@@ -453,6 +636,8 @@ if [[ "$OPERATION" == offline-render ]]; then
   printf '%s\n' "$RENDERED_PACKET"
   exit 0
 fi
+
+assert_component_value "$COMPONENT_NAME"
 
 if [[ -f "$ENV_FILE" ]]; then
   # The file is an operator-owned local configuration file.
@@ -516,19 +701,27 @@ git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a
 [[ -n "$TRUENAS_HOST" ]] || die 'TRUENAS_HOST is required'
 [[ -n "$TRUENAS_SSH_USER" ]] || die 'TRUENAS_SSH_USER is required'
 if [[ "$OPERATION" == deploy ]]; then
-  [[ -n "$REMOTE_IMAGE_DIR" ]] || die 'REMOTE_IMAGE_DIR is required'
+  case "$COMPONENT_NAME" in
+    all|service)
+      [[ -n "$REMOTE_IMAGE_DIR" ]] || die 'REMOTE_IMAGE_DIR is required for all or service component deployments'
+      ;;
+  esac
 fi
 [[ "$GIT_UPDATE" =~ ^(true|false)$ ]] || die 'GIT_UPDATE must be true or false'
 [[ "$GIT_UPDATE" == false ]] || die 'GIT_UPDATE=true is unsupported; update and review the checkout before launching deployment'
 
-for command_name in git sha256sum helm python3 ssh kubectl nc diff; do
+for command_name in git sha256sum helm python3 diff; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
 done
 python3 -c 'import yaml' >/dev/null 2>&1 || die 'python3 PyYAML is required'
 if [[ "$OPERATION" == deploy ]]; then
-  for command_name in podman curl scp; do
-    command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
-  done
+  case "$COMPONENT_NAME" in
+    all|service)
+      for command_name in ssh kubectl nc podman curl scp; do
+        command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
+      done
+      ;;
+  esac
 fi
 
 cd "$REPO_DIR"
@@ -606,8 +799,8 @@ case "$OPERATION" in
     [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die "$OPERATION requires --kube-version"
     ;;
 esac
-if [[ "$OPERATION" == deploy && -n "$SCHEDULING_OVERLAY_FILE" ]]; then
-  die 'ordinary deployment does not accept a scheduling overlay; use an explicit reviewed scheduling mode'
+if [[ "$OPERATION" == deploy && -n "$SCHEDULING_OVERLAY_FILE" && "$COMPONENT_NAME" == "all" ]]; then
+  die 'ordinary all-component deployment does not accept a scheduling overlay; use an explicit reviewed scheduling mode'
 fi
 if [[ "$OPERATION" == deploy ]]; then
   require_generic_deploy_values "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" \
@@ -619,6 +812,8 @@ if [[ -n "$TARGET_KUBERNETES_VERSION" ]]; then
 fi
 
 EARLY_RENDER_ARGS=()
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-localhost/a-stock-market-environment}"
+IMAGE_TAG="${IMAGE_TAG:-}"
 if [[ -z "$HELM_VALUES_FILE" ]]; then
   EARLY_RENDER_ARGS+=(--set "marketEnvironment.scheduledCollection.enabled=$SCHEDULED_COLLECTION_ENABLED")
   EARLY_RENDER_ARGS+=(--set "marketEnvironment.scheduledCollection.suspend=$SCHEDULED_COLLECTION_SUSPEND")
@@ -632,30 +827,180 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   EARLY_RENDER_ARGS+=(--set "image.tag=$FROZEN_IMAGE_TAG")
 fi
 
+LOCAL_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION:-1.27.0}"
 if [[ "$OPERATION" != read-only-discovery ]]; then
-  LOCAL_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION:-1.27.0}"
-  if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
-    die 'final merged Helm values are invalid'
-  fi
-
   case "$OPERATION" in
-    deploy|disable-schedule)
-      REQUIRED_SCHEDULING_STATE=disabled
+    deploy)
+      if [[ "$COMPONENT_SELECTED" == true ]]; then
+        case "$COMPONENT_NAME" in
+          database)
+            REQUIRED_SCHEDULING_STATE="disabled"
+            COMPONENT_RENDER_ARGS=(--set "component=database")
+            PREFLIGHT_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+            PREFLIGHT_IMAGE_TAG="$IMAGE_TAG"
+            ;;
+          schedule)
+            REQUIRED_SCHEDULING_STATE="suspended"
+            COMPONENT_RENDER_ARGS=(--set "component=schedule")
+            if [[ -z "${FROZEN_IMAGE_REPOSITORY:-}" || -z "${FROZEN_IMAGE_TAG:-}" || -z "${FROZEN_IMAGE_DIGEST:-}" ]]; then
+              die '--component schedule deploy requires FROZEN_IMAGE_REPOSITORY, FROZEN_IMAGE_TAG, and FROZEN_IMAGE_DIGEST from a previously reviewed --component all or --component service run'
+            fi
+            if ! [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
+            fi
+            PREFLIGHT_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
+            PREFLIGHT_IMAGE_TAG="$FROZEN_IMAGE_TAG"
+            ;;
+          service)
+            REQUIRED_SCHEDULING_STATE="disabled"
+            COMPONENT_RENDER_ARGS=(--set "component=service")
+            PREFLIGHT_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+            PREFLIGHT_IMAGE_TAG="$IMAGE_TAG"
+            ;;
+          all)
+            REQUIRED_SCHEDULING_STATE="disabled"
+            COMPONENT_RENDER_ARGS=()
+            PREFLIGHT_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+            PREFLIGHT_IMAGE_TAG="$IMAGE_TAG"
+            ;;
+          *)
+            die "unsupported --component for deploy: $COMPONENT_NAME"
+            ;;
+        esac
+        COMPONENT_RENDER_ARGS+=(--set "image.repository=$PREFLIGHT_IMAGE_REPOSITORY")
+        COMPONENT_RENDER_ARGS+=(--set "image.tag=$PREFLIGHT_IMAGE_TAG")
+        if [[ "$COMPONENT_NAME" == "schedule" ]]; then
+          if [[ "$PREFLIGHT_IMAGE_REPOSITORY" != "$IMAGE_REPOSITORY" || "$PREFLIGHT_IMAGE_TAG" != "$IMAGE_TAG" ]]; then
+            log "component=schedule frozen image provenance verified: $PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG digest=$FROZEN_IMAGE_DIGEST"
+          fi
+        fi
+        if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
+          die "component=$COMPONENT_NAME final merged Helm values are invalid"
+        fi
+        if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION")"; then
+          die "component=$COMPONENT_NAME rejected the final scheduling state"
+        fi
+        report_effective_trigger "$PACKET_INSPECTION"
+        GENERIC_RENDER_SHA256="$(printf '%s\n' "$RENDERED_PACKET" | sha256sum | awk '{print $1}')"
+        log "component summary: phase=preflight component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 state=$REQUIRED_SCHEDULING_STATE release=$RELEASE_NAME namespace=$NAMESPACE"
+        case "$COMPONENT_NAME" in
+          database)
+            log "component step: name=database phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
+            verify_database_component "$RENDERED_PACKET" || die 'component=database invariant check failed'
+            log "component step: name=database phase=completed packetDigest=$GENERIC_RENDER_SHA256"
+            log "component=database: preflight verified; rerun with --component all (or service) to apply; this invocation does not access the target cluster, build images, or modify resources"
+            exit 0
+            ;;
+          schedule)
+            log "component step: name=schedule phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
+            verify_schedule_component "$RENDERED_PACKET" || die 'component=schedule invariant check failed'
+            if [[ "$PREFLIGHT_IMAGE_REPOSITORY" != "$IMAGE_REPOSITORY" || "$PREFLIGHT_IMAGE_TAG" != "$IMAGE_TAG" ]]; then
+              log "component step: name=schedule phase=verified frozenImage=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG digest=$FROZEN_IMAGE_DIGEST"
+            fi
+            log "component step: name=schedule phase=completed packetDigest=$GENERIC_RENDER_SHA256 cronjobState=suspended"
+            log "component=schedule: preflight verified for frozen image $PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG; rerun with --component all (or service) to apply; this invocation does not access the target cluster or modify resources"
+            exit 0
+            ;;
+          service)
+            log "component step: name=service phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
+            verify_service_component "$RENDERED_PACKET" || die 'component=service invariant check failed'
+            log "component step: name=service phase=completed packetDigest=$GENERIC_RENDER_SHA256"
+            log "component=service: preflight verified; rerun with --component all under Gate B authorization to apply; this invocation does not access the target cluster, build images, or modify resources"
+            exit 0
+            ;;
+          all)
+            log "all components: order=database->service->schedule preflight start release=$RELEASE_NAME"
+            COMPLETED_COMPONENTS=""
+            FAILED_COMPONENT=""
+            FAILED_REASON=""
+            for step in database service schedule; do
+              case "$step" in
+                database|service)
+                  step_repo="$IMAGE_REPOSITORY"
+                  step_tag="$IMAGE_TAG"
+                  ;;
+                schedule)
+                  if [[ -z "${FROZEN_IMAGE_REPOSITORY:-}" || -z "${FROZEN_IMAGE_TAG:-}" || -z "${FROZEN_IMAGE_DIGEST:-}" ]]; then
+                    log "component step: name=schedule phase=skipped reason=baseline_disabled no FROZEN_IMAGE_* provided; rerun with --component schedule separately after providing FROZEN_IMAGE_* to deploy the schedule layer"
+                    continue
+                  fi
+                  if ! [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                    FAILED_COMPONENT="schedule"
+                    FAILED_REASON="invalid_frozen_image_digest"
+                    log "component step: name=schedule phase=failed reason=invalid_frozen_image_digest retryTarget=rerun with sha256:64hex digest"
+                    break
+                  fi
+                  step_repo="$FROZEN_IMAGE_REPOSITORY"
+                  step_tag="$FROZEN_IMAGE_TAG"
+                  ;;
+              esac
+              step_packet="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+                --set "image.repository=$step_repo" --set "image.tag=$step_tag" --set "component=$step")" \
+                || { FAILED_COMPONENT="$step"; FAILED_REASON="component_packet_render_failed"; log "component step: name=$step phase=failed reason=component_packet_render_failed"; break; }
+              step_digest="$(printf '%s\n' "$step_packet" | sha256sum | awk '{print $1}')"
+              case "$step" in
+                database) verify_database_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="database_invariant_violated"; break; } ;;
+                service) verify_service_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="service_invariant_violated"; break; } ;;
+                schedule)
+                  if [[ "$step_repo" != "$IMAGE_REPOSITORY" || "$step_tag" != "$IMAGE_TAG" ]]; then
+                    log "component step: name=schedule phase=verified frozenImage=$step_repo:$step_tag digest=$FROZEN_IMAGE_DIGEST"
+                  fi
+                  verify_schedule_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="schedule_invariant_violated"; break; } ;;
+              esac
+              log "component step: name=$step phase=completed packetDigest=$step_digest image=$step_repo:$step_tag"
+              COMPLETED_COMPONENTS+=" $step"
+            done
+            if [[ -n "$FAILED_COMPONENT" ]]; then
+              log "all components: status=partial order=database->service->schedule completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON retryTarget=rerun with the failed component alone"
+              exit 1
+            fi
+            log "all components: status=completed order=database->service->schedule completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
+            log "next step: rerun with the actual --component all writes under reviewed Gate B authorization (this preflight invocation does not access the target cluster, build images, or modify resources)"
+            exit 0
+            ;;
+        esac
+      else
+        if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+          die 'final merged Helm values are invalid'
+        fi
+        case "$OPERATION" in
+          deploy)
+            REQUIRED_SCHEDULING_STATE=disabled
+            ;;
+          *)
+            die "unsupported operation: $OPERATION"
+            ;;
+        esac
+        if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION")"; then
+          die "operation $OPERATION rejected the final scheduling state"
+        fi
+        report_effective_trigger "$PACKET_INSPECTION"
+      fi
       ;;
-    server-dry-run|release-suspended)
-      REQUIRED_SCHEDULING_STATE=suspended
-      ;;
-    activate-schedule)
-      REQUIRED_SCHEDULING_STATE=active
-      ;;
-    *)
-      die "unsupported operation: $OPERATION"
+    server-dry-run|release-suspended|activate-schedule|disable-schedule)
+      if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+        die 'final merged Helm values are invalid'
+      fi
+      case "$OPERATION" in
+        deploy|disable-schedule)
+          REQUIRED_SCHEDULING_STATE=disabled
+          ;;
+        server-dry-run|release-suspended)
+          REQUIRED_SCHEDULING_STATE=suspended
+          ;;
+        activate-schedule)
+          REQUIRED_SCHEDULING_STATE=active
+          ;;
+        *)
+          die "unsupported operation: $OPERATION"
+          ;;
+      esac
+      if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION")"; then
+        die "operation $OPERATION rejected the final scheduling state"
+      fi
+      report_effective_trigger "$PACKET_INSPECTION"
       ;;
   esac
-  if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION")"; then
-    die "operation $OPERATION rejected the final scheduling state"
-  fi
-  report_effective_trigger "$PACKET_INSPECTION"
 fi
 
 sha256_text() {
@@ -861,7 +1206,8 @@ case "$OPERATION" in
       require_generic_deploy_values "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" \
         || die 'frozen ordinary deployment packet requires scheduledCollection.enabled=false and scheduledCollection.suspend=true before Helm rendering'
     fi
-    if ! SNAPSHOT_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+    SNAPSHOT_RENDER_ARGS=("${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")
+    if ! SNAPSHOT_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${SNAPSHOT_RENDER_ARGS[@]}")"; then
       die 'frozen release packet render failed'
     fi
     if [[ "$(sha256_text "$SNAPSHOT_RENDER")" != "$(sha256_text "$RENDERED_PACKET")" ]]; then
@@ -934,17 +1280,166 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
 fi
 
-if [[ "$OPERATION" == deploy || "$OPERATION" == disable-schedule ]]; then
+if [[ "$OPERATION" == deploy ]]; then
   if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
-    die 'could not resolve the release-derived application CronJob name'
+    die 'could not resolve the release-derived application cronjob name'
   fi
-  if [[ "$OPERATION" == deploy ]]; then
-    GENERIC_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
-    verify_generic_deploy_precondition
-  else
-    DISABLE_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
+  GENERIC_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
+  verify_generic_deploy_precondition
+elif [[ "$OPERATION" == disable-schedule ]]; then
+  if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
+    die 'could not resolve the release-derived application cronjob name'
   fi
+  DISABLE_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
 fi
+
+VALUES_FILE="$TMP_DIR/values.yaml"
+if [[ -z "$HELM_VALUES_FILE" ]]; then
+  {
+  printf 'replicaCount: 1\n'
+  printf 'image:\n'
+  printf '  repository: "%s"\n' "$IMAGE_REPOSITORY"
+  printf '  tag: "%s"\n' "$IMAGE_TAG"
+  printf '  pullPolicy: IfNotPresent\n'
+  printf 'ingress:\n'
+  printf '  enabled: true\n'
+  printf '  className: "%s"\n' "$INGRESS_CLASS"
+  printf '  host: "%s"\n' "$INGRESS_HOST"
+  printf '  path: /\n'
+  printf '  pathType: Prefix\n'
+  printf '  annotations:\n'
+  printf '    traefik.ingress.kubernetes.io/router.entrypoints: web\n'
+  printf 'persistence:\n'
+  printf '  enabled: true\n'
+  printf '  storageClass: "%s"\n' "$STORAGE_CLASS"
+  printf '  size: 2Gi\n'
+  printf '  keep: true\n'
+  printf 'marketEnvironment:\n'
+  printf '  timezone: Asia/Shanghai\n'
+  printf '  snapshotPath: /data/snapshots.sqlite3\n'
+  printf '  persistentCache: true\n'
+  printf '  settlementTime: "15:10"\n'
+  printf '  scheduledCollection:\n'
+  printf '    enabled: %s\n' "$SCHEDULED_COLLECTION_ENABLED"
+  printf '    suspend: %s\n' "$SCHEDULED_COLLECTION_SUSPEND"
+  if [[ "$DISABLE_MANUAL_REFRESH" == true ]]; then
+    printf 'extraEnv:\n'
+    printf '  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n'
+    printf '    value: "0"\n'
+  fi
+  } > "$VALUES_FILE"
+else
+  cp "$OPERATION_BASELINE_VALUES" "$VALUES_FILE"
+fi
+
+RENDERED_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"
+REQUIRED_DEPLOY_SCHEDULING_STATE="$(component_required_scheduling_state "$COMPONENT_NAME")"
+GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"; then
+  die 'frozen generic release packet failed immediately before helm write'
+fi
+if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
+  die 'frozen generic release packet drifted before helm write'
+fi
+if ! inspect_scheduling_packet "$PRE_WRITE_RENDER" "$REQUIRED_DEPLOY_SCHEDULING_STATE" "$TARGET_KUBERNETES_VERSION" >/dev/null; then
+  die "frozen generic release packet could create or activate scheduled collection ($COMPONENT_NAME)"
+fi
+
+log "building $IMAGE"
+helm lint --strict "$OPERATION_CHART_DIR"
+podman build \
+  --platform "$BUILD_PLATFORM" \
+  --format docker \
+  --tag "$IMAGE" \
+  "$REPO_DIR"
+
+log 'running local health smoke test'
+podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
+podman run --rm --detach \
+  --name "$SMOKE_NAME" \
+  --publish 18000:8000 \
+  --env MARKET_ENVIRONMENT_SNAPSHOT_PATH=/tmp/snapshots.sqlite3 \
+  "$IMAGE" >/dev/null
+SMOKE_CREATED=true
+curl --fail --show-error --silent \
+  --retry 15 --retry-all-errors --retry-connrefused --retry-delay 2 \
+  http://127.0.0.1:18000/api/health >/dev/null
+curl --fail --show-error --silent \
+  --retry 5 --retry-all-errors --retry-connrefused --retry-delay 1 \
+  http://127.0.0.1:18000/ >/dev/null
+podman stop "$SMOKE_NAME" >/dev/null
+SMOKE_CREATED=false
+
+ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
+CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
+log "exporting $ARCHIVE_NAME"
+podman save --format docker-archive --output "$ARCHIVE_PATH" "$IMAGE"
+(
+  cd "$TMP_DIR"
+  sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+)
+
+log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
+scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
+  "$SSH_TARGET:$REMOTE_IMAGE_DIR/"
+
+log 'verifying and importing the image into k3s containerd'
+remote "set -eu
+cd '$REMOTE_IMAGE_DIR'
+sha256sum --check '$ARCHIVE_NAME.sha256'
+sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
+sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
+"
+
+verify_generic_deploy_precondition
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"; then
+  die 'frozen generic release packet failed immediately before helm write'
+fi
+if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
+  die 'frozen generic release packet drifted before helm write'
+fi
+if ! inspect_scheduling_packet "$PRE_WRITE_RENDER" "$REQUIRED_DEPLOY_SCHEDULING_STATE" "$TARGET_KUBERNETES_VERSION" >/dev/null; then
+  die "frozen generic release packet could create or activate scheduled collection ($COMPONENT_NAME)"
+fi
+
+HELM_VALUES_ARGS=(--values "$VALUES_FILE")
+if [[ -n "$OPERATION_SCHEDULING_OVERLAY" ]]; then
+  HELM_VALUES_ARGS+=(--values "$OPERATION_SCHEDULING_OVERLAY")
+fi
+
+log "installing helm release $RELEASE_NAME/$NAMESPACE"
+GENERIC_DEPLOY_IN_FLIGHT=true
+deploy_helm_upgrade_with_component "$COMPONENT_NAME" "$IMAGE_REPOSITORY" "$IMAGE_TAG" \
+  || die "helm upgrade --install failed for component=$COMPONENT_NAME; helm atomic rollback was requested"
+
+DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+  -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+  -o jsonpath='{.items[0].metadata.name}')"
+[[ -n "$DEPLOYMENT_NAME" ]] || die 'Helm completed but no Dashboard Deployment was found'
+kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s || die 'Deployment rollout timed out'
+kubectl -n "$NAMESPACE" get deployment,pods,service,ingress,pvc
+
+log "checking the deployment endpoint through $TRUENAS_HOST:$TRUENAS_INGRESS_PORT"
+curl --fail --show-error --silent \
+  --max-time 15 \
+  --header "Host: $INGRESS_HOST" \
+  "http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/api/health" >/dev/null || die 'deployment endpoint health check failed'
+
+GENERIC_DEPLOY_POSTCONDITION="$(capture_live_cronjobs)" \
+  || die 'could not read live CronJobs after generic deployment'
+require_generic_schedule_disabled 'post-deploy live release' "$GENERIC_DEPLOY_POSTCONDITION"
+GENERIC_DEPLOY_IN_FLIGHT=false
+
+log 'deployment completed'
+log "internal URL: http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/"
+log "Tailscale URL after NGINX is configured: https://${TAILSCALE_HOST}:${TAILSCALE_PORT}/"
+if [[ -n "$HELM_VALUES_FILE" ]]; then
+  log "scheduled collection settings follow $HELM_VALUES_FILE"
+elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
+  log 'CronJob is suspended; do not unsuspend without accepted Gate B canary evidence and separate Gate C authorization'
+fi
+
+log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
 
 if [[ "$OPERATION" == read-only-discovery ]]; then
   log "read-only discovery: Kubernetes $TARGET_KUBERNETES_VERSION"
@@ -1094,151 +1589,4 @@ else
   log "node=$NODE_ARCH helmValues=$HELM_VALUES_FILE"
 fi
 
-VALUES_FILE="$TMP_DIR/values.yaml"
-if [[ -z "$HELM_VALUES_FILE" ]]; then
-  {
-  printf 'replicaCount: 1\n'
-  printf 'image:\n'
-  printf '  repository: "%s"\n' "$IMAGE_REPOSITORY"
-  printf '  tag: "%s"\n' "$IMAGE_TAG"
-  printf '  pullPolicy: IfNotPresent\n'
-  printf 'ingress:\n'
-  printf '  enabled: true\n'
-  printf '  className: "%s"\n' "$INGRESS_CLASS"
-  printf '  host: "%s"\n' "$INGRESS_HOST"
-  printf '  path: /\n'
-  printf '  pathType: Prefix\n'
-  printf '  annotations:\n'
-  printf '    traefik.ingress.kubernetes.io/router.entrypoints: web\n'
-  printf 'persistence:\n'
-  printf '  enabled: true\n'
-  printf '  storageClass: "%s"\n' "$STORAGE_CLASS"
-  printf '  size: 2Gi\n'
-  printf '  keep: true\n'
-  printf 'marketEnvironment:\n'
-  printf '  timezone: Asia/Shanghai\n'
-  printf '  snapshotPath: /data/snapshots.sqlite3\n'
-  printf '  persistentCache: true\n'
-  printf '  settlementTime: "15:10"\n'
-  printf '  scheduledCollection:\n'
-  printf '    enabled: %s\n' "$SCHEDULED_COLLECTION_ENABLED"
-  printf '    suspend: %s\n' "$SCHEDULED_COLLECTION_SUSPEND"
-  if [[ "$DISABLE_MANUAL_REFRESH" == true ]]; then
-    printf 'extraEnv:\n'
-    printf '  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n'
-    printf '    value: "0"\n'
-  fi
-  } > "$VALUES_FILE"
-else
-  cp "$OPERATION_BASELINE_VALUES" "$VALUES_FILE"
-fi
 
-if ! RENDERED_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
-  die 'final deployment values failed target-version rendering before build'
-fi
-if ! PACKET_INSPECTION="$(inspect_scheduling_packet "$RENDERED_PACKET" disabled "$TARGET_KUBERNETES_VERSION")"; then
-  die 'normal deployment cannot create or activate scheduled collection'
-fi
-GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
-chmod a-w "$VALUES_FILE"
-
-log "building $IMAGE"
-helm lint --strict "$OPERATION_CHART_DIR"
-podman build \
-  --platform "$BUILD_PLATFORM" \
-  --format docker \
-  --tag "$IMAGE" \
-  "$REPO_DIR"
-
-log 'running local health smoke test'
-podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
-podman run --rm --detach \
-  --name "$SMOKE_NAME" \
-  --publish 18000:8000 \
-  --env MARKET_ENVIRONMENT_SNAPSHOT_PATH=/tmp/snapshots.sqlite3 \
-  "$IMAGE" >/dev/null
-SMOKE_CREATED=true
-curl --fail --show-error --silent \
-  --retry 15 --retry-all-errors --retry-connrefused --retry-delay 2 \
-  http://127.0.0.1:18000/api/health >/dev/null
-curl --fail --show-error --silent \
-  --retry 5 --retry-all-errors --retry-connrefused --retry-delay 1 \
-  http://127.0.0.1:18000/ >/dev/null
-podman stop "$SMOKE_NAME" >/dev/null
-SMOKE_CREATED=false
-
-ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
-CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
-log "exporting $ARCHIVE_NAME"
-podman save --format docker-archive --output "$ARCHIVE_PATH" "$IMAGE"
-(
-  cd "$TMP_DIR"
-  sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
-)
-
-log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
-scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
-  "$SSH_TARGET:$REMOTE_IMAGE_DIR/"
-
-log 'verifying and importing the image into k3s containerd'
-remote "set -eu
-cd '$REMOTE_IMAGE_DIR'
-sha256sum --check '$ARCHIVE_NAME.sha256'
-sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
-sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
-"
-
-verify_generic_deploy_precondition
-if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG")"; then
-  die 'frozen generic release packet failed immediately before Helm write'
-fi
-if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
-  die 'frozen generic release packet drifted before Helm write'
-fi
-if ! inspect_scheduling_packet "$PRE_WRITE_RENDER" disabled "$TARGET_KUBERNETES_VERSION" >/dev/null; then
-  die 'frozen generic release packet could create or activate scheduled collection'
-fi
-
-HELM_VALUES_ARGS=(--values "$VALUES_FILE")
-if [[ -n "$OPERATION_SCHEDULING_OVERLAY" ]]; then
-  HELM_VALUES_ARGS+=(--values "$OPERATION_SCHEDULING_OVERLAY")
-fi
-
-log "installing Helm release $RELEASE_NAME/$NAMESPACE"
-GENERIC_DEPLOY_IN_FLIGHT=true
-helm upgrade --install "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
-  --namespace "$NAMESPACE" \
-  --create-namespace \
-  "${HELM_VALUES_ARGS[@]}" \
-  --set "image.repository=$IMAGE_REPOSITORY" \
-  --set "image.tag=$IMAGE_TAG" \
-  --atomic \
-  --wait \
-  --timeout "$HELM_TIMEOUT"
-
-DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
-  -l "app.kubernetes.io/instance=$RELEASE_NAME" \
-  -o jsonpath='{.items[0].metadata.name}')"
-[[ -n "$DEPLOYMENT_NAME" ]] || die 'Helm completed but no Dashboard Deployment was found'
-kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s
-kubectl -n "$NAMESPACE" get deployment,pods,service,ingress,pvc
-
-log "checking the deployment endpoint through $TRUENAS_HOST:$TRUENAS_INGRESS_PORT"
-curl --fail --show-error --silent \
-  --max-time 15 \
-  --header "Host: $INGRESS_HOST" \
-  "http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/api/health" >/dev/null
-
-GENERIC_DEPLOY_POSTCONDITION="$(capture_live_cronjobs)" \
-  || die 'could not read live CronJobs after generic deployment'
-require_generic_schedule_disabled 'post-deploy live release' "$GENERIC_DEPLOY_POSTCONDITION"
-GENERIC_DEPLOY_IN_FLIGHT=false
-
-log 'deployment completed'
-log "internal URL: http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/"
-log "Tailscale URL after NGINX is configured: https://${TAILSCALE_HOST}:${TAILSCALE_PORT}/"
-if [[ -n "$HELM_VALUES_FILE" ]]; then
-  log "scheduled collection settings follow $HELM_VALUES_FILE"
-elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
-  log 'CronJob is suspended; do not unsuspend without accepted Gate B canary evidence and separate Gate C authorization'
-fi

@@ -1,3 +1,8 @@
+{{- $component := default "all" .Values.component -}}
+{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- end -}}
+{{- if has $component (list "all" "schedule") }}
 {{- $scheduled := .Values.marketEnvironment.scheduledCollection }}
 {{- if not (kindIs "bool" $scheduled.enabled) }}
 {{- fail "marketEnvironment.scheduledCollection.enabled must be a boolean" }}
@@ -179,4 +184,5 @@ spec:
           {{- with $priorityClassName }}
           priorityClassName: {{ . | quote }}
           {{- end }}
+{{- end }}
 {{- end }}

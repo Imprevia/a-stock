@@ -1,4 +1,8 @@
-{{- if .Values.ingress.enabled }}
+{{- $component := default "all" .Values.component -}}
+{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- end -}}
+{{- if and (has $component (list "all" "service")) .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

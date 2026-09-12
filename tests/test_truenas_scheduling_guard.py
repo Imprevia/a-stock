@@ -2334,3 +2334,575 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
         desired_render.encode()
     ).hexdigest()
     assert "podman" not in calls and "scp" not in calls
+
+
+def _component_fake_repo(
+    tmp_path: Path,
+    *,
+    baseline_name: str = "values-secure-manual-collection.yaml",
+) -> tuple[Path, Path, Path, dict[str, Path]]:
+    """Copy chart + script + values into an isolated reviewed repo so a test
+    can drive the component entry point with fake ssh/kubectl/helm/podman
+    stubs without touching the real checkout.
+    """
+    repo = tmp_path / "component-repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "deploy" / "truenas").mkdir(parents=True)
+    shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
+    shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
+    shutil.copy2(VALIDATOR, repo / "scripts" / VALIDATOR.name)
+    shutil.copy2(ROOT / "Dockerfile", repo / "Dockerfile")
+    sources = {path.name: path for path in (BASELINE, SUSPENDED, ACTIVE, OFF)}
+    copied: dict[str, Path] = {}
+    for source in sources.values():
+        destination = repo / "deploy" / "truenas" / source.name
+        shutil.copy2(source, destination)
+        copied[source.name] = destination
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
+    return repo, repo / "scripts" / SCRIPT.name, copied[baseline_name], copied
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "component",
+    ["database", "schedule"],
+    ids=["database-skips-image", "schedule-requires-frozen-image"],
+)
+def test_component_deploy_routes_around_image_work_without_target_access(
+    tmp_path: Path, component: str
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    digest = f"sha256:{'a' * 64}"
+    env_file = tmp_path / f"{component}.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                "IMAGE_TAG=test-component",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    if component == "schedule":
+        with env_file.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment\n"
+                "FROZEN_IMAGE_TAG=20260905-1904b66\n"
+                f"FROZEN_IMAGE_DIGEST={digest}\n"
+                f"SCHEDULING_OVERLAY_FILE={repo / 'deploy' / 'truenas' / 'values-scheduled-suspended.yaml'}\n"
+            )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            component,
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"component summary: phase=preflight component={component}" in completed.stdout
+    assert "this invocation does not access the target cluster" in completed.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_schedule_rejects_missing_frozen_image_without_target_access(
+    tmp_path: Path,
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    env_file = tmp_path / "schedule.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                f"SCHEDULING_OVERLAY_FILE={repo / 'deploy' / 'truenas' / 'values-scheduled-suspended.yaml'}",
+                "IMAGE_TAG=test-schedule",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "schedule",
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "requires FROZEN_IMAGE_REPOSITORY" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "invalid_component",
+    ["service-database", "all,database", ""],
+    ids=["named-pair", "comma-list", "empty"],
+)
+def test_component_value_rejects_invalid_or_ambiguous_names(
+    tmp_path: Path, invalid_component: str
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    env_file = tmp_path / "invalid.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            invalid_component,
+        ],
+        env={**os.environ, "PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "--component must be one of" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> None:
+    repo, _, baseline, _ = _component_fake_repo(tmp_path)
+    chart_managed = tmp_path / "chart-managed.yaml"
+    chart_managed.write_text(
+        "replicaCount: 1\n"
+        "image:\n"
+        "  repository: localhost/a-stock-market-environment\n"
+        "  tag: chart-managed\n"
+        "  pullPolicy: IfNotPresent\n"
+        "service:\n"
+        "  type: ClusterIP\n"
+        "  port: 80\n"
+        "ingress:\n"
+        "  enabled: false\n"
+        "persistence:\n"
+        "  enabled: true\n"
+        "  storageClass: ix-storage-class\n"
+        "  accessModes:\n"
+        "    - ReadWriteOnce\n"
+        "  size: 2Gi\n"
+        "  mountPath: /data\n"
+        "  keep: true\n"
+        "marketEnvironment:\n"
+        "  timezone: Asia/Shanghai\n"
+        "  snapshotPath: /data/snapshots.sqlite3\n"
+        "  persistentCache: true\n"
+        "  settlementTime: \"15:10\"\n"
+        "  scheduledCollection:\n"
+        "    enabled: false\n"
+        "    suspend: true\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / SCRIPT.name),
+            "--offline-render",
+            "--component",
+            "database",
+            "--baseline-values",
+            str(chart_managed),
+            "--scheduling-overlay",
+            str(repo / "deploy" / "truenas" / "values-scheduled-off.yaml"),
+            "--kube-version",
+            "1.26.6",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
+        ],
+        env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    kinds = {
+        line.split(":", 1)[1].strip()
+        for line in completed.stdout.splitlines()
+        if line.startswith("kind:")
+    }
+    assert kinds == {"PersistentVolumeClaim"}
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_database_with_existingclaim_renders_no_pvc_object(tmp_path: Path) -> None:
+    repo, _, baseline, _ = _component_fake_repo(tmp_path)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / SCRIPT.name),
+            "--offline-render",
+            "--component",
+            "database",
+            "--baseline-values",
+            str(baseline),
+            "--scheduling-overlay",
+            str(repo / "deploy" / "truenas" / "values-scheduled-off.yaml"),
+            "--kube-version",
+            "1.26.6",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
+        ],
+        env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    kinds = {
+        line.split(":", 1)[1].strip()
+        for line in completed.stdout.splitlines()
+        if line.startswith("kind:")
+    }
+    assert "PersistentVolumeClaim" not in kinds
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_schedule_offline_render_keeps_suspended_cronjob(tmp_path: Path) -> None:
+    repo, _, baseline, _ = _component_fake_repo(tmp_path)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / SCRIPT.name),
+            "--offline-render",
+            "--component",
+            "schedule",
+            "--baseline-values",
+            str(baseline),
+            "--scheduling-overlay",
+            str(repo / "deploy" / "truenas" / "values-scheduled-suspended.yaml"),
+            "--kube-version",
+            "1.26.6",
+            "--release-name",
+            "research",
+            "--namespace",
+            "market-data",
+        ],
+        env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "kind: CronJob" in completed.stdout
+    assert "suspend: true" in completed.stdout
+    assert "kind: Deployment" not in completed.stdout
+    assert "kind: Service" not in completed.stdout
+    assert "kind: PersistentVolumeClaim" not in completed.stdout
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_schedule_deploy_preflight_renders_with_frozen_image(
+    tmp_path: Path,
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    digest = f"sha256:{'b' * 64}"
+    frozen_repo = "registry.local/frozen"
+    frozen_tag = "20260101-frozen01"
+    baseline_repo = "localhost/a-stock-market-environment"
+    baseline_tag = "20260905-1904b66"
+    env_file = tmp_path / "schedule-frozen.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                f"SCHEDULING_OVERLAY_FILE={repo / 'deploy' / 'truenas' / 'values-scheduled-suspended.yaml'}",
+                "IMAGE_TAG=test-schedule",
+                f"FROZEN_IMAGE_REPOSITORY={frozen_repo}",
+                f"FROZEN_IMAGE_TAG={frozen_tag}",
+                f"FROZEN_IMAGE_DIGEST={digest}",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "schedule",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"component=schedule frozen image provenance verified: {frozen_repo}:{frozen_tag}" in completed.stdout
+    assert digest in completed.stdout
+    assert f"component step: name=schedule phase=preflight image={frozen_repo}:{frozen_tag}" in completed.stdout
+    assert "does not access the target cluster" in completed.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_schedule_deploy_rejects_baseline_image_when_frozen_required(
+    tmp_path: Path,
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    digest = f"sha256:{'c' * 64}"
+    env_file = tmp_path / "schedule-mismatch.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                f"SCHEDULING_OVERLAY_FILE={repo / 'deploy' / 'truenas' / 'values-scheduled-suspended.yaml'}",
+                "IMAGE_TAG=should-not-be-used",
+                "FROZEN_IMAGE_REPOSITORY=registry.local/frozen",
+                "FROZEN_IMAGE_TAG=20260101-frozen01",
+                f"FROZEN_IMAGE_DIGEST={digest}",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "schedule",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "image=registry.local/frozen:20260101-frozen01" in completed.stdout
+    assert "image=should-not-be-used" not in completed.stdout
+    assert "image=localhost/a-stock-market-environment:20260905-1904b66" not in completed.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_service_deploy_preflight_uses_component_value(
+    tmp_path: Path,
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    env_file = tmp_path / "service.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                "IMAGE_TAG=test-service",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "service",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0, completed.stderr
+    assert "REMOTE_IMAGE_DIR is required" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_target(
+    tmp_path: Path,
+) -> None:
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    env_file = tmp_path / "service.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                "REMOTE_IMAGE_DIR=/unreachable",
+                "IMAGE_TAG=test-service",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "service",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert "REMOTE_IMAGE_DIR is required" not in completed.stderr
+    assert "component step: name=service phase=preflight" in completed.stdout
+    assert "does not access the target cluster" in completed.stdout
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_all_components_ordered_database_service_schedule_in_preflight(
+    tmp_path: Path,
+) -> None:
+    """`all` deploy preflight must report the explicit database -> service ->
+    schedule ordering so operators can verify dependency direction without
+    running the full Helm write.
+    """
+    repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    fake_bin, marker = _write_target_spies(tmp_path)
+    env_file = tmp_path / "all.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"HELM_VALUES_FILE={baseline}",
+                "IMAGE_TAG=test-all",
+                "TARGET_KUBERNETES_VERSION=1.26.6",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--component",
+            "all",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "REMOTE_IMAGE_DIR is required" in completed.stderr
+    assert not marker.exists()

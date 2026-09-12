@@ -9,6 +9,14 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Component intent for the TrueNAS k3s entry point.
+#   all       - render every supported resource (legacy default)
+#   database  - render only the reviewed RWO PVC contract
+#   service   - render the Dashboard Deployment, Service, and configured Ingress
+#   schedule  - render only the scheduled-collection resource when the
+#               reviewed suspended/disabled profile allows it
+component: all
+
 podAnnotations: {}
 podLabels: {}
 

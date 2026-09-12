@@ -202,6 +202,47 @@ def _load_yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _chart_managed_values() -> Path:
+    """Return the path to a chart-managed persistence values file used for
+    component render tests. The TrueNAS baseline values point at an
+    existingClaim, so a separate file is required to exercise the
+    chart-managed PVC path.
+    """
+    path = ROOT / "tests" / "fixtures" / "chart_managed_values.yaml"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "replicaCount: 1\n"
+            "image:\n"
+            "  repository: localhost/a-stock-market-environment\n"
+            "  tag: chart-managed\n"
+            "  pullPolicy: IfNotPresent\n"
+            "service:\n"
+            "  type: ClusterIP\n"
+            "  port: 80\n"
+            "ingress:\n"
+            "  enabled: false\n"
+            "persistence:\n"
+            "  enabled: true\n"
+            "  storageClass: ix-storage-class\n"
+            "  accessModes:\n"
+            "    - ReadWriteOnce\n"
+            "  size: 2Gi\n"
+            "  mountPath: /data\n"
+            "  keep: true\n"
+            "marketEnvironment:\n"
+            "  timezone: Asia/Shanghai\n"
+            "  snapshotPath: /data/snapshots.sqlite3\n"
+            "  persistentCache: true\n"
+            "  settlementTime: \"15:10\"\n"
+            "  scheduledCollection:\n"
+            "    enabled: false\n"
+            "    suspend: true\n",
+            encoding="utf-8",
+        )
+    return path
+
+
 def _render_helm(*arguments: str) -> list[dict]:
     completed = subprocess.run(
         [
@@ -766,6 +807,86 @@ def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     assert _resource(documents, "Deployment")
     assert _resource(documents, "Service")
     assert all(document.get("kind") != "CronJob" for document in documents)
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_component_database_renders_pvc_only() -> None:
+    chart_managed = tmp_chart_managed_values() if False else _chart_managed_values()
+    documents = _render_helm(
+        "--set", "component=database",
+        "--values", str(chart_managed),
+    )
+
+    kinds = [document.get("kind") for document in documents]
+    assert "PersistentVolumeClaim" in kinds
+    assert "Deployment" not in kinds
+    assert "Service" not in kinds
+    assert "Ingress" not in kinds
+    assert "CronJob" not in kinds
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_component_service_renders_dashboard_without_pvc_or_cronjob() -> None:
+    documents = _render_helm(
+        "--set", "component=service",
+        "--values", str(TRUENAS_DIRECT_ACCESS_VALUES),
+    )
+
+    kinds = [document.get("kind") for document in documents]
+    assert "Deployment" in kinds
+    assert "Service" in kinds
+    assert "PersistentVolumeClaim" not in kinds
+    assert "CronJob" not in kinds
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_component_schedule_renders_only_suspended_cronjob() -> None:
+    documents = _render_helm(
+        "--kube-version", "1.26.6",
+        "--set", "component=schedule",
+        "--values", str(TRUENAS_DIRECT_ACCESS_VALUES),
+        "--values", str(TRUENAS_SCHEDULED_SUSPENDED_VALUES),
+    )
+
+    cronjobs = [document for document in documents if document.get("kind") == "CronJob"]
+    assert len(cronjobs) == 1
+    assert cronjobs[0]["spec"]["suspend"] is True
+    assert "Deployment" not in [document.get("kind") for document in documents]
+    assert "Service" not in [document.get("kind") for document in documents]
+    assert "PersistentVolumeClaim" not in [document.get("kind") for document in documents]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_component_database_existingclaim_renders_no_pvc_object() -> None:
+    documents = _render_helm(
+        "--kube-version", "1.26.6",
+        "--set", "component=database",
+        "--values", str(TRUENAS_DIRECT_ACCESS_VALUES),
+    )
+
+    assert all(document.get("kind") != "PersistentVolumeClaim" for document in documents)
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_rejects_invalid_component_value() -> None:
+    completed = subprocess.run(
+        [
+            str(HELM_BINARY),
+            "template",
+            "a-stock",
+            str(CHART_DIR),
+            "--namespace",
+            "a-stock",
+            "--set", "component=invalid",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "component" in completed.stderr
+    assert "value must be one of" in completed.stderr
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")

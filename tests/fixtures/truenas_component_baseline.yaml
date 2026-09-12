@@ -1,0 +1,81 @@
+# TrueNAS k3s reviewed baseline for the componentized deployment workflow.
+# This fixture describes the supported release/namespace/PVC/image/topology/scheduling
+# invariants that operators must respect. Tests must reject any drift away from
+# these assumptions before a target write.
+schema: truenas-k3s-component-baseline/v1
+
+release:
+  name: a-stock
+  namespace: a-stock
+  chart: deploy/helm/a-stock
+  chartVersion: 0.1.1
+
+# Persistence: TrueNAS deployments use a pre-provisioned static RWO PVC.
+# The chart-managed fallback path must still produce an RWO claim with the same
+# name, access mode, capacity, and mount path; tests reject conflicting contracts.
+persistence:
+  enabled: true
+  claimName: a-stock-data
+  storageClass: ix-storage-class
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  mountPath: /data
+  snapshotPath: /data/snapshots.sqlite3
+  keep: true
+
+# The frozen, immutable image that the release and the after-market CronJob
+# must share. Schedule-only operations must reuse this exact reference and
+# reject a digest mismatch.
+image:
+  pullPolicy: IfNotPresent
+  repository: localhost/a-stock-market-environment
+  tagPattern: "%Y%m%d-%H%M%S-%h"
+  digestPrefix: sha256:
+
+# Topology: SQLite RWO with one Dashboard replica and no shared volume for Jobs.
+topology:
+  replicaCount: 1
+  strategy: Recreate
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+  capabilitiesDrop:
+    - ALL
+
+# Scheduling: production schedules are always fail-closed. The component
+# workflow never produces an active CronJob without explicit Gate B/Gate C
+# authorization through the reviewed --release-suspended / --activate-schedule
+# / --disable-schedule paths.
+scheduling:
+  supportedStates:
+    - disabled
+    - suspended
+  defaultState: disabled
+  defaultSuspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  activeDeadlineSeconds: 3600
+  timezoneStrategy:
+    - native
+    - controller
+  businessTimezone: Asia/Shanghai
+  settlementTime: "15:10"
+  schedulePattern: "^[0-9]{1,2} [0-9]{1,2} \\* \\* 1-5$"
+
+# Authorization gates; component operations must not bypass them.
+authorization:
+  releaseSuspended:
+    required: true
+    envVar: SUSPENDED_RELEASE_AUTHORIZED
+    referenceEnvVar: GATE_B_AUTHORIZATION_REF
+  activateSchedule:
+    required: true
+    envVar: SCHEDULE_ACTIVATION_AUTHORIZED
+    referenceEnvVar: GATE_C_AUTHORIZATION_REF
+  disableSchedule:
+    required: true
+    envVar: SCHEDULE_ROLLBACK_AUTHORIZED
+    referenceEnvVar: SCHEDULE_ROLLBACK_AUTHORIZATION_REF
