@@ -32,6 +32,7 @@ import {
   toggleCoreExpansion,
 } from './collection-view-model'
 import { formatLocalDate } from './date-util'
+import { formatDateTime, formatDateTimeTitle } from './timezone'
 
 const DATASET_LABELS: Record<CollectionDataset, string> = {
   core: '核心指数',
@@ -60,17 +61,6 @@ const fullCollectionAllowed = computed(() => (
     ? canCollectAll(status.value.manualRefreshEnabled, status.value.datasets, activeRun.value)
     : false
 ))
-
-function formatDateTime(value: string | null) {
-  if (!value) return '--'
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(new Date(value))
-}
 
 function formatDuration(value: number | null | undefined) {
   if (value == null) return '--'
@@ -211,9 +201,9 @@ onMounted(loadStatus)
                   <span>{{ item.dataset }}</span>
                 </td>
                 <td data-label="可用状态"><span class="collection-badge" :class="item.available ? 'success' : 'failed'">{{ availabilityLabel(item) }}</span></td>
-                <td data-label="最近尝试"><span class="collection-badge" :class="statusTone(item.latestAttempt?.status)">{{ attemptLabel(item) }}</span></td>
+                <td data-label="最近尝试"><span class="collection-badge" :class="statusTone(item.latestAttempt?.status)">{{ attemptLabel(item) }}</span><time v-if="item.latestAttempt?.completedAt || item.latestAttempt?.startedAt || item.latestAttempt?.queuedAt" class="collection-attempt-time" :datetime="item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt || undefined" :title="formatDateTimeTitle(item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt)">{{ formatDateTime(item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt, { precision: 'second' }) }}</time></td>
                 <td data-label="来源 / 样本"><strong>{{ item.source === 'none' ? '--' : item.source }}</strong><span>{{ item.observations.toLocaleString('zh-CN') }} 条</span></td>
-                <td data-label="最近成功">{{ formatDateTime(item.lastSuccessAt) }}</td>
+                <td data-label="最近成功"><span :title="formatDateTimeTitle(item.lastSuccessAt)">{{ formatDateTime(item.lastSuccessAt, { precision: 'second' }) }}</span></td>
                 <td data-label="耗时">{{ formatDuration(item.latestAttempt?.durationMs) }}</td>
                 <td data-label="提示" class="collection-warning"><span class="collection-warning-text" :title="item.latestAttempt?.warning || item.refreshWarning || item.restriction || undefined">{{ item.latestAttempt?.warning || item.refreshWarning || item.restriction || '--' }}</span></td>
                 <td data-label="操作">

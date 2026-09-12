@@ -201,6 +201,13 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock \
 
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
+前端时间显示由 `src/timezone.ts` 统一处理，禁止组件自行调用 `Intl.DateTimeFormat` 或 `toLocaleString` 渲染 ISO 时间。`/settings` 的日期与时间页通过可选 `GET/PUT /api/preferences/timezone` 读取/保存个人和工作区 IANA 偏好；后端未部署时个人偏好使用浏览器 localStorage fallback，并在页面提示“接口尚未接入/离线”，不伪造工作区保存成功。验证时间层和设置状态：
+
+```bash
+npm run test --prefix apps/market-environment-dashboard
+npm run build --prefix apps/market-environment-dashboard
+```
+
 新增或调整页面时，布局、组件、颜色、图表、状态和响应式验收遵循 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
 
 接口检查：

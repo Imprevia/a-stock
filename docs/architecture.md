@@ -129,6 +129,8 @@ tests/                              公式、服务层和 API 契约测试
 
 市场环境 API 保留原有 `indices` / `summary` 契约，并以可选 `chapter01` 对象追加证据。核心接口返回不访问章节外部 provider 的 `chapter01` 骨架，章节接口返回截至当前请求已加载的数据集与后端计算的覆盖率、组合概览和评估；前端只合并后端响应，不补算证据。任何 provider 缺失均使用 `null`、`partial`、`missing` 或 `insufficient` 表达；只有上游明确返回空池时才可将对应计数记为 0，分母为 0 的比率仍为 `null`。规则平台继续通过独立 snapshot 契约执行确定性评分。
 
+前端日期时间由 `apps/market-environment-dashboard/src/timezone.ts` 统一格式化：个人偏好优先于工作区偏好，再回退浏览器 IANA 时区，解析失败显式回退 `UTC`。所有 ISO8601 时间展示本地日期时间与 UTC 偏移，tooltip 保留规范化原始 UTC ISO；空值、无效值和无时区输入保持 `--`，不改写 API 原始字段。偏好接口采用可替换的 `GET/PUT /api/preferences/timezone` 契约；接口尚未接入或离线时个人偏好安全保存在浏览器本机，工作区偏好仍要求服务端权限。
+
 ## 架构相关文档映射规则
 
 | 变更类型 | 必须更新 |

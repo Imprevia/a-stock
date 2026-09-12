@@ -382,6 +382,7 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .collection-badge.warning { background: #f6f0df; color: #8b682e; }
 .collection-badge.running { background: #e7f0f2; color: #2a6f78; }
 .collection-badge.failed { background: #f2eceb; color: #95605b; }
+.collection-attempt-time { display: block; margin-top: 5px; color: #71807a; font-size: 14px; white-space: nowrap; }
 .collection-warning { max-width: 260px; color: #7c6863; line-height: 1.5; overflow-wrap: anywhere; }
 .collection-warning-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .expand-button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: #34413c; cursor: pointer; }
@@ -397,6 +398,34 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .core-index-list strong { color: #34413c; }
 .core-index-list em { color: #866963; font-style: normal; overflow-wrap: anywhere; }
 .core-empty { padding: 18px 0 4px; color: #8a9590; font-size: 14px; text-align: center; }
+.settings-page { max-width: 760px; margin: 0 auto; }
+.settings-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 20px; }
+.settings-header > div > span { color: #73817b; font-size: 14px; font-weight: 700; }
+.settings-header h1 { margin: 5px 0 0; color: #1d2825; font-size: 24px; line-height: 1.25; }
+.settings-header p { margin: 8px 0 0; color: #71807a; font-size: 14px; line-height: 1.6; }
+.settings-header > svg { flex: 0 0 auto; color: #4b8f87; }
+.timezone-effective-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; padding: 18px 20px; border: 1px solid #cdded9; border-radius: 7px; background: #f3f8f6; }
+.timezone-effective-card > div { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+.timezone-effective-card strong { color: #214a43; font-size: 21px; overflow-wrap: anywhere; }
+.timezone-effective-card small { color: #6f817a; font-size: 14px; line-height: 1.5; }
+.timezone-effective-card time { color: #365a53; font-size: 14px; text-align: right; white-space: nowrap; }
+.settings-card { margin-top: 14px; padding: 20px; border: 1px solid #dce3e0; border-radius: 7px; background: #fff; }
+.settings-card-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.settings-card-heading h2 { margin: 4px 0 0; color: #33413c; font-size: 18px; }
+.settings-card-heading > span { color: #85918c; font-size: 14px; text-align: right; }
+.settings-field { display: flex; margin-top: 18px; flex-direction: column; gap: 7px; }
+.settings-field > span { color: #52615b; font-size: 14px; font-weight: 700; }
+.settings-field input { width: 100%; min-height: 40px; box-sizing: border-box; padding: 0 11px; border: 1px solid #cfd9d5; border-radius: 5px; color: #34423c; background: #fff; font: inherit; font-size: 14px; }
+.settings-field input:focus { outline: 2px solid #8bc0b6; outline-offset: 1px; border-color: #4b8f87; }
+.settings-field input[aria-invalid="true"] { border-color: #b96d65; background: #fff8f7; }
+.settings-field input:disabled { color: #89958f; background: #f1f4f2; cursor: not-allowed; }
+.settings-hint { margin: 8px 0 0; color: #82908a; font-size: 14px; line-height: 1.6; }
+.settings-validation { margin: 8px 0 0; color: #995b55; font-size: 14px; line-height: 1.5; }
+.settings-save { margin-top: 16px; }
+.settings-status { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 12px 14px; border: 1px solid #c7ddd5; border-radius: 6px; color: #286e5d; background: #f1f8f5; font-size: 14px; line-height: 1.5; }
+.settings-status.info { border-color: #d9d2b8; color: #8a6c35; background: #fbf8ee; }
+.settings-status.error { border-color: #e1c8c5; color: #995b55; background: #fff8f7; }
+.settings-status svg { flex: 0 0 auto; margin-top: 1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1180px) {
@@ -505,6 +534,11 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
   .core-index-list > div > span:nth-of-type(1), .core-index-list > div > span:nth-of-type(3), .core-index-list > div > em { grid-column: 1 / -1; }
   .collection-summary { align-items: flex-start; flex-direction: column; justify-content: center; gap: 5px; padding-block: 10px; }
   .limits-collection-detail { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+  .timezone-effective-card { align-items: flex-start; flex-direction: column; padding: 16px; }
+  .timezone-effective-card time { text-align: left; white-space: normal; }
+  .settings-card { padding: 16px; }
+  .settings-card-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .settings-card-heading > span { text-align: left; }
 }
 
 @media (max-width: 400px) {

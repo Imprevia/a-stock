@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import {
   Activity, AlertTriangle, BarChart3, CalendarDays, ChevronRight, CircleAlert,
   Database, FileCheck2, Gauge, LineChart, Menu, RefreshCw, Rows3, Scale,
-  ShieldAlert, Target, TrendingDown, TrendingUp, X,
+  Settings2, ShieldAlert, Target, TrendingDown, TrendingUp, X,
 } from 'lucide-vue-next'
 import type {
   Chapter01Analysis,
@@ -16,9 +16,16 @@ import type {
   MarketEnvironmentResponse,
 } from './types'
 import { formatLocalDate, getDefaultMarketDate } from './date-util'
+import {
+  formatDateTime,
+  formatDateTimeTitle,
+  initializeTimezonePreferences,
+  timezonePreferences,
+} from './timezone'
 import DataCollectionView from './data-collection-view.vue'
+import TimezoneSettingsView from './timezone-settings-view.vue'
 
-type AppView = 'dashboard' | 'data-collection'
+type AppView = 'dashboard' | 'data-collection' | 'settings'
 type SectionPhase = 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
 
 interface SectionState {
@@ -61,7 +68,7 @@ const error = ref('')
 const loadedSections = ref<Chapter01Section[]>([])
 const sectionStates = ref(createSectionStates())
 const sidebarOpen = ref(false)
-const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : 'dashboard')
+const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard')
 const chartElement = ref<HTMLElement | null>(null)
 const volumeChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -94,7 +101,7 @@ const activeSection = computed(() => documentSections[selectedDocumentId.value] 
 const activeSectionState = computed(() => activeSection.value ? sectionStates.value[activeSection.value] : null)
 const sectionLoading = computed(() => ['loading', 'refreshing'].includes(activeSectionState.value?.phase ?? ''))
 const sectionError = computed(() => activeSectionState.value?.error ?? '')
-const generatedAt = computed(() => data.value?.generatedAt ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(data.value.generatedAt)) : '')
+const generatedAt = computed(() => formatDateTime(data.value?.generatedAt, { precision: 'second' }))
 const breadthBar = computed(() => {
   const item = breadth.value
   if (!item?.validCount || item.advanceCount == null || item.flatCount == null || item.declineCount == null) return null
@@ -159,12 +166,7 @@ const formatCount = (value: number | null | undefined) => value == null ? '--' :
 const formatAmount = (value: number | null | undefined) => value == null ? '--' : Math.abs(value) >= 100000000 ? `${(value / 100000000).toFixed(1)} 亿` : `${(value / 10000).toFixed(0)} 万`
 const formatPosition = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
 const formatCoverage = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
-const formatEvidenceTime = (value: string | null | undefined) => {
-  if (!value) return '--'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(parsed)
-}
+const formatEvidenceTime = (value: string | null | undefined) => formatDateTime(value, { precision: 'second' })
 const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级来源', partial: '部分覆盖', missing: '缺失', failed: '失败', degraded: '降级保留', insufficient: '数据不足' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
 const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial', 'degraded'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
 const metricQualityTone = (status?: string) => status === 'ok' ? 'ok' : status === 'degraded' ? 'fallback' : 'missing'
@@ -359,12 +361,12 @@ function selectDocument(id: string) {
 function navigateTo(view: AppView) {
   currentView.value = view
   sidebarOpen.value = false
-  const path = view === 'data-collection' ? '/data-collection' : '/'
+  const path = view === 'data-collection' ? '/data-collection' : view === 'settings' ? '/settings' : '/'
   if (window.location.pathname !== path) window.history.pushState({}, '', path)
   if (view === 'dashboard' && !data.value && !loading.value) void loadData()
 }
 function handlePopState() {
-  currentView.value = window.location.pathname === '/data-collection' ? 'data-collection' : 'dashboard'
+  currentView.value = window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard'
   if (currentView.value === 'dashboard' && !data.value && !loading.value) void loadData()
 }
 function selectIndex(code: string) { selectedCode.value = code }
@@ -408,6 +410,7 @@ onMounted(() => {
   const match = window.location.hash.match(/document-(0[1-9])$/)
   if (match) selectedDocumentId.value = match[1]
   if (currentView.value === 'dashboard') loadData()
+  void initializeTimezonePreferences()
   window.addEventListener('resize', resizeCharts)
   window.addEventListener('popstate', handlePopState)
 })
@@ -429,20 +432,22 @@ onBeforeUnmount(() => {
         <div class="secondary-nav"><button v-for="document in documents" :key="document.id" type="button" :class="{ active: currentView === 'dashboard' && selectedDocumentId === document.id }" @click="selectDocument(document.id)"><span class="nav-number">{{ document.id }}</span><span>{{ document.title }}</span></button></div>
         <div class="nav-label management-label">数据管理</div>
         <button class="primary-nav" :class="{ active: currentView === 'data-collection' }" type="button" @click="navigateTo('data-collection')"><Database :size="17" /><span>数据采集</span><ChevronRight :size="15" /></button>
+        <button class="primary-nav" :class="{ active: currentView === 'settings' }" type="button" @click="navigateTo('settings')"><Settings2 :size="17" /><span>偏好设置</span><ChevronRight :size="15" /></button>
       </nav>
       <div class="sidebar-foot"><Database :size="15" /><div><span>规则事实源</span><strong>market-environment v1</strong></div></div>
     </aside>
 
     <main class="main-shell">
-      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : '数据管理' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : '数据采集' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
+      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : currentView === 'data-collection' ? '数据管理' : '偏好设置' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : currentView === 'data-collection' ? '数据采集' : '日期与时间' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
       <div class="content-shell">
         <DataCollectionView v-if="currentView === 'data-collection'" />
+        <TimezoneSettingsView v-else-if="currentView === 'settings'" />
         <template v-else>
         <section class="document-header"><div class="document-number">{{ selectedDocument.id }}</div><div class="document-title"><span>01 · 如何判断市场环境</span><h1>{{ selectedDocument.title }}</h1><p>{{ selectedDocument.objective }}</p></div><div class="rule-reference"><span>规则范围</span><strong>{{ selectedDocument.rules }}</strong><em>经验阈值 · 待回测</em></div></section>
         <section v-if="error" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>行情暂时不可用</strong><p>{{ error }}</p></div><button class="text-button" type="button" @click="loadData">重新加载</button></section>
         <section v-else-if="loading && !data" class="state-panel"><div class="loader" /><span>正在读取市场证据…</span></section>
         <template v-else-if="data">
-          <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span>更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
+          <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span :title="formatDateTimeTitle(data.generatedAt)">更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
 
           <section v-if="activeSection && activeSectionState?.phase === 'loading'" class="state-panel"><div class="loader" /><span>正在读取本节证据…</span></section>
           <section v-else-if="activeSection && sectionError && !loadedSections.includes(activeSection)" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
@@ -506,7 +511,7 @@ onBeforeUnmount(() => {
             <section class="limits-quality-band" aria-label="涨跌停数据质量">
               <div class="limits-quality-heading"><div><span class="panel-kicker">本节证据 · 质量优先</span><h2>涨跌停数据集</h2></div><div class="limits-quality-actions"><span class="quality-badge" :class="qualityTone(limits?.quality)">{{ sectionPhaseLabel(limitSectionPhase) }}</span><button class="icon-button" type="button" :disabled="sectionLoading" aria-label="刷新涨跌停证据" title="刷新涨跌停证据" @click="loadCurrentSection(true)"><RefreshCw :size="17" :class="{ spin: sectionLoading }" /></button></div></div>
               <div class="limits-quality-primary"><div><span>所选交易日</span><strong>{{ data.asOf }}</strong></div><div><span>数据质量</span><strong>{{ qualityCodeLabel(limits?.quality) }}</strong></div><div><span>数据提供方</span><strong>{{ limits?.quality.provider || '--' }}</strong></div><div><span>缓存状态</span><strong>{{ cacheStateLabel(limits?.quality.cacheState) }}</strong></div></div>
-              <div class="limits-quality-secondary"><div><span>样本实际日期</span><strong>{{ limits?.quality.asOf || '--' }}</strong></div><div><span>有效观察数</span><strong>{{ formatCount(limits?.quality.observations) }}</strong></div><div><span>数据来源</span><strong>{{ limits?.quality.source || '--' }}</strong></div><div><span>抓取时间</span><strong>{{ formatEvidenceTime(limits?.quality.snapshotFetchedAt) }}</strong></div></div>
+              <div class="limits-quality-secondary"><div><span>样本实际日期</span><strong>{{ limits?.quality.asOf || '--' }}</strong></div><div><span>有效观察数</span><strong>{{ formatCount(limits?.quality.observations) }}</strong></div><div><span>数据来源</span><strong>{{ limits?.quality.source || '--' }}</strong></div><div><span>抓取时间</span><strong :title="formatDateTimeTitle(limits?.quality.snapshotFetchedAt)">{{ formatEvidenceTime(limits?.quality.snapshotFetchedAt) }}</strong></div></div>
               <div v-if="sectionError" class="limits-refresh-error" role="alert"><CircleAlert :size="17" /><span>刷新失败，继续显示同日期最后一次证据：{{ sectionError }}</span><button class="text-button" type="button" @click="loadCurrentSection(true)">重试</button></div>
               <div class="limits-warning-block" :class="{ empty: !limitWarnings.length }"><AlertTriangle :size="17" /><div><strong>数据警告</strong><span>{{ limitWarnings.length ? limitWarnings.join('；') : '无' }}</span></div></div>
             </section>
@@ -542,7 +547,7 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="selectedDocumentId === '07'">
-            <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">事件台账</span><h2>{{ chapter?.events?.state || '未核实' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.events?.quality)">{{ qualityLabel(chapter?.events?.quality) }}</span></div><div v-if="chapter?.events?.items?.length" class="event-list"><article v-for="event in chapter.events.items" :key="`${event.title}-${event.publishedAt}`"><FileCheck2 :size="18" /><div><strong>{{ event.title }}</strong><span>{{ event.source || '来源未标注' }} · {{ event.publishedAt || '时间未标注' }}</span></div><em :class="event.verified ? 'verified' : ''">{{ event.verified ? '已核实' : '待核实' }}</em></article></div><div v-else class="empty-evidence"><FileCheck2 :size="24" /><strong>没有可追溯事件输入</strong><p>{{ chapter?.events?.quality.warning || '事件不直接决定市场环境；未核实传闻不得进入加分。' }}</p></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">调整边界</span><h2>盘面确认后最多 ±5 分</h2></div></div><p>来源可靠性、信息新鲜度、价格成交确认、板块扩散和次日承接必须分开记录。</p></article></section>
+            <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">事件台账</span><h2>{{ chapter?.events?.state || '未核实' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.events?.quality)">{{ qualityLabel(chapter?.events?.quality) }}</span></div><div v-if="chapter?.events?.items?.length" class="event-list"><article v-for="event in chapter.events.items" :key="`${event.title}-${event.publishedAt}`"><FileCheck2 :size="18" /><div><strong>{{ event.title }}</strong><span :title="formatDateTimeTitle(event.publishedAt)">{{ event.source || '来源未标注' }} · {{ event.publishedAt ? formatDateTime(event.publishedAt) : '时间未标注' }}</span></div><em :class="event.verified ? 'verified' : ''">{{ event.verified ? '已核实' : '待核实' }}</em></article></div><div v-else class="empty-evidence"><FileCheck2 :size="24" /><strong>没有可追溯事件输入</strong><p>{{ chapter?.events?.quality.warning || '事件不直接决定市场环境；未核实传闻不得进入加分。' }}</p></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">调整边界</span><h2>盘面确认后最多 ±5 分</h2></div></div><p>来源可靠性、信息新鲜度、价格成交确认、板块扩散和次日承接必须分开记录。</p></article></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '08'">
