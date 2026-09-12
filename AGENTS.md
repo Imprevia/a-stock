@@ -1,6 +1,14 @@
 # AGENTS.md — a-stock 仓库规则
 
-本仓库是 agent-first 工程系统：`docs/` 是事实源，plan / status / evidence 有固定落地位，本地 gate 强制执行。
+本仓库是面向盘后研究的 agent-first 工程系统：后端提供市场环境分析与交易规则执行能力，前端提供可解释的市场看板，`docs/`、`trading-rules/` 和 `evidence/` 分别承担文档、机器规则和验证证据的事实职责。
+
+## 仓库地图
+
+- `src/market_environment/`：FastAPI 市场环境 API、provider 降级、指标计算、数据质量、快照与采集任务。
+- `apps/market-environment-dashboard/`：Vue 3 + Vite + TypeScript + ECharts 看板；开发时由 Vite 将 `/api` 代理到后端。
+- `src/trading_system/` + `trading-rules/`：规则 schema、快照、确定性 evaluator、证据、回测和 CLI。
+- `deploy/`：Kustomize/Helm 部署包；`scripts/`：渲染、部署和文档门禁脚本。
+- `tests/`：后端、规则平台、部署清单和安全护栏测试；`docs/`：架构、规格、运行手册、计划和状态记录。
 
 ## 按任务类型路由
 
@@ -19,7 +27,7 @@
 
 原版负责观点来源，量化版负责数据口径、公式、阈值、评分、否决和校准状态。整理、新增、删除或重命名交易系统文档时，先更新对应目录索引并保持两个目录相对路径一致；禁止重新建立按飞书下载批次拆分的同主题子目录，也不要把章节正文散落到两个知识库根目录。量化版已有规则 ID 不得因文字调整而重排。
 
-`搭建交易系统-量化版/` 是人读说明层；`trading-rules/` 是机器执行事实源。当前全库规则 ID 为 330 个，第 01 章可执行范围为 49 条。规则变更必须同步 YAML、量化文档、覆盖清单、测试和证据引用。PR 规则验证只能使用固定快照离线运行；真实数据获取只允许在盘后或显式本地命令中执行，数据源失败必须输出 `degraded` 或 `insufficient`。
+`搭建交易系统-量化版/` 是人读说明层；`trading-rules/` 是机器执行事实源。规则 ID、覆盖清单和相对路径是稳定接口，不得因文字调整而重排。规则变更必须同步 YAML、量化文档、覆盖清单、测试和证据引用。PR 规则验证只能使用固定快照离线运行；真实数据获取只允许在盘后或显式本地命令中执行，数据源失败必须输出 `degraded` 或 `insufficient`，不得伪造为成功。
 
 ## 硬规则（gate 强制，非建议）
 
@@ -47,7 +55,7 @@
 - 手动验证：`python scripts/check-docs-contract.py --mode=full`
 - hook 重连：`python scripts/install-hooks.py`
 
-注意：本机未安装 Python 时 hook 会警告并放行（见 `docs/runbooks.md`）。
+GitHub Actions 的规则门禁见 `.github/workflows/trading-rules-pr.yml`；它会校验规则、文档同步、全量确定性测试和 docs contract。若本机缺少 Python，hook 可能只警告放行，不能把这种放行当作验证通过。
 
 ## active plan 必需字段（Gate 4 检查，标题中英任一即可）
 
@@ -57,14 +65,33 @@
 
 - 运行时：Python 优先（数据 / 分析栈）。
 - 平台：Windows / macOS / Linux 均为一等公民；脚本禁止绑定单一平台路径与命令。
-- CI：暂无（见 `docs/status.md` 的缺口清单）。
+- 后端测试使用 pytest；前端测试使用 Vitest，生产构建使用 Vite。
+- CI 规则门禁必须保持离线、确定性和可复现；盘后真实数据 workflow 与 PR 门禁分离。
 
-## 当前业务模块
+## 验证命令
 
-- 市场环境分析 API：`src/market_environment/`；负责五大指数行情适配、指标计算、数据质量和 FastAPI 契约。
-- 市场环境分析网页：`apps/market-environment-dashboard/`；Vue 3 + Vite + TypeScript + ECharts 单页看板，开发时通过 Vite 将 `/api` 代理到 8000 端口。
-- 交易规则平台：`src/trading_system/` + `trading-rules/`；负责规则 schema、快照、确定性 evaluator、证据、回测和 CI 契约。
-- 修改上述代码时必须同步 `docs/architecture.md`、`docs/runbooks.md` 和 active plan；第 01 章看板已覆盖指数、市场广度、涨跌停生态、行业与容量方向，未接入的数据必须保持 `null` / `insufficient`。
+按改动范围选择最小但足够的验证，并在交付说明中记录未运行的检查：
+
+```bash
+python -m pytest tests -q
+python -m src.trading_system.cli rules validate
+python -m src.trading_system.cli rules coverage
+python -m src.trading_system.cli docs sync-check
+python scripts/check-docs-contract.py --mode=full
+```
+
+前端改动还需在 `apps/market-environment-dashboard/` 执行 `npm run test` 和 `npm run build`。部署清单改动先执行 Helm lint、离线 template 或 `python scripts/render-k3s.py --kube-version <版本>`；不要把真实 provider smoke、生产接口访问或部署写操作混入普通测试。
+
+## 领域不变量与安全边界
+
+- 市场数据必须保留真实日期、来源和质量状态；缺失数据用 `null` / `missing` / `insufficient` 表达，不用 0 或其他日期数据补齐。
+- 普通 GET 只读本地精确日期快照或聚合；provider 采集只能由明确的盘后或本地采集命令触发。
+- `scheduledCollection` 默认必须保持 `enabled=false` 且 `suspend=true`。生产部署、手工采集、CronJob、Helm release、NodePort、PVC 和 SQLite 数据操作须遵循 `docs/runbooks.md`，需要外部写入时先取得明确授权。
+- 不得提交凭据、私有环境文件、真实数据快照或运行时产物；不要执行删除 PVC、卸载 release、修改生产集群或改变远端分支的命令来“清理”问题。
+- 前端所有可见文字（含图例、坐标轴和 tooltip）不小于 `14px`；桌面和 390px 移动宽度均不得出现页面级横向溢出、重叠或截断。宽表自身滚动除外。
+- 当前未接入的数据集和未验证的交易规则必须保持明确的 `unverified` / `documented-only` 状态，不得用历史评论或口头说明代替证据。
+
+修改后同步更新受影响的 `docs/architecture.md`、`docs/runbooks.md`、产品规格或 active plan；阶段完成前补齐 plan 的 `Status`、`Completion Evidence`、`Remaining Gaps` 和 `Next Step`。
 
 ## 沟通语言
 

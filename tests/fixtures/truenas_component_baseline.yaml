@@ -31,7 +31,7 @@ image:
   pullPolicy: IfNotPresent
   repository: localhost/a-stock-market-environment
   tagPattern: "%Y%m%d-%H%M%S-%h"
-  digestPrefix: sha256:
+  digestPrefix: "sha256:"
 
 # Topology: SQLite RWO with one Dashboard replica and no shared volume for Jobs.
 topology:

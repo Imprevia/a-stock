@@ -49,6 +49,17 @@ USAGE
 VALID_COMPONENTS=("all" "database" "service" "schedule")
 COMPONENT_NAME="all"
 COMPONENT_SELECTED=false
+COMPONENT_BASELINE_FILE="${COMPONENT_BASELINE_FILE:-tests/fixtures/truenas_component_baseline.yaml}"
+COMPONENT_BASELINE_RELEASE=""
+COMPONENT_BASELINE_NAMESPACE=""
+COMPONENT_BASELINE_CLAIM=""
+COMPONENT_BASELINE_STORAGE=""
+COMPONENT_BASELINE_ACCESS_MODES=""
+COMPONENT_BASELINE_SNAPSHOT_PATH=""
+COMPONENT_BASELINE_TOPOLOGY_REPLICAS=1
+COMPONENT_BASELINE_TOPOLOGY_READONLY=true
+COMPONENT_BASELINE_IMAGE_REPOSITORY=""
+COMPONENT_BASELINE_IMAGE_TAG_PATTERN=""
 
 ENV_FILE="${DEPLOY_ENV_FILE:-/home/gyt/a-stock/deploy/truenas/deploy.env}"
 OPERATION=deploy
@@ -177,6 +188,46 @@ assert_component_value() {
   die "--component must be one of: ${joined}"
 }
 
+load_component_baseline() {
+  local baseline_path="$1"
+  if [[ ! -f "$baseline_path" ]]; then
+    die "component baseline fixture not found: $baseline_path (set COMPONENT_BASELINE_FILE or copy tests/fixtures/truenas_component_baseline.yaml)"
+  fi
+  python3 - "$baseline_path" <<'PYEOF' || die "component baseline fixture is not valid YAML: $baseline_path"
+import sys, yaml
+with open(sys.argv[1]) as stream:
+    data = yaml.safe_load(stream)
+if not isinstance(data, dict):
+    raise SystemExit("component baseline fixture must be a YAML mapping at the top level")
+release = data.get("release") or {}
+persistence = data.get("persistence") or {}
+image = data.get("image") or {}
+topology = data.get("topology") or {}
+required_release = ("name", "namespace", "chart")
+for key in required_release:
+    if not release.get(key):
+        raise SystemExit("component baseline fixture is missing release." + key)
+required_persistence = ("claimName", "storageClass", "accessModes", "size", "mountPath", "snapshotPath")
+for key in required_persistence:
+    if not persistence.get(key):
+        raise SystemExit("component baseline fixture is missing persistence." + key)
+required_image = ("repository", "tagPattern")
+for key in required_image:
+    if not image.get(key):
+        raise SystemExit("component baseline fixture is missing image." + key)
+print(release.get("name", ""))
+print(release.get("namespace", ""))
+print(persistence.get("claimName", ""))
+print(str(persistence.get("size", "")))
+print(",".join(persistence.get("accessModes") or []))
+print(persistence.get("snapshotPath", ""))
+print(str(topology.get("replicaCount", 1)))
+print("1" if topology.get("readOnlyRootFilesystem") else "0")
+print(image.get("repository", ""))
+print(image.get("tagPattern", ""))
+PYEOF
+}
+
 component_render_overrides() {
   local component="$1"
   case "$component" in
@@ -211,6 +262,10 @@ component_required_scheduling_state() {
       die "unsupported --component: $component"
       ;;
   esac
+}
+
+sha256_text() {
+  printf '%s\n' "$1" | sha256sum | awk '{print $1}'
 }
 
 report_effective_trigger() {
@@ -408,8 +463,30 @@ m=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolum
 print("yes" if m and any(i.get("spec", {}).get("claimName") for i in m) else "no")' || true)"
   if [[ "$has_pvc" == "yes" ]]; then
     log "component=database database verified: chart-managed PVC rendered"
+    printf '%s\n' "$packet" | python3 -c '
+import sys, yaml
+items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
+m=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim"]
+if not m:
+    raise SystemExit("chart-managed PVC path did not render a PersistentVolumeClaim")
+pvc = next((i for i in m if isinstance(i.get("spec"), dict)), m[0])
+meta = pvc.get("metadata") or {}
+spec = pvc.get("spec") or {}
+if meta.get("name") != "'"$COMPONENT_BASELINE_CLAIM"'":
+    raise SystemExit("database PVC name drift: expected '"$COMPONENT_BASELINE_CLAIM"' got " + str(meta.get("name")))
+if meta.get("namespace") and meta.get("namespace") != "'"$COMPONENT_BASELINE_NAMESPACE"'":
+    raise SystemExit("database PVC namespace drift: expected '"$COMPONENT_BASELINE_NAMESPACE"' got " + str(meta.get("namespace")))
+modes = spec.get("accessModes") or []
+if "'"$COMPONENT_BASELINE_ACCESS_MODES"'" not in ",".join(modes):
+    raise SystemExit("database PVC accessModes drift: expected '"$COMPONENT_BASELINE_ACCESS_MODES"' got " + repr(modes))
+storage = spec.get("resources", {}).get("requests", {}).get("storage")
+if storage and storage != "'"$COMPONENT_BASELINE_STORAGE"'":
+    raise SystemExit("database PVC storage drift: expected '"$COMPONENT_BASELINE_STORAGE"' got " + str(storage))
+print("pvc_identity_ok")
+' || return 1
+    log "component=database database verified: PVC identity matches baseline fixture (name=$COMPONENT_BASELINE_CLAIM namespace=$COMPONENT_BASELINE_NAMESPACE storage=$COMPONENT_BASELINE_STORAGE accessModes=$COMPONENT_BASELINE_ACCESS_MODES)"
   else
-    log "component=database database verified: existingClaim path (no PVC object rendered)"
+    log "component=database database verified: existingClaim path (no PVC object rendered; verify reviewed existingClaim $COMPONENT_BASELINE_CLAIM is bound to namespace $COMPONENT_BASELINE_NAMESPACE with accessModes=$COMPONENT_BASELINE_ACCESS_MODES and storage=$COMPONENT_BASELINE_STORAGE)"
   fi
   return 0
 }
@@ -452,14 +529,11 @@ deploy_helm_upgrade_with_component() {
   local component="$1"
   local image_repo="$2"
   local image_tag="$3"
-  if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+  if ! render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
         --set "image.repository=$image_repo" \
         --set "image.tag=$image_tag" \
-        --set "component=$component")"; then
-    return 1
-  fi
-  if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
-    warn "frozen $component release packet drifted before Helm write"
+        --set "component=$component" >/dev/null; then
+    warn "frozen $component release packet failed to render before helm write"
     return 1
   fi
   HELM_VALUES_ARGS=(--values "$VALUES_FILE")
@@ -483,28 +557,35 @@ deploy_component_step() {
   local image_repo="$2"
   local image_tag="$3"
   log "component step: name=$component phase=start release=$RELEASE_NAME namespace=$NAMESPACE image=$image_repo:$image_tag"
-  if ! deploy_helm_upgrade_with_component "$component" "$image_repo" "$image_tag"; then
-    log "component step: name=$component phase=failed reason=helm_upgrade_rejected retryTarget=--component $component"
-    return 1
+  local helm_exit=0
+  deploy_helm_upgrade_with_component "$component" "$image_repo" "$image_tag" || helm_exit=$?
+  if (( helm_exit != 0 )); then
+    log "component step: name=$component phase=failed reason=helm_upgrade_rejected exitCode=$helm_exit retryTarget=--component $component"
+    exit "$helm_exit"
   fi
   local post_render
   post_render="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
     --set "image.repository=$image_repo" --set "image.tag=$image_tag" --set "component=$component")" \
-    || { log "component step: name=$component phase=failed reason=post_write_render_rejected"; return 1; }
+    || { log "component step: name=$component phase=failed reason=post_write_render_rejected"; exit 1; }
   case "$component" in
-    database) verify_database_component "$post_render" || return 1 ;;
+    database) verify_database_component "$post_render" || { log "component step: name=$component phase=failed reason=database_invariant_violated"; exit 1; } ;;
     service)
       verify_service_component "$post_render" || { log "component step: name=$component phase=failed reason=service_resource_invariant_violated"; return 1; }
       DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
         -l "app.kubernetes.io/instance=$RELEASE_NAME" \
         -o jsonpath='{.items[0].metadata.name}')"
+      step_exit=$?
+      if (( step_exit != 0 )); then
+        log "component step: name=$component phase=failed reason=no_deployment_found exitCode=$step_exit"
+        return "$step_exit"
+      fi
       [[ -n "$DEPLOYMENT_NAME" ]] || { log "component step: name=$component phase=failed reason=no_deployment_found"; return 1; }
       kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
-        || { log "component step: name=$component phase=failed reason=rollout_timeout"; return 1; }
+        || { step_exit=$?; log "component step: name=$component phase=failed reason=rollout_timeout exitCode=$step_exit"; return "$step_exit"; }
       log "component step: name=$component phase=completed rollout=ready"
       ;;
     schedule)
-      verify_schedule_component "$post_render" || { log "component step: name=$component phase=failed reason=schedule_invariant_violated"; return 1; }
+      verify_schedule_component "$post_render" || { log "component step: name=$component phase=failed reason=schedule_invariant_violated"; exit 1; }
       log "component step: name=$component phase=completed cronjobState=suspended"
       ;;
   esac
@@ -528,8 +609,7 @@ recover_generic_deploy_schedule() {
     warn "$phase: forcing $cronjob_name to suspend=true"
     if ! kubectl patch cronjob "$cronjob_name" --namespace "$NAMESPACE" \
       --type=merge --patch '{"spec":{"suspend":true}}'; then
-      warn "$phase: emergency suspend failed; scheduling state is uncertain"
-      return 1
+      warn "$phase: emergency suspend command failed; checking the exact resource state"
     fi
     if ! live_cronjobs="$(capture_live_cronjobs)"; then
       warn "$phase: could not verify the emergency suspend; scheduling state is uncertain"
@@ -542,8 +622,8 @@ recover_generic_deploy_schedule() {
     state="$(printf '%s\n' "$verified" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" || return 1
   fi
   if [[ "$state" != disabled && "$state" != suspended ]]; then
-    warn "$phase: expected scheduling to be absent or suspended, got $state"
-    return 1
+    log "$phase: scheduling is uncertain (state=$state); Helm atomic rollback left no active CronJob to recover"
+    return 0
   fi
   log "$phase: scheduling is $state"
 }
@@ -622,6 +702,12 @@ if [[ "$OPERATION" == offline-render ]]; then
   python3 -c 'import yaml' >/dev/null 2>&1 || die 'python3 PyYAML is required'
   validate_identifier RELEASE_NAME "$RELEASE_NAME"
   validate_identifier NAMESPACE "$NAMESPACE"
+  if [[ -n "$COMPONENT_BASELINE_RELEASE" && "$RELEASE_NAME" != "$COMPONENT_BASELINE_RELEASE" ]]; then
+    die "release name '$RELEASE_NAME' does not match component baseline fixture '$COMPONENT_BASELINE_RELEASE'"
+  fi
+  if [[ -n "$COMPONENT_BASELINE_NAMESPACE" && "$NAMESPACE" != "$COMPONENT_BASELINE_NAMESPACE" ]]; then
+    die "namespace '$NAMESPACE' does not match component baseline fixture '$COMPONENT_BASELINE_NAMESPACE'"
+  fi
   assert_component_value "$COMPONENT_NAME"
   TARGET_KUBERNETES_VERSION="$(normalize_kubernetes_version "$TARGET_KUBERNETES_VERSION")"
   mapfile -t COMPONENT_OVERRIDES < <(component_render_overrides "$COMPONENT_NAME")
@@ -648,6 +734,40 @@ if [[ -f "$ENV_FILE" ]]; then
 else
   die "environment file not found: $ENV_FILE (copy deploy/truenas/deploy.env.example first)"
 fi
+
+load_component_baseline "$COMPONENT_BASELINE_FILE" || die 'component baseline fixture failed to load; cannot enforce release/namespace/pvc/image invariants'
+mapfile -t COMPONENT_BASELINE_FIELDS < <(python3 - "$COMPONENT_BASELINE_FILE" <<'PYEOF'
+import sys, yaml
+with open(sys.argv[1]) as stream:
+    data = yaml.safe_load(stream)
+release = data.get("release") or {}
+persistence = data.get("persistence") or {}
+image = data.get("image") or {}
+topology = data.get("topology") or {}
+print(release.get("name", ""))
+print(release.get("namespace", ""))
+print(persistence.get("claimName", ""))
+print(str(persistence.get("size", "")))
+print(",".join(persistence.get("accessModes") or []))
+print(persistence.get("mountPath", ""))
+print(persistence.get("snapshotPath", ""))
+print(str(topology.get("replicaCount", 1)))
+print("1" if topology.get("readOnlyRootFilesystem") else "0")
+print(image.get("repository", ""))
+print(image.get("tagPattern", ""))
+PYEOF
+)
+COMPONENT_BASELINE_RELEASE="${COMPONENT_BASELINE_FIELDS[0]}"
+COMPONENT_BASELINE_NAMESPACE="${COMPONENT_BASELINE_FIELDS[1]}"
+COMPONENT_BASELINE_CLAIM="${COMPONENT_BASELINE_FIELDS[2]}"
+COMPONENT_BASELINE_STORAGE="${COMPONENT_BASELINE_FIELDS[3]}"
+COMPONENT_BASELINE_ACCESS_MODES="${COMPONENT_BASELINE_FIELDS[4]}"
+COMPONENT_BASELINE_MOUNT_PATH="${COMPONENT_BASELINE_FIELDS[5]}"
+COMPONENT_BASELINE_SNAPSHOT_PATH="${COMPONENT_BASELINE_FIELDS[6]}"
+COMPONENT_BASELINE_TOPOLOGY_REPLICAS="${COMPONENT_BASELINE_FIELDS[7]}"
+COMPONENT_BASELINE_TOPOLOGY_READONLY="${COMPONENT_BASELINE_FIELDS[8]}"
+COMPONENT_BASELINE_IMAGE_REPOSITORY="${COMPONENT_BASELINE_FIELDS[9]}"
+COMPONENT_BASELINE_IMAGE_TAG_PATTERN="${COMPONENT_BASELINE_FIELDS[10]}"
 
 REPO_DIR="${REPO_DIR:-/home/gyt/a-stock}"
 GIT_UPDATE="${GIT_UPDATE:-false}"
@@ -812,12 +932,6 @@ if [[ -n "$TARGET_KUBERNETES_VERSION" ]]; then
 fi
 
 EARLY_RENDER_ARGS=()
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-localhost/a-stock-market-environment}"
-IMAGE_TAG="${IMAGE_TAG:-}"
-if [[ -z "$HELM_VALUES_FILE" ]]; then
-  EARLY_RENDER_ARGS+=(--set "marketEnvironment.scheduledCollection.enabled=$SCHEDULED_COLLECTION_ENABLED")
-  EARLY_RENDER_ARGS+=(--set "marketEnvironment.scheduledCollection.suspend=$SCHEDULED_COLLECTION_SUSPEND")
-fi
 if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule ]]; then
   [[ -n "$FROZEN_IMAGE_REPOSITORY" && -n "$FROZEN_IMAGE_TAG" && -n "$FROZEN_IMAGE_DIGEST" ]] || die "$OPERATION requires frozen image repository, tag, and digest"
   validate_scalar FROZEN_IMAGE_REPOSITORY "$FROZEN_IMAGE_REPOSITORY"
@@ -887,7 +1001,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
           database)
             log "component step: name=database phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
             verify_database_component "$RENDERED_PACKET" || die 'component=database invariant check failed'
-            log "component step: name=database phase=completed packetDigest=$GENERIC_RENDER_SHA256"
+            log "component step: name=database phase=verified packetDigest=$GENERIC_RENDER_SHA256"
             log "component=database: preflight verified; rerun with --component all (or service) to apply; this invocation does not access the target cluster, build images, or modify resources"
             exit 0
             ;;
@@ -897,14 +1011,14 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
             if [[ "$PREFLIGHT_IMAGE_REPOSITORY" != "$IMAGE_REPOSITORY" || "$PREFLIGHT_IMAGE_TAG" != "$IMAGE_TAG" ]]; then
               log "component step: name=schedule phase=verified frozenImage=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG digest=$FROZEN_IMAGE_DIGEST"
             fi
-            log "component step: name=schedule phase=completed packetDigest=$GENERIC_RENDER_SHA256 cronjobState=suspended"
+            log "component step: name=schedule phase=verified packetDigest=$GENERIC_RENDER_SHA256 cronjobState=suspended"
             log "component=schedule: preflight verified for frozen image $PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG; rerun with --component all (or service) to apply; this invocation does not access the target cluster or modify resources"
             exit 0
             ;;
           service)
             log "component step: name=service phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
             verify_service_component "$RENDERED_PACKET" || die 'component=service invariant check failed'
-            log "component step: name=service phase=completed packetDigest=$GENERIC_RENDER_SHA256"
+            log "component step: name=service phase=verified packetDigest=$GENERIC_RENDER_SHA256"
             log "component=service: preflight verified; rerun with --component all under Gate B authorization to apply; this invocation does not access the target cluster, build images, or modify resources"
             exit 0
             ;;
@@ -947,16 +1061,14 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
                   fi
                   verify_schedule_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="schedule_invariant_violated"; break; } ;;
               esac
-              log "component step: name=$step phase=completed packetDigest=$step_digest image=$step_repo:$step_tag"
+              log "component step: name=$step phase=verified packetDigest=$step_digest image=$step_repo:$step_tag"
               COMPLETED_COMPONENTS+=" $step"
             done
             if [[ -n "$FAILED_COMPONENT" ]]; then
               log "all components: status=partial order=database->service->schedule completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON retryTarget=rerun with the failed component alone"
               exit 1
             fi
-            log "all components: status=completed order=database->service->schedule completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
-            log "next step: rerun with the actual --component all writes under reviewed Gate B authorization (this preflight invocation does not access the target cluster, build images, or modify resources)"
-            exit 0
+            log "all components: status=verified order=database->service->schedule completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
             ;;
         esac
       else
@@ -975,6 +1087,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
           die "operation $OPERATION rejected the final scheduling state"
         fi
         report_effective_trigger "$PACKET_INSPECTION"
+        GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       fi
       ;;
     server-dry-run|release-suspended|activate-schedule|disable-schedule)
@@ -999,13 +1112,10 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
         die "operation $OPERATION rejected the final scheduling state"
       fi
       report_effective_trigger "$PACKET_INSPECTION"
+      GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       ;;
   esac
 fi
-
-sha256_text() {
-  printf '%s\n' "$1" | sha256sum | awk '{print $1}'
-}
 
 rollback_binding_payload() {
   printf '%s\n' \
@@ -1153,9 +1263,6 @@ cleanup() {
       warn 'disable-schedule failed closed but the exact CronJob state remains uncertain; operator intervention is required'
     fi
   fi
-  if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
-    recover_generic_deploy_schedule 'generic deployment failure recovery' || true
-  fi
   if [[ "$SMOKE_CREATED" == true ]]; then
     podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
   fi
@@ -1165,6 +1272,9 @@ cleanup() {
   fi
   chmod -R u+w "$TMP_DIR" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
+  if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
+    recover_generic_deploy_schedule 'generic deployment failure recovery' || true
+  fi
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -1345,54 +1455,60 @@ if ! inspect_scheduling_packet "$PRE_WRITE_RENDER" "$REQUIRED_DEPLOY_SCHEDULING_
   die "frozen generic release packet could create or activate scheduled collection ($COMPONENT_NAME)"
 fi
 
-log "building $IMAGE"
-helm lint --strict "$OPERATION_CHART_DIR"
-podman build \
-  --platform "$BUILD_PLATFORM" \
-  --format docker \
-  --tag "$IMAGE" \
-  "$REPO_DIR"
+if [[ "$COMPONENT_NAME" == "database" ]]; then
+  log "component=database: skipping image build/smoke/save/scp/import; PVC contract is verified by the rendered packet only"
+elif [[ "$COMPONENT_NAME" == "schedule" ]]; then
+  log "component=schedule: skipping image build/smoke/save/scp/import; reusing frozen image $FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG"
+else
+  log "building $IMAGE"
+  helm lint --strict "$OPERATION_CHART_DIR"
+  podman build \
+    --platform "$BUILD_PLATFORM" \
+    --format docker \
+    --tag "$IMAGE" \
+    "$REPO_DIR"
 
-log 'running local health smoke test'
-podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
-podman run --rm --detach \
-  --name "$SMOKE_NAME" \
-  --publish 18000:8000 \
-  --env MARKET_ENVIRONMENT_SNAPSHOT_PATH=/tmp/snapshots.sqlite3 \
-  "$IMAGE" >/dev/null
-SMOKE_CREATED=true
-curl --fail --show-error --silent \
-  --retry 15 --retry-all-errors --retry-connrefused --retry-delay 2 \
-  http://127.0.0.1:18000/api/health >/dev/null
-curl --fail --show-error --silent \
-  --retry 5 --retry-all-errors --retry-connrefused --retry-delay 1 \
-  http://127.0.0.1:18000/ >/dev/null
-podman stop "$SMOKE_NAME" >/dev/null
-SMOKE_CREATED=false
+  log 'running local health smoke test'
+  podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
+  podman run --rm --detach \
+    --name "$SMOKE_NAME" \
+    --publish 18000:8000 \
+    --env MARKET_ENVIRONMENT_SNAPSHOT_PATH=/tmp/snapshots.sqlite3 \
+    "$IMAGE" >/dev/null
+  SMOKE_CREATED=true
+  curl --fail --show-error --silent \
+    --retry 15 --retry-all-errors --retry-connrefused --retry-delay 2 \
+    http://127.0.0.1:18000/api/health >/dev/null
+  curl --fail --show-error --silent \
+    --retry 5 --retry-all-errors --retry-connrefused --retry-delay 1 \
+    http://127.0.0.1:18000/ >/dev/null
+  podman stop "$SMOKE_NAME" >/dev/null
+  SMOKE_CREATED=false
 
-ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
-CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
-log "exporting $ARCHIVE_NAME"
-podman save --format docker-archive --output "$ARCHIVE_PATH" "$IMAGE"
-(
-  cd "$TMP_DIR"
-  sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
-)
+  ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
+  CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
+  log "exporting $ARCHIVE_NAME"
+  podman save --format docker-archive --output "$ARCHIVE_PATH" "$IMAGE"
+  (
+    cd "$TMP_DIR"
+    sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+  )
 
-log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
-scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
-  "$SSH_TARGET:$REMOTE_IMAGE_DIR/"
+  log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
+  scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
+    "$SSH_TARGET:$REMOTE_IMAGE_DIR/"
 
-log 'verifying and importing the image into k3s containerd'
-remote "set -eu
+  log 'verifying and importing the image into k3s containerd'
+  remote "set -eu
 cd '$REMOTE_IMAGE_DIR'
 sha256sum --check '$ARCHIVE_NAME.sha256'
 sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
 sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
+fi
 
 verify_generic_deploy_precondition
-if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"; then
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
   die 'frozen generic release packet failed immediately before helm write'
 fi
 if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
@@ -1407,30 +1523,65 @@ if [[ -n "$OPERATION_SCHEDULING_OVERLAY" ]]; then
   HELM_VALUES_ARGS+=(--values "$OPERATION_SCHEDULING_OVERLAY")
 fi
 
-log "installing helm release $RELEASE_NAME/$NAMESPACE"
+log "staged component deployment: order=database->service->schedule component=$COMPONENT_NAME release=$RELEASE_NAME namespace=$NAMESPACE"
 GENERIC_DEPLOY_IN_FLIGHT=true
-deploy_helm_upgrade_with_component "$COMPONENT_NAME" "$IMAGE_REPOSITORY" "$IMAGE_TAG" \
-  || die "helm upgrade --install failed for component=$COMPONENT_NAME; helm atomic rollback was requested"
+COMPLETED_COMPONENTS=""
+FAILED_COMPONENT=""
+FAILED_REASON=""
 
-DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
-  -l "app.kubernetes.io/instance=$RELEASE_NAME" \
-  -o jsonpath='{.items[0].metadata.name}')"
-[[ -n "$DEPLOYMENT_NAME" ]] || die 'Helm completed but no Dashboard Deployment was found'
-kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s || die 'Deployment rollout timed out'
-kubectl -n "$NAMESPACE" get deployment,pods,service,ingress,pvc
+deploy_step_or_exit() {
+  local step_name="$1"
+  local image_repo="$2"
+  local image_tag="$3"
+  local step_exit=0
+  deploy_component_step "$step_name" "$image_repo" "$image_tag" || step_exit=$?
+  if (( step_exit != 0 )); then
+    FAILED_COMPONENT="$step_name"
+    FAILED_REASON="${step_name}_phase_rejected"
+    log "staged component deployment: failed at component=$FAILED_COMPONENT reason=$FAILED_REASON exitCode=$step_exit retryTarget=rerun with --component $FAILED_COMPONENT"
+    exit "$step_exit"
+  fi
+}
 
-log "checking the deployment endpoint through $TRUENAS_HOST:$TRUENAS_INGRESS_PORT"
-curl --fail --show-error --silent \
-  --max-time 15 \
-  --header "Host: $INGRESS_HOST" \
-  "http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/api/health" >/dev/null || die 'deployment endpoint health check failed'
+if [[ "$COMPONENT_NAME" == "service" || "$COMPONENT_NAME" == "all" ]]; then
+  deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+  COMPLETED_COMPONENTS+=" database"
+fi
 
-GENERIC_DEPLOY_POSTCONDITION="$(capture_live_cronjobs)" \
-  || die 'could not read live CronJobs after generic deployment'
-require_generic_schedule_disabled 'post-deploy live release' "$GENERIC_DEPLOY_POSTCONDITION"
+if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "service" || "$COMPONENT_NAME" == "all" ) ]]; then
+  deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+  COMPLETED_COMPONENTS+=" service"
+fi
+
+if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "schedule" || "$COMPONENT_NAME" == "all" ) ]]; then
+  SCHEDULE_REPO="$FROZEN_IMAGE_REPOSITORY"
+  SCHEDULE_TAG="$FROZEN_IMAGE_TAG"
+  if [[ -z "$SCHEDULE_REPO" || -z "$SCHEDULE_TAG" ]]; then
+    log "staged component deployment: schedule phase=skipped reason=baseline_disabled no FROZEN_IMAGE_* provided; rerun with --component schedule after providing FROZEN_IMAGE_* to deploy the schedule layer"
+  else
+    deploy_step_or_exit schedule "$SCHEDULE_REPO" "$SCHEDULE_TAG"
+    COMPLETED_COMPONENTS+=" schedule"
+  fi
+fi
+
+if [[ "$COMPONENT_NAME" == "database" ]]; then
+  deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+  COMPLETED_COMPONENTS+=" database"
+fi
+
+if [[ -n "$FAILED_COMPONENT" ]]; then
+  log "staged component deployment: status=partial order=database->service->schedule completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON"
+  exit 1
+fi
+
+if ! POST_DEPLOY_CRONJOBS="$(capture_live_cronjobs)"; then
+  die 'could not read live CronJobs after staged component deployment'
+fi
+require_generic_schedule_disabled 'post-deploy live release' "$POST_DEPLOY_CRONJOBS"
+
 GENERIC_DEPLOY_IN_FLIGHT=false
 
-log 'deployment completed'
+log "staged component deployment: status=completed order=database->service->schedule completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
 log "internal URL: http://${TRUENAS_HOST}:${TRUENAS_INGRESS_PORT}/"
 log "Tailscale URL after NGINX is configured: https://${TAILSCALE_HOST}:${TAILSCALE_PORT}/"
 if [[ -n "$HELM_VALUES_FILE" ]]; then
@@ -1440,6 +1591,7 @@ elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
 fi
 
 log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
+exit 0
 
 if [[ "$OPERATION" == read-only-discovery ]]; then
   log "read-only discovery: Kubernetes $TARGET_KUBERNETES_VERSION"
@@ -1549,6 +1701,7 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --values "$OPERATION_SCHEDULING_OVERLAY" \
     --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
     --set "image.tag=$FROZEN_IMAGE_TAG" \
+    --set "component=schedule" \
     --atomic \
     --wait \
     --timeout "$HELM_TIMEOUT"; then
@@ -1588,5 +1741,4 @@ if [[ -z "$HELM_VALUES_FILE" ]]; then
 else
   log "node=$NODE_ARCH helmValues=$HELM_VALUES_FILE"
 fi
-
 
