@@ -1,3 +1,8 @@
+{{- $component := default "all" .Values.component -}}
+{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- end -}}
+{{- if eq $component "all" }}
 {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -23,4 +28,38 @@ spec:
   resources:
     requests:
       storage: {{ .Values.persistence.size }}
+{{- else if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+{{- /* reviewed existingClaim path: do not render a PVC object at all */ -}}
+{{- end }}
+{{- else if eq $component "database" }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "a-stock.pvcName" . }}
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+  {{- if or .Values.persistence.keep .Values.persistence.annotations }}
+  annotations:
+    {{- if .Values.persistence.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- else if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+{{- /* reviewed existingClaim path: verify-only; do not render or modify the existing PVC */ -}}
+{{- end }}
+{{- else }}
+{{- /* service / schedule components never modify the PVC contract; the database component owns it */ -}}
 {{- end }}

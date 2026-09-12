@@ -1,0 +1,26 @@
+replicaCount: 1
+image:
+  repository: localhost/a-stock-market-environment
+  tag: chart-managed
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 80
+ingress:
+  enabled: false
+persistence:
+  enabled: true
+  storageClass: ix-storage-class
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  mountPath: /data
+  keep: true
+marketEnvironment:
+  timezone: Asia/Shanghai
+  snapshotPath: /data/snapshots.sqlite3
+  persistentCache: true
+  settlementTime: "15:10"
+  scheduledCollection:
+    enabled: false
+    suspend: true

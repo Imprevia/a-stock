@@ -6,6 +6,8 @@
 
 本 change 只产出规划工件。没有修改代码、Helm values、集群资源或 release，也没有验证目标机当前网络策略、SSH 跳板或 kubeconfig 的实际授权人列表。
 
+> 归档说明：本文只保留当时的设计背景，不再作为可执行发布或回退手册。当前生产写操作必须遵循 `docs/runbooks.md`，只使用 `scripts/deploy-truenas-k3s.sh` 的 fail-closed 入口；历史 revision 直接恢复路径已经废止。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -46,13 +48,13 @@
 
 实施前读取并保存 `helm get values --all`、`helm history`、Deployment/Service/PVC 描述和当前镜像摘要。环境 values 必须完整保留现有静态 `persistence.existingClaim`、单副本、镜像 tag、关闭 Ingress、关闭 k3s 1.26 定时采集以及安全上下文，仅改变 Service 暴露和手工采集开关。
 
-先在本地执行 `helm lint`、目标 values 的 `helm template` 和 `helm diff`（若插件可用），确认 PVC 不被删除或重建、Deployment 仍为单副本、Service 不再有 nodePort、CronJob 不被意外启用。再执行一次 Helm upgrade 并等待 rollout。禁止为了方便使用未经复核的 `--reuse-values` 或在线 `kubectl set env` 作为最终状态。
+先在本地执行只读 render/diff 检查，确认 PVC 不被删除或重建、Deployment 仍为单副本、Service 不再有 nodePort、CronJob 不被意外启用。生产写操作必须转到当前 runbook 的 `scripts/deploy-truenas-k3s.sh` 普通入口；该入口先证明 Helm stored manifest 与 live state 均无 application CronJob，再执行 release write，并在成功写入后重新验证 live CronJob 仍不存在。禁止继承未经复核的历史 values、直接执行 Helm write 或在线修改 Deployment 作为最终状态。
 
 ### 4. PVC 原地复用并在变更前做一致性备份
 
 变更不修改 `MARKET_ENVIRONMENT_SNAPSHOT_PATH`、volumeMount、PVC claim 或 SQLite schema。发布前记录文件大小和可用空间，并使用 SQLite 在线备份机制或在短暂停止写入后复制数据库；不得直接复制一个可能正在写入的 WAL 数据库而忽略 `-wal` / `-shm`。
 
-Deployment 使用 `Recreate` 且单副本，短时不可用是预期。Helm rollback 不应删除 PVC；回滚和卸载是不同操作，禁止用卸载 release 作为常规回滚。即使手工采集失败，旧成功快照也必须按现有 `failed-retained` 语义保留。
+Deployment 使用 `Recreate` 且单副本，短时不可用是预期。应用回退不得删除 PVC；回退和卸载是不同操作，禁止用卸载 release 作为常规回退。即使手工采集失败，旧成功快照也必须按现有 `failed-retained` 语义保留。
 
 ### 5. Provider 风险由限权、现有协调器和操作规程共同约束
 
@@ -62,7 +64,7 @@ Deployment 使用 `Recreate` 且单副本，短时不可用是预期。Helm roll
 
 ### 6. 回滚优先关闭能力，再恢复暴露方式
 
-出现异常调用、provider 压力、SQLite 锁等待或容量快速增长时，第一步将运行时开关恢复为 `0` 并 rollout，阻止新的 POST；活动任务按现有超时/lease 语义收敛。第二步按需 `helm rollback` 到已记录 revision。PVC 和 SQLite 备份保持不动，不执行清库。
+出现异常调用、provider 压力、SQLite 锁等待或容量快速增长时，第一步通过当前受控入口将运行时开关恢复为 `0`，阻止新的 POST；活动任务按现有超时/lease 语义收敛。若 Helm stored manifest 或 live state 包含 active/suspended application CronJob，必须先按当前 runbook 冻结并审核 off packet，再由获授权的 `--disable-schedule` 删除 exact CronJob。只有该 postcondition 成功后，才能从已审阅 rollback commit 用新的不可变 tag 运行普通入口；不得恢复历史 release revision。PVC 和 SQLite 备份保持不动，不执行清库。
 
 是否重新开放 NodePort 是独立业务决策。若需恢复原来的匿名只读页面，可在手工写开关已确认关闭后恢复 revision 1 的 Service 形态；不得在手工写能力仍开启时恢复无认证 NodePort。
 
@@ -101,7 +103,7 @@ Deployment 使用 `Recreate` 且单副本，短时不可用是预期。Helm roll
 3. 盘点目标 release、完整 values、镜像、Service、Deployment、PVC、存储空间、SSH/kubeconfig/RBAC 持有人和可用回滚 revision；创建并验证 SQLite 备份。
 4. 在受版本控制的 TrueNAS 环境 values 中保留现有集群兼容配置，仅把 Service 改为 ClusterIP，并显式注入 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。
 5. 本地运行 docs-contract、部署清单测试、Helm lint/template，并审查差异：无 NodePort、无意外 Ingress/CronJob、PVC claim 和镜像不变、环境变量唯一。
-6. 在批准的维护窗口执行 Helm upgrade；等待 Deployment ready，验证健康检查、本地快照读取和 PVC 挂载，确认 `192.168.1.20:32001` 已不可达。
+6. 在批准的维护窗口使用当前 runbook 的 fail-closed 发布入口；等待 Deployment ready，验证健康检查、本地快照读取、PVC 挂载和 schedule off/absent postcondition，确认 `192.168.1.20:32001` 已不可达。
 7. 以最小权限身份建立绑定 `127.0.0.1` 的 port-forward/SSH 隧道；验证状态 GET 显示手工采集已启用，未通过隧道不存在访问路径。
 8. 先对上海市场当天触发一个受支持数据集，轮询至终态并核对日志、provider quality、SQLite/PVC；再触发五类批次并接受可解释的 partial/degraded 结果。
 9. 观察一个约定窗口，记录调用者、runId、日期、数据集、provider 错误、任务耗时、PVC 使用率和回滚判据；关闭隧道后确认本机端口不再监听。
@@ -110,7 +112,7 @@ Deployment 使用 `Recreate` 且单副本，短时不可用是预期。Helm roll
 
 1. 通过当前受控管理通道将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 应用到 Deployment，并确认 collection POST 返回 403。
 2. 终止本次建立的精确 port-forward/SSH 子进程，不按进程名批量终止其他会话。
-3. 若发布本身异常，执行 `helm rollback a-stock <previous-revision> --namespace a-stock --wait`，再验证 Deployment、Service 和 PVC；仅在写开关已关闭后才允许恢复 NodePort。
+3. 若发布本身异常，先确认写开关已关闭；当前普通入口会把失败后意外 active CronJob 精确补偿为 suspended 并返回非零。随后通过当前 runbook 的受审 `--disable-schedule` 验证 exact CronJob 已删除，再检出已审阅 rollback commit，使用新的不可变 tag 运行普通 fail-closed 入口，并验证 Deployment、Service、PVC 和 schedule absent postcondition；任何状态不确定都保持 NO-GO。
 4. 保留 PVC、collection 记录和备份。只有确认数据库损坏且用户批准时才从备份恢复；普通 provider 失败不触发数据恢复。
 
 ## Verification
@@ -121,7 +123,7 @@ Deployment 使用 `Recreate` 且单副本，短时不可用是预期。Helm roll
 - API：隧道内 health 与状态 GET 成功；合法当前日期单项 POST 返回 202；非法历史 latest-only 请求返回 422；禁用开关的回滚演练返回 403 且不调用 provider。
 - 任务：轮询 run 至 `success` / `partial` / `failed`，核对五类 task 独立状态、失败保留、重复 lease 和聚合重建。
 - provider：记录 source、quality、warning、429/403、耗时；任何失败都表现为 `degraded` / `insufficient` 等既有状态，不以 0 代替缺失。
-- 回滚：上一 Helm revision 可用，关闭写能力不删除 PVC，恢复后健康和历史读取正常。
+- 回滚：已审阅 rollback commit、完整 baseline values 和新不可变 tag 可用；关闭写能力不删除 PVC，恢复后 schedule off/absent、健康和历史读取正常。
 
 ## Open Questions
 

@@ -47,6 +47,7 @@ const activeRun = ref<CollectionRun | null>(null)
 const loading = ref(false)
 const error = ref('')
 const expandedCore = ref(false)
+const expandedLimits = ref(false)
 let requestSequence = 0
 let runSequence = 0
 
@@ -130,6 +131,18 @@ function retryDataset(item: DatasetCollectionStatus) {
   void collectDatasets([item.dataset])
 }
 
+function toggleLimitsExpansion() {
+  expandedLimits.value = !expandedLimits.value
+}
+
+function limitsDetail(item: DatasetCollectionStatus) {
+  return item.detail ?? item.latestAttempt
+}
+
+function qualityLabel(value?: string | null) {
+  return ({ ok: '正常', partial: '部分覆盖', degraded: '降级', insufficient: '数据不足', failed: '失败' } as Record<string, string>)[value ?? ''] ?? '数据不足'
+}
+
 onMounted(loadStatus)
 </script>
 
@@ -190,6 +203,10 @@ onMounted(loadStatus)
                     <ChevronDown v-if="expandedCore" :size="16" /><ChevronRight v-else :size="16" />
                     <strong>{{ DATASET_LABELS[item.dataset] }}</strong>
                   </button>
+                  <button v-else-if="item.dataset === 'limits'" class="expand-button" type="button" :aria-expanded="expandedLimits" aria-label="展开涨跌停生态" @click="toggleLimitsExpansion">
+                    <ChevronDown v-if="expandedLimits" :size="16" /><ChevronRight v-else :size="16" />
+                    <strong>{{ DATASET_LABELS[item.dataset] }}</strong>
+                  </button>
                   <strong v-else>{{ DATASET_LABELS[item.dataset] }}</strong>
                   <span>{{ item.dataset }}</span>
                 </td>
@@ -219,6 +236,18 @@ onMounted(loadStatus)
                     </div>
                   </div>
                   <div v-else class="core-empty">尚无核心指数采集明细</div>
+                </td>
+              </tr>
+              <tr v-if="item.dataset === 'limits' && expandedLimits" class="core-detail-row limits-detail-row">
+                <td colspan="8">
+                  <div class="limits-collection-detail">
+                    <div><span>当前样本日期</span><strong>{{ limitsDetail(item)?.sampleAsOf || '--' }}</strong></div>
+                    <div><span>前一交易日</span><strong>{{ limitsDetail(item)?.previousAsOf || '--' }}</strong></div>
+                    <div><span>排除样本数</span><strong>{{ limitsDetail(item)?.excludedCount?.toLocaleString('zh-CN') ?? '--' }}</strong></div>
+                    <div><span>晋级质量</span><strong>{{ qualityLabel(limitsDetail(item)?.promotionQuality) }}</strong></div>
+                    <div class="limits-collection-dependency"><span>晋级依赖</span><strong>{{ limitsDetail(item)?.promotionDependency || (limitsDetail(item)?.promotionRequired === false ? '不需要前一交易日样本' : '需要精确相邻交易日和规范证券身份') }}</strong></div>
+                    <div v-if="limitsDetail(item)?.warnings?.length" class="limits-collection-warnings"><span>警告</span><strong>{{ limitsDetail(item)?.warnings?.join('；') }}</strong></div>
+                  </div>
                 </td>
               </tr>
             </template>

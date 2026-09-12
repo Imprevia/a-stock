@@ -9,6 +9,14 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Component intent for the TrueNAS k3s entry point.
+#   all       - render every supported resource (legacy default)
+#   database  - render only the reviewed RWO PVC contract
+#   service   - render the Dashboard Deployment, Service, and configured Ingress
+#   schedule  - render only the scheduled-collection resource when the
+#               reviewed suspended/disabled profile allows it
+component: all
+
 podAnnotations: {}
 podLabels: {}
 
@@ -64,10 +72,14 @@ marketEnvironment:
   persistentCache: true
   settlementTime: "15:10"
   scheduledCollection:
-    enabled: true
-    suspend: false
+    enabled: false
+    suspend: true
     schedule: "30 16 * * 1-5"
+    timezoneStrategy: native
     timeZone: Asia/Shanghai
+    controllerTimeZone: ""
+    controllerTimeZoneVerified: false
+    controllerCanaryVerified: false
     startingDeadlineSeconds: 1800
     activeDeadlineSeconds: 3600
     successfulJobsHistoryLimit: 3

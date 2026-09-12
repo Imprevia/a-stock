@@ -31,12 +31,20 @@ from .calculations import (
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from .refresh import SnapshotRefresher
-from .schemas import MarketEnvironmentResponse
+from .limit_promotion import limit_v1_enabled, without_promotion_fields
+from .limit_ecosystem import build_limit_ecosystem
+from .schemas import LimitEvidence, MarketEnvironmentResponse
 from .snapshot_store import (
+    LIMIT_DETAIL_CHECKSUM_KEY,
+    MATERIALIZED_COMPONENT_REVISION_KEY,
+    LeaseToken,
+    STORAGE_SCHEMA_VERSION,
     MaterializedAggregateRecord,
+    MaterializedAggregateConflict,
     SnapshotIntegrityError,
     SnapshotStore,
     cache_state,
+    payload_checksum,
     persistent_cache_enabled,
 )
 
@@ -50,6 +58,9 @@ CHAPTER_GROUP_KEYS = {
     "sectors": ("sectors",),
 }
 logger = logging.getLogger(__name__)
+_MATERIALIZED_SCHEMA_VERSION_KEY = "_storageSchemaVersion"
+_MATERIALIZED_LIMITS_STATE_KEY = "_limitsSnapshotState"
+_MATERIALIZED_REBUILD_ATTEMPTS = 3
 
 
 def market_today() -> date:
@@ -93,6 +104,7 @@ class MarketEnvironmentService:
         self._lock = Lock()
         self._core_load_lock = Lock()
         self._chapter_load_lock = Lock()
+        self._limit_response_cache: dict[tuple[str, bool, str, str], dict[str, Any]] = {}
 
     def get(self, as_of: date) -> dict:
         """Return the legacy complete aggregate response."""
@@ -155,7 +167,61 @@ class MarketEnvironmentService:
             "chapter01": chapter,
         }
 
-    def rebuild_materialized_aggregate(self, as_of: date) -> dict[str, Any] | None:
+    def rebuild_materialized_aggregate(
+        self,
+        as_of: date,
+        *,
+        lease: LeaseToken | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        rebuild_started = perf_counter()
+        if self.snapshot_store is None:
+            raise RuntimeError("persistent snapshot store is disabled")
+        for _attempt in range(_MATERIALIZED_REBUILD_ATTEMPTS):
+            revision = self.snapshot_store.materialization_revision(as_of)
+            composed = self._compose_materialized_aggregate(as_of, revision)
+            if composed is None:
+                return None
+            validated, record = composed
+            if lease is None:
+                if self.snapshot_store.materialization_revision(as_of) != revision:
+                    continue
+                stored_record = record
+                persisted = False
+            else:
+                try:
+                    stored_record = self.snapshot_store.put_materialized_aggregate(
+                        record,
+                        lease=lease,
+                        expected_revision=revision,
+                        now=lambda: self._market_now().astimezone(ZoneInfo("UTC")),
+                    )
+                except MaterializedAggregateConflict:
+                    continue
+                persisted = True
+            logger.info(
+                "market aggregate rebuild",
+                extra={
+                    "event": "market_aggregate_rebuild",
+                    "requested_as_of": as_of.isoformat(),
+                    "actual_as_of": validated["asOf"],
+                    "limits_v1_enabled": limit_v1_enabled(),
+                    "aggregate_checksum": stored_record.checksum,
+                    "component_revision": revision,
+                    "persisted": persisted,
+                    "rebuild_ms": round((perf_counter() - rebuild_started) * 1000, 3),
+                },
+            )
+            return validated
+        raise MaterializedAggregateConflict(
+            f"materialized aggregate inputs kept changing: {as_of.isoformat()}"
+        )
+
+    def _compose_materialized_aggregate(
+        self,
+        as_of: date,
+        revision: str,
+    ) -> tuple[dict[str, Any], MaterializedAggregateRecord] | None:
         if self.snapshot_store is None:
             raise RuntimeError("persistent snapshot store is disabled")
         core_record = self.snapshot_store.get("core", as_of)
@@ -168,9 +234,12 @@ class MarketEnvironmentService:
             "该日期尚未采集对应数据集",
             status="missing",
         )
+        limits_record = None
         for group in CHAPTER_GROUP_KEYS:
             record = self.snapshot_store.get(group, as_of)
             if record is not None:
+                if group == "limits":
+                    limits_record = record
                 provider_data[group] = self._snapshot_payload(
                     record,
                     cache_state(
@@ -178,31 +247,146 @@ class MarketEnvironmentService:
                         now=self._market_now(),
                         soft_ttl_seconds=self.snapshot_ttl_seconds,
                     ),
-                    refreshing=self.snapshot_store.has_active_lease(group, as_of),
+                    refreshing=False,
                 )
+        provider_data["limits"] = self._limit_payload_for_response(
+            as_of,
+            provider_data["limits"],
+        )
         chapter = self._build_chapter01(core, provider_data)
         payload = self._core_payload(core)
         payload["chapter01"] = chapter
         validated = MarketEnvironmentResponse.model_validate(payload).model_dump()
-        self.snapshot_store.put_materialized_aggregate(
-            MaterializedAggregateRecord(
-                as_of=as_of,
-                payload=validated,
-                generated_at=self._market_now(),
-            )
-        )
-        return validated
+        stored_payload = {
+            **validated,
+            _MATERIALIZED_SCHEMA_VERSION_KEY: STORAGE_SCHEMA_VERSION,
+            _MATERIALIZED_LIMITS_STATE_KEY: self._limits_snapshot_state(limits_record),
+            MATERIALIZED_COMPONENT_REVISION_KEY: revision,
+        }
+        return validated, MaterializedAggregateRecord(
+            as_of=as_of,
+            payload=stored_payload,
+            generated_at=self._market_now(),
+        ).normalized()
 
     def _get_local_aggregate(self, as_of: date) -> dict[str, Any]:
         if self.snapshot_store is None:
             raise RuntimeError("persistent snapshot store is disabled")
-        record = self.snapshot_store.get_materialized_aggregate(as_of)
-        if record is not None:
-            return self._refresh_materialized_synchronization(as_of, copy.deepcopy(record.payload))
+        for _attempt in range(_MATERIALIZED_REBUILD_ATTEMPTS):
+            revision = self.snapshot_store.materialization_revision(as_of)
+            record = self.snapshot_store.get_materialized_aggregate(as_of)
+            if record is None:
+                break
+            payload = copy.deepcopy(record.payload)
+            stored_revision = payload.pop(MATERIALIZED_COMPONENT_REVISION_KEY, None)
+            stored_limits_state = payload.pop(_MATERIALIZED_LIMITS_STATE_KEY, object())
+            payload.pop(_MATERIALIZED_SCHEMA_VERSION_KEY, None)
+            current_limits_state = self._limits_snapshot_state(
+                self.snapshot_store.get("limits", as_of)
+            )
+            if stored_revision != revision or stored_limits_state != current_limits_state:
+                break
+            self._apply_local_limits_policy(as_of, payload)
+            self._apply_local_refreshing_state(as_of, payload)
+            payload = self._refresh_materialized_synchronization(as_of, payload)
+            if self.snapshot_store.materialization_revision(as_of) == revision:
+                return payload
         payload = self.rebuild_materialized_aggregate(as_of)
         if payload is None:
             raise RuntimeError("所选日期没有已采集的核心指数快照")
+        self._apply_local_refreshing_state(as_of, payload)
         return payload
+
+    def _apply_local_limits_policy(self, as_of: date, payload: dict[str, Any]) -> None:
+        chapter = payload.get("chapter01")
+        if not isinstance(chapter, dict) or not isinstance(chapter.get("limits"), dict):
+            return
+        if self.snapshot_store is None:
+            return
+        record = self.snapshot_store.get("limits", as_of)
+        if record is None:
+            limits = self._missing_chapter_provider_data(
+                as_of,
+                "该日期尚未采集涨跌停数据",
+                status="missing",
+            )["limits"]
+        else:
+            limits = self._snapshot_payload(
+                record,
+                cache_state(
+                    record,
+                    now=self._market_now(),
+                    soft_ttl_seconds=self.snapshot_ttl_seconds,
+                ),
+                refreshing=self.snapshot_store.has_active_lease("limits", as_of),
+            )
+        chapter["limits"] = self._limit_payload_for_response(as_of, limits)
+
+    def _apply_local_refreshing_state(self, as_of: date, payload: dict[str, Any]) -> None:
+        if self.snapshot_store is None:
+            return
+        chapter = payload.get("chapter01")
+        if not isinstance(chapter, dict):
+            return
+        for group, keys in CHAPTER_GROUP_KEYS.items():
+            refreshing = self.snapshot_store.has_active_lease(group, as_of)
+            for key in keys:
+                section = chapter.get(key)
+                quality = section.get("quality") if isinstance(section, dict) else None
+                if isinstance(quality, dict):
+                    quality["refreshing"] = refreshing
+
+    @staticmethod
+    def _limits_snapshot_state(record: Any | None) -> dict[str, Any] | None:
+        if record is None:
+            return None
+        return {
+            "checksum": record.checksum,
+            "status": record.status,
+            "refreshWarning": record.refresh_warning,
+            "fetchedAt": record.fetched_at.isoformat(),
+            "settled": record.settled,
+        }
+
+    def _limit_payload_for_response(self, as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
+        value = copy.deepcopy(payload)
+        limits_enabled = limit_v1_enabled()
+        if not limits_enabled:
+            value = without_promotion_fields(value)
+            for field in ("ladder", "stratifications", "history", "ruleEvidence", "riskEvidence", "confirmation", "invalidation"):
+                value.pop(field, None)
+        elif self.snapshot_store is not None:
+            cache_key = (
+                as_of.isoformat(),
+                limits_enabled,
+                payload_checksum(value),
+                self.snapshot_store.materialization_revision(as_of),
+            )
+            cached = self._limit_response_cache.get(cache_key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+            value = build_limit_ecosystem(self.snapshot_store, as_of, value)
+            promotion = {"promotionQuality": value["promotionQuality"]}
+            if promotion["promotionQuality"]["status"] == "degraded":
+                quality = value.get("quality")
+                if isinstance(quality, dict):
+                    quality["status"] = "degraded"
+                    warnings = list(
+                        dict.fromkeys(
+                            [
+                                *(quality.get("warnings") or []),
+                                *(promotion["promotionQuality"].get("warnings") or []),
+                            ]
+                        )
+                    )
+                    quality["warnings"] = warnings
+                    quality["warning"] = "；".join(warnings) if warnings else quality.get("warning")
+            result = LimitEvidence.model_validate(value).model_dump(exclude_unset=True)
+            self._limit_response_cache[cache_key] = copy.deepcopy(result)
+            if len(self._limit_response_cache) > 32:
+                self._limit_response_cache.pop(next(iter(self._limit_response_cache)))
+            return result
+        return LimitEvidence.model_validate(value).model_dump(exclude_unset=True)
 
     def _refresh_materialized_synchronization(self, as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
         """Recalculate the additive assessment when older aggregates lack the new field."""
@@ -430,6 +614,11 @@ class MarketEnvironmentService:
             return None
         as_of = core["effectiveDate"]
         lookup_started = perf_counter()
+        refresh_generation = (
+            self.snapshot_store.get_completed_refresh_generation(group, as_of)
+            if refresh_stale
+            else 0
+        )
         record = self.snapshot_store.get(group, as_of)
         state = cache_state(
             record,
@@ -450,7 +639,12 @@ class MarketEnvironmentService:
         if record is not None:
             refreshing = self.snapshot_store.has_active_lease(group, as_of)
             if state == "stale" and refresh_stale and self._allows_current_snapshot(core) and not refreshing:
-                self._refresh_executor.submit(self._refresh_snapshot_dataset, group, as_of)
+                self._refresh_executor.submit(
+                    self._refresh_snapshot_dataset,
+                    group,
+                    as_of,
+                    refresh_generation,
+                )
                 refreshing = True
             return {group: self._snapshot_payload(record, state, refreshing=refreshing)}
 
@@ -459,7 +653,7 @@ class MarketEnvironmentService:
         if not self._allows_current_snapshot(core):
             return self._missing_snapshot_group(as_of, group, "该交易日没有持久化快照，且历史请求不使用当前数据回填")
 
-        result = self._refresh_snapshot_dataset(group, as_of)
+        result = self._refresh_snapshot_dataset(group, as_of, refresh_generation)
         record = self.snapshot_store.get(group, as_of)
         if record is None and result["datasets"][0]["cacheResult"] == "busy":
             deadline = monotonic() + self.cold_wait_seconds
@@ -471,7 +665,12 @@ class MarketEnvironmentService:
             return self._missing_snapshot_group(as_of, group, warning)
         return {group: self._snapshot_payload(record, cache_state(record, now=self._market_now(), soft_ttl_seconds=self.snapshot_ttl_seconds), refreshing=False)}
 
-    def _refresh_snapshot_dataset(self, group: str, as_of: date) -> dict[str, Any]:
+    def _refresh_snapshot_dataset(
+        self,
+        group: str,
+        as_of: date,
+        observed_refresh_generation: int,
+    ) -> dict[str, Any]:
         if self.snapshot_store is None:
             raise RuntimeError("persistent snapshot store is disabled")
         refresher = SnapshotRefresher(
@@ -480,16 +679,31 @@ class MarketEnvironmentService:
             now=self._now,
             lease_seconds=max(120.0, self.cold_wait_seconds),
         )
-        return refresher.refresh(as_of, [group], force=True)
+        return refresher.refresh(
+            as_of,
+            [group],
+            force=True,
+            reuse_fresh_within_seconds=self.snapshot_ttl_seconds,
+            observed_refresh_generation=observed_refresh_generation,
+        )
 
     def _snapshot_payload(self, record, state: str, *, refreshing: bool) -> dict[str, Any]:
         payload = copy.deepcopy(record.payload)
         quality = payload.get("quality")
         if isinstance(quality, dict):
+            quality.pop(LIMIT_DETAIL_CHECKSUM_KEY, None)
             quality["cacheState"] = state
             quality["snapshotFetchedAt"] = record.fetched_at.isoformat()
             quality["refreshing"] = refreshing
             quality["refreshWarning"] = record.refresh_warning
+            if record.refresh_warning is not None:
+                quality["status"] = "degraded"
+                retained_warning = f"同交易日刷新失败，保留上次成功值：{record.refresh_warning}"
+                warnings = list(quality.get("warnings") or [])
+                if retained_warning not in warnings:
+                    warnings.append(retained_warning)
+                quality["warnings"] = warnings
+                quality["warning"] = "；".join(warnings)
             if state == "stale":
                 stale_warning = "持久化快照已过 freshness 窗口，正在使用同交易日旧值"
                 warnings = list(quality.get("warnings") or [])

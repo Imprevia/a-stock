@@ -13,11 +13,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .providers import MarketDataProvider
-from .snapshot_store import SnapshotRecord, SnapshotStore
+from .snapshot_store import LeaseFenceError, LeaseToken, SnapshotRecord, SnapshotStore, cache_state
 
 MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 SUPPORTED_SNAPSHOT_DATASETS = ("breadth", "activeDirection")
 SUCCESS_STATUSES = frozenset({"ok", "fallback", "partial"})
+SUCCESS_CACHE_RESULTS = frozenset({"stored", "reused"})
 logger = logging.getLogger(__name__)
 
 
@@ -50,16 +51,30 @@ class SnapshotRefresher:
         datasets: Iterable[str] | None = None,
         *,
         force: bool = False,
+        reuse_fresh_within_seconds: float | None = None,
+        observed_refresh_generation: int | None = None,
     ) -> dict[str, Any]:
         selected = tuple(dict.fromkeys(datasets or SUPPORTED_SNAPSHOT_DATASETS))
         unknown = sorted(set(selected) - set(SUPPORTED_SNAPSHOT_DATASETS))
         if unknown:
             raise ValueError(f"unsupported snapshot datasets: {', '.join(unknown)}")
+        if observed_refresh_generation is not None and len(selected) != 1:
+            raise ValueError("observed refresh generation requires exactly one dataset")
         current = self._market_now()
         self._validate_refresh_boundary(as_of, current, force=force)
         run_id = uuid.uuid4().hex
-        results = [self._refresh_dataset(run_id, dataset, as_of, current) for dataset in selected]
-        succeeded = sum(result["cacheResult"] == "stored" for result in results)
+        results = [
+            self._refresh_dataset(
+                run_id,
+                dataset,
+                as_of,
+                current,
+                reuse_fresh_within_seconds=reuse_fresh_within_seconds,
+                observed_refresh_generation=observed_refresh_generation,
+            )
+            for dataset in selected
+        ]
+        succeeded = sum(result["cacheResult"] in SUCCESS_CACHE_RESULTS for result in results)
         if succeeded == len(results):
             status = "ok"
         elif succeeded:
@@ -73,7 +88,6 @@ class SnapshotRefresher:
             "forced": force,
             "datasets": results,
         }
-
     def _market_now(self) -> datetime:
         value = self._now()
         if value.tzinfo is None:
@@ -95,6 +109,9 @@ class SnapshotRefresher:
         dataset: str,
         as_of: date,
         current: datetime,
+        *,
+        reuse_fresh_within_seconds: float | None,
+        observed_refresh_generation: int | None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         owner = f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -107,7 +124,12 @@ class SnapshotRefresher:
             now=current.astimezone(ZoneInfo("UTC")),
         )
         lease_ms = self._milliseconds(lease_started)
-        if not acquired:
+        lease = acquired if isinstance(acquired, LeaseToken) else self.store.get_lease_token(
+            dataset,
+            as_of,
+            owner=owner,
+        )
+        if not acquired or lease is None:
             result = self._result(
                 dataset,
                 as_of,
@@ -124,6 +146,49 @@ class SnapshotRefresher:
 
         timings: dict[str, float] = {"leaseWaitMs": lease_ms}
         try:
+            if reuse_fresh_within_seconds is not None:
+                recheck_started = time.perf_counter()
+                existing = self.store.get(dataset, as_of)
+                timings["freshRecheckMs"] = self._milliseconds(recheck_started)
+                if cache_state(
+                    existing,
+                    now=current,
+                    soft_ttl_seconds=reuse_fresh_within_seconds,
+                ) == "fresh":
+                    assert existing is not None
+                    result = self._result(
+                        dataset,
+                        as_of,
+                        cache_result="reused",
+                        quality=existing.status,
+                        source=existing.source,
+                        observations=existing.observations,
+                        settled=existing.settled,
+                        warning=None,
+                        started=started,
+                        timings=timings,
+                    )
+                    return self._record_result(run_id, dataset, as_of, result)
+
+            if observed_refresh_generation is not None:
+                generation_started = time.perf_counter()
+                current_generation = self.store.get_completed_refresh_generation(dataset, as_of)
+                timings["refreshGenerationCheckMs"] = self._milliseconds(generation_started)
+                if current_generation != observed_refresh_generation:
+                    result = self._result(
+                        dataset,
+                        as_of,
+                        cache_result="retryable",
+                        quality="retryable",
+                        source="none",
+                        observations=0,
+                        settled=False,
+                        warning="another worker completed this refresh cohort without a fresh snapshot; retry",
+                        started=started,
+                        timings=timings,
+                    )
+                    return self._record_result(run_id, dataset, as_of, result)
+
             provider_started = time.perf_counter()
             payload = self._fetch(dataset, as_of)
             timings["providerCollectionMs"] = self._milliseconds(provider_started)
@@ -143,7 +208,13 @@ class SnapshotRefresher:
             if status not in SUCCESS_STATUSES:
                 existing = self.store.get(dataset, as_of)
                 if existing is not None:
-                    self.store.set_refresh_warning(dataset, as_of, warning or f"dataset refresh returned {status}")
+                    self.store.set_refresh_warning(
+                        dataset,
+                        as_of,
+                        warning or f"dataset refresh returned {status}",
+                        lease=lease,
+                        now=self._market_now().astimezone(ZoneInfo("UTC")),
+                    )
                 result = self._result(
                     dataset,
                     as_of,
@@ -171,7 +242,9 @@ class SnapshotRefresher:
                     warnings=warnings,
                     fetched_at=current,
                     settled=settled,
-                )
+                ),
+                lease=lease,
+                now=self._market_now().astimezone(ZoneInfo("UTC")),
             )
             timings["storeWriteMs"] = self._milliseconds(store_started)
             result = self._result(
@@ -187,10 +260,45 @@ class SnapshotRefresher:
                 timings=timings,
             )
             return self._record_result(run_id, dataset, as_of, result)
+        except LeaseFenceError as exc:
+            result = self._result(
+                dataset,
+                as_of,
+                cache_result="fenced",
+                quality="lease-lost",
+                source="none",
+                observations=0,
+                settled=False,
+                warning=f"lease lost; write rejected: {exc}",
+                started=started,
+                timings=timings,
+            )
+            return self._record_result(run_id, dataset, as_of, result)
         except Exception as exc:
             existing = self.store.get(dataset, as_of)
             if existing is not None:
-                self.store.set_refresh_warning(dataset, as_of, str(exc))
+                try:
+                    self.store.set_refresh_warning(
+                        dataset,
+                        as_of,
+                        str(exc),
+                        lease=lease,
+                        now=self._market_now().astimezone(ZoneInfo("UTC")),
+                    )
+                except LeaseFenceError as fence_exc:
+                    result = self._result(
+                        dataset,
+                        as_of,
+                        cache_result="fenced",
+                        quality="lease-lost",
+                        source="none",
+                        observations=0,
+                        settled=False,
+                        warning=f"lease lost; write rejected: {fence_exc}",
+                        started=started,
+                        timings=timings,
+                    )
+                    return self._record_result(run_id, dataset, as_of, result)
             result = self._result(
                 dataset,
                 as_of,
@@ -205,7 +313,7 @@ class SnapshotRefresher:
             )
             return self._record_result(run_id, dataset, as_of, result)
         finally:
-            self.store.release_lease(dataset, as_of, owner)
+            self.store.release_lease(dataset, as_of, lease=lease)
 
     def _fetch(self, dataset: str, as_of: date) -> dict[str, Any]:
         if dataset == "breadth":

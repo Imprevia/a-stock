@@ -1,0 +1,108 @@
+{
+  "asOf": "2026-09-04",
+  "previousAsOf": "2026-09-03",
+  "source": "fixture-limit-pools-matrix-v1",
+  "cases": {
+    "complete": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [
+          {"m": "1", "c": "600000", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "main", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "0", "c": "300000", "board": "chi_next", "is_st": false, "listing_days": 1000, "limit_regime": "chi_next", "close_price": 12.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "1", "c": "688000", "board": "star", "is_st": false, "listing_days": 1000, "limit_regime": "star", "close_price": 12.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true}
+        ],
+        "failed_limit_up": [
+          {"m": "1", "c": "600001", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 10.8, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": false}
+        ],
+        "limit_down": [
+          {"m": "1", "c": "600002", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 9.0, "previous_close": 10.0, "touched_limit_up": false, "closed_limit_up": null}
+        ]
+      }
+    },
+    "empty": {
+      "actualAsOf": "2026-09-04",
+      "pools": {"limit_up": [], "failed_limit_up": [], "limit_down": []}
+    },
+    "partial": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [
+          {"m": "1", "c": "600010", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"c": "bad"}
+        ],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    },
+    "allFail": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [{"c": "bad"}],
+        "failed_limit_up": [{"c": "bad"}],
+        "limit_down": [{"c": "bad"}]
+      }
+    },
+    "nonMappingPartial": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [null],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    },
+    "nonMappingAllFail": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [null],
+        "failed_limit_up": [null],
+        "limit_down": [null]
+      }
+    },
+    "duplicate": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [
+          {"m": "1", "c": "600020", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "1", "c": "600020", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true}
+        ],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    },
+    "identityExchangeEvidence": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [
+          {"security_id": "SSE:600050", "exchange": "SZSE", "code": "600050", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"security_id": "SH:600051", "exchange": "1", "code": "600051", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"security_id": "SSE:600052", "code": "600052", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true}
+        ],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    },
+    "regimeAndEligibilityExclusions": {
+      "actualAsOf": "2026-09-04",
+      "pools": {
+        "limit_up": [
+          {"m": "1", "c": "600030", "board": "main", "is_st": true, "listing_days": 1000, "limit_regime": "st", "close_price": 10.5, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "1", "c": "600031", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "st", "close_price": 10.5, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "0", "c": "300030", "board": "chi_next", "is_st": false, "listing_days": 3, "limit_regime": "pct:20", "close_price": 12.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true},
+          {"m": "1", "c": "688030", "board": "star", "is_st": false, "listing_days": 1000, "limit_regime": "pct:20", "close_price": 12.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": false}
+        ],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    },
+    "dateMismatch": {
+      "actualAsOf": "2026-09-03",
+      "pools": {
+        "limit_up": [
+          {"m": "1", "c": "600040", "board": "main", "is_st": false, "listing_days": 1000, "limit_regime": "pct:10", "close_price": 11.0, "previous_close": 10.0, "touched_limit_up": true, "closed_limit_up": true}
+        ],
+        "failed_limit_up": [],
+        "limit_down": []
+      }
+    }
+  }
+}

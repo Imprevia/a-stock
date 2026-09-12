@@ -122,7 +122,7 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock >/dev/null
 
 ```bash
 git fetch --all --tags
-git checkout <COMMIT_OR_TAG>
+git checkout '<COMMIT_OR_TAG>'
 git rev-parse HEAD
 ```
 
@@ -335,6 +335,9 @@ marketEnvironment:
   timezone: Asia/Shanghai
   snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
+  scheduledCollection:
+    enabled: false
+    suspend: true
 ```
 
 按第 10 节的实际输出替换 `storageClass` 和 `className`，按本次构建替换 tag。为 `<APP_HOST>` 创建指向 `<TRUENAS_IP>` 的 DNS A/AAAA 记录；没有内部 DNS 时，可先在访问电脑的 hosts 文件中添加映射。
@@ -353,17 +356,15 @@ helm template a-stock deploy/helm/a-stock \
 
 ## 13. 首次部署到 k3s
 
-在 VM 仓库根目录执行：
+在 VM 仓库根目录创建私有部署环境文件，将 `HELM_VALUES_FILE` 指向上一节已审阅的完整 `values-truenas.yaml`，并保持 `SCHEDULED_COLLECTION_ENABLED=false`、`SCHEDULED_COLLECTION_SUSPEND=true`。生产写操作只使用仓库的 fail-closed 入口，不直接执行 Helm write：
 
 ```bash
-export KUBECONFIG="$HOME/.kube/truenas-k3s.yaml"
-helm upgrade --install a-stock deploy/helm/a-stock \
-  --namespace a-stock \
-  --create-namespace \
-  --values values-truenas.yaml \
-  --wait \
-  --timeout 5m
+cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
+editor deploy/truenas/deploy.env
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
+
+入口必须在首个 Helm render、build/import、SSH 或目标 API 访问前证明最终合并的调度值为 typed `enabled=false`、`suspend=true`，随后证明 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次验证 live CronJob 仍不存在。若这是对既有 release 的幂等部署，先执行只读 discovery；stored 或 live 状态发现 active/suspended CronJob 时不得继续普通发布，必须先按第 15 节完成受审 `--disable-schedule`。
 
 检查 release 和 Kubernetes 资源：
 
@@ -397,90 +398,51 @@ curl --fail --show-error \
 
 ## 14. 后续发布新版本
 
-每次更新都创建新 tag。以下命令在 VM 仓库根目录执行：
+每次更新都在 VM 仓库根目录检出已审阅的 clean commit，并在 `deploy/truenas/deploy.env` 中设置新的不可变 tag。普通入口负责构建、烟测、SHA-256、SCP、containerd 导入和 release write：
 
 ```bash
 git fetch --all --tags
-git checkout <NEW_COMMIT_OR_TAG>
-
-export IMAGE_TAG=2026.09.02-2
-export IMAGE_REPOSITORY=localhost/a-stock-market-environment
-export IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-export ARCHIVE="a-stock-market-environment-${IMAGE_TAG}.tar"
-
-podman build --platform linux/amd64 --format docker --tag "$IMAGE" .
-podman run --rm --detach --name a-stock-smoke --publish 18000:8000 "$IMAGE"
-curl --fail --show-error http://127.0.0.1:18000/api/health
-podman stop a-stock-smoke
-
-podman save --format docker-archive --output "$ARCHIVE" "$IMAGE"
-sha256sum "$ARCHIVE" >"${ARCHIVE}.sha256"
-scp "$ARCHIVE" "${ARCHIVE}.sha256" \
-  <TRUENAS_USER>@<TRUENAS_IP>:/mnt/<POOL>/app-builds/a-stock/
+git checkout '<NEW_COMMIT_OR_TAG>'
+editor deploy/truenas/deploy.env
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-在 TrueNAS 宿主机校验并导入：
-
-```bash
-cd /mnt/<POOL>/app-builds/a-stock
-sha256sum --check "a-stock-market-environment-${IMAGE_TAG}.tar.sha256"
-sudo k3s ctr --namespace k8s.io images import \
-  "a-stock-market-environment-${IMAGE_TAG}.tar"
-sudo k3s ctr --namespace k8s.io images list | \
-  grep "localhost/a-stock-market-environment:${IMAGE_TAG}"
-```
-
-回到 VM 更新 release。只更新镜像时使用 `--reuse-values`：
-
-```bash
-export KUBECONFIG="$HOME/.kube/truenas-k3s.yaml"
-helm upgrade a-stock deploy/helm/a-stock \
-  --namespace a-stock \
-  --reuse-values \
-  --set-string "image.tag=${IMAGE_TAG}" \
-  --wait \
-  --timeout 5m
-
-kubectl --namespace a-stock rollout status deployment/a-stock --timeout=180s
-kubectl --namespace a-stock get pods -o wide
-```
-
-当 Chart 默认值或 `values-truenas.yaml` 也发生变化时，不使用 `--reuse-values`，而是重新传入完整环境 values：
-
-```bash
-helm upgrade a-stock deploy/helm/a-stock \
-  --namespace a-stock \
-  --values values-truenas.yaml \
-  --set-string "image.tag=${IMAGE_TAG}" \
-  --wait \
-  --timeout 5m
-```
+即使只更新镜像，也必须重新提交完整 baseline values；不得设置 scheduling overlay、继承 release 中无法审阅的历史值或直接执行 Helm write。任何 precondition、write、rollout 或写后调度查询失败都不能报告成功；失败恢复必须把意外 active CronJob 精确暂停并证明状态至少为 absent/suspended，无法证明时保持 uncertain/NO-GO。失败后转入受审 `--disable-schedule`，不得直接重试普通入口。
 
 ## 15. 回滚
 
-查看历史：
+先用只读 discovery 捕获实际 release/version/stored values/live resources。历史 revision 只用于审计，不能直接恢复：
 
 ```bash
-helm history a-stock --namespace a-stock
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-only-discovery \
+  --release-name a-stock --namespace a-stock
 ```
 
-回滚到指定 revision：
+若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>` 后执行。digest 必须绑定 runbook 定义的 canonical payload，包括 `operation=--disable-schedule`、release、namespace、normalized Kubernetes version、reviewed HEAD 与全部 packet hashes；Gate B/C 引用不可复用：
 
 ```bash
-helm rollback a-stock <REVISION> \
-  --namespace a-stock \
-  --wait \
-  --timeout 5m
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
+  --baseline-values deploy/truenas/values-secure-manual-collection.yaml \
+  --scheduling-overlay deploy/truenas/values-scheduled-off.yaml \
+  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-本地镜像模式下，回滚 revision 引用的旧镜像必须仍存在于 k3s containerd。至少保留当前版本和上一个稳定版本。确认不再需要回滚后，才删除旧镜像：
+只有 `--disable-schedule` 的 server-observed postcondition 证明 exact CronJob 已删除后，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口重建应用。active-to-off 失败会按 release-derived exact API name 补偿；label/shape drift 不得阻止暂停，读回无法证明 absent 或 typed `spec.suspend=true` 时必须保持 uncertain/NO-GO：
+
+```bash
+git checkout '<REVIEWED_ROLLBACK_COMMIT_OR_TAG>'
+editor deploy/truenas/deploy.env
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
+```
+
+至少保留当前版本和上一个稳定版本。确认不再需要回退后，才删除旧镜像：
 
 ```bash
 sudo k3s ctr --namespace k8s.io images remove \
   "localhost/a-stock-market-environment:<OLD_TAG>"
 ```
 
-删除前再次运行 `helm history`，确认没有计划回滚到该 tag。
+删除前核对受审回退包，确认不再需要该 tag。
 
 ## 16. SQLite 备份与恢复
 
@@ -516,15 +478,11 @@ kubectl --namespace a-stock scale deployment/a-stock --replicas=0
 
 恢复属于破坏性操作。确认 namespace、release、PVC 和备份文件无误后，使用挂载同一 PVC 的临时维护 Pod 写回，完成后再把 Deployment 恢复为 1。不要直接编辑 SQLite 二进制文件，也不要在 Pod 运行时用普通文件复制覆盖数据库。
 
-## 17. 卸载
+## 17. 退役
 
-卸载 release：
+仓库当前不提供通用 release 退役入口。不得直接执行原始 `helm uninstall`：它会绕过 release lock、stored/live CronJob 前置检查和失败补偿。退役必须另建受审操作包，先冻结 namespace、release、exact CronJob、完整 Helm values、PVC/PV 身份及恢复路径，再由覆盖精确动作的授权执行。
 
-```bash
-helm uninstall a-stock --namespace a-stock
-```
-
-默认 `persistence.keep=true`，Helm 会保留 Chart 创建的 PVC。检查：
+默认 `persistence.keep=true`，受审退役流程应先检查 Chart 创建的 PVC：
 
 ```bash
 kubectl --namespace a-stock get pvc
@@ -611,8 +569,9 @@ sudo k3s kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.
 - [ ] 镜像已进入 containerd `k8s.io` namespace，名称与 Helm values 一致。
 - [ ] StorageClass 和 IngressClass 来自目标集群实际输出。
 - [ ] `helm lint` 和 `helm template` 通过。
-- [ ] `helm upgrade --install` 或 `helm upgrade` 完成。
+- [ ] 通用写操作只使用 `scripts/deploy-truenas-k3s.sh`，提交完整 baseline values，且未继承历史 values、直接调用 Helm write 或恢复历史 revision。
+- [ ] 首个 Helm render/build/image work/SSH/目标 API 访问前候选 baseline 为 typed `enabled=false`、`suspend=true`，Helm stored manifest 与 live state 均无 application CronJob；若此前存在，已先使用 rollback-only canonical-digest ref 完成受审 `--disable-schedule`。
+- [ ] 发布后 `kubectl --namespace a-stock get cronjob` 不包含应用 CronJob；只有另行授权的受控调度路径可保留 `suspend=true` 的资源。
 - [ ] Deployment rollout、Pod、PVC、Ingress 和 `/api/health` 正常。
 - [ ] SQLite 已备份，旧稳定镜像尚未删除。
 - [ ] 临时 kubeconfig 导出副本已从 TrueNAS 数据集删除。
-

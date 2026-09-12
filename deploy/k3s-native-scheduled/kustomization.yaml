@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: a-stock
+
+resources:
+  - ../k3s
+  - market-data-collection-cronjob.yaml
+
+images:
+  - name: a-stock-market-environment
+    newName: a-stock-market-environment
+    newTag: latest

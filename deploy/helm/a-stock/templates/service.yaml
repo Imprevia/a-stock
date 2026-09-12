@@ -1,3 +1,8 @@
+{{- $component := default "all" .Values.component -}}
+{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- end -}}
+{{- if has $component (list "all" "service") }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,3 +21,4 @@ spec:
       {{- with .Values.service.nodePort }}
       nodePort: {{ . }}
       {{- end }}
+{{- end }}

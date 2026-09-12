@@ -1,0 +1,12 @@
+# Gate C candidate only. Applying this overlay requires the separately approved
+# controller preflight and canary evidence; it is never selected automatically.
+marketEnvironment:
+  scheduledCollection:
+    enabled: true
+    suspend: false
+    timezoneStrategy: controller
+    timeZone: Asia/Shanghai
+    schedule: "30 8 * * 1-5"
+    controllerTimeZone: Etc/UTC
+    controllerTimeZoneVerified: true
+    controllerCanaryVerified: true

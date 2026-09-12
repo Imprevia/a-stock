@@ -149,11 +149,64 @@ export interface DataSetQuality {
   dataset?: string
   source: string
   provider?: string
-  status: 'ok' | 'fallback' | 'missing' | 'failed' | string
+  status: 'ok' | 'partial' | 'fallback' | 'missing' | 'failed' | 'degraded' | 'insufficient' | string
   warning?: string | null
   warnings?: string[]
-  observations?: number
-  asOf?: string
+  observations?: number | null
+  asOf?: string | null
+  cacheState?: 'fresh' | 'stale' | 'missing' | string | null
+  snapshotFetchedAt?: string | null
+  refreshing?: boolean | null
+  refreshWarning?: string | null
+}
+
+export type MetricQualityStatus = 'ok' | 'insufficient' | 'degraded' | 'failed' | string
+export interface MetricQuality {
+  status: MetricQualityStatus
+  reason?: string | null
+  observations?: number | null
+  asOf?: string | null
+  source?: string | null
+  warnings?: string[]
+}
+
+export type LimitMetricField = 'todayPromoted' | 'yesterdayLimitUpEligible' | 'promotionRatio'
+
+export interface LimitTierRow {
+  tier: string
+  count: number | null
+  observations?: number | null
+  quality?: MetricQuality | null
+}
+
+export interface LimitStratificationRow {
+  dimension?: string
+  key: string
+  label?: string | null
+  count: number | null
+  observations?: number | null
+  quality?: MetricQuality | null
+}
+
+export interface LimitHistoryPoint {
+  asOf: string
+  limitUpCount: number | null
+  limitDownCount: number | null
+  failedLimitUpRatio: number | null
+  promotionRatio: number | null
+  maxStreak: number | null
+  quality?: MetricQuality | null
+}
+
+export interface LimitRuleEvidence {
+  ruleId: string
+  weight?: number | null
+  status?: string | null
+  score?: number | null
+  confidence?: string | null
+  evidence?: string[]
+  missingInputs?: string[]
+  calibrationStatus?: string | null
 }
 
 export interface ChapterDocument {
@@ -180,8 +233,41 @@ export interface LimitAnalysis {
   limitDownCount: number | null
   failedLimitUpCount: number | null
   failedLimitUpRatio: number | null
+  todayPromoted?: number | null
+  yesterdayLimitUpEligible?: number | null
   promotionRatio?: number | null
+  promotionSampleAsOf?: string | null
+  promotionPreviousAsOf?: string | null
+  promotionSampleRule?: string | null
+  promotionRuleVersion?: string | null
+  promotionQuality?: MetricQuality | null
+  fieldQuality?: Partial<Record<LimitMetricField, MetricQuality>> | null
   maxStreak: number | null
+  ladder?: LimitTierRow[] | null
+  tiers?: LimitTierRow[] | null
+  stratifications?: LimitStratificationRow[] | null
+  history?: {
+    points?: LimitHistoryPoint[] | null
+    validObservations?: number | null
+    requiredObservations?: number | null
+    windowDays?: number | null
+    coverage?: number | null
+    percentile250?: Record<string, number | null> | null
+    quality?: MetricQuality | null
+  } | null
+  historical?: {
+    points?: LimitHistoryPoint[] | null
+    validObservations?: number | null
+    requiredObservations?: number | null
+    windowDays?: number | null
+    coverage?: number | null
+    percentile250?: Record<string, number | null> | null
+    quality?: MetricQuality | null
+  } | null
+  ruleEvidence?: Array<LimitRuleEvidence & { value?: number | string | null; thresholdProvenance?: string | null; vetoes?: string[] }> | null
+  riskEvidence?: Array<{ code?: string; label: string; status?: string | null; value?: string | number | null; asOf?: string | null; evidence?: string[]; quality?: MetricQuality | null }> | null
+  confirmation?: string | null
+  invalidation?: string | null
   state: string
   quality: DataSetQuality
 }

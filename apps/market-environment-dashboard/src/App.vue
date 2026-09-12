@@ -12,12 +12,24 @@ import type {
   Chapter01SectionResponse,
   DataSetQuality,
   IndexAnalysis,
+  LimitStratificationRow,
   MarketEnvironmentResponse,
 } from './types'
 import { formatLocalDate, getDefaultMarketDate } from './date-util'
 import DataCollectionView from './data-collection-view.vue'
 
 type AppView = 'dashboard' | 'data-collection'
+type SectionPhase = 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
+
+interface SectionState {
+  phase: SectionPhase
+  error: string
+}
+
+const chapterSections: Chapter01Section[] = ['breadth', 'limits', 'sectors', 'activeDirection', 'summary']
+const createSectionStates = () => Object.fromEntries(
+  chapterSections.map((section) => [section, { phase: 'idle', error: '' }]),
+) as Record<Chapter01Section, SectionState>
 
 const documents = [
   { id: '01', title: '指数、趋势位置和成交额', objective: '量化指数方向、均线结构、区间位置和量价推进。', rules: 'QTS-01-01-01 ~ 08', icon: LineChart },
@@ -47,8 +59,7 @@ const selectedDate = ref(getDefaultMarketDate(new Date()))
 const loading = ref(false)
 const error = ref('')
 const loadedSections = ref<Chapter01Section[]>([])
-const sectionLoading = ref(false)
-const sectionError = ref('')
+const sectionStates = ref(createSectionStates())
 const sidebarOpen = ref(false)
 const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : 'dashboard')
 const chartElement = ref<HTMLElement | null>(null)
@@ -56,7 +67,8 @@ const volumeChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 let volumeChart: echarts.ECharts | null = null
 let requestSequence = 0
-let sectionRequestSequence = 0
+let sectionEpoch = 0
+const sectionRequestSequences = Object.fromEntries(chapterSections.map((section) => [section, 0])) as Record<Chapter01Section, number>
 let dataRequestDate = ''
 
 const documentSections: Partial<Record<string, Chapter01Section>> = {
@@ -79,6 +91,9 @@ const assessment = computed(() => chapter.value?.assessment)
 const combinationOverview = computed(() => chapter.value?.combinationOverview)
 const synchronizationAssessment = computed(() => data.value?.summary.synchronizationAssessment ?? null)
 const activeSection = computed(() => documentSections[selectedDocumentId.value] ?? null)
+const activeSectionState = computed(() => activeSection.value ? sectionStates.value[activeSection.value] : null)
+const sectionLoading = computed(() => ['loading', 'refreshing'].includes(activeSectionState.value?.phase ?? ''))
+const sectionError = computed(() => activeSectionState.value?.error ?? '')
 const generatedAt = computed(() => data.value?.generatedAt ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(data.value.generatedAt)) : '')
 const breadthBar = computed(() => {
   const item = breadth.value
@@ -98,6 +113,44 @@ const sectionWarning = computed(() => {
   return ''
 })
 
+const limitWarnings = computed(() => {
+  const item = limits.value
+  const warnings = [item?.quality.warning, ...(item?.quality.warnings ?? []), item?.quality.refreshWarning]
+  if (item?.promotionQuality) warnings.push(...(item.promotionQuality.warnings ?? []))
+  for (const quality of Object.values(item?.fieldQuality ?? {})) warnings.push(...(quality?.warnings ?? []))
+  return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))]
+})
+const limitSectionPhase = computed<SectionPhase>(() => {
+  const phase = sectionStates.value.limits.phase
+  if (phase === 'ready' && limits.value?.quality.refreshing) return 'refreshing'
+  return phase
+})
+const promotionGap = computed(() => {
+  if (limits.value?.promotionRatio != null) return ''
+  const reason = limits.value?.promotionQuality?.reason
+  return ({
+    'zero-denominator': '昨日合格样本为 0，晋级率没有可计算分母。',
+    'missing-limits-dataset': '所选交易日缺少涨跌停数据集。',
+    'incomplete-pool-input': '涨跌停池输入不完整，无法形成晋级样本。',
+    'promotion-calculation-failed': '晋级证据计算失败，未返回比例。',
+    'missing-previous-session': '缺少精确前一交易日样本，无法完成跨日匹配。',
+  } as Record<string, string>)[reason ?? ''] ?? '缺少昨日合格收盘涨停样本、逐证券跨日匹配或收盘涨停验证。'
+})
+const limitHistory = computed(() => limits.value?.history?.points ?? limits.value?.historical?.points ?? [])
+const limitHistoryMeta = computed(() => limits.value?.history ?? limits.value?.historical)
+const limitTiers = computed(() => limits.value?.ladder ?? limits.value?.tiers ?? [])
+const limitStratifications = computed(() => {
+  const groups = new Map<string, { label: string; rows: LimitStratificationRow[] }>()
+  for (const row of limits.value?.stratifications ?? []) {
+    const key = String((row as { dimension?: string }).dimension ?? 'other')
+    const labels: Record<string, string> = { regime: '涨跌幅制度', board: '市场板块', exchange: '交易所', sector: '行业板块', risk_tier: '风险位阶', other: '其他分层' }
+    const group = groups.get(key) ?? { label: labels[key] ?? '其他分层', rows: [] }
+    group.rows.push(row)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
+})
+
 const changeTone = (value: number) => value > 0 ? 'positive' : value < 0 ? 'negative' : 'flat'
 const formatPct = (value: number | null | undefined) => value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
 const formatRatio = (value: number | null | undefined) => value == null ? '--' : `${value.toFixed(2)}x`
@@ -106,8 +159,19 @@ const formatCount = (value: number | null | undefined) => value == null ? '--' :
 const formatAmount = (value: number | null | undefined) => value == null ? '--' : Math.abs(value) >= 100000000 ? `${(value / 100000000).toFixed(1)} 亿` : `${(value / 10000).toFixed(0)} 万`
 const formatPosition = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
 const formatCoverage = (value: number | null | undefined) => value == null ? '--' : `${(value * 100).toFixed(0)}%`
-const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级', partial: '部分覆盖', missing: '未接入', failed: '失败' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
-const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
+const formatEvidenceTime = (value: string | null | undefined) => {
+  if (!value) return '--'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(parsed)
+}
+const qualityLabel = (quality?: DataSetQuality) => quality ? ({ ok: '正常', fallback: '降级来源', partial: '部分覆盖', missing: '缺失', failed: '失败', degraded: '降级保留', insufficient: '数据不足' } as Record<string, string>)[quality.status] ?? quality.status : '数据不足'
+const qualityTone = (quality?: DataSetQuality) => quality?.status === 'ok' ? 'ok' : ['fallback', 'partial', 'degraded'].includes(quality?.status ?? '') ? 'fallback' : 'missing'
+const metricQualityTone = (status?: string) => status === 'ok' ? 'ok' : status === 'degraded' ? 'fallback' : 'missing'
+const qualityCodeLabel = (quality?: DataSetQuality) => `${quality?.status ?? 'missing'} · ${qualityLabel(quality)}`
+const cacheStateLabel = (value?: string | null) => ({ fresh: '新鲜', stale: '陈旧', missing: '缺失' } as Record<string, string>)[value ?? ''] ?? '未提供'
+const metricQualityLabel = (status?: string) => ({ ok: '正常', insufficient: '数据不足', degraded: '降级', failed: '失败' } as Record<string, string>)[status ?? ''] ?? '数据不足'
+const sectionPhaseLabel = (phase: SectionPhase) => ({ idle: '等待读取', loading: '正在读取', ready: '已就绪', refreshing: '正在刷新', error: '刷新失败' })[phase]
 const confidenceLabel = (value?: string) => ({ high: '高', medium: '中', low: '低', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
 const assessmentStatusLabel = (value?: string) => ({ confirmed: '已确认', unconfirmed: '待确认', contradicted: '证据反驳', insufficient: '数据不足' } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
 const dimensionStatusLabel = (value?: string) => ({ confirming: '确认', neutral: '中性', contradicting: '反驳', insufficient: '不足' } as Record<string, string>)[value ?? ''] ?? value ?? '不足'
@@ -157,10 +221,10 @@ function formatPriceTooltip(params: unknown) {
 async function loadData() {
   const requestId = ++requestSequence
   const requestedDate = selectedDate.value
-  ++sectionRequestSequence
+  ++sectionEpoch
   loadedSections.value = []
-  sectionLoading.value = false
-  sectionError.value = ''
+  sectionStates.value = createSectionStates()
+  dataRequestDate = ''
   loading.value = true
   error.value = ''
   let shouldLoadSection = false
@@ -194,10 +258,10 @@ function mergeChapterSection(current: Chapter01Analysis | undefined, incoming: C
   merged.status = incoming.status
   merged.coverage = incoming.coverage
   if (incoming.documents) merged.documents = incoming.documents
-  if (incoming.breadth?.quality.status !== 'missing') merged.breadth = incoming.breadth
-  if (incoming.limits?.quality.status !== 'missing') merged.limits = incoming.limits
-  if (incoming.sectors?.quality.status !== 'missing') merged.sectors = incoming.sectors
-  if (incoming.activeDirection?.quality.status !== 'missing') merged.activeDirection = incoming.activeDirection
+  if (section === 'breadth' || incoming.breadth?.quality.status !== 'missing') merged.breadth = incoming.breadth
+  if (section === 'limits' || incoming.limits?.quality.status !== 'missing') merged.limits = incoming.limits
+  if (section === 'sectors' || incoming.sectors?.quality.status !== 'missing') merged.sectors = incoming.sectors
+  if (section === 'activeDirection' || incoming.activeDirection?.quality.status !== 'missing') merged.activeDirection = incoming.activeDirection
   merged.combinationOverview = incoming.combinationOverview
   merged.assessment = incoming.assessment
   return merged
@@ -216,13 +280,16 @@ function completedChapterSections(chapter: Chapter01Analysis, requested: Chapter
 async function loadCurrentSection(force = false) {
   const section = activeSection.value
   const requestedDate = dataRequestDate
-  const requestId = ++sectionRequestSequence
-  sectionLoading.value = false
-  sectionError.value = ''
   if (!section || loading.value || !data.value || !requestedDate || selectedDate.value !== requestedDate) return
-  if (!force && loadedSections.value.includes(section)) return
+  if (!force && loadedSections.value.includes(section)) {
+    if (sectionStates.value[section].phase === 'idle') sectionStates.value = { ...sectionStates.value, [section]: { phase: 'ready', error: '' } }
+    return
+  }
 
-  sectionLoading.value = true
+  const epoch = sectionEpoch
+  const requestId = ++sectionRequestSequences[section]
+  const hasEvidence = loadedSections.value.includes(section)
+  sectionStates.value = { ...sectionStates.value, [section]: { phase: hasEvidence ? 'refreshing' : 'loading', error: '' } }
   try {
     const response = await fetch(`/api/market-environment/chapter-01?as_of=${requestedDate}&section=${section}`)
     if (!response.ok) {
@@ -230,7 +297,7 @@ async function loadCurrentSection(force = false) {
       throw new Error(body.detail || `请求失败（${response.status}）`)
     }
     const nextData = await response.json() as Chapter01SectionResponse
-    if (requestId !== sectionRequestSequence || requestedDate !== dataRequestDate || !data.value) return
+    if (epoch !== sectionEpoch || requestId !== sectionRequestSequences[section] || requestedDate !== dataRequestDate || !data.value) return
     if (nextData.asOf !== data.value.asOf) throw new Error('章节数据日期与核心数据不一致')
     data.value = {
       ...data.value,
@@ -246,11 +313,12 @@ async function loadCurrentSection(force = false) {
     }
     const completedSections = completedChapterSections(nextData.chapter01, section)
     loadedSections.value = [...new Set([...loadedSections.value, ...completedSections])]
+    sectionStates.value = { ...sectionStates.value, [section]: { phase: 'ready', error: '' } }
   } catch (cause) {
-    if (requestId !== sectionRequestSequence || requestedDate !== dataRequestDate) return
-    sectionError.value = cause instanceof Error ? cause.message : '章节证据加载失败，请稍后重试'
+    if (epoch !== sectionEpoch || requestId !== sectionRequestSequences[section] || requestedDate !== dataRequestDate) return
+    sectionStates.value = { ...sectionStates.value, [section]: { phase: 'error', error: cause instanceof Error ? cause.message : '章节证据加载失败，请稍后重试' } }
   } finally {
-    if (requestId === sectionRequestSequence) sectionLoading.value = false
+    // ready/error state is set above; refreshing keeps the old evidence visible while pending.
   }
 }
 
@@ -308,21 +376,33 @@ function disposeCharts() {
   volumeChart = null
 }
 
-watch(selectedIndex, async () => { await nextTick(); renderChart() })
+watch(selectedIndex, async () => {
+  if (loading.value || sectionLoading.value) return
+  await nextTick()
+  if (loading.value || sectionLoading.value) return
+  renderChart()
+})
 watch(selectedDocumentId, async (documentId) => {
   if (documentId !== '01') disposeCharts()
-  await nextTick()
-  renderChart()
-  void loadCurrentSection()
-})
-watch(sectionLoading, async (isLoading) => {
-  if (isLoading) {
-    // The section loading state replaces the chart DOM; discard instances bound to the old nodes.
-    disposeCharts()
+  if (documentId === '01' && sectionLoading.value) {
+    void loadCurrentSection()
     return
   }
   await nextTick()
+  if (documentId === '01' && activeSectionState.value?.phase === 'loading') return
   renderChart()
+  void loadCurrentSection()
+})
+watch(activeSectionState, async (state, previous) => {
+  if (state?.phase === 'loading') {
+    // The initial section loading state replaces the chart DOM.
+    disposeCharts()
+    return
+  }
+  if (state?.phase === 'ready' && (previous?.phase === 'loading' || previous?.phase === 'refreshing')) {
+    await nextTick()
+    renderChart()
+  }
 })
 onMounted(() => {
   const match = window.location.hash.match(/document-(0[1-9])$/)
@@ -364,8 +444,8 @@ onBeforeUnmount(() => {
         <template v-else-if="data">
           <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span>更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
 
-          <section v-if="activeSection && sectionLoading" class="state-panel"><div class="loader" /><span>正在读取本节证据…</span></section>
-          <section v-else-if="activeSection && sectionError" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
+          <section v-if="activeSection && activeSectionState?.phase === 'loading'" class="state-panel"><div class="loader" /><span>正在读取本节证据…</span></section>
+          <section v-else-if="activeSection && sectionError && !loadedSections.includes(activeSection)" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
 
           <template v-else-if="selectedDocumentId === '01'">
             <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></button></section>
@@ -423,8 +503,29 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="selectedDocumentId === '03'">
-            <section class="metric-grid five"><article class="metric-card"><span>涨停</span><strong class="positive">{{ formatCount(limits?.limitUpCount) }}</strong></article><article class="metric-card"><span>跌停</span><strong class="negative">{{ formatCount(limits?.limitDownCount) }}</strong></article><article class="metric-card"><span>炸板</span><strong>{{ formatCount(limits?.failedLimitUpCount) }}</strong></article><article class="metric-card"><span>炸板率</span><strong>{{ limits?.failedLimitUpRatio == null ? '--' : formatPosition(limits.failedLimitUpRatio) }}</strong></article><article class="metric-card"><span>最高连板</span><strong>{{ limits?.maxStreak == null ? '--' : `${limits.maxStreak} 板` }}</strong></article></section>
-            <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">短线生态</span><h2>{{ limits?.state || '数据不足' }}</h2></div><span class="quality-badge" :class="qualityTone(limits?.quality)">{{ qualityLabel(limits?.quality) }}</span></div><div class="signal-list"><div><span>热度</span><strong>涨停家数</strong><em>{{ formatCount(limits?.limitUpCount) }}</em></div><div><span>风险</span><strong>跌停家数</strong><em>{{ formatCount(limits?.limitDownCount) }}</em></div><div><span>封板质量</span><strong>炸板率</strong><em>{{ limits?.failedLimitUpRatio == null ? '--' : formatPosition(limits.failedLimitUpRatio) }}</em></div><div><span>接力</span><strong>晋级率</strong><em>{{ limits?.promotionRatio == null ? '--' : formatPosition(limits.promotionRatio) }}</em></div></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">数据质量</span><h2>{{ limits?.quality.source || '未接入' }}</h2></div></div><p>{{ limits?.quality.warning || '涨停、跌停和炸板数据按当日原始交易口径统计。经验分位尚未完成历史校准。' }}</p></article></section>
+            <section class="limits-quality-band" aria-label="涨跌停数据质量">
+              <div class="limits-quality-heading"><div><span class="panel-kicker">本节证据 · 质量优先</span><h2>涨跌停数据集</h2></div><div class="limits-quality-actions"><span class="quality-badge" :class="qualityTone(limits?.quality)">{{ sectionPhaseLabel(limitSectionPhase) }}</span><button class="icon-button" type="button" :disabled="sectionLoading" aria-label="刷新涨跌停证据" title="刷新涨跌停证据" @click="loadCurrentSection(true)"><RefreshCw :size="17" :class="{ spin: sectionLoading }" /></button></div></div>
+              <div class="limits-quality-primary"><div><span>所选交易日</span><strong>{{ data.asOf }}</strong></div><div><span>数据质量</span><strong>{{ qualityCodeLabel(limits?.quality) }}</strong></div><div><span>数据提供方</span><strong>{{ limits?.quality.provider || '--' }}</strong></div><div><span>缓存状态</span><strong>{{ cacheStateLabel(limits?.quality.cacheState) }}</strong></div></div>
+              <div class="limits-quality-secondary"><div><span>样本实际日期</span><strong>{{ limits?.quality.asOf || '--' }}</strong></div><div><span>有效观察数</span><strong>{{ formatCount(limits?.quality.observations) }}</strong></div><div><span>数据来源</span><strong>{{ limits?.quality.source || '--' }}</strong></div><div><span>抓取时间</span><strong>{{ formatEvidenceTime(limits?.quality.snapshotFetchedAt) }}</strong></div></div>
+              <div v-if="sectionError" class="limits-refresh-error" role="alert"><CircleAlert :size="17" /><span>刷新失败，继续显示同日期最后一次证据：{{ sectionError }}</span><button class="text-button" type="button" @click="loadCurrentSection(true)">重试</button></div>
+              <div class="limits-warning-block" :class="{ empty: !limitWarnings.length }"><AlertTriangle :size="17" /><div><strong>数据警告</strong><span>{{ limitWarnings.length ? limitWarnings.join('；') : '无' }}</span></div></div>
+            </section>
+            <section class="metric-grid five"><article class="metric-card"><span>涨停</span><strong class="positive">{{ formatCount(limits?.limitUpCount) }}</strong></article><article class="metric-card"><span>跌停</span><strong class="negative">{{ formatCount(limits?.limitDownCount) }}</strong></article><article class="metric-card"><span>炸板</span><strong>{{ formatCount(limits?.failedLimitUpCount) }}</strong></article><article class="metric-card"><span>炸板率</span><strong>{{ limits?.failedLimitUpRatio == null ? '--' : `${(limits.failedLimitUpRatio * 100).toFixed(2)}%` }}</strong></article><article class="metric-card"><span>最高连板</span><strong>{{ limits?.maxStreak == null ? '--' : `${limits.maxStreak} 板` }}</strong></article></section>
+            <div v-if="[limits?.limitUpCount, limits?.limitDownCount, limits?.failedLimitUpCount, limits?.failedLimitUpRatio, limits?.maxStreak].some((value) => value == null)" class="limits-null-note"><CircleAlert :size="17" /><span>“--”表示数据不可用或分母不可计算，不代表 0。</span></div>
+
+            <section class="limits-promotion-grid">
+              <article class="panel limit-promotion-panel"><div class="panel-heading"><div><span class="panel-kicker">跨交易日 · 后端直出</span><h2>连板晋级证据</h2></div><span class="quality-badge" :class="metricQualityTone(limits?.promotionQuality?.status)">{{ metricQualityLabel(limits?.promotionQuality?.status) }}</span></div><div class="promotion-summary"><div class="promotion-ratio"><span>晋级率</span><strong>{{ limits?.promotionRatio == null ? '--' : `${(limits.promotionRatio * 100).toFixed(2)}%` }}</strong></div><div><span>今日晋级</span><strong>{{ formatCount(limits?.todayPromoted) }}</strong></div><div><span>昨日合格样本</span><strong>{{ formatCount(limits?.yesterdayLimitUpEligible) }}</strong></div></div><p v-if="promotionGap" class="promotion-gap"><CircleAlert :size="17" />{{ promotionGap }}</p><dl class="promotion-metadata"><div><dt>当前样本日期</dt><dd>{{ limits?.promotionSampleAsOf || '--' }}</dd></div><div><dt>前一样本日期</dt><dd>{{ limits?.promotionPreviousAsOf || '--' }}</dd></div><div><dt>样本规则</dt><dd>{{ limits?.promotionSampleRule || '--' }}</dd></div><div><dt>规则版本</dt><dd>{{ limits?.promotionRuleVersion || '--' }}</dd></div></dl></article>
+              <article class="panel limit-field-quality-panel"><div class="panel-heading"><div><span class="panel-kicker">字段证据</span><h2>晋级字段质量</h2></div></div><div class="field-quality-list"><div><span>今日晋级</span><strong>{{ metricQualityLabel(limits?.fieldQuality?.todayPromoted?.status) }}</strong><small>{{ limits?.fieldQuality?.todayPromoted?.reason || '未提供字段质量' }} · 观察 {{ formatCount(limits?.fieldQuality?.todayPromoted?.observations) }}</small></div><div><span>昨日合格样本</span><strong>{{ metricQualityLabel(limits?.fieldQuality?.yesterdayLimitUpEligible?.status) }}</strong><small>{{ limits?.fieldQuality?.yesterdayLimitUpEligible?.reason || '未提供字段质量' }} · 观察 {{ formatCount(limits?.fieldQuality?.yesterdayLimitUpEligible?.observations) }}</small></div><div><span>晋级率</span><strong>{{ metricQualityLabel(limits?.fieldQuality?.promotionRatio?.status) }}</strong><small>{{ limits?.fieldQuality?.promotionRatio?.reason || '未提供字段质量' }} · 观察 {{ formatCount(limits?.fieldQuality?.promotionRatio?.observations) }}</small></div></div><div class="promotion-quality-source"><span>晋级来源</span><strong>{{ limits?.promotionQuality?.source || '--' }}</strong><span>晋级观察数</span><strong>{{ formatCount(limits?.promotionQuality?.observations) }}</strong></div></article>
+            </section>
+
+            <section class="limits-evidence-grid">
+              <article class="panel limit-table-panel"><div class="panel-heading"><div><span class="panel-kicker">接力结构</span><h2>首板至四板以上梯队</h2></div></div><div v-if="limitTiers.length" class="table-scroll"><table class="limits-table tier-table"><thead><tr><th>梯队</th><th>数量</th><th>观察数</th><th>质量</th></tr></thead><tbody><tr v-for="row in limitTiers" :key="row.tier"><td><strong>{{ row.label || row.tier }}</strong></td><td>{{ formatCount(row.count) }}</td><td>{{ formatCount(row.observations) }}</td><td>{{ metricQualityLabel(row.quality?.status) }}</td></tr></tbody></table></div><div v-else class="empty-evidence compact"><Rows3 :size="22" /><strong>梯队证据不足</strong><p>首板、二板、三板和四板以上数量尚未形成可追溯数据。</p></div></article>
+              <article class="panel limit-table-panel"><div class="panel-heading"><div><span class="panel-kicker">样本结构</span><h2>制度与板块分层</h2></div></div><div v-if="limitStratifications.length" class="stratification-groups"><section v-for="group in limitStratifications" :key="group.label"><h3>{{ group.label }}</h3><div class="table-scroll"><table class="limits-table"><thead><tr><th>分层</th><th>数量</th><th>观察数</th><th>质量</th></tr></thead><tbody><tr v-for="row in group.rows" :key="row.key"><td><strong>{{ row.label || row.key }}</strong></td><td>{{ formatCount(row.count) }}</td><td>{{ formatCount(row.observations) }}</td><td>{{ metricQualityLabel(row.quality?.status) }}</td></tr></tbody></table></div></section></div><div v-else class="empty-evidence compact"><Database :size="22" /><strong>分层证据不足</strong><p>涨跌幅制度、市场板块、ST 与上市窗口样本尚未完整验证。</p></div></article>
+            </section>
+
+            <section class="panel limit-history-panel"><div class="panel-heading"><div><span class="panel-kicker">连续性证据</span><h2>近 5 个已验证交易日</h2></div><span class="quality-badge" :class="metricQualityTone(limitHistoryMeta?.quality?.status)">{{ metricQualityLabel(limitHistoryMeta?.quality?.status) }}</span></div><div v-if="limitHistory.length" class="table-scroll"><table class="limits-table history-table"><thead><tr><th>日期</th><th>涨停</th><th>跌停</th><th>炸板率</th><th>晋级率</th><th>最高板</th></tr></thead><tbody><tr v-for="point in limitHistory" :key="point.asOf"><td><strong>{{ point.asOf }}</strong></td><td>{{ formatCount(point.limitUpCount) }}</td><td>{{ formatCount(point.limitDownCount) }}</td><td>{{ point.failedLimitUpRatio == null ? '--' : `${(point.failedLimitUpRatio * 100).toFixed(2)}%` }}</td><td>{{ point.promotionRatio == null ? '--' : `${(point.promotionRatio * 100).toFixed(2)}%` }}</td><td>{{ point.maxStreak == null ? '--' : `${point.maxStreak} 板` }}</td></tr></tbody></table></div><div v-else class="empty-evidence compact"><LineChart :size="22" /><strong>历史窗口不足</strong><p>只展示精确交易日快照，不使用其他日期回填。当前有效观察 {{ formatCount(limitHistoryMeta?.validObservations) }} / {{ formatCount(limitHistoryMeta?.requiredObservations ?? 60) }}。</p></div><div v-if="limitHistoryMeta?.percentile250" class="limit-percentile"><div><span>250 日有效观察</span><strong>{{ formatCount(limitHistoryMeta?.validObservations) }} / {{ formatCount(limitHistoryMeta?.requiredObservations ?? 60) }}</strong></div><div><span>涨停家数分位</span><strong>{{ formatPosition(limitHistoryMeta.percentile250.limitUpCount) }}</strong></div><div><span>跌停家数分位</span><strong>{{ formatPosition(limitHistoryMeta.percentile250.limitDownCount) }}</strong></div><div><span>炸板率分位</span><strong>{{ formatPosition(limitHistoryMeta.percentile250.failedLimitUpRatio) }}</strong></div><div><span>晋级率分位</span><strong>{{ formatPosition(limitHistoryMeta.percentile250.promotionRatio) }}</strong></div><div><span>最高板分位</span><strong>{{ formatPosition(limitHistoryMeta.percentile250.maxStreak) }}</strong></div></div></section>
+
+              <section class="limits-evidence-grid"><article class="panel limit-rule-panel"><div class="panel-heading"><div><span class="panel-kicker">经验规则 · 待回测</span><h2>规则证据</h2></div></div><div v-if="limits?.ruleEvidence?.length" class="limit-rule-list"><div v-for="rule in limits.ruleEvidence" :key="rule.ruleId"><span>{{ rule.ruleId }}</span><strong>{{ rule.score == null ? '分数不足' : `${rule.score.toFixed(1)} 分` }}</strong><small>{{ rule.calibrationStatus === 'validated' ? '已验证' : '待回测' }} · 权重 {{ rule.weight == null ? '--' : formatPosition(rule.weight) }}</small><ul v-if="rule.evidence?.length"><li v-for="item in rule.evidence" :key="item">{{ item }}</li></ul></div></div><div v-else class="empty-evidence compact"><Scale :size="22" /><strong>规则输入不足</strong><p>不把缺失输入视为零风险，也不生成自动交易建议。</p></div></article><article class="panel limit-risk-panel"><div class="panel-heading"><div><span class="panel-kicker">风险与复核</span><h2>{{ limits?.state || '数据不足' }}</h2></div></div><div v-if="limits?.riskEvidence?.length" class="risk-evidence-list"><div v-for="item in limits.riskEvidence" :key="`${item.label}-${item.asOf}`"><span>{{ item.label }}</span><strong>{{ item.value ?? '--' }}</strong><small>{{ item.asOf || '--' }} · {{ metricQualityLabel(item.quality?.status ?? item.status) }}</small><ul v-if="item.evidence?.length"><li v-for="evidence in item.evidence" :key="evidence">{{ evidence }}</li></ul></div></div><div v-else class="empty-evidence compact"><ShieldAlert :size="22" /><strong>风险证据不足</strong><p>连续跌停、断板修复和板块集中输入不完整时不形成周期结论。</p></div><dl class="limit-verification"><div><dt>次日确认</dt><dd>{{ limits?.confirmation || '等待新增证据' }}</dd></div><div><dt>失效条件</dt><dd>{{ limits?.invalidation || '尚未形成可追溯条件' }}</dd></div></dl></article></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '04'">

@@ -65,6 +65,14 @@ def _task_payload(record: CollectionTaskRecord) -> dict:
         if record.dataset == "core"
         else ()
     )
+    detail = (
+        collection_coordinator._limits_collection_detail(
+            store.get("limits", record.as_of),
+            record.as_of,
+        )
+        if record.dataset == "limits"
+        else None
+    )
     return {
         "taskId": record.task_id,
         "dataset": record.dataset,
@@ -80,6 +88,7 @@ def _task_payload(record: CollectionTaskRecord) -> dict:
         "durationMs": record.duration_ms,
         "settled": record.settled,
         "coreIndices": [_core_index_payload(item) for item in core_indices],
+        "detail": detail,
     }
 
 
@@ -145,6 +154,7 @@ def market_environment_collection_status(
     datasets = []
     for item in result["datasets"]:
         attempt = item["latestAttempt"]
+        detail = item.get("detail") if item["dataset"] == "limits" else None
         datasets.append(
             {
                 **item,
@@ -162,8 +172,15 @@ def market_environment_collection_status(
                     "completedAt": attempt.completed_at,
                     "durationMs": attempt.duration_ms,
                     "settled": attempt.settled,
+                    "sampleAsOf": detail.get("sampleAsOf") if detail else None,
+                    "previousAsOf": detail.get("previousAsOf") if detail else None,
+                    "excludedCount": detail.get("excludedCount") if detail else None,
+                    "promotionQuality": detail.get("promotionQuality") if detail else None,
+                    "promotionDependency": detail.get("promotionDependency") if detail else None,
+                    "warnings": detail.get("warnings", []) if detail else [],
                 },
                 "coreIndices": [_core_index_payload(value) for value in item["coreIndices"]],
+                "detail": detail,
             }
         )
     return {

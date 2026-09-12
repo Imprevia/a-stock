@@ -26,6 +26,7 @@ marketEnvironment:
   settlementTime: "15:10"
   scheduledCollection:
     enabled: false
+    suspend: true
 
 extraEnv:
   - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED

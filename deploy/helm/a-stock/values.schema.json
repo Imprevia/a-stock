@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "component": {
+      "type": "string",
+      "enum": [
+        "all",
+        "database",
+        "service",
+        "schedule"
+      ],
+      "description": "Component intent for the componentized TrueNAS k3s entry point. `all` preserves the existing one-click behaviour; `database`, `service`, and `schedule` constrain rendering to the matching subset of resources."
+    },
+    "marketEnvironment": {
+      "type": "object",
+      "required": [
+        "timezone",
+        "scheduledCollection"
+      ],
+      "properties": {
+        "timezone": {
+          "type": "string",
+          "enum": [
+            "Asia/Shanghai"
+          ]
+        },
+        "scheduledCollection": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "suspend",
+            "controllerTimeZoneVerified",
+            "controllerCanaryVerified"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "suspend": {
+              "type": "boolean"
+            },
+            "controllerTimeZoneVerified": {
+              "type": "boolean"
+            },
+            "controllerCanaryVerified": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

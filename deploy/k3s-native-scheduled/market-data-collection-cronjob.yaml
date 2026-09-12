@@ -1,14 +1,15 @@
 apiVersion: batch/v1
 kind: CronJob
+# This resource is reachable only through the checked native-scheduled overlay.
 metadata:
   name: market-data-collection
+  namespace: a-stock
   labels:
     app.kubernetes.io/name: market-data-collection
     app.kubernetes.io/part-of: a-stock
     app.kubernetes.io/component: data-collection
 spec:
-  schedule: "30 16 * * 1-5"
-  timeZone: Asia/Shanghai
+  schedule: "30 8 * * 1-5"
   suspend: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 1800
@@ -36,7 +37,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: collector
-              image: a-stock-market-environment:latest
+              image: localhost/a-stock-market-environment:20260906-005226-2075b6e
               imagePullPolicy: IfNotPresent
               command:
                 - python

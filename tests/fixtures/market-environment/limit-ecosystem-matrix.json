@@ -1,0 +1,62 @@
+{
+  "document": "搭建交易系统-量化版/01-如何判断市场环境/03.涨停、跌停、炸板和连板晋级.md",
+  "quantVersion": "0.1",
+  "ruleStatus": "needs-backtest",
+  "defaultWindow": 250,
+  "minimumValidObservations": 60,
+  "rules": [
+    {
+      "ruleId": "QTS-01-03-01",
+      "title": "涨停家数",
+      "metric": "limitUpCount",
+      "weight": 0.2,
+      "direction": "positive"
+    },
+    {
+      "ruleId": "QTS-01-03-02",
+      "title": "跌停家数反向分",
+      "metric": "limitDownCount",
+      "weight": 0.25,
+      "direction": "negative"
+    },
+    {
+      "ruleId": "QTS-01-03-03",
+      "title": "炸板率反向分",
+      "metric": "failedLimitUpRatio",
+      "weight": 0.2,
+      "direction": "negative"
+    },
+    {
+      "ruleId": "QTS-01-03-04",
+      "title": "连板晋级率",
+      "metric": "promotionRatio",
+      "weight": 0.25,
+      "direction": "positive"
+    },
+    {
+      "ruleId": "QTS-01-03-05",
+      "title": "最高连板高度",
+      "metric": "maxStreak",
+      "weight": 0.1,
+      "direction": "positive"
+    }
+  ],
+  "qualityStates": [
+    "ok",
+    "partial",
+    "degraded",
+    "insufficient",
+    "failed",
+    "failed-retained",
+    "failed-missing"
+  ],
+  "fixtureCases": [
+    "complete-adjacent-sessions",
+    "zero-denominator",
+    "date-mismatch",
+    "identity-mismatch",
+    "missing-close-status",
+    "partial-provider-pool",
+    "insufficient-history"
+  ]
+}

@@ -1,17 +1,99 @@
-{{- if .Values.marketEnvironment.scheduledCollection.enabled }}
+{{- $component := default "all" .Values.component -}}
+{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- end -}}
+{{- if has $component (list "all" "schedule") }}
+{{- $scheduled := .Values.marketEnvironment.scheduledCollection }}
+{{- if not (kindIs "bool" $scheduled.enabled) }}
+{{- fail "marketEnvironment.scheduledCollection.enabled must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.suspend) }}
+{{- fail "marketEnvironment.scheduledCollection.suspend must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.controllerTimeZoneVerified) }}
+{{- fail "marketEnvironment.scheduledCollection.controllerTimeZoneVerified must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" $scheduled.controllerCanaryVerified) }}
+{{- fail "marketEnvironment.scheduledCollection.controllerCanaryVerified must be a boolean" }}
+{{- end }}
+{{- if ne .Values.marketEnvironment.timezone "Asia/Shanghai" }}
+{{- fail "marketEnvironment.timezone must be Asia/Shanghai" }}
+{{- end }}
+{{- if $scheduled.enabled }}
 {{- if not .Values.persistence.enabled }}
 {{- fail "marketEnvironment.scheduledCollection.enabled requires persistence.enabled=true" }}
+{{- end }}
+{{- $strategy := default "" $scheduled.timezoneStrategy }}
+{{- $schedule := default "" $scheduled.schedule }}
+{{- $settlement := default "" .Values.marketEnvironment.settlementTime }}
+{{- if not (has $strategy (list "native" "controller")) }}
+{{- fail "marketEnvironment.scheduledCollection.timezoneStrategy must be native or controller" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9]{1,2} [0-9]{1,2} \\* \\* 1-5$" $schedule) }}
+{{- fail "marketEnvironment.scheduledCollection.schedule must use one numeric M H * * 1-5 trigger" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9]{1,2}:[0-9]{1,2}$" $settlement) }}
+{{- fail "marketEnvironment.settlementTime must use numeric H:M" }}
+{{- end }}
+{{- $scheduleParts := splitList " " $schedule }}
+{{- $scheduleMinute := atoi (index $scheduleParts 0) }}
+{{- $scheduleHour := atoi (index $scheduleParts 1) }}
+{{- $settlementParts := splitList ":" $settlement }}
+{{- $settlementHour := atoi (index $settlementParts 0) }}
+{{- $settlementMinute := atoi (index $settlementParts 1) }}
+{{- if or (gt $scheduleMinute 59) (gt $scheduleHour 23) (gt $settlementMinute 59) (gt $settlementHour 23) }}
+{{- fail "marketEnvironment.scheduledCollection.schedule and settlementTime must contain valid clock values" }}
+{{- end }}
+{{- $scheduleTotalMinutes := add (mul $scheduleHour 60) $scheduleMinute }}
+{{- $settlementTotalMinutes := add (mul $settlementHour 60) $settlementMinute }}
+{{- if eq $strategy "native" }}
+{{- if not (semverCompare ">=1.27.0" .Capabilities.KubeVersion.Version) }}
+{{- fail "marketEnvironment.scheduledCollection.timezoneStrategy=native requires Kubernetes 1.27+" }}
+{{- end }}
+{{- if ne $scheduled.timeZone "Asia/Shanghai" }}
+{{- fail "marketEnvironment.scheduledCollection.native strategy requires timeZone=Asia/Shanghai" }}
+{{- end }}
+{{- if le $scheduleTotalMinutes $settlementTotalMinutes }}
+{{- fail "marketEnvironment.scheduledCollection.schedule must be strictly after settlementTime" }}
+{{- end }}
+{{- else if eq $strategy "controller" }}
+{{- if not (and (semverCompare ">=1.26.0-0" .Capabilities.KubeVersion.Version) (semverCompare "<1.27.0-0" .Capabilities.KubeVersion.Version)) }}
+{{- fail "marketEnvironment.scheduledCollection.timezoneStrategy=controller is limited to Kubernetes 1.26" }}
+{{- end }}
+{{- if not $scheduled.controllerTimeZoneVerified }}
+{{- fail "marketEnvironment.scheduledCollection.controllerTimeZoneVerified=true is required for controller strategy" }}
+{{- end }}
+{{- if ne $settlement "15:10" }}
+{{- fail "marketEnvironment.scheduledCollection.controller strategy requires settlementTime=15:10 for Shanghai 16:30 equivalence" }}
+{{- end }}
+{{- if eq $scheduled.controllerTimeZone "Etc/UTC" }}
+{{- if ne $schedule "30 8 * * 1-5" }}
+{{- fail "marketEnvironment.scheduledCollection.controller UTC schedule must equal 30 8 * * 1-5 for Shanghai 16:30" }}
+{{- end }}
+{{- else if eq $scheduled.controllerTimeZone "Asia/Shanghai" }}
+{{- if ne $schedule "30 16 * * 1-5" }}
+{{- fail "marketEnvironment.scheduledCollection.controller Shanghai schedule must equal 30 16 * * 1-5" }}
+{{- end }}
+{{- else }}
+{{- fail "marketEnvironment.scheduledCollection.controllerTimeZone must be Etc/UTC or Asia/Shanghai" }}
+{{- end }}
+{{- if and (not $scheduled.suspend) (not $scheduled.controllerCanaryVerified) }}
+{{- fail "marketEnvironment.scheduledCollection.controller strategy requires controllerCanaryVerified=true before suspend=false" }}
+{{- end }}
 {{- end }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: {{ include "a-stock.dataCollectionName" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "a-stock.labels" . | nindent 4 }}
     app.kubernetes.io/component: data-collection
 spec:
   schedule: {{ .Values.marketEnvironment.scheduledCollection.schedule | quote }}
+  {{- if eq $strategy "native" }}
   timeZone: {{ .Values.marketEnvironment.scheduledCollection.timeZone | quote }}
+  {{- end }}
   suspend: {{ .Values.marketEnvironment.scheduledCollection.suspend }}
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: {{ .Values.marketEnvironment.scheduledCollection.startingDeadlineSeconds }}
@@ -102,4 +184,5 @@ spec:
           {{- with $priorityClassName }}
           priorityClassName: {{ . | quote }}
           {{- end }}
+{{- end }}
 {{- end }}

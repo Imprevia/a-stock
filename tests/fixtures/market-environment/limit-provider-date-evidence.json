@@ -1,0 +1,62 @@
+{
+  "requestedAsOf": "2026-09-04",
+  "consistentTopLevel": {
+    "date": "20260904",
+    "pools": {
+      "limit_up": [{"c": "600000"}],
+      "failed_limit_up": [{"c": "600001"}],
+      "limit_down": [{"c": "600002"}]
+    }
+  },
+  "requestedDateMismatch": {
+    "date": "20260903",
+    "pools": {
+      "limit_up": [{"c": "600000"}],
+      "failed_limit_up": [{"c": "600001"}],
+      "limit_down": [{"c": "600002"}]
+    }
+  },
+  "missingTopLevel": {
+    "pools": {
+      "limit_up": [{"c": "600000"}],
+      "failed_limit_up": [{"c": "600001"}],
+      "limit_down": [{"c": "600002"}]
+    }
+  },
+  "rowDateConflict": {
+    "date": "20260904",
+    "pools": {
+      "limit_up": [{"c": "600000", "date": "20260903"}],
+      "failed_limit_up": [{"c": "600001"}],
+      "limit_down": [{"c": "600002"}]
+    }
+  },
+  "poolDateConflict": {
+    "dates": {
+      "getTopicZTPool": "20260904",
+      "getTopicZBPool": "20260903",
+      "getTopicDTPool": "20260904"
+    },
+    "pools": {
+      "limit_up": [{"c": "600000"}],
+      "failed_limit_up": [{"c": "600001"}],
+      "limit_down": [{"c": "600002"}]
+    }
+  },
+  "nonMappingPartial": {
+    "date": "20260904",
+    "pools": {
+      "limit_up": [null],
+      "failed_limit_up": [],
+      "limit_down": []
+    }
+  },
+  "nonMappingAllFail": {
+    "date": "20260904",
+    "pools": {
+      "limit_up": [null],
+      "failed_limit_up": [null],
+      "limit_down": [null]
+    }
+  }
+}
