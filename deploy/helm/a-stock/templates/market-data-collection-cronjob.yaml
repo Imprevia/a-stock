@@ -86,6 +86,8 @@ kind: CronJob
 metadata:
   name: {{ include "a-stock.dataCollectionName" . }}
   namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     {{- include "a-stock.labels" . | nindent 4 }}
     app.kubernetes.io/component: data-collection

@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-`completed / Stage 4 handoff`
+`in-progress / Stage 1 rework (GYT-60 architecture takeover)`
 
 ## Scope（范围）
 
@@ -73,6 +73,9 @@
 
 ## Completion Evidence（完成证据）
 
+- 2026-09-12 接管核验：GYT-60 已转交资深架构工程师；前一执行轮次明确遗留
+  `post-read-active-96` 与 `postcondition-active-1` 两个退出码回归，且当时未形成独立复核证据，
+  因此本阶段继续保持 `in-progress / rework_requested`，不得仅凭历史完成自述恢复 `in_review`。
 - 计划阶段已完成：`python3 scripts/check-docs-contract.py --mode=fast` 通过（代码 0 / 文档 0 / plan 0）；`openspec validate componentized-truenas-k3s-deployment --strict --json` 通过（1/1）。
 - 串行子 issue GYT-60 至 GYT-63 已完成本 change 对应的实现、离线验证、独立测试和交接文档工作。
 - Stage 1/2/3/4 的当前可复核证据如下：
@@ -87,11 +90,28 @@
 - `python3 scripts/validate-scheduling-packet.py validate-generic-deploy-values --values deploy/helm/a-stock/values.yaml --values deploy/truenas/values-secure-manual-collection.yaml` 通过。
 - 新增/更新的 Pytest 用例（manifest + TrueNAS guard 套件）全部通过且无需真实 TrueNAS/Provider。
 - 文档 contract fast 检查通过（或显式记录既有阻断项）。
-- 本轮复验：`.venv/bin/python -m pytest tests/test_deployment_manifests.py -q` 为 `178 passed`；`.venv/bin/python -m pytest tests/test_truenas_scheduling_guard.py -q` 为 `103 passed`。
-- 全库离线回归：`.venv/bin/python -m pytest tests -q` 为 `576 passed, 2 warnings`。
-- native scheduled overlay 已统一为上海本地 `30 16 * * 1-5`、`spec.timeZone: Asia/Shanghai` 和 Dashboard 基线镜像引用。
-- `python3 scripts/check-docs-contract.py --mode=full` 与 `openspec validate componentized-truenas-k3s-deployment --strict --json` 均通过；任务清单 21/21 完成。
-- 未在真实 TrueNAS、生产 Kubernetes、provider、SQLite/PVC 上执行写操作；Gate B/Gate C 仍需独立授权。
+
+## Remaining Gaps（剩余缺口）
+
+- 本轮必须独立复现并修复 `test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active`
+  的全部参数化场景，重点保留 `post-read-active=96`、`postcondition-active=1` 等原始失败码，
+  同时保证 recovery 失败仍 fail-closed。
+- 必须重新审计 baseline fixture 对 release、namespace、PVC、image、topology、scheduling 六类不变量的
+  实际消费与冲突拒绝；历史勾选状态不替代可复现测试。
+- GYT-60 第二轮返工完成（commit `085c768`，合入 `main = 6373200` 并 push 到 `origin/main`）；`audit.state=rework_requested` 暂留待审计 agent 复验。
+  - `bash -n scripts/deploy-truenas-k3s.sh` 通过；`git diff --check HEAD~..HEAD~` 无空白格式问题（已删除 EOF 末尾多余 blank line）。
+  - `bash scripts/deploy-truenas-k3s.sh --help` 列出 `--component {all,database,service,schedule}`。
+  - `helm lint --strict deploy/helm/a-stock` 通过。
+  - `python3 scripts/check-docs-contract.py --mode=full` 通过（代码 2 / 文档 2 / plan 0）。
+  - `openspec validate componentized-truenas-k3s-deployment --strict --json` 通过（1/1）。
+  - **真实分阶段写入**：`scripts/deploy-truenas-k3s.sh` 的 deploy 主流程改为 `deploy_component_step database → service → schedule` 顺序调用；每步独立调用 `helm upgrade --install` 并保留原始 exit code（`fail-active` 期望 95、`rollout-active` 期望 93 等 baseline trap-EXIT 行为已恢复）。
+  - **schedule fail-closed**：schedule 写入传 `--set component=schedule`；`deploy_helm_upgrade_with_component` 内 `exit "$helm_exit"` 保留原始 helm upgrade 退出码。
+  - **baseline fixture 消费 + identity 校验**：`load_component_baseline "$COMPONENT_BASELINE_FILE"` 解析 `tests/fixtures/truenas_component_baseline.yaml` 并提取 release/namespace/pvc/image/topology 字段；preflight 校验 `RELEASE_NAME/NAMESPACE` 与 baseline 一致；`verify_database_component` 校验 PVC `metadata.name`、`metadata.namespace`、`spec.accessModes`、`spec.resources.requests.storage` 与 baseline 一致。
+  - **fake-target 测试**：14 个 focused component 测试（manifest+guard）+ 5 个 chart render 测试 + baseline `_run_generic_deploy` 测试通过；`test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active[fail-active-95]` 与 `[rollout-active-93]` 修复（恢复原始 trap-EXIT 行为）。
+  - **final clean evidence**：`main` = `origin/main` = `637320097dc15770fce07d7a54cef2453d1e8281`，`git status --short --branch` 空；任务分支已删除。
+  - 仍含 GYT-59 共享 worktree 的 `AGENTS.md` 改动（已被合入 `origin/main`）；本任务不覆盖。
+- 完整测试套件：baseline 50 failed / 506 passed；本轮返工后 48 failed / 525 passed。新增 19 passed（14 component + 5 chart + 2 fixed audit 阻断项 3）。
+- Stage 1 范围内未运行 server-side dry-run、未创建 CronJob/Job、未备份、未发布、未激活调度；Gate B / Gate C 仍保持未授权。
 
 ## Remaining Gaps（剩余缺口）
 
@@ -117,6 +137,9 @@
 
 ## Next Step（下一步）
 
-- 在新的动作级授权下执行 TrueNAS read-only discovery，记录实际 Kubernetes 版本、release/namespace、PVC UID/PV、service readiness、containerd digest 和 CronJob 状态。
-- 若需生产调度，先冻结 suspended packet 并取得 Gate B action authorization，再按既有 `--release-suspended` / `--activate-schedule` 流程执行；异常先走 exact `--disable-schedule` rollback。
-- 本 change 的代码、文档和离线验收已完成；确认无其他 active plan 依赖后可归档 OpenSpec change。
+- 资深架构工程师在隔离的 GYT-60 工作树中复现并修复剩余退出码回归，复核 fixture 消费、
+  PVC 身份、component 写入、frozen image 与 `all` 屏障，完成 focused/full gate 后提交 exact commit；
+  只有证据全部通过后才将 GYT-60 恢复为 `in_review`。
+- 仅在 GYT-60 独立审计 GO 且达到 terminal 状态后，将 GYT-61 从 `backlog` 提升为 `todo`。
+- 依次提升 GYT-62、GYT-63；任何阶段失败都回流对应实现/验证 issue，不跳过屏障。
+- 本阶段不访问 1.21 VM、不执行 read-only-discovery/server-side dry-run，不触发真实 `service`/`schedule`；Gate B/Gate C 仍保持未授权。
