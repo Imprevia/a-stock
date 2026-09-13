@@ -42,6 +42,7 @@ from .snapshot_store import (
     MaterializedAggregateRecord,
     MaterializedAggregateConflict,
     SnapshotIntegrityError,
+    SnapshotRecord,
     SnapshotStore,
     cache_state,
     payload_checksum,
@@ -273,37 +274,49 @@ class MarketEnvironmentService:
         if self.snapshot_store is None:
             raise RuntimeError("persistent snapshot store is disabled")
         for _attempt in range(_MATERIALIZED_REBUILD_ATTEMPTS):
-            revision = self.snapshot_store.materialization_revision(as_of)
-            record = self.snapshot_store.get_materialized_aggregate(as_of)
+            record, limits_record, active_leases, revision = self.snapshot_store.get_materialized_aggregate_state(
+                as_of,
+                now=self._market_now(),
+            )
             if record is None:
                 break
             payload = copy.deepcopy(record.payload)
             stored_revision = payload.pop(MATERIALIZED_COMPONENT_REVISION_KEY, None)
             stored_limits_state = payload.pop(_MATERIALIZED_LIMITS_STATE_KEY, object())
             payload.pop(_MATERIALIZED_SCHEMA_VERSION_KEY, None)
-            current_limits_state = self._limits_snapshot_state(
-                self.snapshot_store.get("limits", as_of)
-            )
+            current_limits_state = self._limits_snapshot_state(limits_record)
             if stored_revision != revision or stored_limits_state != current_limits_state:
                 break
-            self._apply_local_limits_policy(as_of, payload)
-            self._apply_local_refreshing_state(as_of, payload)
+            self._apply_local_limits_policy(
+                as_of,
+                payload,
+                record=limits_record,
+                record_loaded=True,
+            )
+            self._apply_local_refreshing_state(as_of, payload, active_leases=active_leases)
             payload = self._refresh_materialized_synchronization(as_of, payload)
-            if self.snapshot_store.materialization_revision(as_of) == revision:
-                return payload
+            return payload
         payload = self.rebuild_materialized_aggregate(as_of)
         if payload is None:
             raise RuntimeError("所选日期没有已采集的核心指数快照")
         self._apply_local_refreshing_state(as_of, payload)
         return payload
 
-    def _apply_local_limits_policy(self, as_of: date, payload: dict[str, Any]) -> None:
+    def _apply_local_limits_policy(
+        self,
+        as_of: date,
+        payload: dict[str, Any],
+        *,
+        record: SnapshotRecord | None = None,
+        record_loaded: bool = False,
+    ) -> None:
         chapter = payload.get("chapter01")
         if not isinstance(chapter, dict) or not isinstance(chapter.get("limits"), dict):
             return
         if self.snapshot_store is None:
             return
-        record = self.snapshot_store.get("limits", as_of)
+        if not record_loaded:
+            record = self.snapshot_store.get("limits", as_of)
         if record is None:
             limits = self._missing_chapter_provider_data(
                 as_of,
@@ -322,14 +335,25 @@ class MarketEnvironmentService:
             )
         chapter["limits"] = self._limit_payload_for_response(as_of, limits)
 
-    def _apply_local_refreshing_state(self, as_of: date, payload: dict[str, Any]) -> None:
+    def _apply_local_refreshing_state(
+        self,
+        as_of: date,
+        payload: dict[str, Any],
+        *,
+        active_leases: frozenset[str] | None = None,
+    ) -> None:
         if self.snapshot_store is None:
             return
         chapter = payload.get("chapter01")
         if not isinstance(chapter, dict):
             return
+        if active_leases is None:
+            active_leases = self.snapshot_store.active_lease_datasets(
+                as_of,
+                now=self._market_now(),
+            )
         for group, keys in CHAPTER_GROUP_KEYS.items():
-            refreshing = self.snapshot_store.has_active_lease(group, as_of)
+            refreshing = group in active_leases
             for key in keys:
                 section = chapter.get(key)
                 quality = section.get("quality") if isinstance(section, dict) else None
@@ -614,11 +638,6 @@ class MarketEnvironmentService:
             return None
         as_of = core["effectiveDate"]
         lookup_started = perf_counter()
-        refresh_generation = (
-            self.snapshot_store.get_completed_refresh_generation(group, as_of)
-            if refresh_stale
-            else 0
-        )
         record = self.snapshot_store.get(group, as_of)
         state = cache_state(
             record,
@@ -639,6 +658,7 @@ class MarketEnvironmentService:
         if record is not None:
             refreshing = self.snapshot_store.has_active_lease(group, as_of)
             if state == "stale" and refresh_stale and self._allows_current_snapshot(core) and not refreshing:
+                refresh_generation = self.snapshot_store.get_completed_refresh_generation(group, as_of)
                 self._refresh_executor.submit(
                     self._refresh_snapshot_dataset,
                     group,
@@ -650,6 +670,7 @@ class MarketEnvironmentService:
 
         if not refresh_stale:
             return None
+        refresh_generation = self.snapshot_store.get_completed_refresh_generation(group, as_of)
         if not self._allows_current_snapshot(core):
             return self._missing_snapshot_group(as_of, group, "该交易日没有持久化快照，且历史请求不使用当前数据回填")
 

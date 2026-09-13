@@ -942,6 +942,25 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
 fi
 
 LOCAL_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION:-1.27.0}"
+
+# Resolve the image reference before any render path. Read-only and reviewed
+# scheduling operations do not build or transfer an image, but their complete
+# Helm packet still needs a defined tag for schema/render compatibility.
+if [[ "$OPERATION" == deploy ]]; then
+  if [[ -z "${IMAGE_TAG:-}" ]]; then
+    IMAGE_TAG="$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
+  fi
+else
+  IMAGE_TAG="${IMAGE_TAG:-unused}"
+fi
+validate_scalar IMAGE_TAG "$IMAGE_TAG"
+if [[ "$OPERATION" == deploy ]]; then
+  IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+  ARCHIVE_NAME="a-stock-market-environment-${IMAGE_TAG}.tar"
+else
+  IMAGE="${FROZEN_IMAGE_REPOSITORY:-${IMAGE_REPOSITORY}}:${FROZEN_IMAGE_TAG:-$IMAGE_TAG}"
+fi
+
 if [[ "$OPERATION" != read-only-discovery ]]; then
   case "$OPERATION" in
     deploy)
@@ -1225,17 +1244,6 @@ case "$OPERATION" in
     ;;
 esac
 
-if [[ "$OPERATION" == deploy ]]; then
-  if [[ -z "${IMAGE_TAG:-}" ]]; then
-    IMAGE_TAG="$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
-  fi
-  validate_scalar IMAGE_TAG "$IMAGE_TAG"
-  IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-  ARCHIVE_NAME="a-stock-market-environment-${IMAGE_TAG}.tar"
-else
-  IMAGE="${FROZEN_IMAGE_REPOSITORY:-${IMAGE_REPOSITORY}}:${FROZEN_IMAGE_TAG:-${IMAGE_TAG:-unused}}"
-fi
-
 SSH_TARGET="${TRUENAS_SSH_USER}@${TRUENAS_HOST}"
 remote() {
   ssh -o BatchMode=yes -o ConnectTimeout=10 -p "$TRUENAS_SSH_PORT" "$SSH_TARGET" "$@"
@@ -1403,6 +1411,7 @@ elif [[ "$OPERATION" == disable-schedule ]]; then
   DISABLE_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
 fi
 
+if [[ "$OPERATION" == deploy ]]; then
 VALUES_FILE="$TMP_DIR/values.yaml"
 if [[ -z "$HELM_VALUES_FILE" ]]; then
   {
@@ -1592,6 +1601,7 @@ fi
 
 log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
 exit 0
+fi
 
 if [[ "$OPERATION" == read-only-discovery ]]; then
   log "read-only discovery: Kubernetes $TARGET_KUBERNETES_VERSION"
@@ -1701,7 +1711,6 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --values "$OPERATION_SCHEDULING_OVERLAY" \
     --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
     --set "image.tag=$FROZEN_IMAGE_TAG" \
-    --set "component=schedule" \
     --atomic \
     --wait \
     --timeout "$HELM_TIMEOUT"; then
@@ -1741,4 +1750,3 @@ if [[ -z "$HELM_VALUES_FILE" ]]; then
 else
   log "node=$NODE_ARCH helmValues=$HELM_VALUES_FILE"
 fi
-

@@ -13,7 +13,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `docs/` | 事实源（规格 / 架构 / runbook / plan / status） | 高频更新，见下方映射表 |
 | `docs/exec-plans/active/` | 活动执行计划（多步工作入口） | 每次多步任务先改这里 |
 | `docs/exec-plans/completed/` | 已归档计划 | 只读，完成时移入 |
-| `scripts/` | 本地门禁与工具脚本 | 改动须同步 `docs/runbooks.md` |
+| `scripts/` | 本地门禁与工具脚本；`deploy-truenas-k3s.sh` 是 TrueNAS k3s 的 all/database/service/schedule 入口，`apply-truenas-operator-override.sh` 是 1.26 临时旁路 CronJob 的 fail-closed 修正入口 | 改动须同步 `docs/runbooks.md` 与 `docs/architecture.md` |
 | `.githooks/` | git hook 薄入口 | 只做转发，规则不写在这里 |
 | `.codegraph/` | 代码索引缓存（已 gitignore） | 不手工编辑 |
 | `搭建交易系统/` | 交易系统知识库；按 `01`—`11` 章节目录归档，章节总览使用 `0-主题.md`，正文直接位于对应目录 | 维护章节目录内的 Markdown；新增章节时同步更新本表 |
@@ -25,8 +25,8 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/market_environment/` | 市场环境分析 API、行情适配、指标计算和响应模型 | 修改数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/`、`deploy/k3s-native-scheduled/` | 市场环境看板的 Dashboard-only k3s Kustomize base，以及受 Kubernetes 1.27+ 检查的 native scheduled overlay | 修改镜像、端口、探针、存储、资源、调度或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
-| `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
-| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数模板；脚本入口位于 `scripts/deploy-truenas-k3s.sh` | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` |
+| `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart；`component` 控制 database/service/schedule/all 资源集合 | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
+| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数、SQLite PVC 基线、调度 overlay，以及已明确标注的 k3s 1.26 operator-override 清单；通用 Helm 入口和临时修正入口分别位于 `scripts/deploy-truenas-k3s.sh` 与 `scripts/apply-truenas-operator-override.sh` | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` 与 `docs/architecture.md` |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 
@@ -61,8 +61,9 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/trading_system/**` / `trading-rules/**` | `docs/product-specs/trading-rule-engineering.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `.github/workflows/**` | `docs/runbooks.md`, active plan | fail |
 | `apps/**` | `docs/architecture.md`, `docs/runbooks.md` | fail |
+| `deploy/truenas/**` | `docs/architecture.md`, `docs/runbooks.md`, active plan | fail |
 | `docs/product-specs/**` 引用的代码路径 | 对应 spec | fail |
-| `scripts/**` | `docs/runbooks.md` | warn |
+| `scripts/**` | `docs/runbooks.md`, `docs/architecture.md`（涉及部署边界时） | warn |
 | `requirements.txt` / `pyproject.toml` | `docs/runbooks.md`, `README.md` | fail |
 
 ## 文档映射规则

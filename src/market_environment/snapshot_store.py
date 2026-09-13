@@ -239,12 +239,15 @@ class SnapshotStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA foreign_keys = ON")
+            # Journal mode is a persistent database setting. Changing it on
+            # every short-lived connection adds avoidable locking and startup
+            # latency; initialize it once for new or legacy databases.
+            connection.execute("PRAGMA journal_mode = WAL")
             current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if current_version > STORAGE_SCHEMA_VERSION:
                 raise ValueError(
@@ -893,18 +896,16 @@ class SnapshotStore:
             ),
         )
 
-    def get(self, dataset: str, as_of: date) -> SnapshotRecord | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM snapshot_entries WHERE dataset = ? AND as_of = ?",
-                (dataset, as_of.isoformat()),
-            ).fetchone()
+    @staticmethod
+    def _snapshot_record_from_row(row: sqlite3.Row | None) -> SnapshotRecord | None:
         if row is None:
             return None
         payload = json.loads(row["payload_json"])
         checksum = payload_checksum(payload)
         if checksum != row["checksum"]:
-            raise SnapshotIntegrityError(f"snapshot checksum mismatch: {dataset}/{as_of.isoformat()}")
+            raise SnapshotIntegrityError(
+                f"snapshot checksum mismatch: {row['dataset']}/{row['as_of']}"
+            )
         return SnapshotRecord(
             dataset=row["dataset"],
             as_of=date.fromisoformat(row["as_of"]),
@@ -919,6 +920,23 @@ class SnapshotStore:
             checksum=row["checksum"],
             refresh_warning=row["refresh_warning"],
         )
+
+    @classmethod
+    def _read_snapshot_record(
+        cls,
+        connection: sqlite3.Connection,
+        dataset: str,
+        as_of: date,
+    ) -> SnapshotRecord | None:
+        row = connection.execute(
+            "SELECT * FROM snapshot_entries WHERE dataset = ? AND as_of = ?",
+            (dataset, as_of.isoformat()),
+        ).fetchone()
+        return cls._snapshot_record_from_row(row)
+
+    def get(self, dataset: str, as_of: date) -> SnapshotRecord | None:
+        with self._connect() as connection:
+            return self._read_snapshot_record(connection, dataset, as_of)
 
     def list_snapshot_dates(self, dataset: str, *, through: date | None = None) -> tuple[date, ...]:
         """Return exact dates with persisted snapshots, never calendar-fill gaps."""
@@ -1782,6 +1800,26 @@ class SnapshotStore:
             ).fetchone()
         return row is not None and datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
 
+    def active_lease_datasets(
+        self,
+        as_of: date,
+        *,
+        now: datetime | None = None,
+    ) -> frozenset[str]:
+        """Return all dataset leases active for one date in a single lookup."""
+
+        current = (now or utc_now()).astimezone(timezone.utc)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT dataset, expires_at FROM refresh_leases WHERE as_of = ?",
+                (as_of.isoformat(),),
+            ).fetchall()
+        return frozenset(
+            row["dataset"]
+            for row in rows
+            if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
+        )
+
     def prune(self, before: date, *, now: datetime | None = None) -> int:
         current = (now or utc_now()).astimezone(timezone.utc)
         with self._connect() as connection:
@@ -2224,18 +2262,16 @@ class SnapshotStore:
             raise
         return value
 
-    def get_materialized_aggregate(self, as_of: date) -> MaterializedAggregateRecord | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM materialized_market_environment WHERE as_of = ?",
-                (as_of.isoformat(),),
-            ).fetchone()
+    @staticmethod
+    def _materialized_aggregate_from_row(
+        row: sqlite3.Row | None,
+    ) -> MaterializedAggregateRecord | None:
         if row is None:
             return None
         payload = json.loads(row["payload_json"])
         if payload_checksum(payload) != row["checksum"]:
             raise SnapshotIntegrityError(
-                f"materialized aggregate checksum mismatch: {as_of.isoformat()}"
+                f"materialized aggregate checksum mismatch: {row['as_of']}"
             )
         return MaterializedAggregateRecord(
             as_of=date.fromisoformat(row["as_of"]),
@@ -2243,6 +2279,52 @@ class SnapshotStore:
             generated_at=datetime.fromisoformat(row["generated_at"]),
             checksum=row["checksum"],
         )
+
+    @classmethod
+    def _read_materialized_aggregate(
+        cls,
+        connection: sqlite3.Connection,
+        as_of: date,
+    ) -> MaterializedAggregateRecord | None:
+        row = connection.execute(
+            "SELECT * FROM materialized_market_environment WHERE as_of = ?",
+            (as_of.isoformat(),),
+        ).fetchone()
+        return cls._materialized_aggregate_from_row(row)
+
+    def get_materialized_aggregate(self, as_of: date) -> MaterializedAggregateRecord | None:
+        with self._connect() as connection:
+            return self._read_materialized_aggregate(connection, as_of)
+
+    def get_materialized_aggregate_state(
+        self,
+        as_of: date,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[
+        MaterializedAggregateRecord | None,
+        SnapshotRecord | None,
+        frozenset[str],
+        str,
+    ]:
+        """Read aggregate, limits, leases, and revision from one consistent view."""
+
+        current = (now or utc_now()).astimezone(timezone.utc)
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            aggregate = self._read_materialized_aggregate(connection, as_of)
+            limits = self._read_snapshot_record(connection, "limits", as_of)
+            lease_rows = connection.execute(
+                "SELECT dataset, expires_at FROM refresh_leases WHERE as_of = ?",
+                (as_of.isoformat(),),
+            ).fetchall()
+            revision = self._materialization_revision(connection, as_of)
+        active_leases = frozenset(
+            row["dataset"]
+            for row in lease_rows
+            if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
+        )
+        return aggregate, limits, active_leases, revision
 
 
 def cache_state(

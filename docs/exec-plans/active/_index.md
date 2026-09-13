@@ -16,9 +16,12 @@
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 | `local-development-port-8001` | Codex | completed | 2026-09-04 |
 | `enable-truenas-scheduled-market-collection` | 资深项目经理 + 资深后端工程师 | in-progress | 2026-09-09 |
+| `enable-scheduled-collection-direct-apply` | Codex | in-progress | 2026-09-13 |
+| `fix-scheduled-collection-stability-and-override` | Codex | completed-without-production-write | 2026-09-13 |
 | `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
-| `componentized-truenas-k3s-deployment` | Mika | in-progress | 2026-09-12 |
+| `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |
 | `unified-local-timezone-dashboard` | 资深前端工程师 | in-progress | 2026-09-12 |
+| `copy-index-values-and-normalize-default-date` | Codex | completed | 2026-09-13 |
 
 ## 说明
 

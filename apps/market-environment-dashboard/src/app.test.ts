@@ -311,6 +311,66 @@ describe('index combination matrix', () => {
   })
 })
 
+describe('index card copy controls', () => {
+  afterEach(() => {
+    mountedWrapper?.unmount()
+    mountedWrapper = null
+    vi.unstubAllGlobals()
+  })
+
+  it('copies the index value and change independently without selecting the card', async () => {
+    const wrapper = await mountScenario(synchronizationAssessment())
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const firstCard = wrapper.findAll('.index-card')[0]
+    const secondCard = wrapper.findAll('.index-card')[1]
+
+    await firstCard.find('.copy-value').trigger('click')
+    await flushPromises()
+    await firstCard.find('.copy-change').trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenNthCalledWith(1, '100.00')
+    expect(writeText).toHaveBeenNthCalledWith(2, '0.00%')
+    expect(firstCard.classes()).toContain('selected')
+    expect(secondCard.classes()).not.toContain('selected')
+    expect(wrapper.text()).toContain('已复制上证指数的涨跌幅')
+  })
+
+  it('reports a failure when clipboard and fallback are unavailable', async () => {
+    const wrapper = await mountScenario(synchronizationAssessment())
+    vi.stubGlobal('navigator', {})
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
+
+    await wrapper.findAll('.index-card')[0].find('.copy-value').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('复制上证指数的指数失败')
+    expect(wrapper.text()).not.toContain('已复制上证指数的指数')
+  })
+})
+
+describe('research dashboard default trading date', () => {
+  afterEach(() => {
+    mountedWrapper?.unmount()
+    mountedWrapper = null
+    vi.unstubAllGlobals()
+  })
+
+  it('normalizes the initial date to the effective trading date', async () => {
+    const wrapper = await mountScenario(synchronizationAssessment())
+    expect(wrapper.find('input[type="date"]').element.value).toBe('2026-09-03')
+  })
+
+  it('does not overwrite a manually selected date', async () => {
+    const wrapper = await mountScenario(synchronizationAssessment())
+    const dateInput = wrapper.find('input[type="date"]')
+    await dateInput.setValue('2026-09-05')
+    await flushPromises()
+    expect((dateInput.element as HTMLInputElement).value).toBe('2026-09-05')
+  })
+})
+
 describe('chart lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks()

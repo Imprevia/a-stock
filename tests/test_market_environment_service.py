@@ -532,13 +532,47 @@ def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path
         local_reads_only=True,
         now=lambda: market_now,
     )
-    result = CollectionCoordinator(
-        provider,
-        store,
+    # Seed the exact aggregate inputs directly; collection orchestration is
+    # covered by its own suite and adds dozens of durable write transactions
+    # unrelated to this local-read latency contract.
+    seed_service = MarketEnvironmentService(
+        provider=provider,
+        persistent_cache=False,
         now=lambda: market_now,
-        rebuild_aggregate=service.rebuild_materialized_aggregate,
-    ).collect(selected)
-    assert result.run.status == "success"
+    )
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=selected,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=len(core["indices"]),
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    breadth = provider.fetch_chapter01_breadth(effective, allow_current_snapshot=True)
+    store.put(
+        SnapshotRecord(
+            dataset="breadth",
+            as_of=selected,
+            payload=breadth,
+            source="fixture",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    revision = store.materialization_revision(selected)
+    composed = service._compose_materialized_aggregate(selected, revision)
+    assert composed is not None
+    store.put_materialized_aggregate(composed[1])
     provider.quote_calls = 0
     provider.fetch_calls = 0
     provider.chapter_calls.clear()

@@ -43,9 +43,10 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 
 市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度直接使用东方财富 `push2delay` 的涨跌幅排序分页，定位正负边界和有效样本中位数，不再先尝试被上游限制为不完整行数的名义全 A 主快照；容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序，只保留形成前 30 聚集和前 10 展示所需字段。延迟域成功时质量来源为 `eastmoney-clist-delay`、状态为 `fallback`，并保留主域错误。东方财富日期化涨停、跌停和炸板池用于打板生态；行业板块排名同样先请求 `push2` 主域，主域恢复失败后降级到同口径 `push2delay`，并在质量元数据中保留 fallback 来源和主域错误。行业领涨股名称取 provider 的 `f128`，`f140` 仅为证券代码且不得显示为名称。当前快照型 provider 只允许为上海时区当前市场日期采集，但已在盘后按交易日持久化的精确快照可以用于对应历史日期，禁止拿其他日期或今日数据回填。暂未接入的高/中/低位亏钱效应和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
 
-研究看板交易日输入按浏览器本地时区生成：本地时间 15:00 前默认选择前一天，达到 15:00 后默认选择当天；用户仍可在日期控件中手动选择不晚于当天的日期。数据采集页不复用该截止逻辑，首次状态请求省略 `as_of` 并使用后端返回的上海市场当天，用户手工切换后才发送显式日期。API 默认日期和“当前快照”判断统一使用 `Asia/Shanghai`，避免浏览器 UTC 转换或服务端部署时区把“今天”错位为前一日。东方财富全 A 快照解析同时接受数组和键值对象形式的 `data.diff`，仅保留有效对象行，并校验实际行数覆盖 `data.total` 后才允许按完整快照计算。
+研究看板交易日输入按浏览器本地时区生成：本地时间 15:00 前默认选择前一天，达到 15:00 后默认选择当天；首次核心响应若确认候选日为非交易日，前端只将自动日期同步为响应的有效 `asOf`，用户仍可在日期控件中手动选择不晚于当天的日期且手动值不被覆盖。数据采集页不复用该截止逻辑，首次状态请求省略 `as_of` 并使用后端返回的上海市场当天，用户手工切换后才发送显式日期。API 默认日期和“当前快照”判断统一使用 `Asia/Shanghai`，避免浏览器 UTC 转换或服务端部署时区把“今天”错位为前一日。东方财富全 A 快照解析同时接受数组和键值对象形式的 `data.diff`，仅保留有效对象行，并校验实际行数覆盖 `data.total` 后才允许按完整快照计算。
 
 网页使用固定一级导航 `如何判断市场环境`，下设 01 至 09 文档视图；侧边栏另设“数据管理”入口 `/data-collection`，不改变交易知识文档层级。研究视图只解释 API 已返回的证据与质量状态，数据采集页只读取本地任务和快照状态并提供受控写操作；前端不补算缺失指标，不把未验证阈值渲染为确定性评分。所有可见界面文字和图表标签以 `14px` 为最小字号，标题与关键数字在此基础上维持层级。移动端将导航收纳为抽屉，宽表或采集状态行必须在自身容器内适配，页面不得横向溢出。
+网页使用固定一级导航 `如何判断市场环境`，下设 01 至 09 文档视图；侧边栏另设“数据管理”入口 `/data-collection`，不改变交易知识文档层级。研究视图只解释 API 已返回的证据与质量状态，数据采集页只读取本地任务和快照状态并提供受控写操作；前端不补算缺失指标，不把未验证阈值渲染为确定性评分。第 01 页指数卡的指数主值和涨跌幅是独立复制交互，Clipboard API 不可用时只允许显式失败或受控降级，不伪造成功。所有可见界面文字和图表标签以 `14px` 为最小字号，标题与关键数字在此基础上维持层级。移动端将导航收纳为抽屉，宽表或采集状态行必须在自身容器内适配，页面不得横向溢出。
 
 规则平台扩展数据包括全市场宽度、涨跌停/炸板池、板块与成交集中度、流动性和事件输入。行情优先 mootdx/腾讯，百度/新浪/东方财富作为明确降级；东方财富请求必须经单进程共享请求门串行执行，锁覆盖限流等待和完整 HTTP 请求，间隔至少 1 秒并加入抖动。连接/读取错误、429 和 5xx 使用有界退避重试，403 不盲目重试。公告、政策和突发事件必须保存来源与有效期；无法观测的主体意图不进入自动评分。
 
@@ -60,6 +61,32 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 盘后定时采集流为：k3s/Helm CronJob → `python -m src.market_environment.cli snapshots scheduled-refresh` → collection coordinator → 同一组五类独立 task → 同一 SQLite/PVC。CLI 在 Python 内按 `Asia/Shanghai` 解析日期，周末无 provider 调用并返回 skipped，结算边界前拒绝执行；CronJob 使用显式 timezone strategy：Kubernetes 1.27+ 的 native strategy 才输出 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 controller strategy 省略该字段且只允许经验证的 `Etc/UTC` 或 `Asia/Shanghai` 映射。CronJob 默认业务目标为工作日 16:30、`concurrencyPolicy: Forbid` 且不对 `partial` 自动整批重试；controller strategy 在获授权 no-provider canary 证明之前必须保持 suspend。CronJob 与人工触发并发时仍由 SQLite dataset/date lease 作为最终去重边界。第一版不维护交易所节假日日历，工作日节假日可能留下 failed/partial 记录，但精确日期校验禁止把其他交易日数据写成当天。
 
 生产部署使用单镜像边界：Node 构建阶段生成 `apps/market-environment-dashboard/dist`，Python 运行阶段由 FastAPI 同时托管静态网页与 `/api`。Dashboard-only 的原生 k3s Kustomize base 位于 `deploy/k3s/`；带原生 CronJob timezone 的显式 overlay 位于 `deploy/k3s-native-scheduled/`，只能由 `scripts/render-k3s.py` 在 Kubernetes 1.27+ 边界内渲染；k3s 1.26 使用 `deploy/helm/a-stock/` 的 controller strategy。Helm 默认 `enabled=false`、`suspend=true`；通用 Dashboard install/upgrade/application rollback 只通过 `scripts/deploy-truenas-k3s.sh`，使用完整受版本控制的 baseline values 且不带 scheduling overlay，不得继承 release 历史 values、直接执行 Helm write、执行原始 uninstall 或恢复历史 revision。普通入口从 Helm render 解析 release-derived exact CronJob 名称，按该名称读取 API live state而不依赖可漂移 instance label；它在构建和目标写入前、Helm write 前分别证明 stored Helm manifest 与 live release 均无 application CronJob，active/suspended 状态必须先经单独审核和授权的 `--disable-schedule` 删除。入口在任何网络前冻结 chart、调用方 values 和 overlay，在最终 values 生成后记录 disabled render hash，并在 Helm write 前从同一只读 packet 重渲染和比对；Helm 不再读取可变 repo chart。普通写入成功后再次证明 exact live CronJob absent；失败、信号或写后读取异常会把 validator 绑定的意外 active CronJob 精确补偿为 suspended 并重读验证，无法证明 absent/suspended 时保持 uncertain/NO-GO。默认路径为 Traefik Ingress → ClusterIP Service → 单副本 Deployment，也允许在没有 Ingress Controller 的单节点环境显式使用 NodePort Service。TrueNAS scheduling packet 必须为 baseline 加一个 ordered overlay；离线 render、只读 discovery、精确 suspended-CronJob admission probe、suspended release 与 Gate C activation 是相互独立的操作。read-only discovery 只绑定 clean reviewed HEAD/chart 并发现实际 release/namespace/version；从 admission 起才要求实际版本派生的 frozen chart/baseline/overlay/render hashes 和覆盖 exact operation 的授权记录。入口在任何网络、构建或写操作前校验最终合并后的 typed Helm values、目标 release/namespace 和 `enabled/suspend`，禁止同次运行更新仓库；admission 仅提交该 namespace 中的 exact suspended CronJob。实际 release 只从本次只读快照读取审阅 packet，拒绝 Helm/live drift，绑定 Deployment→ReplicaSet→ready Dashboard Pod 与 containerd tag 的精确 digest，使用 atomic upgrade 并校验 server-observed postcondition；Gate C 只允许已审阅的 `/spec/suspend` 单字段差异，失败时先补偿暂停 exact CronJob。入口不会自行创建 canary/Job。生产顺序固定为 GYT-47 独立 GO → GYT-48 验收 → read-only preflight → frozen exact packet review 与 Gate B action authorization → exact admission → no-provider canary → 非覆盖备份 → suspended release → 一次性 provider-backed Job → Gate B 证据审阅 → 明确 catch-up 的 Gate C operation authorization → activation。TrueNAS 直连候选为明文 HTTP `NodePort:32001` 且手工写入口开启，没有应用身份认证、TLS 或请求级授权；安全边界是所有实际可路由到节点端口的网络，不能声称仅限用户、设备或子网，且不得配置公网映射。1.21 的部署控制面与应用入口分离：Helm/kubectl 默认通过仅绑定 1.21 回环地址的临时 SSH 隧道连接 TrueNAS `127.0.0.1:6443`，不要求将 k3s API 放行给局域网。两条路径均使用持久卷保存 SQLite 快照，盘后 CronJob 使用同一不可变镜像和 PVC 执行短生命周期 CLI。当前缓存、SQLite lease 和 provider 限流均按单机边界设计，因此默认保持一个 Uvicorn 进程和一个 Dashboard Pod；扩展为多副本前必须先引入支持多节点共享与协调的存储方案。Dashboard 与 CronJob Pod 都需要访问通达信 TCP 及外部 HTTPS 行情源，健康探针只访问不触发外部 provider 的 `/api/health`。
+
+TrueNAS 现存 operator override 是上述单 Helm ownership 的显式临时例外。`scripts/apply-truenas-operator-override.sh` 只允许修正已经存在且非 Helm-owned 的 exact 旁路 CronJob：它先验证主机和 controller 继承 `Asia/Shanghai`、独立 PVC 为 `Bound`，再执行 server-side dry-run；只有显式 `--apply` 才写入，并在写后精确读回。目标清单 `deploy/truenas/market-data-collection-cronjob-1.26-controller-shanghai.yaml` 省略 `spec.timeZone` 并使用本地 `30 16 * * 1-5`；它复用冻结镜像但挂载独立 PVC，不归 Helm ownership，也不能替代 Gate B/Gate C 链路。Kubernetes 1.27+ 的 native timezone 清单继续只存在于 `deploy/k3s-native-scheduled/`，两者不得互相覆盖或混合 apply。
+
+### TrueNAS k3s 组件化部署边界
+
+`scripts/deploy-truenas-k3s.sh` 是 TrueNAS 的唯一组件入口，`--component` 取值为
+`all`、`database`、`service`、`schedule`。四种操作共享同一个 Helm release、release name、
+namespace 和受审 values packet；组件选择只改变本次期望资源集合，不创建竞争性的 Helm
+release。`all` 的依赖图固定为 `database -> service -> schedule`：
+
+- `database` 只负责 namespace/PVC 合同。SQLite 始终位于 `/data/snapshots.sqlite3`，
+  使用 RWO claim；`persistence.existingClaim` 时验证 UID、PV、容量、访问模式和挂载路径，
+  不创建、删除、替换或扩容现有 claim，也不启动 PostgreSQL 或其他数据库工作负载。
+- `service` 依赖已验证的 namespace、绑定 PVC 和不可变镜像，保持单副本 Deployment、
+  Dashboard Service/Ingress、健康探针及非 root/read-only-rootfs 安全上下文。镜像变更只
+  更新服务工作负载，PVC identity 与 SQLite 路径保持不变。
+- `schedule` 依赖 service/PVC 就绪和目标 k3s containerd 中已证明 digest 的 frozen image，
+  只渲染或部署 `scheduled-refresh` 的 suspended/disabled 状态。它复用 service 的镜像、
+  PVC、时区、环境和安全边界，不因布尔值直接激活生产采集。
+
+每个组件先执行 typed values、资源集合和依赖预检，再写入并读取 server-observed postcondition；
+失败输出区分 prerequisite/component，并给出唯一重试组件。组件操作仍由单个 Helm release
+管理资源，避免对同一 Deployment、Service、Ingress、CronJob 或 PVC 产生多套 ownership。
+`database` 不构建或传输镜像，`service`/`all` 复用不可变镜像构建、烟测、校验和、SCP 与
+containerd import，`schedule` 只接受已审核的 frozen image。任何 active schedule 都必须
+转交既有 Gate B/Gate C 或 exact rollback 流程；组件参数本身不是调度授权。
 
 调度发布将调用者提供的原始 Kubernetes 版本传入 packet validator，使用严格 SemVer 并按 prerelease precedence 比较；非法值或低于 stable 1.27.0 的 native prerelease 在 kubectl/target access 前失败。Gate C 还从 active packet 的 schedule、timezone 与 `startingDeadlineSeconds` 计算 previous/next trigger：`next-schedule` 必须越过 missed-run deadline 且距离下一触发至少 300 秒，`immediate-catch-up` 只允许在上一触发的 deadline window。该 activation window 在 preflight 检查一次，并在 live/image/diff/re-render/hash 检查后、Helm write 前重新检查；第二次失败不执行写入或补偿。通过后才建立 release-derived exact CronJob fail-safe guard；Helm 或任何写后读取、比较、最终查询、HUP/INT/TERM 失败都先补偿 `suspend=true`，全部 postcondition 通过后才解除 guard。
 

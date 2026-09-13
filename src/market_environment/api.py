@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,9 +20,17 @@ from .schemas import (
     CollectionRunResponse,
     CollectionStatusResponse,
     MarketEnvironmentResponse,
+    TimezonePreferenceUpdateRequest,
+    TimezonePreferencesResponse,
 )
 from .service import MarketEnvironmentService, market_today
 from .snapshot_store import CollectionTaskRecord, CoreIndexResultRecord, SnapshotStore
+from .timezone_preferences import (
+    DEFAULT_USER_ID,
+    DEFAULT_WORKSPACE_ID,
+    TimezonePreferenceStore,
+    resolve_timezone,
+)
 
 app = FastAPI(title="市场环境分析 API", version="1.0.0")
 app.add_middleware(
@@ -38,7 +47,146 @@ collection_coordinator = CollectionCoordinator(
     rebuild_aggregate=service.rebuild_materialized_aggregate,
 )
 collection_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-collection")
+timezone_preference_store = TimezonePreferenceStore(collection_store.path)
 ChapterSection = Literal["breadth", "limits", "sectors", "activeDirection", "summary"]
+
+
+@dataclass(frozen=True)
+class RequestIdentity:
+    """Small adapter seam for the platform identity provider.
+
+    Until the host platform supplies auth middleware, local/dev callers may
+    provide ``X-User-ID``, ``X-Workspace-ID`` and an explicit admin role.  A
+    missing identity is treated as an anonymous read-only subject so the
+    dashboard remains usable without making workspace writes permissive.
+    """
+
+    user_id: str
+    workspace_id: str
+    can_manage_workspace: bool
+
+
+def _header(request: Request, *names: str) -> str | None:
+    for name in names:
+        value = request.headers.get(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def _request_identity(request: Request) -> RequestIdentity:
+    user_id = _header(request, "x-user-id", "x-actor-id", "x-user") or DEFAULT_USER_ID
+    workspace_id = _header(request, "x-workspace-id", "x-workspace") or DEFAULT_WORKSPACE_ID
+    role = (_header(request, "x-workspace-role", "x-user-role") or "").lower()
+    admin_flag = (_header(request, "x-workspace-admin") or "").lower()
+    can_manage = role in {"admin", "owner", "workspace_admin", "workspace-admin"} or admin_flag in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return RequestIdentity(user_id[:256], workspace_id[:256], can_manage)
+
+
+def _browser_timezone(request: Request) -> str | None:
+    # The browser UI resolves its own timezone, but accepting this optional
+    # hint lets API consumers obtain the same effective-timezone contract.
+    return _header(request, "x-timezone", "x-user-timezone", "x-browser-timezone")
+
+
+def _timezone_preferences_payload(request: Request) -> dict:
+    identity = _request_identity(request)
+    personal = timezone_preference_store.get(
+        "personal", subject_id=identity.user_id, workspace_id=identity.workspace_id
+    )
+    workspace = timezone_preference_store.get(
+        "workspace", subject_id=identity.user_id, workspace_id=identity.workspace_id
+    )
+    effective, source = resolve_timezone(
+        personal.timezone,
+        workspace.timezone,
+        _browser_timezone(request),
+    )
+    updated = max(
+        (item.updated_at for item in (personal, workspace) if item.updated_at is not None),
+        default=None,
+    )
+    warning = None
+    if source == "utc-fallback" and (personal.timezone or workspace.timezone or _browser_timezone(request)):
+        warning = "偏好或浏览器时区无效，已安全回退 UTC。"
+    return {
+        "personalTimeZone": personal.timezone,
+        "workspaceTimeZone": workspace.timezone,
+        "effectiveTimeZone": effective,
+        "effectiveSource": source,
+        "canManageWorkspaceTimeZone": identity.can_manage_workspace,
+        "timeZone": effective,
+        "timezone": effective,
+        "updatedAt": updated,
+        "warning": warning,
+        "timezoneCapability": {
+            "personal": {"read": True, "write": True},
+            "workspace": {"read": True, "write": identity.can_manage_workspace},
+            "browserFallback": True,
+            "utcFallback": True,
+        },
+    }
+
+
+@app.middleware("http")
+async def attach_timezone_context(request: Request, call_next):
+    """Expose the effective display timezone without changing payload values.
+
+    Consumers that aggregate several resource types can use these headers as
+    a capability signal; timestamps in JSON remain their original ISO8601
+    values for auditability.
+    """
+
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        try:
+            context = _timezone_preferences_payload(request)
+            response.headers["X-Effective-Timezone"] = context["effectiveTimeZone"]
+            response.headers["X-Timezone-Source"] = context["effectiveSource"]
+        except Exception:
+            # A preference-store outage must not turn an otherwise healthy
+            # read-only market endpoint into a 500; UTC is the safe signal.
+            response.headers["X-Effective-Timezone"] = "UTC"
+            response.headers["X-Timezone-Source"] = "utc-fallback"
+    return response
+
+
+@app.get(
+    "/api/preferences/timezone",
+    response_model=TimezonePreferencesResponse,
+)
+def get_timezone_preferences(request: Request) -> dict:
+    """Return persisted preferences and the effective display timezone."""
+
+    return _timezone_preferences_payload(request)
+
+
+@app.put(
+    "/api/preferences/timezone",
+    response_model=TimezonePreferencesResponse,
+)
+def update_timezone_preferences(
+    request: Request,
+    body: TimezonePreferenceUpdateRequest,
+) -> dict:
+    """Set or clear a personal/workspace IANA timezone preference."""
+
+    identity = _request_identity(request)
+    if body.scope == "workspace" and not identity.can_manage_workspace:
+        raise HTTPException(status_code=403, detail="当前账号没有修改工作区时区的权限")
+    timezone_preference_store.set(
+        body.scope,
+        subject_id=identity.user_id,
+        workspace_id=identity.workspace_id,
+        timezone_value=body.timezone,
+        actor_id=identity.user_id,
+    )
+    return _timezone_preferences_payload(request)
 
 
 def _validate_as_of(as_of: date) -> None:

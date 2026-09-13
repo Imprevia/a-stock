@@ -1,6 +1,8 @@
 apiVersion: batch/v1
 kind: CronJob
-# This resource is reachable only through the checked native-scheduled overlay.
+# Operator override for the verified Asia/Shanghai controller on TrueNAS k3s 1.26.
+# This resource is intentionally outside the Helm release and must not be used
+# when the controller timezone evidence changes.
 metadata:
   name: market-data-collection
   namespace: a-stock
@@ -10,7 +12,6 @@ metadata:
     app.kubernetes.io/component: data-collection
 spec:
   schedule: "30 16 * * 1-5"
-  timeZone: Asia/Shanghai
   suspend: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 1800
@@ -38,7 +39,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: collector
-              image: a-stock-market-environment:latest
+              image: localhost/a-stock-market-environment:20260906-005226-2075b6e
               imagePullPolicy: IfNotPresent
               command:
                 - python

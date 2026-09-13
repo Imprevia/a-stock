@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .timezone_preferences import validate_timezone
+
 CollectionDataset = Literal["core", "breadth", "limits", "sectors", "activeDirection"]
 CollectionRunState = Literal["queued", "collecting", "success", "partial", "failed"]
 CollectionTaskState = Literal[
@@ -486,6 +488,21 @@ class CombinationOverview(BaseModel):
     evidence: list[str]
 
 
+def _validate_aware_iso8601(value: str) -> str:
+    """Require API-generated timestamps to retain an explicit UTC/offset."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("timestamp must be an ISO8601 string with timezone")
+    candidate = value.strip()
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("timestamp must be a valid ISO8601 string with timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must include Z or an explicit UTC offset")
+    return value
+
+
 class Chapter01Evidence(BaseModel):
     status: str
     coverage: float
@@ -508,12 +525,54 @@ class MarketEnvironmentResponse(BaseModel):
     summary: Summary
     chapter01: Chapter01Evidence | None = None
 
+    @field_validator("generatedAt")
+    @classmethod
+    def validate_generated_at(cls, value: str) -> str:
+        return _validate_aware_iso8601(value)
+
+
+class TimezonePreferenceUpdateRequest(BaseModel):
+    """Request body for the user/workspace timezone preference endpoint."""
+
+    scope: Literal["personal", "workspace"]
+    timezone: str | None = Field(default=None, validation_alias="timezone")
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone_value(cls, value: str | None) -> str | None:
+        try:
+            return validate_timezone(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class TimezonePreferencesResponse(BaseModel):
+    """Effective timezone plus the two persisted preference scopes."""
+
+    personalTimeZone: str | None = None
+    workspaceTimeZone: str | None = None
+    effectiveTimeZone: str
+    effectiveSource: Literal["personal", "workspace", "browser", "utc-fallback"]
+    canManageWorkspaceTimeZone: bool
+    # Aliases make the contract easy to consume from non-TypeScript clients,
+    # while the camelCase fields above remain the frontend's stable shape.
+    timeZone: str
+    timezone: str
+    updatedAt: datetime | None = None
+    warning: str | None = None
+    timezoneCapability: dict[str, Any] = Field(default_factory=dict)
+
 
 class Chapter01Response(BaseModel):
     asOf: str
     generatedAt: str
     summary: Summary | None = None
     chapter01: Chapter01Evidence
+
+    @field_validator("generatedAt")
+    @classmethod
+    def validate_generated_at(cls, value: str) -> str:
+        return _validate_aware_iso8601(value)
 
 
 class CollectionRunRequest(BaseModel):

@@ -2,18 +2,18 @@
 
 ## Stage（阶段）
 
-Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；GYT-47 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例。实现与测试范围固定在 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；其后的 `b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 和冻结的 clean review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 均为 docs-only wrappers。后续 local-main-first 收尾提交只记录合入证据，不改变该 review packet。Gate B/Gate C 保持冻结，本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
+Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；GYT-47 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例。GYT-52 随后于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。实现与测试范围固定在 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；其后的 `b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 和冻结的 clean review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 均为 docs-only wrappers。Gate B/Gate C 仍要求独立 exact action/operation authorization；本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
 
 ## Status（状态）
 
-`implementation-complete-awaiting-independent-review`：当前隔离分支 `agent/backend/gyt-47-gate-a-remediation-v2` 从 exact clean baseline `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 创建；该 baseline 以 `b6d3942a7cf75d51b9c6efebcef71b7317931fb6` 为祖先且不包含 GYT-21 提交 `99a625a38bff8bdbfc421fb21176565b8c9d3028`。OpenSpec、plan、architecture、runbook、rollback authorization binding、active-to-off fail-safe recovery、文档 Helm 命令 fail-closed 审计和 ordinary deploy typed-value 前置拒绝均已完成并通过本地离线门禁。代码/测试证据绑定 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；冻结的 clean review/evidence tip 为 docs-only successor `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，其余 wrapper lineage 不改变实现范围。GYT-52 必须对该 exact tip 及其 parent 独立复验；旧 HEAD 及其测试结果不作为当前验收证据。
+`gate-a-go-awaiting-gate-b-action`：GYT-52 已于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。实现与测试证据绑定 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；clean/review/evidence tip 为 `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，其余 wrapper lineage 不改变实现范围。Gate A GO 仅允许进入 Gate B 精确 packet 准备；Gate B/C 仍分别要求 action/operation authorization，生产访问与写操作尚未执行。
 
 ## Context（上下文）
 
 - Parent：`GYT-45`（issue `01a07ca1-a97b-70c2-9e65-9d2cccd337cc`）。
 - Gate A approval：成员于 2026-09-08（Asia/Shanghai）在评论 `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` 回复“批准”；Mika 在 `01a07e3d-5a77-7972-a9cd-360c9d41dc84` 记录 Gate A 决策。
 - Approved change：`openspec/changes/enable-truenas-scheduled-market-collection/`。
-- Gate A 只授权仓库实现与离线验证。成员随后在 GYT-47 评论 `01a07fcd-9140-7aa7-b05a-83485a7ed8c7` 写明“Gate B/Gate C 授权”，但该推进授权必须按顺序使用：GYT-47 修复并取得独立 GO，GYT-48 完成 Stage 3，再准备和审核精确 Gate B 包；Gate B 证据被接受且明确选择 `next-schedule` 或 `immediate catch-up` 后，Gate C 才可执行。
+- Gate A 只授权仓库实现与离线验证。成员随后在 GYT-47 评论 `01a07fcd-9140-7aa7-b05a-83485a7ed8c7` 写明“Gate B/Gate C 授权”，该推进授权现可在 GYT-52 Gate A GO 后按顺序使用：先完成只读 preflight、精确 Gate B packet 审核及 action authorization；Gate B 证据被接受且明确选择 `next-schedule` 或 `immediate catch-up` 后，Gate C 才可执行。
 
 ## Scope（范围）
 
@@ -49,16 +49,16 @@ Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c150
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
 | Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.8；focused render/deployment tests；无应用/前端/生产 diff | completed at exact `cd26dff3e6bebe012198dcd38074c354c1a9afac` |
 | Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` reviewed | tasks 3.1-3.8；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | fresh evidence complete on exact remediation candidate |
-| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean review tip | prior NO-GO remediated; awaiting independent review of `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` (docs/evidence tip; implementation/test parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`) |
-| Gate B | 生产验证 | 未分配 | GYT-47 independent GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | progression/read-only permission recorded; blocked by prerequisites |
+| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean review tip | GO on exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` (`01a08af1-2842-7c07-80a6-2af49b91e196`); Gate B preparation may proceed |
+| Gate B | 生产验证 | 未分配 | GYT-52 Gate A GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | Gate A GO recorded; blocked on target access, packet review, and action authorization |
 | Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
 
 ## Task Breakdown And Dependencies（任务拆分与依赖）
 
 1. Stage 1：项目经理记录 Gate A、工件边界、风险、计划与研发分配；不改代码。
 2. Stage 2 / `GYT-47`：后端在 exact `0b319c1` 后继隔离 worktree 中先同步 active plan、OpenSpec 2.8/3.8、architecture、runbook 和 status，再实现四项回流修复；文档未通过 staged fast gate 时禁止代码改动。
-3. Stage 3 / `GYT-48`：本轮由 GYT-47 补齐与修复直接相关的固定离线负例和全量证据；新的 clean exact HEAD 未经 GYT-52 独立 GO 前，不得复用旧 Stage 3 验收结论。
-4. Gate B/Gate C：推进授权和后续 read-only permission 已记录，但本轮不执行生产动作；只有 GYT-47 独立 GO、GYT-48 验收、read-only preflight、精确 packet 审核及覆盖 exact actions 的 Gate B authorization 依次成立后才能进入写类 Gate B，Gate C 还需接受 Gate B 证据并形成明确 catch-up 选择的最终 operation authorization。
+3. Stage 3 / `GYT-48`：本轮由 GYT-47 补齐与修复直接相关的固定离线负例和全量证据；该证据已随 GYT-52 对 exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 的 Gate A GO 被接受，旧 SHA 仍不作为当前主线证据。
+4. Gate B/Gate C：GYT-52 Gate A GO 与推进授权已记录，但本轮不执行生产动作；仍须完成 read-only preflight、精确 packet 审核及覆盖 exact actions 的 Gate B authorization，Gate C 还需接受 Gate B 证据并形成明确 catch-up 选择的最终 operation authorization。
 
 ## Risks（风险）
 
@@ -183,15 +183,15 @@ Gate A / Stage 4 NO-GO 回流修复。GYT-52 已拒绝已推送主线 `0b319c150
 
 ## Remaining Gaps（剩余缺口）
 
-- GYT-52 对旧 exact `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 提出的四项阻塞已在本轮实现与对抗负例中关闭；新的 clean exact HEAD 尚待独立复验，旧 `0cd9b31`/`0b319c1` 的 GO 或测试结果不能迁移为本轮验收。
+- GYT-52 对旧 exact `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 提出的四项阻塞已在本轮实现与对抗负例中关闭；其后已于 2026-09-10 对 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。旧 `0cd9b31`/`0b319c1` 的 GO 或测试结果仍不能迁移为当前验收证据。
 - 共享 worktree 仍不是 clean implementation baseline；本次整合只在新隔离 worktree 和临时本地 `main` worktree 中执行，未 stash/reset/覆盖共享树改动。
-- Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流已在原 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；其获准内容与 GYT-48 已批准提交现已重放到新主线 lineage。由于提交 SHA 改写，GYT-52 仍须绑定最终 `origin/main` SHA 重验，旧 SHA 的 GO 不自动迁移。
-- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU，materialized local read 也在最终并行全量门禁中出现一次 `0.877854s > 0.5s` 的性能断言失败；两项源文件和测试均与 `origin/main` 相同，不由 GYT-47 引入。GYT-21 已按授权排除，因此本 issue 不越界修复或通过重跑掩盖，GYT-52 必须在 exact-main 审阅中评估。
+- Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流已在原 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；其获准内容与 GYT-48 已批准提交现已重放到新主线 lineage。GYT-52 已对最终 `origin/main=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 独立复验并给出 GO；旧 SHA 的 GO 不自动迁移。
+- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU，materialized local read 也在最终并行全量门禁中出现一次 `0.877854s > 0.5s` 的性能断言失败；两项源文件和测试均与当时的 `origin/main` 相同，不由 GYT-47 引入。GYT-21 已按授权排除；这些应用层性能/竞态问题不构成 GYT-52 Gate A 阻塞，但后续修复必须单独记录并补跑全量测试，不能通过重跑或放宽断言掩盖。
 - `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均是被替代的历史候选，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；原 lineage 中仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 取得三路 GO，本次重放后的 SHA 必须重新绑定验收。
-- GYT-48 已完成且其四个 Stage 3 提交已整合；剩余仓库门槛是 GYT-52 对最终推送主线的 Stage 4 独立复验。
+- GYT-48 已完成且其四个 Stage 3 提交已整合；GYT-52 已对最终推送主线 `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 完成 Stage 4 独立复验并给出 GO。
 - controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
 - 生产定时任务契约（fail-closed 默认）：截至当前，k3s 集群中观察不到任何 application CronJob、也无 controller 创建的 collection Job，这不是部署事故，也不是漏配。生产 CronJob 创建与激活分别要求 Gate B action authorization 与 Gate C operation authorization 两份独立授权作为 canonical change artifact 记录在案；仅记录 Gate B / Gate C progression authorization 不构成生产执行授权，当前状态是"进度授权已记录、操作授权待记录"，不是"永久 off-by-design"。Chart、TrueNAS baseline 与三个 overlay 默认均为 `scheduledCollection.enabled=false / suspend=true`；`scripts/deploy-truenas-k3s.sh` 的通用 release 入口在首次 Helm render、image 工作或目标 API 访问前，typed values 不是这一对就会 `die` 并阻断任何写入；在 Gate B action authorization 与 Gate C operation authorization 均作为 canonical change artifact 记录在案前，不得创建或 unsuspend CronJob，也不得出现 controller-created Job。契约细节见 `openspec/changes/surface-scheduled-collection-failclosed-contract/specs/after-market-data-collection-scheduling/spec.md` 的 `Fail-closed production scheduling default` requirement；后续 K3s 部署、审计或排错请以本契约为准，避免把"未跑"误判为"漏配"，但也不要把它解读为永久禁用决策——它反映的是 Gate B action 与 Gate C operation 双授权当前未到位。
 
 ## Next Step（下一步）
 
-implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only evidence wrappers 已冻结；review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 已推送并绑定本轮离线证据（代码/测试仍只归属 parent），后续 local-main 收尾只新增合入证据。下一步是由 GYT-52 对该 exact clean review tip 及其 parent implementation 进行独立复验。明确 GO 前不得启动 GYT-50/GYT-51、生产只读 preflight 或任何生产动作。
+implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only evidence wrappers 已冻结；GYT-52 已于 2026-09-10 对最终 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。下一步是仅在生产访问和精确 Gate B action authorization 具备后准备/审核 Gate B packet；Gate C 仍需 Gate B 证据接受和明确 operation authorization，当前不执行生产动作。

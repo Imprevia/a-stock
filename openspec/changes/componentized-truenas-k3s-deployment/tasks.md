@@ -41,17 +41,17 @@ The first Stage 1 delivery was independently rejected. Tasks 1.2 and 3.2-3.7 are
 
 ## 4. Automated verification
 
-- [ ] 4.1 Extend deployment manifest tests for component resource sets, dependency failures, PVC identity preservation, image reuse, schedule suspension, and security parity; verify the focused deployment suite passes with no production network access.
-- [ ] 4.2 Extend TrueNAS guard tests for component ordering, skipped image work, Helm packet ownership, idempotence, authorization boundaries, and failure postconditions; verify the focused guard suite and existing scheduling regression suite pass.
-- [ ] 4.3 Add shell/Python syntax, Helm lint/template, and fake SSH/kubectl/containerd integration checks to the documented offline validation commands; verify all commands are reproducible without TrueNAS, real providers, or production SQLite/PVC access.
+- [x] 4.1 Extend deployment manifest tests for component resource sets, dependency failures, PVC identity preservation, image reuse, schedule suspension, and security parity; verify the focused deployment suite passes with no production network access.
+- [x] 4.2 Extend TrueNAS guard tests for component ordering, skipped image work, Helm packet ownership, idempotence, authorization boundaries, and failure postconditions; verify the focused guard suite and existing scheduling regression suite pass.
+- [x] 4.3 Add shell/Python syntax, Helm lint/template, and fake SSH/kubectl/containerd integration checks to the documented offline validation commands; verify all commands are reproducible without TrueNAS, real providers, or production SQLite/PVC access.
 
 ## 5. Documentation and operator workflow
 
-- [ ] 5.1 Update `docs/runbooks.md` with prerequisites, environment variables, all-components and independent component commands, dependency behavior, suspended scheduling semantics, and rollback steps; verify every executable example passes the repository command audit.
-- [ ] 5.2 Update `docs/architecture.md` with the component dependency graph, single Helm release ownership, shared SQLite PVC boundary, image flow, and schedule authorization boundary; verify the architecture text matches rendered manifests and script behavior.
-- [ ] 5.3 Update `docs/repository-guide.md`, README deployment guidance, `docs/status.md`, and the active plan with the new entry point and code-document mappings; verify docs-contract fast/full checks pass or record an explicit unrelated blocker.
+- [x] 5.1 Update `docs/runbooks.md` with prerequisites, environment variables, all-components and independent component commands, dependency behavior, suspended scheduling semantics, and rollback steps; verify every executable example passes the repository command audit.
+- [x] 5.2 Update `docs/architecture.md` with the component dependency graph, single Helm release ownership, shared SQLite PVC boundary, image flow, and schedule authorization boundary; verify the architecture text matches rendered manifests and script behavior.
+- [x] 5.3 Update `docs/repository-guide.md`, README deployment guidance, `docs/status.md`, and the active plan with the new entry point and code-document mappings; verify docs-contract fast/full checks pass or record an explicit unrelated blocker.
 
 ## 6. Acceptance and handoff
 
-- [ ] 6.1 Run the complete offline acceptance matrix (all/database/service/schedule, first install and rerun, chart-managed and existingClaim storage, suspended and unauthorized active schedule); verify expected resource sets, ordering, postconditions, and exit codes.
-- [ ] 6.2 Record Completion Evidence, Remaining Gaps, and Next Step in the active plan, including the lack of real TrueNAS/provider execution and any required maintenance-window authorization; verify the plan status and OpenSpec strict validation report complete artifacts.
+- [x] 6.1 Run the complete offline acceptance matrix (all/database/service/schedule, first install and rerun, chart-managed and existingClaim storage, suspended and unauthorized active schedule); verify expected resource sets, ordering, postconditions, and exit codes.
+- [x] 6.2 Record Completion Evidence, Remaining Gaps, and Next Step in the active plan, including the lack of real TrueNAS/provider execution and any required maintenance-window authorization; verify the plan status and OpenSpec strict validation report complete artifacts.

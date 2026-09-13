@@ -43,6 +43,26 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
+同一入口支持按组件执行，依赖和写入顺序固定为 `database -> service -> schedule`：
+
+```bash
+# 一键按 database -> service -> schedule 部署；无 frozen image 时 schedule 保持 disabled/absent
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component all
+# 只校验/部署现有 SQLite PVC；不构建或传输镜像
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component database
+# 部署 Dashboard Deployment、Service 和 Ingress
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component service
+# 复用已验证的 frozen image，部署 suspended CronJob
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component schedule
+```
+
+`database` 保持 `/data/snapshots.sqlite3` 的现有 SQLite PVC，不创建 PostgreSQL；配置
+`persistence.existingClaim` 时只验证 claim 的 UID、绑定卷、容量、访问模式和挂载路径。
+`service` 依赖 namespace/PVC 和可用镜像，`schedule` 还依赖已验证的 service、PVC 与
+`FROZEN_IMAGE_REPOSITORY/TAG/DIGEST`；`all` 未提供 frozen image 时会记录 skipped 并保持
+schedule disabled/absent。没有 Gate B/Gate C 授权时不会启动 Job；失败时按输出的组件重试目标
+重跑，绝不删除 PVC。
+
 后续发布在审阅后的 clean commit 上设置新的不可变 `IMAGE_TAG`，再执行同一入口；不得直接调用 Helm write、继承 release values 或恢复历史 revision。入口必须在构建、导入或发布前确认 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次证明 live CronJob 仍不存在。
 
 若只读发现显示 release 已有 active 或 suspended application CronJob，普通发布和应用回退都必须停止。先冻结并审核 exact off packet，在授权后通过受控调度入口删除 exact CronJob；只有 `--disable-schedule` 的 server-observed postcondition 成功后，才能重新执行普通发布：

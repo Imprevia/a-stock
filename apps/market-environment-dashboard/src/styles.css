@@ -86,12 +86,23 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2d8a8c; outline-
 .index-card { min-width: 0; padding: 14px; border: 1px solid #dde3e0; border-radius: 6px; background: #fff; cursor: pointer; text-align: left; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .index-card:hover { border-color: #aec7c1; transform: translateY(-1px); }
 .index-card.selected { border-color: #4b8f87; box-shadow: inset 0 2px #4b8f87; }
+.index-card:focus-visible { outline: 2px solid #2d8a8c; outline-offset: 2px; }
 .card-top, .card-price, .card-bottom, .panel-heading, .volume-heading, .chart-footnote, .source-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .card-top { color: #4d5a55; font-size: 14px; font-weight: 700; }
 .card-top .code { color: #99a29e; font-size: 14px; font-weight: 500; }
 .card-price { margin-top: 10px; align-items: baseline; }
 .card-price strong { color: #202b27; font-size: 18px; font-variant-numeric: tabular-nums; }
 .card-price span { font-size: 14px; font-weight: 700; }
+.copy-field { display: inline-flex; min-width: 0; align-items: center; gap: 4px; padding: 2px 3px; border: 1px solid transparent; border-radius: 4px; background: transparent; cursor: copy; }
+.copy-field:hover { border-color: #c5d9d4; background: #f3f8f6; }
+.copy-field:focus-visible { outline: 2px solid #2d8a8c; outline-offset: 1px; }
+.copy-field svg { flex: 0 0 auto; color: #7c9b94; }
+.copy-field.copy-value strong { font-size: 18px; }
+.copy-field.copy-change span { font-size: 14px; font-weight: 700; }
+.copy-result { color: #287b70 !important; font-size: 14px !important; font-weight: 600 !important; white-space: nowrap; }
+.copy-result.error { color: #995b55 !important; }
+.copy-result::before { content: "·"; margin-right: 2px; color: #9aa9a4; }
+.copy-live-region { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .card-bottom { margin-top: 9px; color: #8a9590; font-size: 14px; }
 .positive { color: #c65050 !important; }
 .negative { color: #26815f !important; }

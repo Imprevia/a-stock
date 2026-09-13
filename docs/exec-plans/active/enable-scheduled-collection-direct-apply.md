@@ -2,7 +2,7 @@
 
 ## Stage（阶段）
 
-绕过 `enable-truenas-scheduled-market-collection` 这条 GYT-* 半成品链路，用裸 yaml 在 TrueNAS k3s 集群上直接 apply 一个市场数据采集 CronJob，并手动触发一次验证。
+续接已部署的 operator override，修正 TrueNAS k3s 1.26 controller 时区映射，用独立裸 YAML 将市场数据采集 CronJob 固定到上海工作日 16:30，并验证周末无 provider 冒烟与下一交易日自然触发。
 
 ## Status（状态）
 
@@ -12,8 +12,10 @@
 
 - 在 `a-stock` namespace 下新建一个独立的 `market-environment-data` PVC（2Gi RWO，StorageClass `manual-local`），并按集群静态 PV 模式创建对应 `a-stock-market-environment-data` PV（hostPath `/mnt/xiaomi/app-data/a-stock-market-environment`）。
 - 因为集群没有 `manual-local` StorageClass 对象，同名 SC 也需要新建（`provisioner: kubernetes.io/no-provisioner`，`volumeBindingMode: Immediate`，`reclaimPolicy: Retain`）。
-- 在 `deploy/k3s-native-scheduled/` 下新增三个裸 yaml：StorageClass、PersistentVolume、PersistentVolumeClaim，并修改 `market-data-collection-cronjob.yaml` 的 schedule、删除 `timeZone`、把 image tag 从 `latest` 改为写死的 `20260906-005226-2075b6e`，补上 `namespace: a-stock`。
-- 通过 `kubectl apply -f` 单文件方式部署，**不走** `scripts/deploy-truenas-k3s.sh` 的 fail-closed 入口、**不走** Helm release 升级、**不动**既有 `a-stock-data` PVC 与 helm 装的 Deployment/Service。
+- `deploy/k3s-native-scheduled/` 继续只承担 Kubernetes 1.27+ native timezone overlay；不再把其 CronJob 清单改造成 TrueNAS 1.26 专用资源。
+- 在 `deploy/truenas/` 增加独立的 k3s 1.26 controller-timezone override 清单：省略 `spec.timeZone`，使用目标 controller 已验证的 `Asia/Shanghai` 本地 schedule `30 16 * * 1-5`，镜像固定为 `localhost/a-stock-market-environment:20260906-005226-2075b6e`。
+- 通过 `scripts/apply-truenas-operator-override.sh` 执行 fail-closed 校验：只允许修正已存在且非 Helm-owned 的 exact CronJob；先验证主机/controller 时区、独立 PVC Bound、冻结镜像和安全上下文，再执行 server-side dry-run、可选显式 apply 与 exact readback，不创建/删除/patch PVC/PV/Deployment/Service。
+- 通过专用脚本对单文件执行 server-side dry-run 和显式 apply，**不走** `scripts/deploy-truenas-k3s.sh` 的 Helm 发布入口、**不走** Helm release 升级、**不动**既有 `a-stock-data` PVC 与 helm 装的 Deployment/Service。
 - 用单独的 `market-data-verify` Job（`snapshots refresh --as-of 2026-09-11 --force`）验证 PVC 挂载、镜像可用、collector 可写 SQLite；不直接派生 CronJob（`scheduled-refresh` 在 settlement time 之前会被 rejected）。
 - 在节点上 `mkdir -p /mnt/xiaomi/app-data/a-stock-market-environment` 并 `chmod 0777`，允许非 root 容器（`runAsUser: 10001`）写入 hostPath。
 - 同步更新 `docs/runbooks.md` 与 `docs/status.md`。
@@ -22,9 +24,10 @@
 
 - `docs/exec-plans/active/enable-scheduled-collection-direct-apply.md` 6 个必需字段齐全。
 - `docs/runbooks.md` 新增 `### Native CronJob 直接 apply（operator override 路径）` 节，明确记录路径、命名决策、镜像 tag 冻结、与既有 helm release 的隔离边界。
+- operator override 必须通过专用脚本完成：默认只读 + server-side dry-run，`--apply` 才允许写入；脚本拒绝缺失 exact CronJob、Helm ownership、时区/PVC/镜像/安全上下文漂移，并在写后 exact readback。
 - `docs/status.md` 的 `## 进行中` 列表新增本计划对应条目。
 - 集群 `a-stock` namespace 下：
-  - `kubectl get cronjob -n a-stock` 出现 `market-data-collection`，`SUSPEND=False`，schedule `30 8 * * 1-5`（UTC=上海 16:30），无 `timeZone` 字段。
+  - `kubectl get cronjob -n a-stock` 出现 `market-data-collection`，`SUSPEND=False`，schedule `30 16 * * 1-5`（controller `Asia/Shanghai`），无 `timeZone` 字段。
   - `kubectl get pvc -n a-stock` 出现 `market-environment-data`，`STATUS=Bound`，`VOLUME=a-stock-market-environment-data`，`STORAGECLASS=manual-local`，2Gi RWO。
   - `kubectl get pv a-stock-market-environment-data` 出现，`STATUS=Bound`，`CLAIM=a-stock/market-environment-data`。
   - `kubectl get sc manual-local` 出现，`PROVISIONER=kubernetes.io/no-provisioner`，`VOLUMEBINDINGMODE=Immediate`。
@@ -64,6 +67,23 @@
 - baidu kline 全部 403，core dataset 已降级到新浪 + 腾讯成交额估算（已在日志 warning 中说明）；breadth/sectors 通过东方财富延迟接口补齐。
 - `manual-collect-1789098455`（第一次 `--from=cronjob/...` 派生的 Job）已被 collector 拒绝（exit 2），Pod 残留但 Job 已 `delete`。
 
+**时区复核（2026-09-13 09:19 / Asia/Shanghai，修正写入前）:**
+
+- live server 为 k3s `v1.26.6+k3s-6a894050-dirty`；主机 `timedatectl` 与 `/etc/localtime` 均为 `Asia/Shanghai`，k3s systemd 环境没有 `TZ` 覆盖，controller 使用上海本地时区解释无 `spec.timeZone` 的 CronJob。
+- live CronJob 仍为 `schedule=30 8 * * 1-5`、`suspend=false`、冻结镜像 digest `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`，但创建 45 小时后 `lastScheduleTime` 仍为空，也没有 controller 派生 Job；因此 `30 8` 在本目标实际表示上海 08:30，原“UTC=上海 16:30”假设已被 live 证据否定。
+- `market-environment-data` PVC 与 `a-stock-market-environment-data` PV 仍为 `Bound`；节点仍存在冻结镜像。正式 Helm/Gate B/Gate C 链路未被调用，本次只修正既有 override 的 schedule。
+
+**schedule 修正与周末 smoke（2026-09-13 09:24 / Asia/Shanghai）:**
+
+- 新增 `deploy/truenas/market-data-collection-cronjob-1.26-controller-shanghai.yaml`；离线部署清单测试 `179 passed`，YAML 解析确认 `schedule=30 16 * * 1-5`、无 `spec.timeZone`、冻结镜像与独立 PVC 不变。
+- server-side dry-run 通过；`kubectl diff` 只包含 generation 与 `spec.schedule: 30 8 * * 1-5 -> 30 16 * * 1-5`。apply 后 live generation 为 2，`suspend=false`、无 `spec.timeZone`，镜像仍为 `localhost/a-stock-market-environment:20260906-005226-2075b6e`。
+- PVC UID `ad1d0f69-f64e-4d95-827a-b341f123007c`、PV UID `3f1b6e86-f320-4448-9052-8aa84879adbb` 与绑定关系均未变化；未修改 Helm release、Deployment、Service、Ingress、PVC/PV 或 StorageClass。
+- 临时 Job `market-data-weekend-smoke-20260913` 从更新后的 CronJob 派生并完成：Pod `Succeeded`、exit code 0，日志为 `{"asOf":"2026-09-13","datasets":[],"reason":"weekend","status":"skipped","trigger":"scheduled"}`。SQLite 在前后均为 360448 字节、mtime epoch `1789099798`，证明周末路径未写数据；记录证据后已按 exact Job 名称删除。
+- 最终 live 读回：CronJob generation 2、`schedule=30 16 * * 1-5`、`suspend=false`、`Forbid`、deadlines `1800/3600`、`backoffLimit=0`、冻结镜像与 `market-environment-data` PVC 均符合清单；传输到目标 `/tmp` 的清单副本已删除。
+- 本地验证：`tests/test_deployment_manifests.py` 为 `179 passed`，`python scripts/render-k3s.py --kube-version 1.27.0` 仍输出 native `30 16` + `Asia/Shanghai`，`git diff --check` 与 `python scripts/check-docs-contract.py --mode=full` 均通过。
+- 修复前全量离线 pytest 曾为 `576 passed, 1 failed, 2 warnings`；唯一失败是既有 materialized local read 的 0.5 秒性能阈值，现已由独立稳定性计划修复并 supersede。最新全量离线结果为 `592 passed, 2 warnings`。
+- 新增 `tests/test_truenas_operator_override.py`，以 fake timedatectl/systemctl/kubectl 覆盖成功 dry-run/apply/readback、缺失/Helm-owned CronJob、时区/PVC/manifest/live 漂移及 apply 后置条件；当前专测结果 `14 passed`。
+
 **本地:**
 
 - active plan 6 字段齐全；`runbooks.md` 新章节；`status.md` 新条目。
@@ -74,16 +94,16 @@
 
 - 本计划未创建 application CronJob 之外的任何集群资源；helm 装的 `a-stock` Deployment 仍跑 `20260906-005226-2075b6e`，本计划不动它。
 - shared working tree 不 clean：包含 `AGENTS.md`、`docs/runbooks.md`、`docs/status.md`、`openspec/changes/surface-scheduled-market-collection/tasks.md` 与 `openspec/changes/archive/2026-09-11-surface-scheduled-collection-failclosed-contract/*` 的既有 M/A（这些均非本计划引入），按 AGENTS.md 不 stash/reset/checkout。
-- `enable-truenas-scheduled-market-collection` GYT 链路仍标记为 `in-progress`，本计划是其**临时绕过路径**而非替代；该 GYT 链路完成归档前，两套方案并存，冲突由 GYT-52 后续复验裁决。
+- `enable-truenas-scheduled-market-collection` 已取得 GYT-52 Gate A GO，但 Gate B/Gate C 仍需独立 exact action/operation authorization；本计划只是**临时 operator override 路径**而非正式 Helm 发布替代。两套方案通过非 Helm ownership 隔离并存，operator override 也不得绕过专用脚本的 fail-closed 校验。
 - 本计划**超出原方案边界的写操作**（operator override 已承担后果）：
   1. 新建集群级 StorageClass `manual-local`（`provisioner: kubernetes.io/no-provisioner`，`Immediate`，`Retain`）。
   2. 新建集群级 PV `a-stock-market-environment-data`（hostPath `/mnt/xiaomi/app-data/a-stock-market-environment`，2Gi RWO，Retain）。
   3. 在节点上 `mkdir -p` + `chmod 0777` 修改主机文件系统权限（与既有 `a-stock-data` 的 `0770 10001:10001` 不一致，更宽松）。
   4. 多次 patch PVC（加 `volumeName`、`storageClassName`）与 PV（加 `claimRef`）。
-  5. 修改 `deploy/k3s-native-scheduled/market-data-collection-cronjob.yaml`：删 `timeZone: Asia/Shanghai`、schedule 改为 UTC `30 8 * * 1-5`、image 写死具体 tag、补 `namespace: a-stock`。
+  5. 早期曾把 Kubernetes 1.27+ native 清单临时改造成 1.26 资源；本阶段改为 `deploy/truenas/` 独立清单，避免两种版本语义继续互相覆盖。
   6. 创建集群级验证 Job `market-data-verify`（与 CronJob 不同的子命令）。
-- CronJob 调度本身**未被验证**：本次只跑了 `snapshots refresh --force` 的验证 Job。`snapshots scheduled-refresh`（settlement time 之后）的真路径只能在周一 16:30 上海时由 CronJob 自然触发，**本次任务窗口内没有运行窗口**。
-- `scheduled-refresh` 子命令在 settlement time 之前会返回 `{"status": "rejected", "error": "scheduled refresh is only allowed after the configured settlement time"}` 并 exit 2；当前的 30 8 UTC（上海 16:30）已晚于 settlement time（15:10），理论上应能正常进入 collect，但实际是否能产出 success（exit 0）取决于 provider 在该时点的可用性（本次验证 Job 中 baidu kline 全部 403）。
+- CronJob 的上海 16:30 自然触发仍**未被验证**：live schedule 已修为 `30 16`，需等待 9 月 14 日自然触发。
+- 周末派生 Job 已证明 `scheduled-refresh` 返回 `skipped`、exit 0 且 SQLite 不变，但不能替代交易日 16:30 的 provider-backed 验证。
 - 镜像 tag 是手动指定的 `20260906-005226-2075b6e`，未在 controller 上跑过 canary，也未冻结到 `FROZEN_IMAGE_*` 字段；后续若需要持续维护，应迁移到 Helm 或 fail-closed 入口并补齐 controller 证据。
 - Pod 的安全属性（non-root、cap drop、read-only rootfs、no token、Forbid、backoffLimit 0、1800/3600 deadlines）继承自 `deploy/k3s-native-scheduled/market-data-collection-cronjob.yaml` 原文件，本计划未调整这些字段。
 - 验证 Job `market-data-verify` 与其 Pod 残留 metadata 在 `a-stock` namespace；Job 对象已 `delete`，Pod 会随 GC 清理。
@@ -91,8 +111,6 @@
 
 ## Next Step（下一步）
 
-1. 等下一个交易日（周一 2026-09-14）盘后 16:30 上海（= 08:30 UTC）由 CronJob 自然触发；观察 `kubectl get jobs -n a-stock --selector=job-name` 与对应 Pod 日志，确认 `scheduled-refresh` 在 settlement time 之后能正常 collect 并落 SQLite。
-2. 若周一触发失败（最可能原因是 baidu kline 403 与 core dataset 降级到 partial），评估是否将 image tag 升级到带 provider fallback 的更新版镜像，或在 CronJob env 中追加备用 provider endpoint。
-3. 把验证 Job `market-data-verify` 的 Pod 残留清干净；本计划完成后把 Job 资源完全删除。
-4. 把本次扩 Scope 的 `storage-class.yaml` / `persistent-volume.yaml` / `persistent-volume-claim.yaml` 同步进 Helm chart 或独立 namespace 包，以便后续维护不依赖本 active plan。
-5. 把本次修改的 `market-data-collection-cronjob.yaml` 改动（schedule/timeZone/image/namespace）以独立 commit 形式提交，并在 `docs/status.md` 中把本计划标为 `completed` 后归档到 `docs/exec-plans/completed/`。
+1. 等下一个交易日（周一 2026-09-14）16:30 上海由 CronJob 自然触发；观察 Job、Pod 日志和 SQLite mtime，确认真实 collect。
+2. 若周一触发失败，保留 partial/failed 证据并评估不可变镜像升级；不得把 `latest` 应用于现有 override。
+3. 后续清理既有 `market-data-verify` 残留，并把 override 迁回完成 Gate B/Gate C 的受控 Helm 链路后再归档本计划。

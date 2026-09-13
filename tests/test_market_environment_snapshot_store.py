@@ -67,6 +67,21 @@ def test_store_rejects_unsupported_schema_and_detects_tampering(tmp_path) -> Non
     with pytest.raises(SnapshotIntegrityError, match="checksum mismatch"):
         store.get("breadth", AS_OF)
 
+    aggregate = store.put_materialized_aggregate(
+        MaterializedAggregateRecord(
+            as_of=AS_OF,
+            payload={"asOf": AS_OF.isoformat(), "version": 1},
+            generated_at=NOW,
+        )
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE materialized_market_environment SET payload_json = ? WHERE as_of = ?",
+            ('{"asOf":"2026-09-02","version":999}', AS_OF.isoformat()),
+        )
+    with pytest.raises(SnapshotIntegrityError, match="materialized aggregate checksum mismatch"):
+        store.get_materialized_aggregate(aggregate.as_of)
+
 
 def test_leases_are_shared_across_store_instances_and_expire(tmp_path) -> None:
     path = tmp_path / "snapshots.sqlite3"
@@ -84,6 +99,21 @@ def test_leases_are_shared_across_store_instances_and_expire(tmp_path) -> None:
     )
     assert not first.release_lease("breadth", AS_OF, "worker-1")
     assert second.release_lease("breadth", AS_OF, "worker-2")
+
+
+def test_active_lease_datasets_returns_only_unexpired_leases(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.acquire_lease("breadth", AS_OF, "breadth-worker", lease_seconds=10, now=NOW)
+    store.acquire_lease("activeDirection", AS_OF, "active-worker", lease_seconds=10, now=NOW)
+    store.acquire_lease(
+        "sectors",
+        AS_OF,
+        "expired-worker",
+        lease_seconds=1,
+        now=NOW - timedelta(seconds=10),
+    )
+
+    assert store.active_lease_datasets(AS_OF, now=NOW) == {"breadth", "activeDirection"}
 
 
 def test_cache_state_distinguishes_missing_fresh_stale_and_settled() -> None:
@@ -251,4 +281,3 @@ def test_core_index_results_and_materialized_aggregate_replace_atomically(tmp_pa
     assert store.list_core_index_results("task-1") == (index_result,)
     assert first.checksum != replacement.checksum
     assert store.get_materialized_aggregate(AS_OF) == replacement
-

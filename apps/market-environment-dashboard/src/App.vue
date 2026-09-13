@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import {
-  Activity, AlertTriangle, BarChart3, CalendarDays, ChevronRight, CircleAlert,
+  Activity, AlertTriangle, BarChart3, CalendarDays, ChevronRight, CircleAlert, Copy,
   Database, FileCheck2, Gauge, LineChart, Menu, RefreshCw, Rows3, Scale,
   Settings2, ShieldAlert, Target, TrendingDown, TrendingUp, X,
 } from 'lucide-vue-next'
@@ -69,6 +69,9 @@ const loadedSections = ref<Chapter01Section[]>([])
 const sectionStates = ref(createSectionStates())
 const sidebarOpen = ref(false)
 const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard')
+const copyStatus = ref<{ key: string; state: 'success' | 'error'; message: string } | null>(null)
+let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
+let initialDatePending = true
 const chartElement = ref<HTMLElement | null>(null)
 const volumeChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -194,6 +197,50 @@ const gapLabel = (reason: string) => ({
   'not-computable': '当前数据在数学上不可计算',
 } as Record<string, string>)[reason] ?? '数据不足'
 
+function copyStatusFor(code: string, field: 'value' | 'change') {
+  return copyStatus.value?.key === `${code}:${field}` ? copyStatus.value : null
+}
+
+async function writeClipboard(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Continue to the local fallback for HTTP origins or denied permissions.
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  textarea.remove()
+  return copied
+}
+
+async function copyIndexField(index: IndexAnalysis, field: 'value' | 'change') {
+  const text = field === 'value' ? index.close.toFixed(2) : formatPct(index.changePct)
+  const label = field === 'value' ? '指数' : '涨跌幅'
+  const success = await writeClipboard(text)
+  copyStatus.value = {
+    key: `${index.code}:${field}`,
+    state: success ? 'success' : 'error',
+    message: success ? `已复制${index.name}的${label}` : `复制${index.name}的${label}失败`,
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
 interface ChartTooltipItem {
   axisValueLabel?: string
   data?: number[] | null
@@ -239,7 +286,10 @@ async function loadData() {
     const nextData = await response.json() as MarketEnvironmentResponse
     if (requestId !== requestSequence) return
     data.value = nextData
-    dataRequestDate = requestedDate
+    const normalizeInitialDate = initialDatePending && nextData.asOf !== requestedDate
+    if (normalizeInitialDate) selectedDate.value = nextData.asOf
+    dataRequestDate = normalizeInitialDate ? nextData.asOf : requestedDate
+    initialDatePending = false
     shouldLoadSection = true
     if (!data.value.indices.some((item) => item.code === selectedCode.value)) selectedCode.value = data.value.indices[0]?.code ?? ''
   } catch (cause) {
@@ -370,6 +420,10 @@ function handlePopState() {
   if (currentView.value === 'dashboard' && !data.value && !loading.value) void loadData()
 }
 function selectIndex(code: string) { selectedCode.value = code }
+function handleDateChange() {
+  initialDatePending = false
+  void loadData()
+}
 function resizeCharts() { chart?.resize(); volumeChart?.resize() }
 function disposeCharts() {
   chart?.dispose()
@@ -417,6 +471,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)
   window.removeEventListener('popstate', handlePopState)
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
   disposeCharts()
 })
 </script>
@@ -438,7 +493,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="main-shell">
-      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : currentView === 'data-collection' ? '数据管理' : '偏好设置' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : currentView === 'data-collection' ? '数据采集' : '日期与时间' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="loadData" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
+      <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : currentView === 'data-collection' ? '数据管理' : '偏好设置' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : currentView === 'data-collection' ? '数据采集' : '日期与时间' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="handleDateChange" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
       <div class="content-shell">
         <DataCollectionView v-if="currentView === 'data-collection'" />
         <TimezoneSettingsView v-else-if="currentView === 'settings'" />
@@ -453,7 +508,7 @@ onBeforeUnmount(() => {
           <section v-else-if="activeSection && sectionError && !loadedSections.includes(activeSection)" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
 
           <template v-else-if="selectedDocumentId === '01'">
-            <section class="index-cards" aria-label="指数概览"><button v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" type="button" @click="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><strong>{{ index.close.toFixed(2) }}</strong><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></button></section>
+            <section class="index-cards" aria-label="指数概览"><article v-for="index in data.indices" :key="index.code" class="index-card" :class="{ selected: selectedIndex?.code === index.code }" role="button" tabindex="0" :aria-pressed="selectedIndex?.code === index.code" @click="selectIndex(index.code)" @keydown.enter.prevent="selectIndex(index.code)" @keydown.space.prevent="selectIndex(index.code)"><div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div><div class="card-price"><button class="copy-field copy-value" type="button" :aria-label="`复制${index.name}指数`" :title="`复制${index.name}指数`" @click.stop="copyIndexField(index, 'value')" @keydown.stop><strong>{{ index.close.toFixed(2) }}</strong><Copy :size="13" aria-hidden="true" /><span v-if="copyStatusFor(index.code, 'value')" class="copy-result" :class="{ error: copyStatusFor(index.code, 'value')?.state === 'error' }">{{ copyStatusFor(index.code, 'value')?.state === 'success' ? '已复制' : '失败' }}</span></button><button class="copy-field copy-change" type="button" :aria-label="`复制${index.name}涨跌幅`" :title="`复制${index.name}涨跌幅`" @click.stop="copyIndexField(index, 'change')" @keydown.stop><span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span><Copy :size="13" aria-hidden="true" /><span v-if="copyStatusFor(index.code, 'change')" class="copy-result" :class="{ error: copyStatusFor(index.code, 'change')?.state === 'error' }">{{ copyStatusFor(index.code, 'change')?.state === 'success' ? '已复制' : '失败' }}</span></button></div><div class="card-bottom"><span>{{ index.trendState }}</span><span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span></div></article><div class="copy-live-region" role="status" aria-live="polite" aria-atomic="true">{{ copyStatus?.message ?? '' }}</div></section>
             <section class="workspace-grid"><article class="panel chart-panel"><div class="panel-heading"><div><span class="panel-kicker">价格结构</span><h2>{{ selectedIndex?.name }} · 60 日走势</h2></div><span class="selected-hint"><TrendingUp v-if="selectedIndex && selectedIndex.changePct >= 0" :size="15" /><TrendingDown v-else :size="15" />{{ selectedIndex?.trendState }}</span></div><div ref="chartElement" class="price-chart" /><div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div><div ref="volumeChartElement" class="volume-chart" /><div class="chart-footnote"><span>日 K 线与 MA5 / MA10 / MA20 / MA60</span><span>来源：{{ selectedIndex?.dataQuality.source }}</span></div></article><article class="panel detail-panel"><div class="panel-heading"><div><span class="panel-kicker">当前结构</span><h2>趋势与量能</h2></div></div><div v-if="selectedIndex" class="metric-stack"><div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div><div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div><div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div><div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div><div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div></div></article></section>
             <section v-if="synchronizationAssessment" class="synchronization-assessment-band" aria-labelledby="synchronization-assessment-title">
               <header class="synchronization-assessment-header">
