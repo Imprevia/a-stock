@@ -16,6 +16,7 @@ SCRIPT = ROOT / "scripts" / "deploy-truenas-k3s.sh"
 VALIDATOR = ROOT / "scripts" / "validate-scheduling-packet.py"
 CHART = ROOT / "deploy" / "helm" / "a-stock"
 BASELINE = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
+COMPONENT_FIXTURE = ROOT / "tests" / "fixtures" / "truenas_component_baseline.yaml"
 SUSPENDED = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
 ACTIVE = ROOT / "deploy" / "truenas" / "values-scheduled-active.yaml"
 OFF = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
@@ -366,10 +367,10 @@ def _render(chart: Path, baseline: Path, overlay: Path, state: str) -> str:
         [
             HELM,
             "template",
-            "a-stock",
+            "research",
             str(chart),
             "--namespace",
-            "a-stock",
+            "market-data",
             "--kube-version",
             "1.26.6",
             "--values",
@@ -401,9 +402,9 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
             str(VALIDATOR),
             "compare-add-suspended",
             "--release-name",
-            "a-stock",
+            "research",
             "--namespace",
-            "a-stock",
+            "market-data",
             "--current",
             str(disabled_path),
             "--desired",
@@ -419,9 +420,9 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
             str(VALIDATOR),
             "compare-suspend-only",
             "--release-name",
-            "a-stock",
+            "research",
             "--namespace",
-            "a-stock",
+            "market-data",
             "--current",
             str(suspended_path),
             "--desired",
@@ -482,6 +483,7 @@ def _chart_hash(repo: Path) -> str:
 def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
+    (repo / "tests" / "fixtures").mkdir(parents=True)
     (repo / "deploy" / "truenas").mkdir(parents=True)
     shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
     shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
@@ -1053,9 +1055,9 @@ def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Pat
             str(env_file),
             "--read-only-discovery",
             "--release-name",
-            "research",
+            "a-stock",
             "--namespace",
-            "market-data",
+            "a-stock",
         ],
         env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
         capture_output=True,
@@ -1247,10 +1249,12 @@ def _runtime_payloads(rendered: str, release: str, digest: str) -> tuple[dict, d
 def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
+    (repo / "tests" / "fixtures").mkdir(parents=True)
     (repo / "deploy" / "truenas").mkdir(parents=True)
     shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
     shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
     shutil.copy2(VALIDATOR, repo / "scripts" / VALIDATOR.name)
+    shutil.copy2(COMPONENT_FIXTURE, repo / "tests" / "fixtures" / COMPONENT_FIXTURE.name)
     shutil.copy2(BASELINE, repo / "deploy" / "truenas" / BASELINE.name)
     shutil.copy2(SUSPENDED, repo / "deploy" / "truenas" / SUSPENDED.name)
     shutil.copy2(ROOT / "Dockerfile", repo / "Dockerfile")
@@ -1271,10 +1275,10 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         [
             HELM,
             "template",
-            "research",
+            "a-stock",
             str(repo / "deploy" / "helm" / "a-stock"),
             "--namespace",
-            "market-data",
+            "a-stock",
             "--kube-version",
             "1.26.6+k3s1",
             "--values",
@@ -1362,9 +1366,9 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
             "--kube-version",
             "1.26.6+k3s1",
             "--release-name",
-            "research",
+            "a-stock",
             "--namespace",
-            "market-data",
+            "a-stock",
         ],
         env={
             **os.environ,
@@ -2347,10 +2351,12 @@ def _component_fake_repo(
     """
     repo = tmp_path / "component-repo"
     (repo / "scripts").mkdir(parents=True)
+    (repo / "tests" / "fixtures").mkdir(parents=True)
     (repo / "deploy" / "truenas").mkdir(parents=True)
     shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
     shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
     shutil.copy2(VALIDATOR, repo / "scripts" / VALIDATOR.name)
+    shutil.copy2(COMPONENT_FIXTURE, repo / "tests" / "fixtures" / COMPONENT_FIXTURE.name)
     shutil.copy2(ROOT / "Dockerfile", repo / "Dockerfile")
     sources = {path.name: path for path in (BASELINE, SUSPENDED, ACTIVE, OFF)}
     copied: dict[str, Path] = {}
@@ -2561,9 +2567,9 @@ def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> 
             "--kube-version",
             "1.26.6",
             "--release-name",
-            "research",
+            "a-stock",
             "--namespace",
-            "market-data",
+            "a-stock",
         ],
         env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
         capture_output=True,
@@ -2598,9 +2604,9 @@ def test_component_database_with_existingclaim_renders_no_pvc_object(tmp_path: P
             "--kube-version",
             "1.26.6",
             "--release-name",
-            "research",
+            "a-stock",
             "--namespace",
-            "market-data",
+            "a-stock",
         ],
         env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
         capture_output=True,
@@ -2635,9 +2641,9 @@ def test_component_schedule_offline_render_keeps_suspended_cronjob(tmp_path: Pat
             "--kube-version",
             "1.26.6",
             "--release-name",
-            "research",
+            "a-stock",
             "--namespace",
-            "market-data",
+            "a-stock",
         ],
         env={**os.environ, "DEPLOY_ENV_FILE": "/definitely/not/present", "REAL_HELM": HELM},
         capture_output=True,

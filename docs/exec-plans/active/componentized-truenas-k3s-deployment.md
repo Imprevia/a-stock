@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-`in-progress / Stage 1 rework`
+`in-progress / Stage 1 rework (GYT-60 architecture takeover)`
 
 ## Scope（范围）
 
@@ -73,6 +73,9 @@
 
 ## Completion Evidence（完成证据）
 
+- 2026-09-12 接管核验：GYT-60 已转交资深架构工程师；前一执行轮次明确遗留
+  `post-read-active-96` 与 `postcondition-active-1` 两个退出码回归，且当时未形成独立复核证据，
+  因此本阶段继续保持 `in-progress / rework_requested`，不得仅凭历史完成自述恢复 `in_review`。
 - 计划阶段已完成：`python3 scripts/check-docs-contract.py --mode=fast` 通过（代码 0 / 文档 0 / plan 0）；`openspec validate componentized-truenas-k3s-deployment --strict --json` 通过（1/1）。
 - 已创建串行子 issue：GYT-60（Stage 1 实施，资深后端，`todo`）、GYT-61（Stage 2 离线验证，资深后端，`backlog`）、GYT-62（Stage 3 独立测试，资深测试，`backlog`）、GYT-63（Stage 4 只读上线计划，资深运维，`backlog`）。
 - Stage 1 执行人申报（GYT-60；已被独立审计退回，不是完成证据）：
@@ -91,6 +94,11 @@
 
 ## Remaining Gaps（剩余缺口）
 
+- 本轮必须独立复现并修复 `test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active`
+  的全部参数化场景，重点保留 `post-read-active=96`、`postcondition-active=1` 等原始失败码，
+  同时保证 recovery 失败仍 fail-closed。
+- 必须重新审计 baseline fixture 对 release、namespace、PVC、image、topology、scheduling 六类不变量的
+  实际消费与冲突拒绝；历史勾选状态不替代可复现测试。
 - GYT-60 第二轮返工完成（commit `085c768`，合入 `main = 6373200` 并 push 到 `origin/main`）；`audit.state=rework_requested` 暂留待审计 agent 复验。
   - `bash -n scripts/deploy-truenas-k3s.sh` 通过；`git diff --check HEAD~..HEAD~` 无空白格式问题（已删除 EOF 末尾多余 blank line）。
   - `bash scripts/deploy-truenas-k3s.sh --help` 列出 `--component {all,database,service,schedule}`。
@@ -127,7 +135,9 @@
 
 ## Next Step（下一步）
 
-- 已重新调度 GYT-60 原资深后端工程师；新 run `01a09301-29ae-76fe-9b3a-d4b03324710e` 将在本次 in-place 工作目录释放后启动。返工修复 fixture 消费、组件依赖检查、service component 写入、schedule frozen image/既有 reviewed 模式绑定、`all` 真实分阶段编排及 failure/retry 证据，并完成 exact-main 收尾；修复后回到 `in_review` 接受独立复验。
+- 资深架构工程师在隔离的 GYT-60 工作树中复现并修复剩余退出码回归，复核 fixture 消费、
+  PVC 身份、component 写入、frozen image 与 `all` 屏障，完成 focused/full gate 后提交 exact commit；
+  只有证据全部通过后才将 GYT-60 恢复为 `in_review`。
 - 仅在 GYT-60 独立审计 GO 且达到 terminal 状态后，将 GYT-61 从 `backlog` 提升为 `todo`。
 - 依次提升 GYT-62、GYT-63；任何阶段失败都回流对应实现/验证 issue，不跳过屏障。
 - 本阶段不访问 1.21 VM、不执行 read-only-discovery/server-side dry-run，不触发真实 `service`/`schedule`；Gate B/Gate C 仍保持未授权。

@@ -49,17 +49,29 @@ USAGE
 VALID_COMPONENTS=("all" "database" "service" "schedule")
 COMPONENT_NAME="all"
 COMPONENT_SELECTED=false
-COMPONENT_BASELINE_FILE="${COMPONENT_BASELINE_FILE:-tests/fixtures/truenas_component_baseline.yaml}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMPONENT_BASELINE_FILE="${COMPONENT_BASELINE_FILE:-$SCRIPT_DIR/../tests/fixtures/truenas_component_baseline.yaml}"
 COMPONENT_BASELINE_RELEASE=""
 COMPONENT_BASELINE_NAMESPACE=""
 COMPONENT_BASELINE_CLAIM=""
+COMPONENT_BASELINE_STORAGE_CLASS=""
 COMPONENT_BASELINE_STORAGE=""
 COMPONENT_BASELINE_ACCESS_MODES=""
+COMPONENT_BASELINE_MOUNT_PATH=""
 COMPONENT_BASELINE_SNAPSHOT_PATH=""
 COMPONENT_BASELINE_TOPOLOGY_REPLICAS=1
 COMPONENT_BASELINE_TOPOLOGY_READONLY=true
+COMPONENT_BASELINE_TOPOLOGY_STRATEGY="Recreate"
+COMPONENT_BASELINE_AUTOMOUNT_TOKEN=false
 COMPONENT_BASELINE_IMAGE_REPOSITORY=""
 COMPONENT_BASELINE_IMAGE_TAG_PATTERN=""
+COMPONENT_BASELINE_IMAGE_PULL_POLICY="IfNotPresent"
+COMPONENT_BASELINE_SCHEDULED_DEFAULT="disabled"
+COMPONENT_BASELINE_SCHEDULED_SUSPEND=true
+COMPONENT_BASELINE_SCHEDULED_TIMEZONE="Asia/Shanghai"
+COMPONENT_BASELINE_SCHEDULED_CONCURRENCY="Forbid"
+COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE=1800
+COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE=3600
 
 ENV_FILE="${DEPLOY_ENV_FILE:-/home/gyt/a-stock/deploy/truenas/deploy.env}"
 OPERATION=deploy
@@ -199,32 +211,80 @@ with open(sys.argv[1]) as stream:
     data = yaml.safe_load(stream)
 if not isinstance(data, dict):
     raise SystemExit("component baseline fixture must be a YAML mapping at the top level")
+if data.get("schema") != "truenas-k3s-component-baseline/v1":
+    raise SystemExit("component baseline fixture has an unsupported schema")
 release = data.get("release") or {}
 persistence = data.get("persistence") or {}
 image = data.get("image") or {}
 topology = data.get("topology") or {}
+scheduling = data.get("scheduling") or {}
+authorization = data.get("authorization") or {}
 required_release = ("name", "namespace", "chart")
 for key in required_release:
     if not release.get(key):
         raise SystemExit("component baseline fixture is missing release." + key)
-required_persistence = ("claimName", "storageClass", "accessModes", "size", "mountPath", "snapshotPath")
+required_persistence = ("enabled", "claimName", "storageClass", "accessModes", "size", "mountPath", "snapshotPath", "keep")
 for key in required_persistence:
     if not persistence.get(key):
         raise SystemExit("component baseline fixture is missing persistence." + key)
+if persistence.get("enabled") is not True or persistence.get("keep") is not True:
+    raise SystemExit("component baseline fixture requires persistence.enabled=true and keep=true")
+if persistence.get("accessModes") != ["ReadWriteOnce"]:
+    raise SystemExit("component baseline fixture requires exactly one ReadWriteOnce access mode")
 required_image = ("repository", "tagPattern")
 for key in required_image:
     if not image.get(key):
         raise SystemExit("component baseline fixture is missing image." + key)
+if image.get("pullPolicy") != "IfNotPresent" or image.get("digestPrefix") != "sha256:":
+    raise SystemExit("component baseline fixture has an unsupported image identity policy")
+security = topology.get("securityContext") or {}
+required_topology = ("replicaCount", "strategy", "automountServiceAccountToken", "securityContext", "capabilitiesDrop")
+for key in required_topology:
+    if key not in topology:
+        raise SystemExit("component baseline fixture is missing topology." + key)
+if topology.get("replicaCount") != 1 or topology.get("strategy") != "Recreate":
+    raise SystemExit("component baseline fixture requires one Recreate replica")
+if topology.get("automountServiceAccountToken") is not False:
+    raise SystemExit("component baseline fixture requires automountServiceAccountToken=false")
+if security.get("runAsNonRoot") is not True or security.get("readOnlyRootFilesystem") is not True or security.get("allowPrivilegeEscalation") is not False:
+    raise SystemExit("component baseline fixture has an unsafe security context")
+if topology.get("capabilitiesDrop") != ["ALL"]:
+    raise SystemExit("component baseline fixture requires capabilitiesDrop=[ALL]")
+required_scheduling = ("supportedStates", "defaultState", "defaultSuspend", "concurrencyPolicy", "startingDeadlineSeconds", "activeDeadlineSeconds", "businessTimezone", "settlementTime", "schedulePattern")
+for key in required_scheduling:
+    if key not in scheduling:
+        raise SystemExit("component baseline fixture is missing scheduling." + key)
+if scheduling.get("supportedStates") != ["disabled", "suspended"] or scheduling.get("defaultState") != "disabled" or scheduling.get("defaultSuspend") is not True:
+    raise SystemExit("component baseline fixture scheduling defaults must be disabled/suspended")
+if scheduling.get("concurrencyPolicy") != "Forbid" or scheduling.get("businessTimezone") != "Asia/Shanghai":
+    raise SystemExit("component baseline fixture has unsupported scheduling safety values")
+if not isinstance(scheduling.get("startingDeadlineSeconds"), int) or not isinstance(scheduling.get("activeDeadlineSeconds"), int):
+    raise SystemExit("component baseline fixture scheduling deadlines must be integers")
+for key in ("releaseSuspended", "activateSchedule", "disableSchedule"):
+    gate = authorization.get(key) or {}
+    if gate.get("required") is not True or not gate.get("envVar") or not gate.get("referenceEnvVar"):
+        raise SystemExit("component baseline fixture is missing authorization." + key)
 print(release.get("name", ""))
 print(release.get("namespace", ""))
 print(persistence.get("claimName", ""))
+print(persistence.get("storageClass", ""))
 print(str(persistence.get("size", "")))
 print(",".join(persistence.get("accessModes") or []))
+print(persistence.get("mountPath", ""))
 print(persistence.get("snapshotPath", ""))
 print(str(topology.get("replicaCount", 1)))
-print("1" if topology.get("readOnlyRootFilesystem") else "0")
+print("1" if security.get("readOnlyRootFilesystem") else "0")
+print(topology.get("strategy", ""))
+print("1" if topology.get("automountServiceAccountToken") else "0")
 print(image.get("repository", ""))
 print(image.get("tagPattern", ""))
+print(image.get("pullPolicy", ""))
+print(scheduling.get("defaultState", ""))
+print("1" if scheduling.get("defaultSuspend") else "0")
+print(scheduling.get("businessTimezone", ""))
+print(scheduling.get("concurrencyPolicy", ""))
+print(str(scheduling.get("startingDeadlineSeconds", "")))
+print(str(scheduling.get("activeDeadlineSeconds", "")))
 PYEOF
 }
 
@@ -256,7 +316,10 @@ component_required_scheduling_state() {
       printf '%s\n' disabled
       ;;
     schedule)
-      printf '%s\n' suspended
+      # The reviewed baseline permits either a disabled packet (no CronJob) or
+      # a safely suspended CronJob.  Active scheduling is still rejected by the
+      # chart and by the Gate B/Gate C reviewed paths.
+      printf '%s\n' any
       ;;
     *)
       die "unsupported --component: $component"
@@ -491,6 +554,153 @@ print("pvc_identity_ok")
   return 0
 }
 
+verify_live_pvc_contract() {
+  local payload
+  [[ -n "$COMPONENT_BASELINE_CLAIM" ]] || return 1
+  if ! payload="$(kubectl get pvc "$COMPONENT_BASELINE_CLAIM" --namespace "$NAMESPACE" -o json)"; then
+    warn "component PVC prerequisite missing: $COMPONENT_BASELINE_CLAIM/$NAMESPACE"
+    return 1
+  fi
+  PVC_PAYLOAD="$payload" python3 - \
+    "$COMPONENT_BASELINE_CLAIM" "$NAMESPACE" "$COMPONENT_BASELINE_STORAGE_CLASS" \
+    "$COMPONENT_BASELINE_ACCESS_MODES" "$COMPONENT_BASELINE_STORAGE" <<'PYEOF'
+import json, sys
+payload = json.loads(__import__("os").environ["PVC_PAYLOAD"])
+claim, namespace, storage_class, access_modes, storage = sys.argv[1:]
+metadata = payload.get("metadata") or {}
+spec = payload.get("spec") or {}
+status = payload.get("status") or {}
+if metadata.get("name") != claim or metadata.get("namespace") != namespace:
+    raise SystemExit("PVC identity does not match the reviewed claim name/namespace")
+if not metadata.get("uid") or not spec.get("volumeName"):
+    raise SystemExit("PVC must expose a UID and bound volumeName")
+if status.get("phase") != "Bound":
+    raise SystemExit("PVC must be Bound before a component write")
+if spec.get("storageClassName") != storage_class:
+    raise SystemExit("PVC storageClassName does not match the reviewed baseline")
+if spec.get("accessModes") != access_modes.split(","):
+    raise SystemExit("PVC accessModes do not match the reviewed baseline")
+if (spec.get("resources") or {}).get("requests", {}).get("storage") != storage:
+    raise SystemExit("PVC requested storage does not match the reviewed baseline")
+print("pvc_live_identity_ok")
+PYEOF
+}
+
+verify_rendered_component_contract() {
+  local packet="$1"
+  local expected_image_repo="${2:-$IMAGE_REPOSITORY}"
+  local expected_image_tag="${3:-$IMAGE_TAG}"
+  PACKET_PAYLOAD="$packet" python3 - \
+    "$COMPONENT_BASELINE_CLAIM" "$COMPONENT_BASELINE_STORAGE_CLASS" \
+    "$COMPONENT_BASELINE_STORAGE" "$COMPONENT_BASELINE_ACCESS_MODES" \
+    "$COMPONENT_BASELINE_MOUNT_PATH" "$COMPONENT_BASELINE_SNAPSHOT_PATH" \
+    "$COMPONENT_BASELINE_TOPOLOGY_REPLICAS" "$COMPONENT_BASELINE_TOPOLOGY_STRATEGY" \
+    "$COMPONENT_BASELINE_SCHEDULED_CONCURRENCY" "$COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE" \
+    "$COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE" "$expected_image_repo" "$expected_image_tag" <<'PYEOF'
+import sys, yaml
+import os
+items = [item for item in yaml.safe_load_all(os.environ["PACKET_PAYLOAD"]) if item is not None]
+(claim, storage_class, storage, access_modes, mount_path, snapshot_path,
+ replicas, strategy, concurrency, starting_deadline, active_deadline,
+ expected_repo, expected_tag) = sys.argv[1:]
+replicas = int(replicas)
+deployments = [i for i in items if i.get("kind") == "Deployment"]
+cronjobs = [i for i in items if i.get("kind") == "CronJob"]
+pvcs = [i for i in items if i.get("kind") == "PersistentVolumeClaim"]
+for deployment in deployments:
+    spec = deployment.get("spec") or {}
+    if spec.get("replicas") != replicas or (spec.get("strategy") or {}).get("type") != strategy:
+        raise SystemExit("Deployment topology does not match the reviewed baseline")
+    pod = (spec.get("template") or {}).get("spec") or {}
+    if pod.get("automountServiceAccountToken") is not False:
+        raise SystemExit("Deployment must disable service account token automount")
+    containers = pod.get("containers") or []
+    dashboard = next((c for c in containers if c.get("name") == "dashboard"), None)
+    if dashboard is None or dashboard.get("image") != f"{expected_repo}:{expected_tag}":
+        raise SystemExit("Dashboard image does not match the component image")
+    security = dashboard.get("securityContext") or {}
+    if security.get("readOnlyRootFilesystem") is not True or security.get("allowPrivilegeEscalation") is not False:
+        raise SystemExit("Dashboard security context does not match the reviewed baseline")
+    mounts = dashboard.get("volumeMounts") or []
+    data_mount = next((m for m in mounts if m.get("name") == "data"), None)
+    if data_mount is None or data_mount.get("mountPath") != mount_path:
+        raise SystemExit("Dashboard data mount path does not match the reviewed baseline")
+    env = {entry.get("name"): entry.get("value") for entry in dashboard.get("env", [])}
+    if env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
+        raise SystemExit("Dashboard snapshot path does not match the reviewed baseline")
+for cronjob in cronjobs:
+    spec = cronjob.get("spec") or {}
+    if spec.get("concurrencyPolicy") != concurrency:
+        raise SystemExit("CronJob concurrency policy does not match the reviewed baseline")
+    if spec.get("startingDeadlineSeconds") != int(starting_deadline):
+        raise SystemExit("CronJob starting deadline does not match the reviewed baseline")
+    job_spec = ((spec.get("jobTemplate") or {}).get("spec") or {})
+    if job_spec.get("activeDeadlineSeconds") != int(active_deadline):
+        raise SystemExit("CronJob active deadline does not match the reviewed baseline")
+    pod = ((job_spec.get("template") or {}).get("spec") or {})
+    collector = next((c for c in pod.get("containers", []) if c.get("name") == "collector"), None)
+    if collector is None or collector.get("image") != f"{expected_repo}:{expected_tag}":
+        raise SystemExit("CronJob image does not match the component image")
+    mounts = collector.get("volumeMounts") or []
+    data_mount = next((m for m in mounts if m.get("name") == "data"), None)
+    if data_mount is None or data_mount.get("mountPath") != mount_path:
+        raise SystemExit("CronJob data mount path does not match the reviewed baseline")
+    env = {entry.get("name"): entry.get("value") for entry in collector.get("env", [])}
+    if env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
+        raise SystemExit("CronJob snapshot path does not match the reviewed baseline")
+for pvc in pvcs:
+    metadata = pvc.get("metadata") or {}
+    spec = pvc.get("spec") or {}
+    if metadata.get("name") != claim or spec.get("storageClassName") != storage_class:
+        raise SystemExit("Rendered PVC identity does not match the reviewed baseline")
+    if spec.get("accessModes") != access_modes.split(","):
+        raise SystemExit("Rendered PVC accessModes do not match the reviewed baseline")
+    if (spec.get("resources") or {}).get("requests", {}).get("storage") != storage:
+        raise SystemExit("Rendered PVC capacity does not match the reviewed baseline")
+print("rendered_component_contract_ok")
+PYEOF
+}
+
+verify_component_prerequisites() {
+  local component="$1"
+  case "$component" in
+    database)
+      return 0
+      ;;
+    service)
+      verify_live_pvc_contract || return 1
+      ;;
+    schedule)
+      verify_live_pvc_contract || return 1
+      local deployment_payload
+      deployment_payload="$(kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json)" \
+        || return 1
+      DEPLOYMENT_PAYLOAD="$deployment_payload" python3 - "$RELEASE_NAME" <<'PYEOF' \
+        || return 1
+import json, sys
+payload = json.loads(__import__("os").environ["DEPLOYMENT_PAYLOAD"])
+items = [i for i in payload.get("items", []) if (i.get("metadata") or {}).get("labels", {}).get("app.kubernetes.io/instance") == sys.argv[1]]
+if len(items) != 1:
+    raise SystemExit("expected exactly one Dashboard Deployment")
+status = items[0].get("status") or {}
+if status.get("readyReplicas") != 1 or status.get("availableReplicas") != 1:
+    raise SystemExit("Dashboard Deployment must have one ready and available replica")
+PYEOF
+      ;;
+    *)
+      die "unsupported component prerequisite: $component"
+      ;;
+  esac
+}
+
+verify_component_schedule_state() {
+  local live_cronjobs inspection state
+  live_cronjobs="$(capture_live_cronjobs)" || return 1
+  inspection="$(inspect_scheduling_packet "$live_cronjobs" any "$TARGET_KUBERNETES_VERSION")" || return 1
+  state="$(printf '%s\n' "$inspection" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" || return 1
+  [[ "$state" == disabled || "$state" == suspended ]]
+}
+
 verify_service_component() {
   local packet="$1"
   if ! printf '%s\n' "$packet" | python3 -c '
@@ -513,8 +723,16 @@ verify_schedule_component() {
   if ! printf '%s\n' "$packet" | python3 -c '
 import sys, yaml
 items = [i for i in yaml.safe_load_all(sys.stdin) if i is not None]
-cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
-assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
+  cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
+  if not cronjobs:
+      # The reviewed baseline explicitly allows scheduling to remain disabled,
+      # in which case the safe component packet contains no CronJob at all.
+      enabled = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
+      if enabled:
+          raise SystemExit("schedule component rendered an unexpected CronJob")
+      print("schedule_disabled_ok")
+      raise SystemExit(0)
+  assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
 spec = cronjobs[0].get("spec", {})
 suspend_value = spec.get("suspend")
 assert suspend_value is True, "schedule component must render suspended CronJob; got suspend=" + repr(suspend_value)
@@ -523,6 +741,24 @@ assert suspend_value is True, "schedule component must render suspended CronJob;
   fi
   log "component=schedule verified: suspended CronJob rendered"
   return 0
+}
+
+verify_schedule_runtime_image() {
+  local image_repo="$1"
+  local image_tag="$2"
+  local digest="$3"
+  local image_ref="$image_repo:$image_tag"
+  local deployments_file="$TMP_DIR/schedule-deployments.json"
+  local replicasets_file="$TMP_DIR/schedule-replicasets.json"
+  local pods_file="$TMP_DIR/schedule-pods.json"
+  kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$deployments_file" || return 1
+  kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$replicasets_file" || return 1
+  kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$pods_file" || return 1
+  python3 "$PACKET_VALIDATOR" verify-runtime-image \
+    --release-name "$RELEASE_NAME" --image "$image_ref" --digest "$digest" \
+    --deployments "$deployments_file" --replicasets "$replicasets_file" --pods "$pods_file" || return 1
+  remote "sudo -n k3s ctr --namespace k8s.io images info '$image_ref'" \
+    | python3 "$PACKET_VALIDATOR" verify-containerd-image --image "$image_ref" --digest "$digest"
 }
 
 deploy_helm_upgrade_with_component() {
@@ -557,20 +793,31 @@ deploy_component_step() {
   local image_repo="$2"
   local image_tag="$3"
   log "component step: name=$component phase=start release=$RELEASE_NAME namespace=$NAMESPACE image=$image_repo:$image_tag"
+  if [[ "$component" == schedule && -n "$FROZEN_IMAGE_DIGEST" ]]; then
+    verify_schedule_runtime_image "$image_repo" "$image_tag" "$FROZEN_IMAGE_DIGEST" \
+      || { log "component step: name=$component phase=failed reason=frozen_image_runtime_unproven retryTarget=--component $component"; return 1; }
+  fi
   local helm_exit=0
   deploy_helm_upgrade_with_component "$component" "$image_repo" "$image_tag" || helm_exit=$?
   if (( helm_exit != 0 )); then
     log "component step: name=$component phase=failed reason=helm_upgrade_rejected exitCode=$helm_exit retryTarget=--component $component"
-    exit "$helm_exit"
+    return "$helm_exit"
   fi
   local post_render
   post_render="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
     --set "image.repository=$image_repo" --set "image.tag=$image_tag" --set "component=$component")" \
-    || { log "component step: name=$component phase=failed reason=post_write_render_rejected"; exit 1; }
+    || { log "component step: name=$component phase=failed reason=post_write_render_rejected retryTarget=--component $component"; return 1; }
+  verify_rendered_component_contract "$post_render" "$image_repo" "$image_tag" \
+    || { log "component step: name=$component phase=failed reason=${component}_baseline_contract_violated retryTarget=--component $component"; return 1; }
   case "$component" in
-    database) verify_database_component "$post_render" || { log "component step: name=$component phase=failed reason=database_invariant_violated"; exit 1; } ;;
+    database)
+      verify_database_component "$post_render" || { log "component step: name=$component phase=failed reason=database_invariant_violated retryTarget=--component $component"; return 1; }
+      if [[ "$COMPONENT_SELECTED" == true ]]; then
+        verify_live_pvc_contract || { log "component step: name=$component phase=failed reason=pvc_live_identity_violated retryTarget=--component $component"; return 1; }
+      fi
+      ;;
     service)
-      verify_service_component "$post_render" || { log "component step: name=$component phase=failed reason=service_resource_invariant_violated"; return 1; }
+      verify_service_component "$post_render" || { log "component step: name=$component phase=failed reason=service_resource_invariant_violated retryTarget=--component $component"; return 1; }
       DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
         -l "app.kubernetes.io/instance=$RELEASE_NAME" \
         -o jsonpath='{.items[0].metadata.name}')"
@@ -585,7 +832,7 @@ deploy_component_step() {
       log "component step: name=$component phase=completed rollout=ready"
       ;;
     schedule)
-      verify_schedule_component "$post_render" || { log "component step: name=$component phase=failed reason=schedule_invariant_violated"; exit 1; }
+      verify_schedule_component "$post_render" || { log "component step: name=$component phase=failed reason=schedule_invariant_violated retryTarget=--component $component"; return 1; }
       log "component step: name=$component phase=completed cronjobState=suspended"
       ;;
   esac
@@ -622,8 +869,8 @@ recover_generic_deploy_schedule() {
     state="$(printf '%s\n' "$verified" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" || return 1
   fi
   if [[ "$state" != disabled && "$state" != suspended ]]; then
-    log "$phase: scheduling is uncertain (state=$state); Helm atomic rollback left no active CronJob to recover"
-    return 0
+    warn "$phase: expected scheduling to be absent or suspended, got $state"
+    return 1
   fi
   log "$phase: scheduling is $state"
 }
@@ -700,6 +947,17 @@ if [[ "$OPERATION" == offline-render ]]; then
   command -v helm >/dev/null 2>&1 || die 'required command not found: helm'
   command -v python3 >/dev/null 2>&1 || die 'required command not found: python3'
   python3 -c 'import yaml' >/dev/null 2>&1 || die 'python3 PyYAML is required'
+  load_component_baseline "$COMPONENT_BASELINE_FILE"
+  mapfile -t COMPONENT_BASELINE_IDENTITY < <(python3 - "$COMPONENT_BASELINE_FILE" <<'PYEOF'
+import sys, yaml
+data = yaml.safe_load(open(sys.argv[1]))
+release = data.get("release") or {}
+print(release.get("name", ""))
+print(release.get("namespace", ""))
+PYEOF
+  )
+  COMPONENT_BASELINE_RELEASE="${COMPONENT_BASELINE_IDENTITY[0]}"
+  COMPONENT_BASELINE_NAMESPACE="${COMPONENT_BASELINE_IDENTITY[1]}"
   validate_identifier RELEASE_NAME "$RELEASE_NAME"
   validate_identifier NAMESPACE "$NAMESPACE"
   if [[ -n "$COMPONENT_BASELINE_RELEASE" && "$RELEASE_NAME" != "$COMPONENT_BASELINE_RELEASE" ]]; then
@@ -752,22 +1010,48 @@ print(",".join(persistence.get("accessModes") or []))
 print(persistence.get("mountPath", ""))
 print(persistence.get("snapshotPath", ""))
 print(str(topology.get("replicaCount", 1)))
-print("1" if topology.get("readOnlyRootFilesystem") else "0")
+print("1" if security.get("readOnlyRootFilesystem") else "0")
+print(topology.get("strategy", ""))
+print("1" if topology.get("automountServiceAccountToken") else "0")
 print(image.get("repository", ""))
 print(image.get("tagPattern", ""))
+print(image.get("pullPolicy", ""))
+print(scheduling.get("defaultState", ""))
+print("1" if scheduling.get("defaultSuspend") else "0")
+print(scheduling.get("businessTimezone", ""))
+print(scheduling.get("concurrencyPolicy", ""))
+print(str(scheduling.get("startingDeadlineSeconds", "")))
+print(str(scheduling.get("activeDeadlineSeconds", "")))
 PYEOF
 )
 COMPONENT_BASELINE_RELEASE="${COMPONENT_BASELINE_FIELDS[0]}"
 COMPONENT_BASELINE_NAMESPACE="${COMPONENT_BASELINE_FIELDS[1]}"
 COMPONENT_BASELINE_CLAIM="${COMPONENT_BASELINE_FIELDS[2]}"
-COMPONENT_BASELINE_STORAGE="${COMPONENT_BASELINE_FIELDS[3]}"
-COMPONENT_BASELINE_ACCESS_MODES="${COMPONENT_BASELINE_FIELDS[4]}"
-COMPONENT_BASELINE_MOUNT_PATH="${COMPONENT_BASELINE_FIELDS[5]}"
-COMPONENT_BASELINE_SNAPSHOT_PATH="${COMPONENT_BASELINE_FIELDS[6]}"
-COMPONENT_BASELINE_TOPOLOGY_REPLICAS="${COMPONENT_BASELINE_FIELDS[7]}"
-COMPONENT_BASELINE_TOPOLOGY_READONLY="${COMPONENT_BASELINE_FIELDS[8]}"
-COMPONENT_BASELINE_IMAGE_REPOSITORY="${COMPONENT_BASELINE_FIELDS[9]}"
-COMPONENT_BASELINE_IMAGE_TAG_PATTERN="${COMPONENT_BASELINE_FIELDS[10]}"
+COMPONENT_BASELINE_STORAGE_CLASS="${COMPONENT_BASELINE_FIELDS[3]}"
+COMPONENT_BASELINE_STORAGE="${COMPONENT_BASELINE_FIELDS[4]}"
+COMPONENT_BASELINE_ACCESS_MODES="${COMPONENT_BASELINE_FIELDS[5]}"
+COMPONENT_BASELINE_MOUNT_PATH="${COMPONENT_BASELINE_FIELDS[6]}"
+COMPONENT_BASELINE_SNAPSHOT_PATH="${COMPONENT_BASELINE_FIELDS[7]}"
+COMPONENT_BASELINE_TOPOLOGY_REPLICAS="${COMPONENT_BASELINE_FIELDS[8]}"
+COMPONENT_BASELINE_TOPOLOGY_READONLY="${COMPONENT_BASELINE_FIELDS[9]}"
+COMPONENT_BASELINE_TOPOLOGY_STRATEGY="${COMPONENT_BASELINE_FIELDS[10]}"
+COMPONENT_BASELINE_AUTOMOUNT_TOKEN="${COMPONENT_BASELINE_FIELDS[11]}"
+COMPONENT_BASELINE_IMAGE_REPOSITORY="${COMPONENT_BASELINE_FIELDS[12]}"
+COMPONENT_BASELINE_IMAGE_TAG_PATTERN="${COMPONENT_BASELINE_FIELDS[13]}"
+COMPONENT_BASELINE_IMAGE_PULL_POLICY="${COMPONENT_BASELINE_FIELDS[14]}"
+COMPONENT_BASELINE_SCHEDULED_DEFAULT="${COMPONENT_BASELINE_FIELDS[15]}"
+COMPONENT_BASELINE_SCHEDULED_SUSPEND="${COMPONENT_BASELINE_FIELDS[16]}"
+COMPONENT_BASELINE_SCHEDULED_TIMEZONE="${COMPONENT_BASELINE_FIELDS[17]}"
+COMPONENT_BASELINE_SCHEDULED_CONCURRENCY="${COMPONENT_BASELINE_FIELDS[18]}"
+COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE="${COMPONENT_BASELINE_FIELDS[19]}"
+COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE="${COMPONENT_BASELINE_FIELDS[20]}"
+
+if [[ "$COMPONENT_SELECTED" == true ]]; then
+  [[ "$RELEASE_NAME" == "$COMPONENT_BASELINE_RELEASE" ]] \
+    || die "release name '$RELEASE_NAME' does not match component baseline fixture '$COMPONENT_BASELINE_RELEASE'"
+  [[ "$NAMESPACE" == "$COMPONENT_BASELINE_NAMESPACE" ]] \
+    || die "namespace '$NAMESPACE' does not match component baseline fixture '$COMPONENT_BASELINE_NAMESPACE'"
+fi
 
 REPO_DIR="${REPO_DIR:-/home/gyt/a-stock}"
 GIT_UPDATE="${GIT_UPDATE:-false}"
@@ -932,6 +1216,7 @@ if [[ -n "$TARGET_KUBERNETES_VERSION" ]]; then
 fi
 
 EARLY_RENDER_ARGS=()
+COMPONENT_RENDER_ARGS=()
 if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule ]]; then
   [[ -n "$FROZEN_IMAGE_REPOSITORY" && -n "$FROZEN_IMAGE_TAG" && -n "$FROZEN_IMAGE_DIGEST" ]] || die "$OPERATION requires frozen image repository, tag, and digest"
   validate_scalar FROZEN_IMAGE_REPOSITORY "$FROZEN_IMAGE_REPOSITORY"
@@ -939,6 +1224,7 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
   EARLY_RENDER_ARGS+=(--set "image.repository=$FROZEN_IMAGE_REPOSITORY")
   EARLY_RENDER_ARGS+=(--set "image.tag=$FROZEN_IMAGE_TAG")
+  COMPONENT_RENDER_ARGS+=(--set 'component=schedule')
 fi
 
 LOCAL_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION:-1.27.0}"
@@ -1001,26 +1287,29 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
           database)
             log "component step: name=database phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
             verify_database_component "$RENDERED_PACKET" || die 'component=database invariant check failed'
+            verify_rendered_component_contract "$RENDERED_PACKET" "$PREFLIGHT_IMAGE_REPOSITORY" "$PREFLIGHT_IMAGE_TAG" \
+              || die 'component=database rendered contract does not match the baseline fixture'
             log "component step: name=database phase=verified packetDigest=$GENERIC_RENDER_SHA256"
-            log "component=database: preflight verified; rerun with --component all (or service) to apply; this invocation does not access the target cluster, build images, or modify resources"
-            exit 0
+            log "component=database: preflight verified; target write will run after live prerequisites"
             ;;
           schedule)
             log "component step: name=schedule phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
             verify_schedule_component "$RENDERED_PACKET" || die 'component=schedule invariant check failed'
+            verify_rendered_component_contract "$RENDERED_PACKET" "$PREFLIGHT_IMAGE_REPOSITORY" "$PREFLIGHT_IMAGE_TAG" \
+              || die 'component=schedule rendered contract does not match the baseline fixture'
             if [[ "$PREFLIGHT_IMAGE_REPOSITORY" != "$IMAGE_REPOSITORY" || "$PREFLIGHT_IMAGE_TAG" != "$IMAGE_TAG" ]]; then
               log "component step: name=schedule phase=verified frozenImage=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG digest=$FROZEN_IMAGE_DIGEST"
             fi
             log "component step: name=schedule phase=verified packetDigest=$GENERIC_RENDER_SHA256 cronjobState=suspended"
-            log "component=schedule: preflight verified for frozen image $PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG; rerun with --component all (or service) to apply; this invocation does not access the target cluster or modify resources"
-            exit 0
+            log "component=schedule: preflight verified for frozen image $PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG; target write will run after live prerequisites"
             ;;
           service)
             log "component step: name=service phase=preflight image=$PREFLIGHT_IMAGE_REPOSITORY:$PREFLIGHT_IMAGE_TAG"
             verify_service_component "$RENDERED_PACKET" || die 'component=service invariant check failed'
+            verify_rendered_component_contract "$RENDERED_PACKET" "$PREFLIGHT_IMAGE_REPOSITORY" "$PREFLIGHT_IMAGE_TAG" \
+              || die 'component=service rendered contract does not match the baseline fixture'
             log "component step: name=service phase=verified packetDigest=$GENERIC_RENDER_SHA256"
-            log "component=service: preflight verified; rerun with --component all under Gate B authorization to apply; this invocation does not access the target cluster, build images, or modify resources"
-            exit 0
+            log "component=service: preflight verified; target write will run after live prerequisites"
             ;;
           all)
             log "all components: order=database->service->schedule preflight start release=$RELEASE_NAME"
@@ -1061,6 +1350,8 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
                   fi
                   verify_schedule_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="schedule_invariant_violated"; break; } ;;
               esac
+              verify_rendered_component_contract "$step_packet" "$step_repo" "$step_tag" \
+                || { FAILED_COMPONENT="$step"; FAILED_REASON="${step}_baseline_contract_violated"; break; }
               log "component step: name=$step phase=verified packetDigest=$step_digest image=$step_repo:$step_tag"
               COMPLETED_COMPONENTS+=" $step"
             done
@@ -1235,6 +1526,12 @@ if [[ "$OPERATION" == deploy ]]; then
 else
   IMAGE="${FROZEN_IMAGE_REPOSITORY:-${IMAGE_REPOSITORY}}:${FROZEN_IMAGE_TAG:-${IMAGE_TAG:-unused}}"
 fi
+DEPLOY_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+DEPLOY_IMAGE_TAG="$IMAGE_TAG"
+if [[ "$COMPONENT_NAME" == schedule ]]; then
+  DEPLOY_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
+  DEPLOY_IMAGE_TAG="$FROZEN_IMAGE_TAG"
+fi
 
 SSH_TARGET="${TRUENAS_SSH_USER}@${TRUENAS_HOST}"
 remote() {
@@ -1263,6 +1560,12 @@ cleanup() {
       warn 'disable-schedule failed closed but the exact CronJob state remains uncertain; operator intervention is required'
     fi
   fi
+  # Generic component failures may need the temporary kubeconfig and SSH
+  # tunnel to prove that no active CronJob remains. Recover before tearing
+  # those resources down while retaining the original exit status.
+  if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
+    recover_generic_deploy_schedule 'generic deployment failure recovery' || true
+  fi
   if [[ "$SMOKE_CREATED" == true ]]; then
     podman rm -f "$SMOKE_NAME" >/dev/null 2>&1 || true
   fi
@@ -1272,9 +1575,6 @@ cleanup() {
   fi
   chmod -R u+w "$TMP_DIR" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
-  if [[ "$GENERIC_DEPLOY_IN_FLIGHT" == true ]]; then
-    recover_generic_deploy_schedule 'generic deployment failure recovery' || true
-  fi
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -1395,7 +1695,11 @@ if [[ "$OPERATION" == deploy ]]; then
     die 'could not resolve the release-derived application cronjob name'
   fi
   GENERIC_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
-  verify_generic_deploy_precondition
+  if [[ "$COMPONENT_SELECTED" == true && ( "$COMPONENT_NAME" == service || "$COMPONENT_NAME" == schedule ) ]]; then
+    verify_component_schedule_state || die "component=$COMPONENT_NAME prerequisite failed: live scheduling must be disabled or suspended"
+  else
+    verify_generic_deploy_precondition
+  fi
 elif [[ "$OPERATION" == disable-schedule ]]; then
   if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
     die 'could not resolve the release-derived application cronjob name'
@@ -1442,10 +1746,10 @@ else
   cp "$OPERATION_BASELINE_VALUES" "$VALUES_FILE"
 fi
 
-RENDERED_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"
+RENDERED_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" --set "component=$COMPONENT_NAME")"
 REQUIRED_DEPLOY_SCHEDULING_STATE="$(component_required_scheduling_state "$COMPONENT_NAME")"
 GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
-if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" --set "component=$COMPONENT_NAME")"; then
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" --set "component=$COMPONENT_NAME")"; then
   die 'frozen generic release packet failed immediately before helm write'
 fi
 if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
@@ -1508,7 +1812,7 @@ sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 fi
 
 verify_generic_deploy_precondition
-if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$IMAGE_REPOSITORY" --set "image.tag=$IMAGE_TAG" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
+if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
   die 'frozen generic release packet failed immediately before helm write'
 fi
 if [[ "$(sha256_text "$PRE_WRITE_RENDER")" != "$GENERIC_RENDER_SHA256" ]]; then
@@ -1534,21 +1838,25 @@ deploy_step_or_exit() {
   local image_repo="$2"
   local image_tag="$3"
   local step_exit=0
+  if [[ "$step_name" != database ]] && ! verify_component_prerequisites "$step_name"; then
+    FAILED_COMPONENT="$step_name"
+    FAILED_REASON="${step_name}_prerequisite_failed"
+    log "component step: name=$step_name phase=failed reason=$FAILED_REASON retryTarget=--component $step_name"
+    log "staged component deployment: status=partial order=database->service->schedule completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON retryTarget=--component $step_name"
+    exit 1
+  fi
   deploy_component_step "$step_name" "$image_repo" "$image_tag" || step_exit=$?
   if (( step_exit != 0 )); then
     FAILED_COMPONENT="$step_name"
     FAILED_REASON="${step_name}_phase_rejected"
-    log "staged component deployment: failed at component=$FAILED_COMPONENT reason=$FAILED_REASON exitCode=$step_exit retryTarget=rerun with --component $FAILED_COMPONENT"
+    log "staged component deployment: failed at component=$FAILED_COMPONENT reason=$FAILED_REASON exitCode=$step_exit retryTarget=--component $FAILED_COMPONENT"
     exit "$step_exit"
   fi
 }
 
-if [[ "$COMPONENT_NAME" == "service" || "$COMPONENT_NAME" == "all" ]]; then
+if [[ "$COMPONENT_NAME" == "all" ]]; then
   deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
   COMPLETED_COMPONENTS+=" database"
-fi
-
-if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "service" || "$COMPONENT_NAME" == "all" ) ]]; then
   deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
   COMPLETED_COMPONENTS+=" service"
 fi
@@ -1567,6 +1875,11 @@ fi
 if [[ "$COMPONENT_NAME" == "database" ]]; then
   deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
   COMPLETED_COMPONENTS+=" database"
+fi
+
+if [[ "$COMPONENT_NAME" == "service" ]]; then
+  deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+  COMPLETED_COMPONENTS+=" service"
 fi
 
 if [[ -n "$FAILED_COMPONENT" ]]; then
@@ -1678,7 +1991,7 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_MANIFEST"
 
   verify_reviewed_sources true
-  if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+  if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
     die 'frozen scheduling packet changed before release'
   fi
   verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$PRE_WRITE_RENDER")"
@@ -1741,4 +2054,3 @@ if [[ -z "$HELM_VALUES_FILE" ]]; then
 else
   log "node=$NODE_ARCH helmValues=$HELM_VALUES_FILE"
 fi
-
