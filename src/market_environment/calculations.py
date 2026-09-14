@@ -672,3 +672,139 @@ def build_summary_sentence(
         leaning or "环境倾向数据不足",
     )
     return "，".join(parts) + "。"
+
+
+def build_market_review_evidence(
+    analyses: Sequence[Mapping[str, object]],
+    breadth: Mapping[str, object] | None,
+    sync_pattern: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the seven market-level facts used by the dashboard review.
+
+    The function deliberately keeps ``None`` for unavailable inputs.  A review
+    is useful only when the reader can see which dimension is missing, so the
+    caller receives both values and layered data-gap reasons.
+    """
+
+    valid_indices = [item for item in analyses if item.get("changePct") is not None]
+    advancing = sum(float(item["changePct"]) > 0 for item in valid_indices)
+    declining = sum(float(item["changePct"]) < 0 for item in valid_indices)
+    above_ma20 = 0
+    ma20_valid = 0
+    ratios: list[float] = []
+    volume_advance = 0
+    volume_decline = 0
+    gaps: list[dict[str, str]] = []
+    warnings: list[str] = []
+
+    for item in analyses:
+        averages = item.get("movingAverages")
+        close = item.get("close")
+        ma20 = averages.get("ma20") if isinstance(averages, Mapping) else None
+        if close is not None and ma20 is not None:
+            ma20_valid += 1
+            above_ma20 += int(float(close) >= float(ma20))
+        ratio = item.get("amountRatio5")
+        if ratio is not None:
+            ratios.append(float(ratio))
+        change = item.get("changePct")
+        state = item.get("volumePriceState")
+        if state == "上涨放量" or (change is not None and float(change) >= 0.5 and ratio is not None and float(ratio) >= 1.2):
+            volume_advance += 1
+        if state == "放量下跌" or (change is not None and float(change) <= -0.5 and ratio is not None and float(ratio) >= 1.2):
+            volume_decline += 1
+        for gap in item.get("dataGaps", []) if isinstance(item.get("dataGaps"), Sequence) else ():
+            if isinstance(gap, Mapping) and gap.get("field") and gap.get("reason"):
+                gaps.append({"field": str(gap["field"]), "reason": str(gap["reason"])})
+        quality = item.get("dataQuality")
+        if isinstance(quality, Mapping) and quality.get("warning"):
+            warnings.append(str(quality["warning"]))
+
+    breadth = breadth or {}
+    advance_ratio = breadth.get("advanceRatio")
+    median_return = breadth.get("medianReturn")
+    breadth_quality = breadth.get("quality")
+    if isinstance(breadth_quality, Mapping):
+        warnings.extend(str(item) for item in breadth_quality.get("warnings", []) if item)
+        if breadth_quality.get("warning"):
+            warnings.append(str(breadth_quality["warning"]))
+
+    def require(field: str, value: object, reason: str) -> None:
+        if value is None:
+            gaps.append({"field": field, "reason": reason})
+
+    require("directionPattern", (sync_pattern or {}).get("code"), "missing-today")
+    require("ma20", above_ma20 if ma20_valid else None, "insufficient-history")
+    require("medianAmountRatio5", median(ratios) if ratios else None, "insufficient-history")
+    require("volumeBackedDirection", volume_advance if ratios else None, "insufficient-history")
+    require("advanceRatio", advance_ratio, "missing-today")
+    require("medianReturn", median_return, "missing-today")
+
+    return {
+        "directionPattern": (sync_pattern or {}).get("code"),
+        "directionLabel": (sync_pattern or {}).get("label"),
+        "advancingIndexCount": advancing if valid_indices else None,
+        "decliningIndexCount": declining if valid_indices else None,
+        "validIndexCount": len(valid_indices) or None,
+        "aboveMa20Count": above_ma20 if ma20_valid else None,
+        "ma20ValidCount": ma20_valid or None,
+        "medianAmountRatio5": round(float(median(ratios)), 4) if ratios else None,
+        "volumeBackedAdvanceCount": volume_advance if ratios else None,
+        "volumeBackedDeclineCount": volume_decline if ratios else None,
+        "advanceRatio": float(advance_ratio) if advance_ratio is not None else None,
+        "medianReturn": float(median_return) if median_return is not None else None,
+        "status": "available" if not gaps else "insufficient",
+        "warnings": list(dict.fromkeys(warnings)),
+        "dataGaps": list({(gap["field"], gap["reason"]): gap for gap in gaps}.values()),
+    }
+
+
+def build_review_sentence(evidence: Mapping[str, object]) -> dict[str, object]:
+    """Render seven auditable slots, preserving a visible missing reason."""
+
+    gaps = {
+        str(item.get("field")): str(item.get("reason"))
+        for item in evidence.get("dataGaps", [])
+        if isinstance(item, Mapping) and item.get("field")
+    }
+
+    def segment(key: str, label: str, rendered: str | None) -> dict[str, object]:
+        reason = gaps.get(key)
+        missing = rendered is None
+        return {
+            "key": key,
+            "label": label,
+            "value": rendered if not missing else "数据不足",
+            "status": "insufficient" if missing else "available",
+            "reason": reason if missing else None,
+        }
+
+    direction = evidence.get("directionLabel")
+    valid = evidence.get("validIndexCount")
+    up = evidence.get("advancingIndexCount")
+    down = evidence.get("decliningIndexCount")
+    ma20_valid = evidence.get("ma20ValidCount")
+    above = evidence.get("aboveMa20Count")
+    ratio = evidence.get("medianAmountRatio5")
+    volume_up = evidence.get("volumeBackedAdvanceCount")
+    volume_down = evidence.get("volumeBackedDeclineCount")
+    advance_ratio = evidence.get("advanceRatio")
+    median_return = evidence.get("medianReturn")
+    warnings = [str(item) for item in evidence.get("warnings", []) if item]
+    segments = [
+        segment("directionPattern", "指数方向", f"{direction}（上涨 {up}/{valid}，下跌 {down}/{valid}）" if direction and valid is not None else None),
+        segment("ma20", "MA20 位置", f"{above}/{ma20_valid} 位于 MA20 上方" if above is not None and ma20_valid else None),
+        segment("medianAmountRatio5", "成交额中位比值", f"{float(ratio):.2f} 倍" if ratio is not None else None),
+        segment("volumeBackedDirection", "放量方向", f"上涨 {volume_up} / 下跌 {volume_down}" if volume_up is not None and volume_down is not None else None),
+        segment("advanceRatio", "全 A 上涨占比", f"{float(advance_ratio):.0%}" if advance_ratio is not None else None),
+        segment("medianReturn", "涨跌幅中位数", f"{float(median_return):+.2f}%" if median_return is not None else None),
+        segment("riskBoundary", "风险与缺口", "；".join(warnings) if warnings else "暂无新增风险提示"),
+    ]
+    full_sentence = "；".join(f"{item['label']}：{item['value']}" for item in segments) + "。"
+    return {
+        "status": "available" if all(item["status"] == "available" for item in segments[:6]) else "insufficient",
+        "template": "今日{指数方向}；MA20位置{MA20位置}；成交额中位比值{成交额中位比值}；放量方向{放量方向}；全A上涨占比{全A上涨占比}；涨跌幅中位数{涨跌幅中位数}；风险与缺口{风险与缺口}。",
+        "segments": segments,
+        "fullSentence": full_sentence,
+        "warnings": list(dict.fromkeys(warnings)),
+    }

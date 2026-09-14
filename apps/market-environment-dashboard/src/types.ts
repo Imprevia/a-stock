@@ -123,6 +123,8 @@ export interface MarketSummary {
   syncPattern?: { code: string; label: string; score: number; evidence: string[] } | null
   synchronizationAssessment?: SynchronizationAssessment | null
   bullishAlignmentRatio?: number | null
+  marketEvidence?: MarketReviewEvidence | null
+  reviewSentence?: ReviewSentence | null
   dataGaps?: DataGap[]
   dominantTrend: string
   warnings: string[]
@@ -356,7 +358,66 @@ export interface Chapter01Analysis {
   activeDirection?: ActiveDirectionAnalysis
   events?: EventAnalysis
   combinationOverview: CombinationOverview
+  marketEvidence?: MarketReviewEvidence | null
+  reviewSentence?: ReviewSentence | null
   summarySentence?: string | null
   dataGaps?: DataGap[]
   assessment: ChapterAssessment
+}
+
+export type ReviewSegmentStatus = 'available' | 'degraded' | 'insufficient' | 'unverified' | string
+
+export interface MarketReviewEvidence {
+  directionPattern?: string | null
+  directionLabel?: string | null
+  advancingIndexCount?: number | null
+  decliningIndexCount?: number | null
+  validIndexCount?: number | null
+  aboveMa20Count?: number | null
+  ma20ValidCount?: number | null
+  medianAmountRatio5?: number | null
+  volumeBackedAdvanceCount?: number | null
+  volumeBackedDeclineCount?: number | null
+  advanceRatio?: number | null
+  medianReturn?: number | null
+  status?: ReviewSegmentStatus
+  warnings?: string[]
+  dataGaps?: DataGap[]
+}
+
+export interface ReviewSentenceSegment {
+  key: string
+  label: string
+  value: string
+  status: ReviewSegmentStatus
+  reason?: string | null
+}
+
+export interface ReviewSentence {
+  status: ReviewSegmentStatus
+  template: string
+  segments: ReviewSentenceSegment[]
+  fullSentence: string
+  warnings?: string[]
+}
+
+export interface NextSessionComparison {
+  status: 'available' | 'pending' | 'insufficient' | string
+  requestedAsOf: string
+  currentAsOf?: string | null
+  nextAsOf?: string | null
+  current?: MarketReviewEvidence | null
+  next?: MarketReviewEvidence | null
+  deltas: {
+    directionPattern?: string | null
+    advancingIndexCount?: number | null
+    decliningIndexCount?: number | null
+    aboveMa20Count?: number | null
+    medianAmountRatio5?: number | null
+    volumeBackedAdvanceCount?: number | null
+    volumeBackedDeclineCount?: number | null
+    advanceRatio?: number | null
+    medianReturn?: number | null
+  }
+  warnings: string[]
 }

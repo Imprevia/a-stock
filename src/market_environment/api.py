@@ -20,6 +20,7 @@ from .schemas import (
     CollectionRunResponse,
     CollectionStatusResponse,
     MarketEnvironmentResponse,
+    NextSessionComparisonResponse,
     TimezonePreferenceUpdateRequest,
     TimezonePreferencesResponse,
 )
@@ -274,6 +275,22 @@ def market_environment_core(
     _validate_as_of(as_of)
     try:
         return service.get_core(as_of)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/market-environment/next-session",
+    response_model=NextSessionComparisonResponse,
+)
+def market_environment_next_session(
+    as_of: date = Query(default_factory=market_today, description="当前交易日，格式 YYYY-MM-DD"),
+) -> dict:
+    """Return exact next-session evidence without provider access."""
+
+    _validate_as_of(as_of)
+    try:
+        return service.get_next_session_comparison(as_of)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

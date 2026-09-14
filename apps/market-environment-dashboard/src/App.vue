@@ -14,6 +14,7 @@ import type {
   IndexAnalysis,
   LimitStratificationRow,
   MarketEnvironmentResponse,
+  NextSessionComparison,
 } from './types'
 import { formatLocalDate, getDefaultMarketDate } from './date-util'
 import {
@@ -24,6 +25,8 @@ import {
 } from './timezone'
 import DataCollectionView from './data-collection-view.vue'
 import TimezoneSettingsView from './timezone-settings-view.vue'
+import NextSessionPanel from './next-session-panel.vue'
+import ReviewSentencePanel from './review-sentence-panel.vue'
 
 type AppView = 'dashboard' | 'data-collection' | 'settings'
 type SectionPhase = 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
@@ -70,6 +73,7 @@ const sectionStates = ref(createSectionStates())
 const sidebarOpen = ref(false)
 const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard')
 const copyStatus = ref<{ key: string; state: 'success' | 'error'; message: string } | null>(null)
+const nextSessionComparison = ref<NextSessionComparison | null>(null)
 let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
 let initialDatePending = true
 const chartElement = ref<HTMLElement | null>(null)
@@ -80,6 +84,7 @@ let requestSequence = 0
 let sectionEpoch = 0
 const sectionRequestSequences = Object.fromEntries(chapterSections.map((section) => [section, 0])) as Record<Chapter01Section, number>
 let dataRequestDate = ''
+let nextSessionRequestSequence = 0
 
 const documentSections: Partial<Record<string, Chapter01Section>> = {
   '01': 'summary',
@@ -100,11 +105,14 @@ const limits = computed(() => chapter.value?.limits)
 const assessment = computed(() => chapter.value?.assessment)
 const combinationOverview = computed(() => chapter.value?.combinationOverview)
 const synchronizationAssessment = computed(() => data.value?.summary.synchronizationAssessment ?? null)
+const reviewSentence = computed(() => chapter.value?.reviewSentence ?? data.value?.summary.reviewSentence ?? null)
 const activeSection = computed(() => documentSections[selectedDocumentId.value] ?? null)
 const activeSectionState = computed(() => activeSection.value ? sectionStates.value[activeSection.value] : null)
 const sectionLoading = computed(() => ['loading', 'refreshing'].includes(activeSectionState.value?.phase ?? ''))
 const sectionError = computed(() => activeSectionState.value?.error ?? '')
 const generatedAt = computed(() => formatDateTime(data.value?.generatedAt, { precision: 'second' }))
+const sourceSummary = computed(() => [...new Set((data.value?.indices ?? []).map((item) => item.dataQuality.source).filter(Boolean))].join('、') || '--')
+const warningSummary = computed(() => data.value?.summary.warnings?.[0] || '无')
 const breadthBar = computed(() => {
   const item = breadth.value
   if (!item?.validCount || item.advanceCount == null || item.flatCount == null || item.declineCount == null) return null
@@ -241,6 +249,19 @@ async function copyIndexField(index: IndexAnalysis, field: 'value' | 'change') {
   copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
 }
 
+async function copyReviewSentence() {
+  const sentence = reviewSentence.value?.fullSentence
+  if (!sentence) return
+  const success = await writeClipboard(sentence)
+  copyStatus.value = {
+    key: 'review-sentence',
+    state: success ? 'success' : 'error',
+    message: success ? '已复制完整复盘句' : '复制完整复盘句失败',
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
 interface ChartTooltipItem {
   axisValueLabel?: string
   data?: number[] | null
@@ -286,6 +307,7 @@ async function loadData() {
     const nextData = await response.json() as MarketEnvironmentResponse
     if (requestId !== requestSequence) return
     data.value = nextData
+    void loadNextSessionComparison(nextData.asOf)
     const normalizeInitialDate = initialDatePending && nextData.asOf !== requestedDate
     if (normalizeInitialDate) selectedDate.value = nextData.asOf
     dataRequestDate = normalizeInitialDate ? nextData.asOf : requestedDate
@@ -302,6 +324,18 @@ async function loadData() {
     renderChart()
   }
   if (shouldLoadSection) void loadCurrentSection()
+}
+
+async function loadNextSessionComparison(asOf: string) {
+  const requestId = ++nextSessionRequestSequence
+  try {
+    const response = await fetch(`/api/market-environment/next-session?as_of=${asOf}`)
+    if (!response.ok) return
+    const value = await response.json() as NextSessionComparison
+    if (requestId === nextSessionRequestSequence) nextSessionComparison.value = value
+  } catch {
+    if (requestId === nextSessionRequestSequence) nextSessionComparison.value = null
+  }
 }
 
 function mergeChapterSection(current: Chapter01Analysis | undefined, incoming: Chapter01Analysis, section: Chapter01Section) {
@@ -502,7 +536,7 @@ onBeforeUnmount(() => {
         <section v-if="error" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>行情暂时不可用</strong><p>{{ error }}</p></div><button class="text-button" type="button" @click="loadData">重新加载</button></section>
         <section v-else-if="loading && !data" class="state-panel"><div class="loader" /><span>正在读取市场证据…</span></section>
         <template v-else-if="data">
-          <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div class="evidence-meta"><span :title="formatDateTimeTitle(data.generatedAt)">更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
+          <section class="evidence-strip"><div><span>实际交易日</span><strong>{{ data.asOf }}</strong></div><div><span>数据来源</span><strong>{{ sourceSummary }}</strong></div><div><span>章节覆盖率</span><strong>{{ formatCoverage(chapter?.coverage) }}</strong></div><div><span>数据状态</span><strong>{{ chapter?.status === 'ok' ? '完整' : ['degraded', 'partial'].includes(chapter?.status ?? '') ? '降级' : '数据不足' }}</strong></div><div><span>warning</span><strong>{{ warningSummary }}</strong></div><div class="evidence-meta"><span :title="formatDateTimeTitle(data.generatedAt)">更新 {{ generatedAt }}</span><i class="source-dot" /><span>{{ data.indices.length }} 个指数</span></div></section>
 
           <section v-if="activeSection && activeSectionState?.phase === 'loading'" class="state-panel"><div class="loader" /><span>正在读取本节证据…</span></section>
           <section v-else-if="activeSection && sectionError && !loadedSections.includes(activeSection)" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>本节证据暂时不可用</strong><p>{{ sectionError }}</p></div><button class="text-button" type="button" @click="loadCurrentSection(true)">重新加载</button></section>
@@ -547,22 +581,28 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="synchronizationAssessment.risks.length" class="synchronization-risks"><AlertTriangle :size="17" /><div><strong>风险提示</strong><ul><li v-for="item in synchronizationAssessment.risks" :key="item">{{ item }}</li></ul></div></div>
             </section>
-            <section class="panel combination-overview-panel">
+            <ReviewSentencePanel :sentence="reviewSentence" :data-gaps="chapter?.dataGaps" @copy="copyReviewSentence" />
+            <NextSessionPanel :comparison="nextSessionComparison" />
+            <details class="panel combination-overview-panel learn-more">
+              <summary>再学：六类指数组合矩阵和详细证据</summary>
+              <div class="learn-more-content">
               <div class="panel-heading"><div><span class="panel-kicker">第四部分 · 组合全景</span><h2>四问结论与五指数矩阵</h2></div><span class="quality-badge" :class="combinationOverview?.confidence === 'medium' ? 'fallback' : 'missing'">置信度 {{ confidenceLabel(combinationOverview?.confidence) }}</span></div>
               <div class="combination-output-list four-question-strip"><div><span>市场是否真强</span><strong>{{ combinationOverview?.strength || '数据不足' }}</strong></div><div><span>市场所处阶段</span><strong>{{ combinationOverview?.stage || '数据不足' }}</strong></div><div><span>资金是否认可</span><strong>{{ combinationOverview?.capitalAcceptance || '数据不足' }}</strong></div><div><span>交易模式</span><strong>{{ combinationOverview?.tradingMode || '数据不足' }}</strong></div></div>
               <div class="combination-matrix-scroll"><table class="combination-matrix"><thead><tr><th>指数</th><th v-for="item in combinationDefinitions" :key="item.key" :title="item.condition">{{ item.state }}</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><th>{{ index.name }}<small>{{ formatPct(index.changePct) }}</small></th><td v-for="item in combinationDefinitions" :key="item.key" :class="{ matched: index.combination.matched && index.combination.key === item.key }"><span v-if="index.combination.matched && index.combination.key === item.key">{{ formatPosition(index.rangePosition60) }} · {{ formatRatio(index.amountRatio5) }}</span><span v-else>--</span></td></tr></tbody></table></div>
               <div v-if="selectedCombination" class="combination-state" :class="selectedCombination.tone"><span>{{ selectedIndex?.name }} · 选中行证据</span><strong>{{ selectedCombination.state || '未命中明确组合' }}</strong><p>交易模式：{{ selectedCombination.tradingMode }}</p><ul class="combination-evidence"><li v-for="item in selectedCombination.evidence" :key="item">{{ item }}</li></ul></div>
-            </section>
-            <section class="panel summary-sentence-panel"><div class="panel-heading"><div><span class="panel-kicker">盘后记录</span><h2>今日收束句</h2></div></div><blockquote>{{ chapter?.summarySentence || '数据不足' }}</blockquote><ul v-if="chapter?.dataGaps?.length" class="data-gap-list"><li v-for="gap in chapter.dataGaps" :key="`${gap.field}-${gap.reason}`"><strong>{{ gap.field }}</strong><span>{{ gapLabel(gap.reason) }}</span></li></ul></section>
+              </div>
+            </details>
             <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">横向比较</span><h2>五大指数指标表</h2></div></div><div class="table-scroll"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>收盘价</th><th>MA20 / MA60</th><th>20日位置</th><th>60日位置</th><th>成交额</th><th>5日 / 20日</th><th>量价状态</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td><td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td><td>{{ index.close.toFixed(2) }}</td><td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td><td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td><td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td><td>{{ formatAmount(index.amount) }}</td><td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td><td><span v-if="index.volumePriceState" class="state-chip">{{ index.volumePriceState }}</span><span v-else>--</span></td></tr></tbody></table></div></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '02'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="metric-grid four"><article class="metric-card"><span>上涨家数</span><strong class="positive">{{ formatCount(breadth?.advanceCount) }}</strong></article><article class="metric-card"><span>下跌家数</span><strong class="negative">{{ formatCount(breadth?.declineCount) }}</strong></article><article class="metric-card"><span>上涨占比</span><strong>{{ breadth?.advanceRatio == null ? '--' : formatPosition(breadth.advanceRatio) }}</strong></article><article class="metric-card"><span>涨跌幅中位数</span><strong :class="changeTone(breadth?.medianReturn ?? 0)">{{ formatPct(breadth?.medianReturn) }}</strong></article></section>
             <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">全 A 参与面</span><h2>市场广度分布</h2></div><span class="quality-badge" :class="qualityTone(breadth?.quality)">{{ qualityLabel(breadth?.quality) }}</span></div><div v-if="breadthBar" class="breadth-visual"><div class="breadth-bar"><i class="advance" :style="{ width: `${breadthBar.advance}%` }" /><i class="flat-bar" :style="{ width: `${breadthBar.flat}%` }" /><i class="decline" :style="{ width: `${breadthBar.decline}%` }" /></div><div class="breadth-legend"><span><i class="advance" />上涨 {{ formatCount(breadth?.advanceCount) }}</span><span><i class="flat-bar" />平盘 {{ formatCount(breadth?.flatCount) }}</span><span><i class="decline" />下跌 {{ formatCount(breadth?.declineCount) }}</span></div></div><div v-else class="empty-evidence"><Database :size="22" /><strong>市场广度数据不足</strong><p>{{ breadth?.quality.warning || '全 A 上涨、下跌和平盘样本尚未返回。' }}</p></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">组合判定</span><h2>{{ breadth?.state || '数据不足' }}</h2></div></div><p>指数与全 A 中位数同向时才具备广度一致性；缺少全市场样本时不形成强弱结论。</p><div class="source-row"><span>数据源</span><strong>{{ breadth?.quality.source || '--' }}</strong></div></article></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '03'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="limits-quality-band" aria-label="涨跌停数据质量">
               <div class="limits-quality-heading"><div><span class="panel-kicker">本节证据 · 质量优先</span><h2>涨跌停数据集</h2></div><div class="limits-quality-actions"><span class="quality-badge" :class="qualityTone(limits?.quality)">{{ sectionPhaseLabel(limitSectionPhase) }}</span><button class="icon-button" type="button" :disabled="sectionLoading" aria-label="刷新涨跌停证据" title="刷新涨跌停证据" @click="loadCurrentSection(true)"><RefreshCw :size="17" :class="{ spin: sectionLoading }" /></button></div></div>
               <div class="limits-quality-primary"><div><span>所选交易日</span><strong>{{ data.asOf }}</strong></div><div><span>数据质量</span><strong>{{ qualityCodeLabel(limits?.quality) }}</strong></div><div><span>数据提供方</span><strong>{{ limits?.quality.provider || '--' }}</strong></div><div><span>缓存状态</span><strong>{{ cacheStateLabel(limits?.quality.cacheState) }}</strong></div></div>
@@ -589,28 +629,34 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="selectedDocumentId === '04'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="metric-grid four"><article class="metric-card"><span>高位风险</span><strong>{{ chapter?.tierRisk?.high ?? '--' }}</strong></article><article class="metric-card"><span>中位风险</span><strong>{{ chapter?.tierRisk?.middle ?? '--' }}</strong></article><article class="metric-card"><span>低位风险</span><strong>{{ chapter?.tierRisk?.low ?? '--' }}</strong></article><article class="metric-card"><span>修复率</span><strong>{{ chapter?.tierRisk?.repairRatio == null ? '--' : formatPosition(chapter.tierRisk.repairRatio) }}</strong></article></section>
             <section class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">分层风险</span><h2>{{ chapter?.tierRisk?.state || '数据不足' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.tierRisk?.quality)">{{ qualityLabel(chapter?.tierRisk?.quality) }}</span></div><div class="empty-evidence"><ShieldAlert :size="24" /><strong>分层样本必须独立计算</strong><p>{{ chapter?.tierRisk?.quality.warning || '最高板、核心、中位接力、首板与失败样本尚未形成可追溯数据集，不按安全状态处理。' }}</p></div></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '05'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">行业轮动</span><h2>{{ chapter?.sectors?.state || '板块证据' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.sectors?.quality)">{{ qualityLabel(chapter?.sectors?.quality) }}</span></div><div v-if="chapter?.sectors?.rows?.length" class="table-scroll"><table class="sector-table"><thead><tr><th>板块</th><th>涨跌幅</th><th>上涨 / 下跌</th><th>主力净额</th><th>领涨股</th></tr></thead><tbody><tr v-for="row in chapter.sectors.rows" :key="row.code || row.name"><td><strong>{{ row.name }}</strong><span>{{ row.code || '' }}</span></td><td :class="changeTone(row.changePct ?? 0)">{{ formatPct(row.changePct) }}</td><td>{{ formatCount(row.upCount) }} / {{ formatCount(row.downCount) }}</td><td>{{ formatAmount(row.mainNet) }}</td><td>{{ row.leader || '--' }}</td></tr></tbody></table></div><div v-else class="empty-evidence"><BarChart3 :size="24" /><strong>板块数据不足</strong><p>{{ chapter?.sectors?.quality.warning || '行业相对强度、成交持续性、板块宽度和集中度尚未返回。' }}</p></div></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '06'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">容量资金</span><h2>{{ chapter?.activeDirection?.state || '主动进攻方向' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.activeDirection?.quality)">{{ qualityLabel(chapter?.activeDirection?.quality) }}</span></div><p v-if="chapter?.activeDirection?.summary" class="panel-summary">{{ chapter.activeDirection.summary }}</p><div v-if="chapter?.activeDirection?.topStocks?.length" class="table-scroll"><table><thead><tr><th>个股</th><th>涨跌幅</th><th>成交额</th><th>方向</th><th>收盘位置</th></tr></thead><tbody><tr v-for="stock in chapter.activeDirection.topStocks" :key="stock.code || stock.name"><td><strong>{{ stock.name || '--' }}</strong><span>{{ stock.code || '--' }}</span></td><td :class="changeTone(stock.changePct ?? 0)">{{ formatPct(stock.changePct) }}</td><td>{{ formatAmount(stock.amount) }}</td><td>{{ stock.industry || '--' }}</td><td>{{ formatPosition(stock.closePosition) }}</td></tr></tbody></table></div><div v-else class="empty-evidence"><Target :size="24" /><strong>未确认容量进攻方向</strong><p>{{ chapter?.activeDirection?.quality.warning || '成交额前 30、方向聚集度和板块同步率尚未形成完整证据。' }}</p></div></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '07'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">事件台账</span><h2>{{ chapter?.events?.state || '未核实' }}</h2></div><span class="quality-badge" :class="qualityTone(chapter?.events?.quality)">{{ qualityLabel(chapter?.events?.quality) }}</span></div><div v-if="chapter?.events?.items?.length" class="event-list"><article v-for="event in chapter.events.items" :key="`${event.title}-${event.publishedAt}`"><FileCheck2 :size="18" /><div><strong>{{ event.title }}</strong><span :title="formatDateTimeTitle(event.publishedAt)">{{ event.source || '来源未标注' }} · {{ event.publishedAt ? formatDateTime(event.publishedAt) : '时间未标注' }}</span></div><em :class="event.verified ? 'verified' : ''">{{ event.verified ? '已核实' : '待核实' }}</em></article></div><div v-else class="empty-evidence"><FileCheck2 :size="24" /><strong>没有可追溯事件输入</strong><p>{{ chapter?.events?.quality.warning || '事件不直接决定市场环境；未核实传闻不得进入加分。' }}</p></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">调整边界</span><h2>盘面确认后最多 ±5 分</h2></div></div><p>来源可靠性、信息新鲜度、价格成交确认、板块扩散和次日承接必须分开记录。</p></article></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '08'">
+            <p class="page-flow-label">事实 → 判断 → 质量边界</p>
             <section class="classification-layout"><article class="classification-main"><span>当前环境</span><strong>{{ environmentLabel(assessment?.state) }}</strong><p>置信度 {{ confidenceLabel(assessment?.confidence) }} · 规则覆盖 {{ formatCoverage(chapter?.coverage) }}</p></article><article class="panel evidence-panel"><div class="panel-heading"><div><span class="panel-kicker">证据一致性</span><h2>风险优先分类</h2></div></div><div class="evidence-list"><div v-for="item in assessment?.evidence || []" :key="item"><TrendingUp :size="16" /><span>{{ item }}</span></div><div v-if="!assessment?.evidence?.length" class="muted-row"><Database :size="16" /><span>有效证据链不足，暂不归类为趋势、轮动或退潮。</span></div></div></article></section>
           </template>
 
           <template v-else-if="selectedDocumentId === '09'">
             <section class="synthesis-grid"><article class="conclusion-block"><span class="panel-kicker">唯一结论</span><div class="conclusion-state"><strong>{{ environmentLabel(assessment?.state) }}</strong><em>{{ assessment?.score == null ? '分数不足' : `${assessment.score.toFixed(1)} 分` }}</em></div><p>置信度 {{ confidenceLabel(assessment?.confidence) }}，覆盖率 {{ formatCoverage(chapter?.coverage) }}。经验阈值仍处于待回测状态。</p></article><article class="panel synthesis-panel"><div class="panel-heading"><div><span class="panel-kicker">证据链</span><h2>支持当前判断</h2></div></div><ul v-if="assessment?.evidence?.length"><li v-for="item in assessment.evidence" :key="item">{{ item }}</li></ul><div v-else class="empty-inline">暂无完整证据链</div></article><article class="panel synthesis-panel risk"><div class="panel-heading"><div><span class="panel-kicker">风险否决</span><h2>不可忽略的风险</h2></div></div><ul v-if="assessment?.risks?.length"><li v-for="item in assessment.risks" :key="item">{{ item }}</li></ul><div v-else class="empty-inline">当前未返回已触发的风险否决</div></article><article class="panel verification-panel"><div><span>次日确认</span><strong>{{ assessment?.nextConfirmation || '数据不足，等待新增证据' }}</strong></div><div><span>失效条件</span><strong>{{ assessment?.invalidation || '尚未形成可追溯失效条件' }}</strong></div></article></section>
+            <NextSessionPanel :comparison="nextSessionComparison" mode="summary" />
           </template>
 
           <section v-if="sectionWarning" class="warning-band"><AlertTriangle :size="17" /><div><strong>本节证据边界</strong><span>{{ sectionWarning }}</span></div></section>

@@ -1,5 +1,9 @@
 # 架构
 
+## 多页市场研判重构边界（2026-09-14）
+
+市场环境 Dashboard 保持 01–09 独立路由和按需章节加载。第 01 页的七项复盘证据与 `ReviewSentence` 在计算层由五项指数和精确市场广度聚合生成；第 09 页仅消费综合摘要。`GET /api/market-environment/next-session` 是 provider-free 只读路径：服务从 `trading_sessions` 解析严格大于 `as_of` 的最小真实交易日，并读取该日核心/广度 materialized aggregate，缺失返回 `pending` 或 `insufficient`，不触发采集、不跨日期回退。新增 schema 为 additive，旧 `summarySentence`、`syncPattern` 和组合矩阵字段继续兼容。看板不保存用户复盘记录、输入或训练进度，SQLite schema 不变。
+
 > 状态：**已落地第 01 章市场环境看板与交易规则工程平台首期**。产品范围见 `docs/product-specs/market-environment-dashboard.md` 与 `docs/product-specs/trading-rule-engineering.md`；看板视觉与交互约束见 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
 
 ## 系统角色

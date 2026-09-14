@@ -57,6 +57,19 @@ class StubService:
             "chapter01": builder._build_chapter01(core, provider_data),
         }
 
+    def get_next_session_comparison(self, as_of: date):
+        self.calls.append(("next-session", None))
+        return {
+            "status": "insufficient",
+            "requestedAsOf": as_of.isoformat(),
+            "currentAsOf": None,
+            "nextAsOf": None,
+            "current": None,
+            "next": None,
+            "deltas": {},
+            "warnings": ["fixture no next session"],
+        }
+
 
 def test_api_rejects_invalid_and_future_dates() -> None:
     client = TestClient(api.app)
@@ -91,6 +104,18 @@ def test_api_exposes_core_and_section_endpoints(monkeypatch) -> None:
     assert chapter.status_code == 200
     assert chapter.json()["chapter01"]["breadth"]["quality"]["status"] == "missing"
     assert service.calls == [("core", None), ("chapter01", "breadth")]
+
+
+def test_api_exposes_provider_free_next_session_endpoint(monkeypatch) -> None:
+    service = StubService()
+    monkeypatch.setattr(api, "service", service)
+
+    response = TestClient(api.app).get("/api/market-environment/next-session?as_of=2026-08-28")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient"
+    assert response.json()["nextAsOf"] is None
+    assert service.calls == [("next-session", None)]
 
 
 def test_api_rejects_unknown_chapter_section(monkeypatch) -> None:

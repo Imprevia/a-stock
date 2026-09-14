@@ -2,6 +2,8 @@
 
 ## 已实现
 
+- 2026-09-14 启动 `market-environment-multipage-rework`：目标是保持 01–09 独立页面，补齐第 01 页市场级句式和第 01/09 页精确下一交易日只读对照；实现进行中，尚未宣称完成。
+
 - harness 骨架：`docs/` 事实源体系、exec-plans 落地位、本地门禁（`.githooks/` + `scripts/check-docs-contract.py` + `scripts/install-hooks.py`）。
   - 事实源：`docs/repository-guide.md`、`docs/architecture.md`、`docs/runbooks.md`
 - `搭建交易系统/` 已完成目录归档：11 个章节各自使用唯一章节目录，章节总览和正文不再散落于下载批次子目录。

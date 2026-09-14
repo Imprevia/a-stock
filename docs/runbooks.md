@@ -1,5 +1,11 @@
 # Runbook
 
+## 下一交易日对照与多页看板（2026-09-14）
+
+`GET /api/market-environment/next-session?as_of=YYYY-MM-DD` 只读本地精确交易日证据。排查时先确认 `trading_sessions` 存在严格大于请求日期的下一真实交易日，再检查该日核心指数和 materialized aggregate；缺失应保持 `pending`/`insufficient` 并记录 warning。该请求不得调用 provider、不得用自然日加一、不得回退旧日期。页面 01 和 09 共用该接口，普通研究页仍不承担采集职责。
+
+复盘句式为临时展示与复制内容，不写入 SQLite；不要添加保存按钮、复盘记录表或 20 日训练进度状态。03、04、07 的未接入证据继续显示真实 `unverified`/`insufficient`。
+
 ## 环境要求
 
 - Python 3.11+（建议使用仓库 `.venv`）

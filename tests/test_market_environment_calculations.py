@@ -5,6 +5,8 @@ from src.market_environment.calculations import (
     amount_ratio,
     advance_efficiency_percentile,
     build_summary_sentence,
+    build_market_review_evidence,
+    build_review_sentence,
     build_synchronization_assessment,
     bullish_alignment_ratio,
     classify_index_combination,
@@ -303,3 +305,40 @@ def test_bullish_alignment_and_summary_sentence_keep_missing_segments() -> None:
     partial = build_summary_sentence("同步上涨", None, None, None, None, "保持观察")
     assert "成交额为5日均值的1.20倍" in complete
     assert partial.count("数据不足") == 4
+
+
+def test_market_review_sentence_uses_market_level_slots_and_preserves_missing_reason() -> None:
+    analyses = [
+        {
+            "changePct": 1.2,
+            "close": 102,
+            "movingAverages": {"ma20": 100},
+            "amountRatio5": 1.3,
+            "volumePriceState": "上涨放量",
+            "dataGaps": [],
+            "dataQuality": {"warning": None},
+        },
+        {
+            "changePct": -0.4,
+            "close": 99,
+            "movingAverages": {"ma20": 100},
+            "amountRatio5": None,
+            "volumePriceState": "数据不足",
+            "dataGaps": [{"field": "amountRatio5", "reason": "insufficient-history"}],
+            "dataQuality": {"warning": None},
+        },
+    ]
+    evidence = build_market_review_evidence(
+        analyses,
+        {"advanceRatio": None, "medianReturn": None, "quality": {"warnings": ["广度缺失"]}},
+        {"code": "synchronized_rally", "label": "同步上涨"},
+    )
+    sentence = build_review_sentence(evidence)
+
+    assert evidence["advancingIndexCount"] == 1
+    assert evidence["decliningIndexCount"] == 1
+    assert len(sentence["segments"]) == 7
+    breadth_segment = next(item for item in sentence["segments"] if item["key"] == "advanceRatio")
+    assert breadth_segment["value"] == "数据不足"
+    assert breadth_segment["reason"] == "missing-today"
+    assert "同步上涨" in sentence["fullSentence"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from threading import Lock
@@ -23,6 +23,8 @@ from .calculations import (
     advance_efficiency_percentile,
     bullish_alignment_ratio,
     build_summary_sentence,
+    build_market_review_evidence,
+    build_review_sentence,
     build_synchronization_assessment,
     ma20_slope_percentile,
     moving_average,
@@ -167,6 +169,134 @@ class MarketEnvironmentService:
             "summary": self._core_payload(core)["summary"],
             "chapter01": chapter,
         }
+
+    def get_next_session_comparison(self, as_of: date) -> dict[str, Any]:
+        """Read an exact next trading session without invoking any provider.
+
+        Trading sessions are the authority for date navigation.  We deliberately
+        read existing snapshots/materialized aggregates only; a missing next
+        session payload is a pending/insufficient result rather than a refresh.
+        """
+
+        requested = as_of.isoformat()
+        base: dict[str, Any] = {
+            "status": "insufficient",
+            "requestedAsOf": requested,
+            "currentAsOf": None,
+            "nextAsOf": None,
+            "current": None,
+            "next": None,
+            "deltas": {},
+            "warnings": [],
+        }
+        if self.snapshot_store is None:
+            base["warnings"] = ["持久化快照未启用，无法解析精确下一交易日"]
+            return base
+        try:
+            sessions = tuple(
+                item for item in self.snapshot_store.list_trading_sessions()
+                if item.is_session and item.as_of > as_of
+            )
+        except SnapshotIntegrityError as exc:
+            base["warnings"] = [f"交易日证据校验失败：{exc}"]
+            return base
+        if not sessions:
+            base["warnings"] = ["本地没有严格晚于当前日期的真实交易日"]
+            return base
+        next_date = min(item.as_of for item in sessions)
+        base["nextAsOf"] = next_date.isoformat()
+        contexts: dict[date, tuple[dict[str, Any] | None, list[str]]] = {}
+        for target in (as_of, next_date):
+            contexts[target] = self._read_exact_review_context(target)
+        current_evidence, current_warnings = contexts[as_of]
+        next_evidence, next_warnings = contexts[next_date]
+        base["warnings"] = list(dict.fromkeys([*current_warnings, *next_warnings]))
+        if current_evidence is None:
+            base["warnings"].append("当前日期缺少精确核心指数或市场广度快照")
+            return base
+        base["currentAsOf"] = as_of.isoformat()
+        base["current"] = current_evidence
+        if next_evidence is None:
+            base["status"] = "pending"
+            base["warnings"].append(f"下一真实交易日 {next_date.isoformat()} 的核心或广度聚合尚未就绪")
+            return base
+        base["next"] = next_evidence
+        base["status"] = "available"
+        base["deltas"] = self._review_evidence_deltas(current_evidence, next_evidence)
+        return base
+
+    def _read_exact_review_context(self, as_of: date) -> tuple[dict[str, Any] | None, list[str]]:
+        """Return a review evidence object from one exact date, read-only."""
+
+        if self.snapshot_store is None:
+            return None, []
+        warnings: list[str] = []
+        payload: dict[str, Any] | None = None
+        try:
+            aggregate = self.snapshot_store.get_materialized_aggregate(as_of)
+        except SnapshotIntegrityError as exc:
+            return None, [f"{as_of.isoformat()} 聚合校验失败：{exc}"]
+        if aggregate is not None:
+            payload = copy.deepcopy(aggregate.payload)
+            payload.pop(_MATERIALIZED_SCHEMA_VERSION_KEY, None)
+            payload.pop(_MATERIALIZED_LIMITS_STATE_KEY, None)
+            payload.pop(MATERIALIZED_COMPONENT_REVISION_KEY, None)
+        else:
+            try:
+                core_record = self.snapshot_store.get("core", as_of)
+                breadth_record = self.snapshot_store.get("breadth", as_of)
+            except SnapshotIntegrityError as exc:
+                return None, [f"{as_of.isoformat()} 快照校验失败：{exc}"]
+            if core_record is None:
+                return None, [f"{as_of.isoformat()} 缺少精确核心指数快照"]
+            payload = copy.deepcopy(core_record.payload)
+            if breadth_record is not None:
+                payload.setdefault("chapter01", {})["breadth"] = copy.deepcopy(breadth_record.payload)
+            else:
+                warnings.append(f"{as_of.isoformat()} 缺少精确市场广度快照")
+        if isinstance(payload, dict) and payload.get("asOf") not in (None, as_of.isoformat()):
+            return None, [*warnings, f"{as_of.isoformat()} 聚合实际日期与请求日期不一致"]
+        indices = payload.get("indices") if isinstance(payload, dict) else None
+        summary = payload.get("summary") if isinstance(payload, dict) else None
+        chapter = payload.get("chapter01") if isinstance(payload, dict) else None
+        breadth = chapter.get("breadth") if isinstance(chapter, dict) else None
+        if not isinstance(breadth, dict):
+            try:
+                breadth_record = self.snapshot_store.get("breadth", as_of)
+            except SnapshotIntegrityError as exc:
+                return None, [*warnings, f"{as_of.isoformat()} 市场广度快照校验失败：{exc}"]
+            if breadth_record is not None:
+                breadth = copy.deepcopy(breadth_record.payload)
+                if isinstance(chapter, dict):
+                    chapter["breadth"] = breadth
+        if not isinstance(indices, list) or not isinstance(summary, dict) or not isinstance(breadth, dict):
+            return None, [*warnings, f"{as_of.isoformat()} 缺少核心指数或市场广度聚合"]
+        breadth_quality = breadth.get("quality")
+        if isinstance(breadth_quality, dict) and breadth_quality.get("asOf") not in (None, as_of.isoformat()):
+            return None, [*warnings, f"{as_of.isoformat()} 市场广度实际日期与请求日期不一致"]
+        sync = summary.get("syncPattern") or self._sync_pattern(indices)
+        evidence = chapter.get("marketEvidence") if isinstance(chapter, dict) else None
+        if not isinstance(evidence, dict):
+            evidence = build_market_review_evidence(indices, breadth, sync)
+        return evidence, warnings
+
+    @staticmethod
+    def _review_evidence_deltas(current: Mapping[str, Any], next_value: Mapping[str, Any]) -> dict[str, Any]:
+        numeric_fields = (
+            "advancingIndexCount", "decliningIndexCount", "aboveMa20Count",
+            "medianAmountRatio5", "volumeBackedAdvanceCount", "volumeBackedDeclineCount",
+            "advanceRatio", "medianReturn",
+        )
+        result: dict[str, Any] = {}
+        for field in numeric_fields:
+            before, after = current.get(field), next_value.get(field)
+            result[field] = round(float(after) - float(before), 4) if before is not None and after is not None else None
+        result["directionPattern"] = (
+            f"{current.get('directionLabel') or current.get('directionPattern')} → "
+            f"{next_value.get('directionLabel') or next_value.get('directionPattern')}"
+            if current.get("directionPattern") != next_value.get("directionPattern") else None
+        )
+        return result
 
     def rebuild_materialized_aggregate(
         self,
@@ -428,6 +558,16 @@ class MarketEnvironmentService:
         synchronization_assessment = self._synchronization_assessment(core, breadth)
         core["summary"]["synchronizationAssessment"] = synchronization_assessment
         payload["summary"] = self._core_payload(core)["summary"]
+        market_evidence = build_market_review_evidence(
+            core["indices"],
+            breadth,
+            core["summary"].get("syncPattern"),
+        )
+        core["summary"]["marketEvidence"] = market_evidence
+        core["summary"]["reviewSentence"] = build_review_sentence(market_evidence)
+        payload["summary"] = self._core_payload(core)["summary"]
+        chapter["marketEvidence"] = market_evidence
+        chapter["reviewSentence"] = core["summary"]["reviewSentence"]
         chapter["combinationOverview"] = self._combination_overview(
             core["indices"],
             synchronization_assessment,
@@ -544,6 +684,8 @@ class MarketEnvironmentService:
                 "synchronization": core["summary"]["synchronization"],
                 "syncPattern": core["summary"].get("syncPattern"),
                 "synchronizationAssessment": core["summary"].get("synchronizationAssessment"),
+                "marketEvidence": core["summary"].get("marketEvidence"),
+                "reviewSentence": core["summary"].get("reviewSentence"),
                 "bullishAlignmentRatio": core["summary"].get("bullishAlignmentRatio"),
                 "dominantTrend": core["summary"]["dominantTrend"],
                 "warnings": list(core["summary"]["warnings"]),
@@ -819,6 +961,14 @@ class MarketEnvironmentService:
         synchronization_assessment = self._synchronization_assessment(core, breadth)
         core["summary"]["synchronizationAssessment"] = synchronization_assessment
         combination_overview = self._combination_overview(analyses, synchronization_assessment, breadth)
+        market_evidence = build_market_review_evidence(
+            analyses,
+            breadth,
+            core["summary"].get("syncPattern"),
+        )
+        review_sentence = build_review_sentence(market_evidence)
+        core["summary"]["marketEvidence"] = market_evidence
+        core["summary"]["reviewSentence"] = review_sentence
         summary_sentence = build_summary_sentence(
             core["summary"].get("syncPattern", {}).get("label") if core["summary"].get("syncPattern") else synchronization,
             next((item.get("ma20PositionLabel") for item in analyses if item.get("ma20PositionLabel")), None),
@@ -860,6 +1010,8 @@ class MarketEnvironmentService:
             "events": events,
             "combinationOverview": combination_overview,
             "summarySentence": summary_sentence,
+            "marketEvidence": market_evidence,
+            "reviewSentence": review_sentence,
             "dataGaps": [
                 *core["summary"].get("dataGaps", []),
                 *(gap for item in analyses for gap in item.get("dataGaps", [])),

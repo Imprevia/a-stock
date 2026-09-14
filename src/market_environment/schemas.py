@@ -188,6 +188,8 @@ class Summary(BaseModel):
     syncPattern: SyncPattern | None = None
     synchronizationAssessment: SynchronizationAssessment | None = None
     bullishAlignmentRatio: float | None = None
+    marketEvidence: dict[str, Any] | None = None
+    reviewSentence: dict[str, Any] | None = None
     dataGaps: list[DataGap] = Field(default_factory=list)
 
 
@@ -488,6 +490,89 @@ class CombinationOverview(BaseModel):
     evidence: list[str]
 
 
+ReviewSegmentStatus = Literal["available", "degraded", "insufficient", "unverified"]
+NextSessionStatus = Literal["available", "pending", "insufficient"]
+
+
+class MarketReviewEvidence(BaseModel):
+    """Seven market-level facts used by the review sentence and comparison."""
+
+    directionPattern: str | None = None
+    directionLabel: str | None = None
+    advancingIndexCount: int | None = Field(default=None, ge=0)
+    decliningIndexCount: int | None = Field(default=None, ge=0)
+    validIndexCount: int | None = Field(default=None, ge=0)
+    aboveMa20Count: int | None = Field(default=None, ge=0)
+    ma20ValidCount: int | None = Field(default=None, ge=0)
+    medianAmountRatio5: float | None = None
+    volumeBackedAdvanceCount: int | None = Field(default=None, ge=0)
+    volumeBackedDeclineCount: int | None = Field(default=None, ge=0)
+    advanceRatio: float | None = Field(default=None, ge=0, le=1)
+    medianReturn: float | None = None
+    status: ReviewSegmentStatus = "available"
+    warnings: list[str] = Field(default_factory=list)
+    dataGaps: list[DataGap] = Field(default_factory=list)
+
+
+class ReviewSentenceSegment(BaseModel):
+    """One auditable slot in the generated sentence."""
+
+    key: str
+    label: str
+    value: str
+    status: ReviewSegmentStatus
+    reason: str | None = None
+
+
+class ReviewSentence(BaseModel):
+    """Market-level sentence with explicit missing-data semantics."""
+
+    status: ReviewSegmentStatus
+    template: str
+    segments: list[ReviewSentenceSegment]
+    fullSentence: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class NextSessionDeltas(BaseModel):
+    directionPattern: str | None = None
+    advancingIndexCount: int | None = None
+    decliningIndexCount: int | None = None
+    aboveMa20Count: int | None = None
+    medianAmountRatio5: float | None = None
+    volumeBackedAdvanceCount: int | None = None
+    volumeBackedDeclineCount: int | None = None
+    advanceRatio: float | None = None
+    medianReturn: float | None = None
+
+
+class NextSessionComparison(BaseModel):
+    """Exact-date, read-only posterior comparison for the next real session."""
+
+    status: NextSessionStatus
+    requestedAsOf: str
+    currentAsOf: str | None = None
+    nextAsOf: str | None = None
+    current: MarketReviewEvidence | None = None
+    next: MarketReviewEvidence | None = None
+    deltas: NextSessionDeltas = Field(default_factory=NextSessionDeltas)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("requestedAsOf", "currentAsOf", "nextAsOf")
+    @classmethod
+    def validate_comparison_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_comparison_dates(self) -> "NextSessionComparison":
+        if self.currentAsOf is not None and self.currentAsOf != self.requestedAsOf:
+            raise ValueError("currentAsOf must match requestedAsOf for an exact comparison")
+        if self.currentAsOf is not None and self.nextAsOf is not None:
+            if date.fromisoformat(self.nextAsOf) <= date.fromisoformat(self.currentAsOf):
+                raise ValueError("nextAsOf must be strictly later than currentAsOf")
+        return self
+
+
 def _validate_aware_iso8601(value: str) -> str:
     """Require API-generated timestamps to retain an explicit UTC/offset."""
 
@@ -515,6 +600,8 @@ class Chapter01Evidence(BaseModel):
     combinationOverview: CombinationOverview
     assessment: ChapterAssessment
     summarySentence: str | None = None
+    marketEvidence: MarketReviewEvidence | None = None
+    reviewSentence: ReviewSentence | None = None
     dataGaps: list[DataGap] = Field(default_factory=list)
 
 
@@ -573,6 +660,12 @@ class Chapter01Response(BaseModel):
     @classmethod
     def validate_generated_at(cls, value: str) -> str:
         return _validate_aware_iso8601(value)
+
+
+class NextSessionComparisonResponse(NextSessionComparison):
+    """Named response model kept for API discoverability."""
+
+    pass
 
 
 class CollectionRunRequest(BaseModel):

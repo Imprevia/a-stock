@@ -22,6 +22,7 @@
 | `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |
 | `unified-local-timezone-dashboard` | 资深前端工程师 | in-progress | 2026-09-12 |
 | `copy-index-values-and-normalize-default-date` | Codex | completed | 2026-09-13 |
+| `market-environment-multipage-rework` | Codex | in-progress | 2026-09-14 |
 
 ## 说明
 

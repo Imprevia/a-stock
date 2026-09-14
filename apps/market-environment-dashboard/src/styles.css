@@ -79,6 +79,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2d8a8c; outline-
 .evidence-strip > div { display: flex; min-width: 140px; flex-direction: column; gap: 3px; padding: 0 18px; border-right: 1px solid #e4e9e7; }
 .evidence-strip span { color: #89938f; font-size: 14px; }
 .evidence-strip strong { color: #33403b; font-size: 14px; }
+.evidence-strip > div strong { overflow-wrap: anywhere; }
 .evidence-strip .evidence-meta { min-width: 0; margin-left: auto; flex-direction: row; align-items: center; gap: 8px; border-right: 0; }
 .source-dot { width: 4px; height: 4px; border-radius: 50%; background: #57a28f; }
 
@@ -188,7 +189,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #2d8a8c; outline-
 .combination-matrix tbody tr { cursor: pointer; }
 .combination-matrix tbody tr.active th { box-shadow: inset 3px 0 #287d75; background: #eef6f3; }
 .combination-matrix tbody th { color: #34413c; text-align: left; }
-.combination-matrix tbody th small { display: block; margin-top: 4px; color: #7b8882; }
+.combination-matrix tbody th small { display: block; margin-top: 4px; color: #7b8882; font-size: 14px; }
 .combination-matrix td.matched { background: #dfeee9; color: #176b63; font-weight: 700; }
 .summary-sentence-panel { margin-top: 14px; }
 .summary-sentence-panel blockquote { margin: 14px 0 0; padding: 16px 18px; border-left: 3px solid #287d75; background: #f4f8f6; color: #34413c; font-size: 16px; line-height: 1.8; }
@@ -561,4 +562,36 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+.review-sentence-panel, .next-session-panel { min-width: 0; }
+.page-flow-label { margin: 0 0 10px; color: #7a8982; font-size: 14px; letter-spacing: 0; }
+.review-template { margin: 0 0 16px; color: #68756f; font-size: 14px; line-height: 1.7; }
+.review-segment-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.review-sentence-segment { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 12px; border: 1px solid #dfe7e3; border-radius: 10px; background: #f8fbf9; }
+.review-sentence-segment span { color: #718079; font-size: 14px; }
+.review-sentence-segment strong { color: #25342e; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.review-sentence-segment.insufficient { border-color: #e5c9a5; background: #fffaf2; }
+.review-sentence-segment small { color: #9b6b36; font-size: 14px; line-height: 1.4; }
+.review-sentence-panel blockquote { margin: 0; padding: 16px; border-left: 3px solid #77a993; background: #f4f8f5; color: #25342e; font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; }
+.next-session-dates { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 14px; color: #68756f; font-size: 14px; }
+.next-session-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.next-session-grid > div { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 12px; border: 1px solid #dfe7e3; border-radius: 10px; }
+.next-session-grid span { color: #718079; font-size: 14px; }
+.next-session-grid strong { color: #25342e; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.synthesis-next { grid-column: 1 / -1; }
+.learn-more { overflow: hidden; }
+.learn-more > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 16px 20px; color: #2f6254; font-size: 15px; font-weight: 700; list-style: none; }
+.learn-more > summary::-webkit-details-marker { display: none; }
+.learn-more > summary::after { content: '展开'; color: #718079; font-size: 14px; font-weight: 600; }
+.learn-more[open] > summary::after { content: '收起'; }
+.learn-more-content { padding: 0 20px 20px; }
+
+@media (max-width: 760px) {
+  .review-segment-list, .next-session-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .learn-more-content { padding-inline: 16px; }
+}
+
+@media (max-width: 400px) {
+  .review-segment-list, .next-session-grid { grid-template-columns: 1fr; }
 }
