@@ -12,7 +12,9 @@
   "dependencies": {
     "echarts": "^5.5.1",
     "lucide-vue-next": "^0.468.0",
-    "vue": "^3.5.13"
+    "pinia": "^2.2.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",

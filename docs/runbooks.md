@@ -650,3 +650,51 @@ sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob mar
 ## 失败解读指引
 
 gate 输出的每条错误消息都自带修复指引（对应 `AGENTS.md` 硬规则编号语义）。修改 `scripts/check-docs-contract.py` 的消息文案时必须同步 `AGENTS.md`。
+
+
+## 前端路由 history mode SPA fallback（2026-09-16）
+
+市场环境看板从单一 App.vue 路由壳演进为 ue-router history mode 后，直接刷新或通过 URL 直接访问非根路径会先打到后端静态服务，必须配置 SPA fallback，否则返回 404。
+
+### 触发条件
+
+用户访问任一非 / 路径并触发浏览器刷新：
+
+- http://host/dashboard/03 → 直接 404（如果未配置 fallback）
+- http://host/settings → 直接 404
+- http://host/data-collection → 直接 404
+
+内部 <RouterLink> 与 outer.push 不会触发此问题，因为它们走 pushState / popstate，不重新加载 HTML。
+
+### 部署侧要求
+
+- 开发环境（Vite dev server）：自动 fallback，无需额外配置。ite.config.ts 已配置 server.proxy 到 /api。
+- TrueNAS k3s Ingress 部署：Ingress 必须配置 
+ginx.ingress.kubernetes.io/rewrite-target: / 或同等的 fallback annotation；Helm chart 尚未升级此配置（属于 rontend-component-split change 的 Phase 4 任务 4.8）。
+- TrueNAS NodePort 直连：使用 kubectl port-forward 或 NodePort 直连 Vite 静态构建产物（pps/market-environment-dashboard/dist/index.html），需要在静态文件服务器（nginx / caddy）侧配置 SPA fallback：
+  - nginx: 	ry_files \ \/ /index.html;
+  - caddy: 	ry_files {path} /index.html
+- 本地纯静态托管：同上，静态文件服务器需配置 SPA fallback。
+
+### 与现有部署路径的交叉
+
+- 当前 pps/market-environment-dashboard/dist/ 不存在（本次提交未构建），待首次 
+pm run build 后产出。
+- Ingress / NodePort 部署清单（deploy/truenas/、deploy/k3s/）暂未升级 Vue 路由 + SPA fallback 配置；属于后续 Phase 4 任务 4.8 范围，本次提交不交付。
+
+### 验证
+
+- 部署后手动刷新任一 /dashboard/03 / /settings / /data-collection URL，必须返回 200 与前端 HTML。
+- 测试命令（开发）：
+pm run dev --prefix apps/market-environment-dashboard 后浏览器访问 http://localhost:5173/dashboard/03，应渲染 03 章节占位内容（本次提交占位为 DashboardPlaceholder）。
+
+## legacy hash 重定向（2026-09-16）
+
+旧版看板使用 #document-03 锚点定位章节。outer/legacy-redirect.ts 在 outer.beforeEach 钩子里检测 window.location.hash，匹配 #document-(0[1-9])$ 时调用 outer.replace('/dashboard/N') 重写路径并清空 hash。
+
+### 行为
+
+- https://host/#document-03 → 重写为 https://host/dashboard/03，hash 清空，不留历史记录
+- https://host/#some-anchor → 不动（路由按当前路径解析）
+- 已经处于 /dashboard/03 的链接 → 不重复重写
+- SPA fallback 不会与 legacy hash 冲突：fallback 服务返回 index.html 后前端 router 接管，legacy-redirect 在路由解析的 eforeEach 阶段生效。

@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
+import { routes } from './router/routes'
 
 vi.mock('echarts', () => ({ init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })) }))
 
@@ -63,15 +66,19 @@ async function mountLimits(limits: Record<string, unknown>, refreshFails = false
     if (refreshFails && chapterCalls > 1) return { ok: false, status: 502, json: async () => ({ detail: 'fixture refresh failed' }) }
     return { ok: true, json: async () => ({ asOf: '2026-09-10', generatedAt: '2026-09-10T16:12:00+08:00', chapter01: { ...baseChapter, limits } }) }
   }))
-  wrapper = mount(App)
+  setActivePinia(createPinia())
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push('/dashboard/03')
+  await router.isReady()
+  wrapper = mount(App, { global: { plugins: [router] } })
   await flushPromises()
   await flushPromises()
   return wrapper
 }
 
 describe('第 03 页涨跌停证据', () => {
-  beforeEach(() => { window.location.hash = '#document-03'; vi.clearAllMocks() })
-  afterEach(() => { wrapper?.unmount(); wrapper = null; window.location.hash = ''; vi.unstubAllGlobals() })
+  beforeEach(() => { vi.clearAllMocks() })
+  afterEach(() => { wrapper?.unmount(); wrapper = null; vi.unstubAllGlobals() })
 
   it('直接展示完整晋级、梯队、分层、历史和规则证据', async () => {
     const view = await mountLimits(completeLimits())

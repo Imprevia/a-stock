@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
+import { routes } from './router/routes'
 
 const mockEchartsSetOption = vi.hoisted(() => vi.fn())
 const mockEchartsDispose = vi.hoisted(() => vi.fn())
@@ -178,14 +181,17 @@ function makeResponse() {
 }
 
 async function mountDocument02() {
-  // Route to the breadth document via hash; the App reads the hash on mount.
-  window.location.hash = '#document-02'
+  // Route to the breadth document via vue-router; the App reads the path on mount.
   const fetchMock = vi.fn(async () => ({
     ok: true,
     json: async () => makeResponse(),
   }))
   vi.stubGlobal('fetch', fetchMock)
-  wrapper = mount(App)
+  setActivePinia(createPinia())
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push('/dashboard/02')
+  await router.isReady()
+  wrapper = mount(App, { global: { plugins: [router] } })
   await flushPromises()
   await flushPromises()
   await flushPromises()
@@ -203,7 +209,6 @@ afterEach(() => {
     wrapper = null
   }
   vi.unstubAllGlobals()
-  window.location.hash = ''
 })
 
 describe('breadth page rendering', () => {

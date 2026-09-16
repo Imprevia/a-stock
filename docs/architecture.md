@@ -187,3 +187,48 @@ tests/                              公式、服务层和 API 契约测试
 ## 看板图表生命周期
 
 第 01 章的 ECharts 容器位于章节证据加载态的条件渲染区域内。章节加载开始时必须释放旧的 ECharts 实例，避免实例继续引用已卸载的 DOM；章节加载结束并完成下一轮 DOM 更新后，再重新初始化价格和成交额图表。切换指数或窗口尺寸时复用当前 DOM 对应的实例并执行 `setOption` / `resize`。
+
+## 前端路由与状态层（2026-09-16）
+
+市场环境看板前端从单一 `App.vue` 路由壳演进为 `vue-router` history mode + `pinia` 状态层。前端**不**接入 SSR、不**修改**后端端点；后端契约（`/core` / `/chapter-01?section=` / `/next-session` / `/preferences/timezone`）保持不变。
+
+### 路由边界
+
+- `router/routes.ts` 声明 5 条路由：
+  - `/` → 重定向到 `/dashboard/01`
+  - `/dashboard/:documentId(0[1-9])` → `DashboardPlaceholder.vue`（Phase 1 临时占位；Phase 2 task 2.6 替换为 `DashboardLayout.vue`，Phase 3/4 在 `frontend-component-split` change 内拆为各 `DocumentXXPage.vue` 嵌套 children）
+  - `/data-collection` → `data-collection-view.vue`
+  - `/settings` → `timezone-settings-view.vue`
+  - `/:pathMatch(.*)*` → catch-all 重定向到 `/dashboard/01`
+- `router/legacy-redirect.ts` 在 `beforeEach` 内一次性把 `#document-N`（N=01–09）重写为 `/dashboard/N`，旧书签可点；非文档 hash 不动。
+- `props: route => ({ documentId: route.params.documentId })` 让占位组件拿到 URL 参数；后续 `DashboardLayout` 复用此机制。
+
+### 状态归属
+
+- `stores/market.ts`：核心数据 (`data` / `loading` / `error` / `loadedSections` / `sectionStates` / `nextSessionComparison`)、3 个 action（`loadCore` / `loadSection` / `loadNextSession`）、2 个 setter（`setDate` / `setSelectedCode`）、`selectedDate` / `selectedCode` 作为受控输入。请求序列（`coreSequence` / `sectionEpoch` / `sectionSequences` / `nextSessionSequence`）与 `initialDatePending` 是 store 闭包变量，不暴露给 UI。
+- `stores/preferences.ts`：时区偏好（`personalTimeZone` / `workspaceTimeZone` / `effectiveTimeZone` / `source` / `warning` / `loading` / `saving` / `canManageWorkspaceTimeZone` / `backendAvailable`）、`load()` / `save(scope, value)` action、localStorage 读写。`formatDateTime` / `parseTimestamp` 等纯函数迁入 `composables/useFormatDateTime.ts`，接收显式 `timeZone` 参数，不读 store。
+- `stores/navigation.ts`：UI 路由附属状态（`sidebarOpen` + `openSidebar` / `closeSidebar` / `toggleSidebar`）。
+- `market` store 不调其他 store；`preferences` / `navigation` 不调其他 store；时间显示由调用方显式读 `usePreferencesStore().effectiveTimeZone` 后传入纯函数。
+
+### `App.vue` 职责
+
+- 路由壳：`<RouterView/>` 接管 dashboard / data-collection / settings 三层；侧栏与顶栏仍是 `App.vue` 模板（`Sidebar.vue` / `Topbar.vue` 在 `frontend-component-split` change 内拆出）。
+- `useRoute()` / `useRouter()` 替换原 `currentView` / `window.history.pushState` / `popstate` 手写路由；`documentFromPath(route.path)` 派生 `selectedDocumentId` 让章节内联模板按 URL URL 渲染。
+- `onMounted` 调 `market.loadCore()` 取代原 `loadData()`；`watch(selectedIndex)` / `watch(selectedDocumentId)` 等 ECharts 副作用保留到 `frontend-component-split` 内的 `useChartLifecycle` composable 抽出。
+- `initializeTimezonePreferences()` 仍由 `App.vue` 触发（保留在路由壳）。
+
+### 测试边界
+
+- `app.test.ts` / `breadth-page.test.ts` / `limits-page.test.ts` 在 `setActivePinia(createPinia())` + `createMemoryHistory` + `router.push('/dashboard/0X')` + `mount(App, { global: { plugins: [router] } })` 模式下跑通；Phase 1 加入 3 条路由断言（`/dashboard/01` 直达、`/dashboard/99` 重定向、`#document-03` 重写）。
+- `stores/market.test.ts`（9 tests）覆盖 `loadCore` 数据填充与初始日期归一、503 错误、并发请求序列、`loadSection` 跳过已加载与合并、`setDate` / `setSelectedCode` / `reset`。
+- `stores/preferences.test.ts`（10 tests）覆盖 `load` 200/404/503、`save` 200/401/403/404、`isSupportedTimeZone` / `resolveEffectiveTimeZone` 纯函数。
+
+### 部署侧注意点
+
+- vue-router history mode 在生产部署需要 SPA fallback：开发由 Vite 自动处理；生产 Ingress / NodePort 必须在 404 时回退 `index.html`。详见 `docs/runbooks.md`（后续 Phase 4 增补）。
+
+### 当前不在范围内的范围
+
+- `App.vue` 内联的 9 章节模板仍内联（由 `selectedDocumentId` 切换）；`market` store 未挂载到 `App.vue` 的 ref（仍是设计稿）。完整迁移与组件拆分推迟到 `frontend-component-split` change（2026-09-16-frontend-component-split）：Phase A 抽 composable、Phase B 按章节顺序拆 `Document01`..`Document09`、Phase C App.vue 收尾 + 嵌套路由升级、Phase D 文档同步 + archive。
+- 后端 `/api/market-environment` 全量端点（不在当前调用链上）保留为兼容接口。
+- 历史模式 SPA fallback 的 Ingress / NodePort 具体配置在 Phase 4 增补（不在本次交付范围）。

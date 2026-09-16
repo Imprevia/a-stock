@@ -1,10 +1,14 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
 import type { SynchronizationAssessment, SynchronizationDimensionStatus } from './types'
+import { applyLegacyHashRedirect } from './router/legacy-redirect'
+import { routes } from './router/routes'
 
 const mockEchartsSetOption = vi.hoisted(() => vi.fn())
 const mockEchartsDispose = vi.hoisted(() => vi.fn())
@@ -171,7 +175,11 @@ async function mountScenario(assessment: SynchronizationAssessment) {
       : response,
   })))
 
-  mountedWrapper = mount(App)
+  setActivePinia(createPinia())
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push('/dashboard/01')
+  await router.isReady()
+  mountedWrapper = mount(App, { global: { plugins: [router] } })
   await flushPromises()
   await flushPromises()
   return mountedWrapper
@@ -405,7 +413,11 @@ describe('chart lifecycle', () => {
       json: async () => url.includes('chapter-01') ? chapterResponse : response,
     })))
 
-    mountedWrapper = mount(App)
+    setActivePinia(createPinia())
+    const testRouter = createRouter({ history: createMemoryHistory(), routes })
+    await testRouter.push('/dashboard/01')
+    await testRouter.isReady()
+    mountedWrapper = mount(App, { global: { plugins: [testRouter] } })
     await flushPromises()
 
     expect(mockEchartsInit).toHaveBeenCalledTimes(2)
@@ -423,5 +435,84 @@ describe('chart lifecycle', () => {
     expect(mockEchartsDispose).toHaveBeenCalledTimes(2)
     expect(mockEchartsInit).toHaveBeenCalledTimes(4)
     expect(mockEchartsSetOption).toHaveBeenCalledTimes(4)
+  })
+})
+
+describe('routing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.location.hash = ''
+  })
+
+  afterEach(() => {
+    mountedWrapper?.unmount()
+    mountedWrapper = null
+    vi.unstubAllGlobals()
+    window.location.hash = ''
+  })
+
+  function stubCoreFetch(): void {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => url.includes('chapter-01')
+        ? {
+            asOf: '2026-09-03',
+            generatedAt: '2026-09-03T16:00:00+08:00',
+            summary: { synchronization: 'fixture', dominantTrend: 'fixture', warnings: [] },
+            chapter01: chapter(),
+          }
+        : {
+            asOf: '2026-09-03',
+            generatedAt: '2026-09-03T16:00:00+08:00',
+            indices: [],
+            summary: { synchronization: 'fixture', dominantTrend: 'fixture', warnings: [] },
+            chapter01: chapter(),
+          },
+    })))
+  }
+
+  it('lands directly on /dashboard/01 without redirecting', async () => {
+    stubCoreFetch()
+    setActivePinia(createPinia())
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    await router.push('/dashboard/01')
+    await router.isReady()
+    mountedWrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/dashboard/01')
+  })
+
+  it('redirects an unknown dashboard path to /dashboard/01', async () => {
+    stubCoreFetch()
+    setActivePinia(createPinia())
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    await router.push('/dashboard/99')
+    await router.isReady()
+    mountedWrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/dashboard/01')
+  })
+
+  it('rewrites a legacy #document-03 hash to /dashboard/03', async () => {
+    setActivePinia(createPinia())
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    await router.push('/dashboard/01')
+    await router.isReady()
+
+    // Pre-seed the legacy hash before invoking the redirect helper. The
+    // `beforeEach` guard in router/index.ts delegates to this helper, so
+    // calling it directly mirrors the production code path without relying
+    // on memory-history picking up the hash from `window.location`.
+    window.location.hash = '#document-03'
+    const redirected = await applyLegacyHashRedirect(router)
+    // vue-router resolves `replace` asynchronously; let microtasks settle
+    // before reading `currentRoute.value.path`.
+    await flushPromises()
+    expect(redirected).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/dashboard/03')
   })
 })

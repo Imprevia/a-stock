@@ -6,6 +6,7 @@ import {
   Database, FileCheck2, Gauge, LineChart, Menu, RefreshCw, Rows3, Scale,
   Settings2, ShieldAlert, Target, TrendingDown, TrendingUp, X,
 } from 'lucide-vue-next'
+import { useRoute, useRouter, RouterView } from 'vue-router'
 import type {
   Chapter01Analysis,
   Chapter01Section,
@@ -23,10 +24,9 @@ import {
   initializeTimezonePreferences,
   timezonePreferences,
 } from './timezone'
-import DataCollectionView from './data-collection-view.vue'
-import TimezoneSettingsView from './timezone-settings-view.vue'
 import NextSessionPanel from './next-session-panel.vue'
 import ReviewSentencePanel from './review-sentence-panel.vue'
+import { useMarketStore } from './stores/market'
 
 type AppView = 'dashboard' | 'data-collection' | 'settings'
 type SectionPhase = 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
@@ -62,16 +62,26 @@ const combinationDefinitions = [
   { key: 'trend_damage', condition: '跌破关键均线、放量下跌', state: '趋势破坏或退潮' },
 ]
 
+const route = useRoute()
+const router = useRouter()
+const initialView: AppView = route.path.startsWith('/data-collection') ? 'data-collection' : route.path.startsWith('/settings') ? 'settings' : 'dashboard'
+const documentFromPath = (path: string): string => {
+  const match = path.match(/^\/dashboard\/(0[1-9])$/)
+  return match ? match[1] : '01'
+}
+// Phase 2 rollback: restore the local refs that the failed task 2.2-2.3
+// migration deleted. The market store exists as a parallel cache but is
+// not yet wired into App.vue.
 const data = ref<MarketEnvironmentResponse | null>(null)
 const selectedCode = ref('sh000001')
-const selectedDocumentId = ref('01')
+const selectedDocumentId = ref(documentFromPath(route.path))
 const selectedDate = ref(getDefaultMarketDate(new Date()))
 const loading = ref(false)
 const error = ref('')
 const loadedSections = ref<Chapter01Section[]>([])
 const sectionStates = ref(createSectionStates())
 const sidebarOpen = ref(false)
-const currentView = ref<AppView>(window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard')
+const currentView = ref<AppView>(initialView)
 const copyStatus = ref<{ key: string; state: 'success' | 'error'; message: string } | null>(null)
 const nextSessionComparison = ref<NextSessionComparison | null>(null)
 let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
@@ -428,7 +438,7 @@ function formatPriceTooltip(params: unknown) {
   for (const item of items.filter((entry) => entry.seriesName?.startsWith('MA'))) {
     const value = typeof item.value === 'number' ? item.value : null
     if (value != null) lines.push(`${item.marker ?? ''}${item.seriesName}　${value.toFixed(2)}`)
-  }
+}
   return lines.join('<br/>')
 }
 
@@ -636,21 +646,19 @@ async function copyBreadthVerification() {
 }
 
 function selectDocument(id: string) {
-  navigateTo('dashboard')
+  void router.push(`/dashboard/${id}`)
   selectedDocumentId.value = id
   sidebarOpen.value = false
-  window.location.hash = `document-${id}`
 }
 function navigateTo(view: AppView) {
-  currentView.value = view
   sidebarOpen.value = false
-  const path = view === 'data-collection' ? '/data-collection' : view === 'settings' ? '/settings' : '/'
-  if (window.location.pathname !== path) window.history.pushState({}, '', path)
+  if (view === 'dashboard') {
+    void router.push(`/dashboard/${selectedDocumentId.value}`)
+    return
+  }
+  void router.push(view === 'data-collection' ? '/data-collection' : '/settings')
+  currentView.value = view
   if (view === 'dashboard' && !data.value && !loading.value) void loadData()
-}
-function handlePopState() {
-  currentView.value = window.location.pathname === '/data-collection' ? 'data-collection' : window.location.pathname === '/settings' ? 'settings' : 'dashboard'
-  if (currentView.value === 'dashboard' && !data.value && !loading.value) void loadData()
 }
 function selectIndex(code: string) { selectedCode.value = code }
 function handleDateChange() {
@@ -709,16 +717,12 @@ watch(activeSectionState, async (state, previous) => {
   }
 })
 onMounted(() => {
-  const match = window.location.hash.match(/document-(0[1-9])$/)
-  if (match) selectedDocumentId.value = match[1]
   if (currentView.value === 'dashboard') loadData()
   void initializeTimezonePreferences()
   window.addEventListener('resize', resizeCharts)
-  window.addEventListener('popstate', handlePopState)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)
-  window.removeEventListener('popstate', handlePopState)
   if (copyStatusTimer) clearTimeout(copyStatusTimer)
   disposeCharts()
   disposeBreadthChart()
@@ -744,8 +748,7 @@ onBeforeUnmount(() => {
     <main class="main-shell">
       <header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="打开导航" @click="sidebarOpen = true"><Menu :size="19" /></button><div class="breadcrumb"><span>{{ currentView === 'dashboard' ? '如何判断市场环境' : currentView === 'data-collection' ? '数据管理' : '偏好设置' }}</span><ChevronRight :size="14" /><strong>{{ currentView === 'dashboard' ? selectedDocument.id : currentView === 'data-collection' ? '数据采集' : '日期与时间' }}</strong></div></div><div v-if="currentView === 'dashboard'" class="header-actions"><label class="date-field"><CalendarDays :size="16" /><span class="sr-only">选择交易日</span><input v-model="selectedDate" type="date" :max="formatLocalDate(new Date())" :disabled="loading" @change="handleDateChange" /></label><button class="icon-button" type="button" :disabled="loading" aria-label="刷新行情" title="刷新行情" @click="loadData"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="icon-button" type="button" aria-label="打开数据采集" title="打开数据采集" @click="navigateTo('data-collection')"><Database :size="17" /></button></div></header>
       <div class="content-shell">
-        <DataCollectionView v-if="currentView === 'data-collection'" />
-        <TimezoneSettingsView v-else-if="currentView === 'settings'" />
+        <RouterView v-if="currentView !== 'dashboard'" />
         <template v-else>
         <section class="document-header"><div class="document-number">{{ selectedDocument.id }}</div><div class="document-title"><span>01 · 如何判断市场环境</span><h1>{{ selectedDocument.title }}</h1><p>{{ selectedDocument.objective }}</p></div><div class="rule-reference"><span>规则范围</span><strong>{{ selectedDocument.rules }}</strong><em>经验阈值 · 待回测</em></div></section>
         <section v-if="error" class="state-panel error-panel" role="alert"><CircleAlert :size="22" /><div><strong>行情暂时不可用</strong><p>{{ error }}</p></div><button class="text-button" type="button" @click="loadData">重新加载</button></section>
