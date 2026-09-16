@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
+import Document02BreadthPage from './pages/dashboard/Document02BreadthPage.vue'
 import { routes } from './router/routes'
+import { useMarketStore } from './stores/market'
 
 const mockEchartsSetOption = vi.hoisted(() => vi.fn())
 const mockEchartsDispose = vi.hoisted(() => vi.fn())
@@ -181,17 +183,23 @@ function makeResponse() {
 }
 
 async function mountDocument02() {
-  // Route to the breadth document via vue-router; the App reads the path on mount.
+  // Phase B-02: mount Document02BreadthPage directly with pinia + router
+  // context; the page reads market.data + breadth via useMarketStore() and
+  // useDocumentContext(). Populate the store via loadCore() so the fetch
+  // mock feeds the page the same way App.vue's onMounted used to.
   const fetchMock = vi.fn(async () => ({
     ok: true,
     json: async () => makeResponse(),
   }))
   vi.stubGlobal('fetch', fetchMock)
   setActivePinia(createPinia())
+  const market = useMarketStore()
+  await market.loadCore()
+  await flushPromises()
   const router = createRouter({ history: createMemoryHistory(), routes })
   await router.push('/dashboard/02')
   await router.isReady()
-  wrapper = mount(App, { global: { plugins: [router] } })
+  wrapper = mount(Document02BreadthPage, { global: { plugins: [router] } })
   await flushPromises()
   await flushPromises()
   await flushPromises()
@@ -272,8 +280,10 @@ describe('breadth page rendering', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 })
     window.dispatchEvent(new Event('resize'))
     await flushPromises()
-    const main = wrapper!.find('.content-shell').element as HTMLElement
-    // The app shell enforces width clamp; the content shell should never exceed the viewport.
+    // Phase B-02: the page is mounted without the App.vue shell, so use the
+    // page's own root element instead of `.content-shell`.
+    const main = wrapper!.element as HTMLElement
+    // The page content should never exceed the viewport width.
     expect(main.scrollWidth).toBeLessThanOrEqual(390)
   })
 })

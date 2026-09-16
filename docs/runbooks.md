@@ -739,3 +739,18 @@ composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字
 
 - 章节测试报错 Cannot read properties of undefined：检查 setActivePinia(createPinia()) 后是否手动 market.data = fixture 预填；composable 派生全部基于 market.breadth / market.limits，store 为 null 时返回空数组/默认值。
 - 测试通过但运行时报 isSupportedTimeZone 异常：检查 fixtures 里的 timezone 字段是否使用 IANA 标准名（如 Asia/Shanghai），而非 CST / GMT+8。
+
+## 章节页面组件（2026-09-16 frontend-component-split Phase B-01/B-02）
+
+第 01、02 章已拆为独立页面组件（Document01IndexPricePage / Document02BreadthPage），配套三个 chart panel。
+
+### 章节 fixture 预填约定
+
+- 独立挂载页面组件时，fetch mock 不会自动生效——必须在 setActivePinia 后显式调用 market.loadCore()（或手动赋值 market.data）预填数据，再 mount。直接 mount 页面组件而 store 为 null 时，页面只渲染 page-flow-label 与空 section，测试会拿到空 DOM。
+- 溢出断言：页面组件挂载后没有 App.vue 的 .content-shell 节点，390px 视口检查应针对 wrapper.element（页面根元素）而非壳层节点。
+
+### chart panel 调试
+
+- IndexPriceChartPanel 的 K 线 tooltip 由组件内 formatPriceTooltip 提供，从 App.vue 迁移时签名保持一致（接受 echarts params 数组）。
+- BreadthHistoryChartPanel 的当日标记：advanceRatio / medianReturn props 非空且历史 points 为空时，图上只画当日单点；历史 points 非空时当日数据以 props 追加判断，与旧 App.vue renderBreadthChart 行为一致。
+- 三个 panel 均 useChartLifecycle 持有实例；测试里 vi.mock('echarts') 后可断言 init/setOption/dispose 调用次数。

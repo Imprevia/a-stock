@@ -245,3 +245,15 @@ tests/                              公式、服务层和 API 契约测试
 - `pages/dashboard/DashboardLayout.vue`：`/dashboard/:documentId` 嵌套路由的共享壳（document header + evidence strip + breadcrumb + `<RouterView/>`）。`onMounted` 调 `market.loadCore()`（若 `market.data` 为 null）。从 `preferences.effectiveTimeZone` 读取时区给 `evidence-strip` 的 generatedAt 显示。Phase C 才接入路由——目前 `/dashboard/:documentId(0[1-9])` 仍指向 `DashboardPlaceholder.vue`。
 
 测试边界：12 文件 / 86 tests / 全绿。其中 18 个新测试（`useChartLifecycle` 4 个 + `useDocumentContext` 10 个 + 其他已被新 composable 间接覆盖的边界）。
+
+### Phase B-01 / B-02 章节组件（2026-09-16，frontend-component-split）
+
+按章节逐个拆分的前两章已落地为独立页面组件。它们**尚未接入路由**（`/dashboard/:documentId` 仍渲染 `DashboardPlaceholder`，App.vue 内联模板未删除）；现有测试已改为直接挂载页面组件。
+
+- `pages/dashboard/Document01IndexPricePage.vue`：第 01 章全部 7 个 section（指数卡 / 价格结构 + 趋势量能 / 同步评估 / 复盘句 / 次日对照 / 组合矩阵 / 五大指数指标表）。只读 `useMarketStore()` + `useDocumentContext()`；写操作（选指数、复制、刷新）通过 emit 上抛。图表区域预留 `<slot name="price-chart" />` / `<slot name="volume-chart" />`，由路由壳在 Phase C 填入 chart panel。
+- `pages/dashboard/Document01IndexPricePage.test.ts`：6 tests，独立 `mount` + pinia 预填 market fixture；覆盖指数卡、workspace grid、同步评估、组合矩阵、null 数据兜底、`selectIndex` emit。
+- `pages/dashboard/Document02BreadthPage.vue`：第 02 章全部 5 个 section（盘后复盘卡 / 量化证据 / 近 5 日宽度趋势 / 指数×广度一致性 / 次交易日验证 + 质量元数据）。直接内嵌 `BreadthHistoryChartPanel`；`copyVerification` 通过 emit 上抛。
+- `components/charts/IndexPriceChartPanel.vue` / `VolumeChartPanel.vue` / `BreadthHistoryChartPanel.vue`：三个 chart panel，全部通过 `useChartLifecycle` 持有各自 ECharts 实例；接收 `history` / `dates` / `points` props，watch 数据变化重画。
+- `breadth-page.test.ts` 改造：从 `mount(App)` + hash 跳转改为 `mount(Document02BreadthPage)` + `setActivePinia` + `market.loadCore()` 预填；原 7 条断言保留，390px 溢出断言从 `.content-shell`（App 壳层节点）改为页面根元素。
+
+测试边界：13 文件 / 92 tests / 全绿（86 基线 + 6 个 Document01 新测试；breadth-page 7 条断言随组件化迁移，总数不变）。
