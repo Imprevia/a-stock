@@ -257,3 +257,10 @@ tests/                              公式、服务层和 API 契约测试
 - `breadth-page.test.ts` 改造：从 `mount(App)` + hash 跳转改为 `mount(Document02BreadthPage)` + `setActivePinia` + `market.loadCore()` 预填；原 7 条断言保留，390px 溢出断言从 `.content-shell`（App 壳层节点）改为页面根元素。
 
 测试边界：13 文件 / 92 tests / 全绿（86 基线 + 6 个 Document01 新测试；breadth-page 7 条断言随组件化迁移，总数不变）。
+
+### Phase B-03 章节组件（2026-09-16，frontend-component-split）
+
+- `pages/dashboard/Document03LimitsPage.vue`：第 03 章全部 6 个区块（涨跌停质量条 / 5 张指标卡 + null 提示 / 连板晋级 + 字段质量 / 梯队 + 分层 / 近 5 日历史 + 250 日分位 / 规则证据 + 风险复核）。只读 `useMarketStore()`（`limits` getter、`sectionStates.limits`）与 `useDocumentContext()`（`limitWarnings` / `limitSectionPhase` / `promotionGap` / `limitTiers` / `limitHistory` / `limitHistoryMeta` / `limitStratifications` + label 字典）；刷新按钮通过 `refreshSection` emit 上抛。抓取时间显示读取 `preferences.effectiveTimeZone` 传给纯函数 `formatDateTime`——章节组件不直接读 store 时区状态。
+- `limits-page.test.ts` 改造：从 `mount(App)` 改为 `mount(Document03LimitsPage)`；预填走 `market.loadCore()` + `market.loadSection('limits')`（03 章数据来自 `chapter-01?section=limits`，与 01/02 的 core 直出不同）；刷新按钮的写操作在 mount 时通过 `onRefreshSection` prop 接线回 `market.loadSection('limits', true)`，验证了 emit 边界。
+
+测试边界：13 文件 / 92 tests / 全绿（B-03 不新增测试文件；limits-page 4 条断言随组件化迁移，总数不变）。

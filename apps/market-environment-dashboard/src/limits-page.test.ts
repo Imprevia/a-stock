@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import App from './App.vue'
+import Document03LimitsPage from './pages/dashboard/Document03LimitsPage.vue'
+import { routes } from './router/routes'
+import { useMarketStore } from './stores/market'
 import { routes } from './router/routes'
 
 vi.mock('echarts', () => ({ init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })) }))
@@ -67,10 +70,20 @@ async function mountLimits(limits: Record<string, unknown>, refreshFails = false
     return { ok: true, json: async () => ({ asOf: '2026-09-10', generatedAt: '2026-09-10T16:12:00+08:00', chapter01: { ...baseChapter, limits } }) }
   }))
   setActivePinia(createPinia())
+  const market = useMarketStore()
+  await market.loadCore()
+  await flushPromises()
+  await market.loadSection('limits')
+  await flushPromises()
   const router = createRouter({ history: createMemoryHistory(), routes })
   await router.push('/dashboard/03')
   await router.isReady()
-  wrapper = mount(App, { global: { plugins: [router] } })
+  wrapper = mount(Document03LimitsPage, {
+    global: { plugins: [router] },
+    props: {
+      onRefreshSection: () => void market.loadSection('limits', true),
+    },
+  })
   await flushPromises()
   await flushPromises()
   return wrapper

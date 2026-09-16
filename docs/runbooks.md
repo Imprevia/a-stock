@@ -754,3 +754,13 @@ composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字
 - IndexPriceChartPanel 的 K 线 tooltip 由组件内 formatPriceTooltip 提供，从 App.vue 迁移时签名保持一致（接受 echarts params 数组）。
 - BreadthHistoryChartPanel 的当日标记：advanceRatio / medianReturn props 非空且历史 points 为空时，图上只画当日单点；历史 points 非空时当日数据以 props 追加判断，与旧 App.vue renderBreadthChart 行为一致。
 - 三个 panel 均 useChartLifecycle 持有实例；测试里 vi.mock('echarts') 后可断言 init/setOption/dispose 调用次数。
+
+## Document03 预填与刷新约定（2026-09-16 frontend-component-split Phase B-03）
+
+第 03 章（涨跌停）数据来自 chapter-01?section=limits，与第 01、02 章的 core 直出不同。独立挂载 Document03LimitsPage 时 fixture 预填必须走两步：先 market.loadCore()（满足 store 的 coreRequestedDate 前置条件），再 market.loadSection('limits')（拉取章节合并进 chapter01）。只调 loadCore 的话 market.limits 为 undefined，页面会渲染全部空态。
+
+### section 刷新 emit 边界
+
+- 组件内刷新按钮不直接调 store action，只 emit('refreshSection')。
+- 测试在 mount 时通过 onRefreshSection prop 接线回 market.loadSection('limits', true)，验证 emit 边界的完整性。
+- 刷新失败场景（fixture 第二次 chapter-01 返回 502）：store 的 sectionStates.limits 落入 error phase，组件的 limits-refresh-error 块显示 detail 并保留旧证据，与原 App.vue 行为一致。
