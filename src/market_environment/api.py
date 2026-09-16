@@ -48,7 +48,11 @@ collection_coordinator = CollectionCoordinator(
     rebuild_aggregate=service.rebuild_materialized_aggregate,
 )
 collection_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-collection")
-timezone_preference_store = TimezonePreferenceStore(collection_store.path)
+timezone_preference_store = (
+    TimezonePreferenceStore()
+    if getattr(collection_store, "_postgres", False)
+    else TimezonePreferenceStore(collection_store.path)
+)
 ChapterSection = Literal["breadth", "limits", "sectors", "activeDirection", "summary"]
 
 
@@ -192,7 +196,20 @@ def update_timezone_preferences(
 
 def _validate_as_of(as_of: date) -> None:
     if as_of > market_today():
-        raise HTTPException(status_code=422, detail="as_of 不能晚于当前日期")
+        raise HTTPException(status_code=422, detail="as_of 不能晚于当前有效市场日")
+
+
+def _resolve_as_of(as_of: date | None) -> date:
+    """Resolve an omitted query date at request time.
+
+    FastAPI/Pydantic may evaluate ``Query(default_factory=...)`` while the
+    route metadata is constructed, which can freeze the default for a process
+    that spans a market-date boundary.  Keeping the query optional and
+    resolving it inside the handler ensures the Shanghai effective date is
+    recalculated for every request (including the 09:30 pre-open fallback).
+    """
+
+    return as_of if as_of is not None else market_today()
 
 
 def _core_index_payload(record: CoreIndexResultRecord) -> dict:
@@ -259,8 +276,9 @@ def _run_payload(result) -> dict:
 
 @app.get("/api/market-environment", response_model=MarketEnvironmentResponse)
 def market_environment(
-    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+    as_of: date | None = Query(default=None, description="交易日，格式 YYYY-MM-DD"),
 ) -> dict:
+    as_of = _resolve_as_of(as_of)
     _validate_as_of(as_of)
     try:
         return service.get(as_of)
@@ -270,8 +288,9 @@ def market_environment(
 
 @app.get("/api/market-environment/core", response_model=MarketEnvironmentResponse)
 def market_environment_core(
-    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+    as_of: date | None = Query(default=None, description="交易日，格式 YYYY-MM-DD"),
 ) -> dict:
+    as_of = _resolve_as_of(as_of)
     _validate_as_of(as_of)
     try:
         return service.get_core(as_of)
@@ -284,10 +303,11 @@ def market_environment_core(
     response_model=NextSessionComparisonResponse,
 )
 def market_environment_next_session(
-    as_of: date = Query(default_factory=market_today, description="当前交易日，格式 YYYY-MM-DD"),
+    as_of: date | None = Query(default=None, description="当前交易日，格式 YYYY-MM-DD"),
 ) -> dict:
     """Return exact next-session evidence without provider access."""
 
+    as_of = _resolve_as_of(as_of)
     _validate_as_of(as_of)
     try:
         return service.get_next_session_comparison(as_of)
@@ -297,9 +317,10 @@ def market_environment_next_session(
 
 @app.get("/api/market-environment/chapter-01", response_model=Chapter01Response)
 def market_environment_chapter01(
-    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+    as_of: date | None = Query(default=None, description="交易日，格式 YYYY-MM-DD"),
     section: ChapterSection = Query(description="按需加载的第 01 章数据集"),
 ) -> dict:
+    as_of = _resolve_as_of(as_of)
     _validate_as_of(as_of)
     try:
         return service.get_chapter01(as_of, section)
@@ -312,8 +333,9 @@ def market_environment_chapter01(
     response_model=CollectionStatusResponse,
 )
 def market_environment_collection_status(
-    as_of: date = Query(default_factory=market_today, description="交易日，格式 YYYY-MM-DD"),
+    as_of: date | None = Query(default=None, description="交易日，格式 YYYY-MM-DD"),
 ) -> dict:
+    as_of = _resolve_as_of(as_of)
     _validate_as_of(as_of)
     result = collection_coordinator.collection_status(as_of)
     datasets = []

@@ -5,7 +5,10 @@ namespace: a-stock
 
 resources:
   - namespace.yaml
-  - persistent-volume-claim.yaml
+  - postgresql-pvc.yaml
+  - postgresql-service.yaml
+  - postgresql-statefulset.yaml
+  - postgresql-schema-migration-job.yaml
   - deployment.yaml
   - service.yaml
   - ingress.yaml

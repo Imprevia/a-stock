@@ -1,0 +1,59 @@
+{{- if and .Values.database.enabled .Values.database.migration.enabled (has (default "all" .Values.component) (list "all" "database")) }}
+{{- if or (not .Values.database.existingSecret) (not .Values.database.migration.sourceClaim) }}
+{{- fail "database migration requires existingSecret and database.migration.sourceClaim" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "a-stock.databaseMigrationName" . }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database-migration
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "a-stock.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database-migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: migration
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "src.market_environment.cli", "database", "migrate"]
+          args:
+            - --source
+            - {{ .Values.database.migration.sourcePath | quote }}
+            - --backup
+            - {{ .Values.database.migration.backupPath | quote }}
+            {{- if .Values.database.migration.apply }}
+            - --apply
+            {{- end }}
+          env:
+            - name: MARKET_ENVIRONMENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.url }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: legacy-sqlite
+              mountPath: /data
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: legacy-sqlite
+          persistentVolumeClaim:
+            claimName: {{ .Values.database.migration.sourceClaim }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

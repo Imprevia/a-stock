@@ -32,6 +32,8 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
 
 COPY --chown=10001:10001 src ./src
+COPY --chown=10001:10001 alembic.ini ./alembic.ini
+COPY --chown=10001:10001 alembic ./alembic
 COPY --from=frontend-builder --chown=10001:10001 \
      /build/apps/market-environment-dashboard/dist \
      ./apps/market-environment-dashboard/dist

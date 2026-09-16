@@ -26,7 +26,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/`、`deploy/k3s-native-scheduled/` | 市场环境看板的 Dashboard-only k3s Kustomize base，以及受 Kubernetes 1.27+ 检查的 native scheduled overlay | 修改镜像、端口、探针、存储、资源、调度或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart；`component` 控制 database/service/schedule/all 资源集合 | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
-| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数、SQLite PVC 基线、调度 overlay，以及已明确标注的 k3s 1.26 operator-override 清单；通用 Helm 入口和临时修正入口分别位于 `scripts/deploy-truenas-k3s.sh` 与 `scripts/apply-truenas-operator-override.sh` | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` 与 `docs/architecture.md` |
+| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数、PostgreSQL Secret/Service 合同、旧 SQLite 迁移输入边界、调度 overlay，以及已明确标注的 k3s 1.26 operator-override 清单；通用 Helm 入口和临时修正入口分别位于 `scripts/deploy-truenas-k3s.sh` 与 `scripts/apply-truenas-operator-override.sh` | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` 与 `docs/architecture.md` |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 

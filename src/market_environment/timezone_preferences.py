@@ -1,4 +1,4 @@
-"""User/workspace timezone preferences and their small SQLite audit trail.
+"""User/workspace timezone preferences and their append-only audit trail.
 
 The market-environment service deliberately has no dependency on a platform
 identity provider.  This module keeps the storage and identity boundary small:
@@ -9,6 +9,7 @@ preference contract or historical snapshot values.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,11 +17,24 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from .database import DatabaseSettings, create_database_engine
+from .postgres_compat import PostgresConnection
+from .postgres_schema import create_schema
+
 TimezoneScope = Literal["personal", "workspace"]
 
 DEFAULT_USER_ID = "anonymous"
 DEFAULT_WORKSPACE_ID = "default"
 _SUPPORTED_TIMEZONES = frozenset(available_timezones())
+
+
+def _as_datetime(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def validate_timezone(value: str | None) -> str | None:
@@ -87,19 +101,36 @@ class TimezonePreference:
 
 
 class TimezonePreferenceStore:
-    """SQLite-backed, scope-isolated preference store.
+    """Scope-isolated preference store with SQLite fixture and PostgreSQL runtime paths.
 
     Personal preferences are keyed by user and workspace preferences by
     workspace.  Audit rows are append-only and contain only subject IDs and
     timezone values; no credentials or request payloads are persisted.
     """
 
-    def __init__(self, path: Path | str) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+    def __init__(self, path: Path | str | None = None, *, database_url: str | None = None) -> None:
+        self._postgres = database_url is not None or (
+            path is None and bool(os.getenv("MARKET_ENVIRONMENT_DATABASE_URL"))
+        )
+        self.engine = None
+        if self._postgres:
+            self.engine = create_database_engine(
+                DatabaseSettings(url=database_url)
+                if database_url
+                else DatabaseSettings.from_environment(required=True)
+            )
+            self.path = None
+            create_schema(self.engine)
+        else:
+            if path is None:
+                raise ValueError("SQLite timezone preference store requires an explicit path")
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
+        if self._postgres:
+            return PostgresConnection(self.engine.connect())
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
@@ -167,7 +198,7 @@ class TimezonePreferenceStore:
             subject_id=row["subject_id"],
             workspace_id=row["workspace_id"],
             timezone=row["timezone"],
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+            updated_at=_as_datetime(row["updated_at"]),
         )
 
     def set(
@@ -184,11 +215,22 @@ class TimezonePreferenceStore:
         key = self._key(scope, subject_id, workspace_id)
         timestamp = self._timestamp(changed_at)
         with self._connect() as connection:
-            row = connection.execute(
+            if self._postgres:
+                # A missing preference row cannot be locked with SELECT FOR
+                # UPDATE. Serialize first writes as well as updates so two
+                # concurrent requests produce a correct previous_timezone
+                # audit chain instead of both recording NULL.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))",
+                    (f"market-timezone:{key[0]}:{key[1]}:{key[2]}",),
+                )
+            query = (
                 "SELECT timezone FROM timezone_preferences "
-                "WHERE scope = ? AND subject_id = ? AND workspace_id = ?",
-                key,
-            ).fetchone()
+                "WHERE scope = ? AND subject_id = ? AND workspace_id = ?"
+            )
+            if self._postgres:
+                query += " FOR UPDATE"
+            row = connection.execute(query, key).fetchone()
             previous = row["timezone"] if row else None
             connection.execute(
                 """
@@ -210,7 +252,7 @@ class TimezonePreferenceStore:
                     """,
                     (*key, actor_id, previous, validated, timestamp),
                 )
-        return TimezonePreference(scope, key[1], key[2], validated, datetime.fromisoformat(timestamp))
+        return TimezonePreference(scope, key[1], key[2], validated, _as_datetime(timestamp))
 
     def audit_entries(self) -> tuple[sqlite3.Row, ...]:
         """Return audit rows for offline verification and diagnostics."""

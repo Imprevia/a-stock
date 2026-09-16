@@ -13,6 +13,10 @@ service:
 ingress:
   enabled: false
 
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
 persistence:
   enabled: true
   existingClaim: a-stock-data
@@ -21,7 +25,6 @@ persistence:
 
 marketEnvironment:
   timezone: Asia/Shanghai
-  snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
   settlementTime: "15:10"
   scheduledCollection:

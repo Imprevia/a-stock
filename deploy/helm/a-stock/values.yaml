@@ -17,6 +17,47 @@ fullnameOverride: ""
 #               reviewed suspended/disabled profile allows it
 component: all
 
+# PostgreSQL is the runtime store. Credentials must be supplied through a
+# pre-created Secret; the chart never renders passwords or creates a Secret.
+database:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16.4"
+    # Pinned linux/amd64 manifest digest for postgres:16.4.
+    digest: "sha256:9a70e4d1c03a5066080292db2dd95ee3965d3651316e21989fa0935afb8ce8ca"
+    pullPolicy: IfNotPresent
+  existingSecret: ""
+  secretKeys:
+    url: DATABASE_URL
+    username: POSTGRES_USER
+    password: POSTGRES_PASSWORD
+    database: POSTGRES_DB
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    storageClass: local-path
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    mountPath: /var/lib/postgresql/data
+    keep: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  migration:
+    enabled: false
+    sourceClaim: ""
+    sourcePath: /data/snapshots.sqlite3
+    backupPath: /tmp/snapshots-before-postgresql.sqlite3
+    apply: false
+    schemaEnabled: true
+
 podAnnotations: {}
 podLabels: {}
 
@@ -68,8 +109,13 @@ persistence:
 
 marketEnvironment:
   timezone: Asia/Shanghai
-  snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
+  database:
+    sslMode: prefer
+    poolSize: 5
+    maxOverflow: 5
+    poolTimeoutSeconds: 10
+    statementTimeoutMs: 30000
   settlementTime: "15:10"
   scheduledCollection:
     enabled: false

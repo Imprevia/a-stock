@@ -11,9 +11,24 @@ permissions:
 jobs:
   offline-rule-gate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres@sha256:9a70e4d1c03a5066080292db2dd95ee3965d3651316e21989fa0935afb8ce8ca
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: market
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test -d market"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     env:
       TRADING_RULES_OFFLINE: "1"
       PYTHONHASHSEED: "0"
+      MARKET_ENVIRONMENT_TEST_DATABASE_URL: postgresql+psycopg://test:test@127.0.0.1:5432/market
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

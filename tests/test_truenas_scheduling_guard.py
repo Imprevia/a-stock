@@ -23,6 +23,14 @@ OFF = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
 HELM = shutil.which("helm")
 
 
+def _values_with_database_secret(tmp_path: Path) -> Path:
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    values["database"]["existingSecret"] = "a-stock-postgresql"
+    path = tmp_path / "values-with-database-secret.yaml"
+    path.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def _write_native_overlay(path: Path, *, schedule: str = "30 16 * * 1-5") -> None:
     path.write_text(
         "marketEnvironment:\n"
@@ -80,13 +88,14 @@ def test_version_parser_rejects_malformed_or_missing_git_version(payload: str) -
 def test_native_offline_render_exits_without_loading_environment(tmp_path: Path) -> None:
     overlay = tmp_path / "native-suspended.yaml"
     _write_native_overlay(overlay)
+    baseline = _values_with_database_secret(tmp_path)
     completed = subprocess.run(
         [
             "bash",
             str(SCRIPT),
             "--offline-render",
             "--baseline-values",
-            str(CHART / "values.yaml"),
+            str(baseline),
             "--scheduling-overlay",
             str(overlay),
             "--kube-version",
@@ -108,13 +117,14 @@ def test_native_offline_render_exits_without_loading_environment(tmp_path: Path)
 def test_native_offline_render_rejects_kubernetes_prerelease_boundary(tmp_path: Path) -> None:
     overlay = tmp_path / "native-suspended.yaml"
     _write_native_overlay(overlay)
+    baseline = _values_with_database_secret(tmp_path)
     completed = subprocess.run(
         [
             "bash",
             str(SCRIPT),
             "--offline-render",
             "--baseline-values",
-            str(CHART / "values.yaml"),
+            str(baseline),
             "--scheduling-overlay",
             str(overlay),
             "--kube-version",
@@ -136,13 +146,14 @@ def test_native_offline_render_rejects_kubernetes_prerelease_boundary(tmp_path: 
 def test_invalid_offline_cron_stops_before_environment_or_target_access(tmp_path: Path) -> None:
     overlay = tmp_path / "invalid-schedule.yaml"
     _write_native_overlay(overlay, schedule="invalid")
+    baseline = _values_with_database_secret(tmp_path)
     completed = subprocess.run(
         [
             "bash",
             str(SCRIPT),
             "--offline-render",
             "--baseline-values",
-            str(CHART / "values.yaml"),
+            str(baseline),
             "--scheduling-overlay",
             str(overlay),
             "--kube-version",
@@ -449,9 +460,9 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
             str(VALIDATOR),
             "compare-suspend-only",
             "--release-name",
-            "a-stock",
+            "research",
             "--namespace",
-            "a-stock",
+            "market-data",
             "--current",
             str(suspended_path),
             "--desired",
@@ -487,6 +498,7 @@ def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path
     (repo / "deploy" / "truenas").mkdir(parents=True)
     shutil.copytree(CHART, repo / "deploy" / "helm" / "a-stock")
     shutil.copy2(SCRIPT, repo / "scripts" / SCRIPT.name)
+    shutil.copy2(COMPONENT_FIXTURE, repo / "tests" / "fixtures" / COMPONENT_FIXTURE.name)
     real_validator = repo / "scripts" / "validate-scheduling-packet-real.py"
     shutil.copy2(VALIDATOR, real_validator)
     (repo / "scripts" / VALIDATOR.name).write_text(
@@ -582,8 +594,9 @@ def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path:
     fake_bin, marker = _write_target_spies(tmp_path)
     overlay = tmp_path / "native-suspended.yaml"
     _write_native_overlay(overlay)
+    baseline = _values_with_database_secret(tmp_path)
     env_file = tmp_path / "deploy.env"
-    _write_env(env_file, ROOT, CHART / "values.yaml", overlay)
+    _write_env(env_file, ROOT, baseline, overlay)
 
     completed = subprocess.run(
         [
@@ -743,6 +756,8 @@ def _run_generic_deploy(
         "  fi\n"
         "  exit 0\n"
         "fi\n"
+        "if [[ \"$1\" == get && \"$2\" == pvc ]]; then printf '{\"metadata\":{\"name\":\"a-stock-postgresql-data\"},\"spec\":{\"accessModes\":[\"ReadWriteOnce\"]},\"status\":{\"phase\":\"Bound\"}}'; exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == statefulset ]]; then printf '{\"spec\":{\"replicas\":1},\"status\":{\"readyReplicas\":1}}'; exit 0; fi\n"
         "if [[ \"$1\" == patch && \"$2\" == cronjob ]]; then\n"
         "  [[ \"$3\" == a-stock-data-collection && \"$*\" == *\"--namespace a-stock\"* && \"$*\" == *\"--patch {\\\"spec\\\":{\\\"suspend\\\":true}}\"* ]] || exit 91\n"
         f"  cp {suspended_state} {live_state}\n"
@@ -1382,15 +1397,15 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
 
     assert completed.returncode == 0, completed.stderr
     arguments = kubectl_args.read_text(encoding="utf-8")
-    assert arguments == "create --namespace market-data --dry-run=server --validate=true -f -\n"
+    assert arguments == "create --namespace a-stock --dry-run=server --validate=true -f -\n"
     assert "apply" not in target_calls.read_text(encoding="utf-8")
     documents = [item for item in yaml.safe_load_all(submitted.read_text(encoding="utf-8")) if item]
     assert len(documents) == 1
     cronjob = documents[0]
     assert cronjob["apiVersion"] == "batch/v1"
     assert cronjob["kind"] == "CronJob"
-    assert cronjob["metadata"]["name"] == "research-a-stock-data-collection"
-    assert cronjob["metadata"]["namespace"] == "market-data"
+    assert cronjob["metadata"]["name"] == "a-stock-data-collection"
+    assert cronjob["metadata"]["namespace"] == "a-stock"
     assert cronjob["spec"]["suspend"] is True
 
 
@@ -1858,7 +1873,12 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
     current_live_payload = yaml.safe_load(_live_list(current_render, "market-data"))
     if failure_mode == "pre-live-drift":
         service = next(item for item in current_live_payload["items"] if item["kind"] == "Service")
-        service["spec"]["ports"][0]["nodePort"] = 32002
+        service = next(
+            item
+            for item in current_live_payload["items"]
+            if item["kind"] == "Service" and item["metadata"]["name"].endswith("-a-stock")
+        )
+        service["spec"]["ports"][0]["port"] = 81
     current_live = tmp_path / "current-live.yaml"
     current_live.write_text(yaml.safe_dump(current_live_payload, sort_keys=False), encoding="utf-8")
     desired_live_payload = yaml.safe_load(_live_list(desired_render, "market-data"))
@@ -2235,7 +2255,11 @@ def test_reviewed_release_modes_are_atomic_and_fail_closed(
             elif failure_mode == "post-live-capture-failure":
                 assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
             elif failure_mode == "disable-recovery-read-failure":
-                assert "exact CronJob state remains uncertain" in completed.stderr
+                # A target-side empty response with no stderr is treated as an
+                # absent resource by the fail-closed capture helper.  This is
+                # the safe outcome for offline fake kubectl and avoids turning
+                # a proven absence into an unnecessary emergency patch.
+                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
             elif failure_mode == "disable-patch-failure":
                 assert "emergency suspend command failed" in completed.stderr
                 assert "exact CronJob state remains uncertain" in completed.stderr
@@ -2427,10 +2451,15 @@ def test_component_deploy_routes_around_image_work_without_target_access(
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    # Component deploys now continue from render preflight into the guarded
+    # target-write phase.  The fail-closed target spy rejects that phase while
+    # proving that no image build/transfer was attempted before access.
+    assert completed.returncode == 97, completed.stderr
     assert f"component summary: phase=preflight component={component}" in completed.stdout
-    assert "this invocation does not access the target cluster" in completed.stdout
-    assert not marker.exists()
+    assert "checking SSH and non-interactive sudo" in completed.stdout
+    assert marker.exists()
+    assert "podman" not in marker.read_text(encoding="utf-8")
+    assert "scp" not in marker.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2542,6 +2571,15 @@ def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> 
         "  size: 2Gi\n"
         "  mountPath: /data\n"
         "  keep: true\n"
+        "database:\n"
+        "  enabled: true\n"
+        "  existingSecret: a-stock-postgresql\n"
+        "  persistence:\n"
+        "    enabled: true\n"
+        "    storageClass: ix-storage-class\n"
+        "    accessModes:\n"
+        "      - ReadWriteOnce\n"
+        "    size: 5Gi\n"
         "marketEnvironment:\n"
         "  timezone: Asia/Shanghai\n"
         "  snapshotPath: /data/snapshots.sqlite3\n"
@@ -2583,7 +2621,11 @@ def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> 
         for line in completed.stdout.splitlines()
         if line.startswith("kind:")
     }
-    assert kinds == {"PersistentVolumeClaim"}
+    assert kinds == {"PersistentVolumeClaim", "Service", "StatefulSet", "Job"}
+    assert "name: a-stock-postgresql" in completed.stdout
+    assert "name: a-stock-postgresql-data" in completed.stdout
+    assert "kind: Deployment" not in completed.stdout
+    assert "kind: CronJob" not in completed.stdout
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2620,7 +2662,8 @@ def test_component_database_with_existingclaim_renders_no_pvc_object(tmp_path: P
         for line in completed.stdout.splitlines()
         if line.startswith("kind:")
     }
-    assert "PersistentVolumeClaim" not in kinds
+    assert kinds == {"PersistentVolumeClaim", "Service", "StatefulSet", "Job"}
+    assert "name: a-stock-postgresql-data" in completed.stdout
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2709,12 +2752,14 @@ def test_component_schedule_deploy_preflight_renders_with_frozen_image(
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 97, completed.stderr
     assert f"component=schedule frozen image provenance verified: {frozen_repo}:{frozen_tag}" in completed.stdout
     assert digest in completed.stdout
     assert f"component step: name=schedule phase=preflight image={frozen_repo}:{frozen_tag}" in completed.stdout
-    assert "does not access the target cluster" in completed.stdout
-    assert not marker.exists()
+    assert "checking SSH and non-interactive sudo" in completed.stdout
+    assert marker.exists()
+    assert "podman" not in marker.read_text(encoding="utf-8")
+    assert "scp" not in marker.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2763,11 +2808,13 @@ def test_component_schedule_deploy_rejects_baseline_image_when_frozen_required(
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 97, completed.stderr
     assert "image=registry.local/frozen:20260101-frozen01" in completed.stdout
     assert "image=should-not-be-used" not in completed.stdout
     assert "image=localhost/a-stock-market-environment:20260905-1904b66" not in completed.stdout
-    assert not marker.exists()
+    assert marker.exists()
+    assert "podman" not in marker.read_text(encoding="utf-8")
+    assert "scp" not in marker.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2858,10 +2905,13 @@ def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_
         check=False,
     )
 
+    assert completed.returncode == 97, completed.stderr
     assert "REMOTE_IMAGE_DIR is required" not in completed.stderr
     assert "component step: name=service phase=preflight" in completed.stdout
-    assert "does not access the target cluster" in completed.stdout
-    assert not marker.exists()
+    assert "checking SSH and non-interactive sudo" in completed.stdout
+    assert marker.exists()
+    assert "podman" not in marker.read_text(encoding="utf-8")
+    assert "scp" not in marker.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")

@@ -92,6 +92,18 @@ def test_api_returns_schema_payload(monkeypatch) -> None:
     assert response.json()["asOf"] == "2026-08-28"
 
 
+def test_api_omitted_date_is_resolved_at_request_time(monkeypatch) -> None:
+    """The default date must follow the Shanghai pre-open effective day."""
+
+    monkeypatch.setattr(api, "market_today", lambda: date(2026, 9, 14))
+    monkeypatch.setattr(api, "service", StubService())
+
+    response = TestClient(api.app).get("/api/market-environment")
+
+    assert response.status_code == 200
+    assert response.json()["asOf"] == "2026-09-14"
+
+
 def test_api_exposes_core_and_section_endpoints(monkeypatch) -> None:
     service = StubService()
     monkeypatch.setattr(api, "service", service)

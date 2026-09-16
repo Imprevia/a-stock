@@ -1,0 +1,85 @@
+{{- if and .Values.database.enabled (has (default "all" .Values.component) (list "all" "database")) }}
+{{- if not .Values.database.existingSecret }}
+{{- fail "database.existingSecret is required; create the PostgreSQL Secret before rendering" }}
+{{- end }}
+{{- if not .Values.database.persistence.enabled }}
+{{- fail "database.persistence.enabled=true is required for the PostgreSQL StatefulSet" }}
+{{- end }}
+{{- if ne (join "," .Values.database.persistence.accessModes) "ReadWriteOnce" }}
+{{- fail "database.persistence.accessModes must be exactly ReadWriteOnce" }}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "a-stock.postgresqlName" . }}
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  serviceName: {{ include "a-stock.postgresqlName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "a-stock.postgresqlName" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "a-stock.postgresqlName" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgresql
+          {{- if .Values.database.image.digest }}
+          image: "{{ .Values.database.image.repository }}@{{ .Values.database.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.database.image.repository }}:{{ .Values.database.image.tag }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.database.image.pullPolicy }}
+          ports:
+            - name: postgresql
+              containerPort: {{ .Values.database.service.port }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.username }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.password }}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.database }}
+            - name: PGDATA
+              value: {{ printf "%s/pgdata" .Values.database.persistence.mountPath | quote }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -h 127.0.0.1"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -h 127.0.0.1"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.database.resources | nindent 12 }}
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: {{ .Values.database.persistence.mountPath }}
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: {{ include "a-stock.postgresqlPvcName" . }}
+{{- end }}

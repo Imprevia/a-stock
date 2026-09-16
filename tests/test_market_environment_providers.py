@@ -310,6 +310,99 @@ def test_active_direction_provider_falls_back_to_keyed_delayed_response(monkeypa
     assert "已降级到东方财富延迟容量方向" in result["quality"]["warnings"]
 
 
+def test_active_direction_provider_accepts_alias_rows_and_rows_container(monkeypatch):
+    provider = MarketDataProvider()
+    rows = [
+        {
+            "code": f"600{index:03d}",
+            "name": f"样本{index}",
+            "amount": f"{30_000 - index:,}",
+            "industry": "银行" if index < 3 else "行业",
+            "price": 10,
+            "change_pct": 1,
+        }
+        for index in range(30)
+    ]
+
+    monkeypatch.setattr(
+        provider.eastmoney,
+        "get_json",
+        lambda _url, _params: {"data": {"rows": {str(i): row for i, row in enumerate(rows)}}},
+    )
+
+    result = provider.fetch_chapter01_active_direction(date(2026, 9, 3), allow_current_snapshot=True)
+
+    assert result["state"] == "candidate"
+    assert result["topStocks"][0]["code"] == "600000"
+    assert result["topStocks"][0]["amount"] == 30_000
+    assert result["topStocks"][0]["industry"] == "银行"
+
+
+def test_limit_provider_binds_explicit_query_date_when_group_date_is_omitted(monkeypatch):
+    provider = MarketDataProvider()
+    as_of = date(2026, 9, 11)
+
+    def fake_get_json(_url, _params):
+        return {"data": {"pool": {"0": {"c": "600000"}}}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_limit_dataset_strict(as_of)
+
+    assert result.normalization.actual_as_of == as_of
+    assert result.payload["quality"]["dateEvidence"] == "request-parameter"
+    assert result.payload["quality"]["status"] == "ok"
+    assert result.pool_evidence["limit_up"]["dateEvidence"] == "request-parameter"
+
+
+def test_limit_provider_falls_back_per_pool_to_delayed_endpoint(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+    pools = {
+        "getTopicZTPool": [{"c": "600000"}],
+        "getTopicZBPool": [{"c": "600001"}],
+        "getTopicDTPool": [{"c": "600002"}],
+    }
+
+    def fake_get_json(url, params):
+        calls.append((url, params))
+        if url.startswith(provider._LIMIT_POOL_PRIMARY_HOST):
+            raise RuntimeError("primary pool disconnected")
+        endpoint = url.rsplit("/", 1)[-1]
+        return {"data": {"pool": pools[endpoint]}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_limit_dataset_strict(date(2026, 9, 11))
+
+    assert len(calls) == 6
+    assert all(url.startswith(provider._LIMIT_POOL_FALLBACK_HOST) for url, _params in calls[1::2])
+    assert result.payload["quality"]["source"] == "eastmoney-push2ex-delay"
+    assert result.payload["quality"]["status"] == "fallback"
+    assert result.payload["limitUpCount"] == 1
+    assert "primary pool disconnected" in result.payload["quality"]["warning"]
+    assert all(
+        evidence["source"] == "eastmoney-push2ex-delay"
+        for evidence in result.pool_evidence.values()
+    )
+
+
+def test_limit_provider_falls_back_when_primary_date_shape_is_invalid(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+
+    def fake_get_json(url, _params):
+        calls.append(url)
+        if url.startswith(provider._LIMIT_POOL_PRIMARY_HOST):
+            return {"data": {"date": "not-a-date", "pool": [{"c": "600000"}]}}
+        return {"data": {"pool": [{"c": "600000"}]}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = provider.fetch_chapter01_limit_dataset_strict(date(2026, 9, 11))
+
+    assert len(calls) == 6
+    assert result.payload["quality"]["source"] == "eastmoney-push2ex-delay"
+    assert "invalid top-level session date" in result.payload["quality"]["warning"]
+
+
 def test_stock_snapshot_rejects_partial_market_response(monkeypatch):
     provider = MarketDataProvider()
     monkeypatch.setattr(

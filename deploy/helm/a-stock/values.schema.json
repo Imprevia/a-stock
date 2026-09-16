@@ -12,6 +12,59 @@
       ],
       "description": "Component intent for the componentized TrueNAS k3s entry point. `all` preserves the existing one-click behaviour; `database`, `service`, and `schedule` constrain rendering to the matching subset of resources."
     },
+    "database": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingSecret": {"type": "string"},
+        "secretKeys": {
+          "type": "object",
+          "required": ["url", "username", "password", "database"],
+          "properties": {
+            "url": {"type": "string", "minLength": 1},
+            "username": {"type": "string", "minLength": 1},
+            "password": {"type": "string", "minLength": 1},
+            "database": {"type": "string", "minLength": 1}
+          }
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {"type": "string"},
+            "tag": {"type": "string"},
+            "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "pullPolicy": {"type": "string"}
+          }
+        },
+        "service": {
+          "type": "object",
+          "required": ["port"],
+          "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+        },
+        "persistence": {
+          "type": "object",
+          "required": ["enabled", "size"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "storageClass": {"type": "string"},
+            "size": {"type": "string"},
+            "keep": {"type": "boolean"}
+          }
+        },
+        "migration": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "sourceClaim": {"type": "string"},
+            "sourcePath": {"type": "string"},
+            "backupPath": {"type": "string"},
+            "apply": {"type": "boolean"},
+            "schemaEnabled": {"type": "boolean"}
+          }
+        }
+      }
+    },
     "marketEnvironment": {
       "type": "object",
       "required": [
@@ -24,6 +77,16 @@
           "enum": [
             "Asia/Shanghai"
           ]
+        },
+        "database": {
+          "type": "object",
+          "properties": {
+            "sslMode": {"type": "string", "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]},
+            "poolSize": {"type": "integer", "minimum": 1},
+            "maxOverflow": {"type": "integer", "minimum": 0},
+            "poolTimeoutSeconds": {"type": "integer", "minimum": 1},
+            "statementTimeoutMs": {"type": "integer", "minimum": 100}
+          }
         },
         "scheduledCollection": {
           "type": "object",

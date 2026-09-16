@@ -1,0 +1,25 @@
+{{- if and .Values.database.enabled (has (default "all" .Values.component) (list "all" "database")) .Values.database.persistence.enabled }}
+{{- if ne (join "," .Values.database.persistence.accessModes) "ReadWriteOnce" }}
+{{- fail "database.persistence.accessModes must be exactly ReadWriteOnce" }}
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "a-stock.postgresqlPvcName" . }}
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+  {{- if .Values.database.persistence.keep }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.database.persistence.accessModes | nindent 4 }}
+  {{- with .Values.database.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.database.persistence.size }}
+{{- end }}

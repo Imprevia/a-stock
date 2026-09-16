@@ -12,6 +12,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from sqlalchemy import Engine
+
+from .database import DatabaseSettings, create_database_engine
+from .postgres_compat import PostgresConnection
+from .postgres_schema import create_schema
+
 from .limit_facts import (
     LIMIT_FACT_SCHEMA_VERSION,
     LimitSecurityFactRecord,
@@ -109,6 +115,39 @@ class TradingSessionRecord:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_date(value: date | datetime | str | None) -> date | None:
+    """Normalize SQLite strings and PostgreSQL DATE/DATETIME values."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
+def _as_datetime(value: datetime | date | str | None) -> datetime | None:
+    """Normalize PostgreSQL TIMESTAMPTZ and legacy ISO text to UTC-aware time."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time())
+    else:
+        parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _json_value(value: Any, default: Any = None) -> Any:
+    """Decode JSON text while accepting native PostgreSQL JSONB values."""
+    if value is None:
+        return default
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def default_snapshot_path() -> Path:
@@ -230,12 +269,32 @@ class MaterializedAggregateRecord:
 
 
 class SnapshotStore:
-    def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path) if path is not None else default_snapshot_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+    def __init__(self, path: Path | str | None = None, *, database_url: str | None = None) -> None:
+        # Explicit paths remain available to the isolated SQLite migration
+        # tool and legacy unit fixtures.  Normal application construction uses
+        # the configured PostgreSQL URL and never silently falls back when a
+        # URL was explicitly requested.
+        self._postgres = database_url is not None or (
+            path is None and bool(os.getenv("MARKET_ENVIRONMENT_DATABASE_URL"))
+        )
+        self.engine: Engine | None = None
+        if self._postgres:
+            self.engine = create_database_engine(
+                DatabaseSettings(url=database_url)
+                if database_url
+                else DatabaseSettings.from_environment(required=True)
+            )
+            self.path = None
+            create_schema(self.engine)
+        else:
+            self.path = Path(path) if path is not None else default_snapshot_path()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Any:
+        if self._postgres:
+            assert self.engine is not None
+            return PostgresConnection(self.engine.connect())
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
@@ -377,6 +436,27 @@ class SnapshotStore:
                     generated_at TEXT NOT NULL,
                     checksum TEXT NOT NULL
                 );
+
+                -- Date relabel operations are intentionally independent of the
+                -- storage schema version.  The audit row contains a complete
+                -- before-image for every touched row, which makes a local
+                -- migration reversible without relying on SQLite backups.
+                CREATE TABLE IF NOT EXISTS date_relabel_audits (
+                    audit_id TEXT PRIMARY KEY,
+                    source_as_of TEXT NOT NULL,
+                    target_as_of TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    operator TEXT NOT NULL,
+                    conflict_policy TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    before_image_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    applied_at TEXT,
+                    rolled_back_at TEXT,
+                    result_json TEXT
+                );
+                CREATE INDEX IF NOT EXISTS date_relabel_audits_dates_idx
+                    ON date_relabel_audits(source_as_of, target_as_of, created_at);
 
                 CREATE TABLE IF NOT EXISTS trading_sessions (
                     as_of TEXT PRIMARY KEY,
@@ -615,8 +695,8 @@ class SnapshotStore:
         return value.astimezone(timezone.utc)
 
     @staticmethod
-    def _parse_datetime(value: str | None) -> datetime | None:
-        return datetime.fromisoformat(value) if value else None
+    def _parse_datetime(value: datetime | date | str | None) -> datetime | None:
+        return _as_datetime(value)
 
     @staticmethod
     def _resolve_lease_argument(
@@ -663,7 +743,7 @@ class SnapshotStore:
             or row["owner"] != lease.owner
             or int(row["generation"]) != lease.generation
             or row["token"] != lease.token
-            or datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) <= current
+            or (_as_datetime(row["expires_at"]) or datetime.min.replace(tzinfo=timezone.utc)) <= current
         ):
             raise LeaseFenceError(
                 "lease fenced: owner/token differs or lease has expired",
@@ -900,7 +980,7 @@ class SnapshotStore:
     def _snapshot_record_from_row(row: sqlite3.Row | None) -> SnapshotRecord | None:
         if row is None:
             return None
-        payload = json.loads(row["payload_json"])
+        payload = _json_value(row["payload_json"], {})
         checksum = payload_checksum(payload)
         if checksum != row["checksum"]:
             raise SnapshotIntegrityError(
@@ -908,13 +988,13 @@ class SnapshotStore:
             )
         return SnapshotRecord(
             dataset=row["dataset"],
-            as_of=date.fromisoformat(row["as_of"]),
+            as_of=_as_date(row["as_of"]),
             payload=payload,
             source=row["source"],
             status=row["status"],
             observations=int(row["observations"]),
-            warnings=tuple(json.loads(row["warnings_json"])),
-            fetched_at=datetime.fromisoformat(row["fetched_at"]),
+            warnings=tuple(_json_value(row["warnings_json"], [])),
+            fetched_at=_as_datetime(row["fetched_at"]),
             settled=bool(row["settled"]),
             schema_version=int(row["schema_version"]),
             checksum=row["checksum"],
@@ -950,12 +1030,17 @@ class SnapshotStore:
                 f"SELECT as_of FROM snapshot_entries WHERE {' AND '.join(clauses)} ORDER BY as_of DESC",
                 values,
             ).fetchall()
-        return tuple(date.fromisoformat(row["as_of"]) for row in rows)
+        return tuple(_as_date(row["as_of"]) for row in rows)
 
     def storage_schema_version(self) -> int:
-        """Return the additive storage schema version recorded by SQLite."""
+        """Return the additive storage schema version."""
 
         with self._connect() as connection:
+            if self._postgres:
+                row = connection.execute(
+                    "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
+                ).fetchone()
+                return int(row["version"] if row else 0)
             return int(connection.execute("PRAGMA user_version").fetchone()[0])
 
     def migration_versions(self) -> tuple[int, ...]:
@@ -1029,15 +1114,15 @@ class SnapshotStore:
         if row is None:
             return None
         value = TradingSessionRecord(
-            as_of=date.fromisoformat(row["as_of"]),
-            previous_as_of=date.fromisoformat(row["previous_as_of"]) if row["previous_as_of"] else None,
-            actual_as_of=date.fromisoformat(row["actual_as_of"]) if row["actual_as_of"] else None,
+            as_of=_as_date(row["as_of"]),
+            previous_as_of=_as_date(row["previous_as_of"]),
+            actual_as_of=_as_date(row["actual_as_of"]),
             is_session=bool(row["is_session"]),
             source=row["source"],
             schema_version=int(row["schema_version"]),
             checksum=row["checksum"],
-            fetched_at=datetime.fromisoformat(row["fetched_at"]),
-            warnings=tuple(json.loads(row["warnings_json"])),
+            fetched_at=_as_datetime(row["fetched_at"]),
+            warnings=tuple(_json_value(row["warnings_json"], [])),
         )
         if value.schema_version != TRADING_SESSION_SCHEMA_VERSION:
             raise SnapshotIntegrityError(f"unsupported trading session schema version: {as_of.isoformat()}")
@@ -1048,7 +1133,7 @@ class SnapshotStore:
     def list_trading_sessions(self) -> tuple[TradingSessionRecord, ...]:
         with self._connect() as connection:
             rows = connection.execute("SELECT as_of FROM trading_sessions ORDER BY as_of").fetchall()
-        return tuple(self.get_trading_session(date.fromisoformat(row[0])) for row in rows if row is not None)  # type: ignore[misc]
+        return tuple(self.get_trading_session(_as_date(row[0])) for row in rows if row is not None)  # type: ignore[misc]
 
     def put_limit_security_facts(
         self,
@@ -1490,17 +1575,17 @@ class SnapshotStore:
         if row is None:
             return None
         return {
-            "as_of": date.fromisoformat(row["as_of"]),
-            "actual_as_of": date.fromisoformat(row["actual_as_of"]) if row["actual_as_of"] else None,
+            "as_of": _as_date(row["as_of"]),
+            "actual_as_of": _as_date(row["actual_as_of"]),
             "source": row["source"],
             "source_revision": row["source_revision"],
             "rule_version": row["rule_version"],
             "schema_version": int(row["schema_version"]),
             "complete": bool(row["complete"]),
             "excluded": int(row["excluded"]),
-            "warnings": tuple(json.loads(row["warnings_json"])),
+            "warnings": tuple(_json_value(row["warnings_json"], [])),
             "dataset_checksum": row["dataset_checksum"],
-            "fetched_at": datetime.fromisoformat(row["fetched_at"]),
+            "fetched_at": _as_datetime(row["fetched_at"]),
         }
 
     def _read_limit_security_facts(
@@ -1519,8 +1604,8 @@ class SnapshotStore:
         facts: list[LimitSecurityFactRecord] = []
         for row in rows:
             fact = LimitSecurityFactRecord(
-                as_of=date.fromisoformat(row["as_of"]),
-                actual_as_of=date.fromisoformat(row["actual_as_of"]) if row["actual_as_of"] else None,
+                as_of=_as_date(row["as_of"]),
+                actual_as_of=_as_date(row["actual_as_of"]),
                 security_id=row["security_id"],
                 pool_type=row["pool_type"],
                 code=row["code"],
@@ -1528,7 +1613,7 @@ class SnapshotStore:
                 name=row["name"],
                 board=row["board"],
                 is_st=bool(row["is_st"]) if row["is_st"] is not None else None,
-                listing_date=date.fromisoformat(row["listing_date"]) if row["listing_date"] else None,
+                listing_date=_as_date(row["listing_date"]),
                 listing_days=int(row["listing_days"]) if row["listing_days"] is not None else None,
                 limit_regime=row["limit_regime"],
                 close_price=float(row["close_price"]) if row["close_price"] is not None else None,
@@ -1541,7 +1626,7 @@ class SnapshotStore:
                 eligible=bool(row["eligible"]),
                 invalid_reason=row["invalid_reason"],
                 source=row["source"],
-                fetched_at=datetime.fromisoformat(row["fetched_at"]),
+                fetched_at=_as_datetime(row["fetched_at"]),
                 schema_version=int(row["schema_version"]),
                 row_checksum=row["row_checksum"],
                 dataset_checksum=row["dataset_checksum"],
@@ -1647,12 +1732,24 @@ class SnapshotStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            if self._postgres:
+                # Hash-keyed transactional advisory lock closes the missing-row
+                # race before the unique lease row exists. It is released on
+                # commit/rollback and does not depend on process-local locks.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))",
+                    (f"market-lease:{dataset}:{as_of.isoformat()}",),
+                )
+            lease_query = "SELECT owner, expires_at, generation, token FROM refresh_leases WHERE dataset = ? AND as_of = ?"
+            if self._postgres:
+                lease_query += " FOR UPDATE"
             row = connection.execute(
-                "SELECT owner, expires_at, generation, token FROM refresh_leases WHERE dataset = ? AND as_of = ?",
+                lease_query,
                 (dataset, as_of.isoformat()),
             ).fetchone()
             if row is not None:
-                existing_expiry = datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc)
+                existing_expiry = _as_datetime(row["expires_at"])
+                assert existing_expiry is not None
                 if existing_expiry > current:
                     connection.rollback()
                     return None
@@ -1725,7 +1822,7 @@ class SnapshotStore:
             row["owner"],
             int(row["generation"]),
             row["token"],
-            datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc),
+            _as_datetime(row["expires_at"]),
         )
 
     def renew_lease(
@@ -1798,7 +1895,7 @@ class SnapshotStore:
                 "SELECT expires_at FROM refresh_leases WHERE dataset = ? AND as_of = ?",
                 (dataset, as_of.isoformat()),
             ).fetchone()
-        return row is not None and datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
+        return row is not None and (_as_datetime(row["expires_at"]) or datetime.min.replace(tzinfo=timezone.utc)) > current
 
     def active_lease_datasets(
         self,
@@ -1817,7 +1914,7 @@ class SnapshotStore:
         return frozenset(
             row["dataset"]
             for row in rows
-            if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
+            if (_as_datetime(row["expires_at"]) or datetime.min.replace(tzinfo=timezone.utc)) > current
         )
 
     def prune(self, before: date, *, now: datetime | None = None) -> int:
@@ -1865,7 +1962,7 @@ class SnapshotStore:
                 (dataset, as_of.isoformat()),
             )
             for row in rows:
-                result = json.loads(row["result_json"])
+                result = _json_value(row["result_json"], {})
                 if result.get("cacheResult") in {"stored", "retained", "missing"}:
                     return int(row["rowid"])
         return 0
@@ -2013,10 +2110,10 @@ class SnapshotStore:
             return None
         return CollectionRunRecord(
             run_id=row["run_id"],
-            as_of=date.fromisoformat(row["as_of"]),
+            as_of=_as_date(row["as_of"]),
             status=row["status"],
-            requested_datasets=tuple(json.loads(row["requested_datasets_json"])),
-            created_at=datetime.fromisoformat(row["created_at"]),
+            requested_datasets=tuple(_json_value(row["requested_datasets_json"], [])),
+            created_at=_as_datetime(row["created_at"]),
             started_at=self._parse_datetime(row["started_at"]),
             completed_at=self._parse_datetime(row["completed_at"]),
         )
@@ -2119,12 +2216,12 @@ class SnapshotStore:
             task_id=row["task_id"],
             run_id=row["run_id"],
             dataset=row["dataset"],
-            as_of=date.fromisoformat(row["as_of"]),
+            as_of=_as_date(row["as_of"]),
             status=row["status"],
             source=row["source"],
             observations=int(row["observations"]),
             warning=row["warning"],
-            timings=json.loads(row["timings_json"]),
+            timings=_json_value(row["timings_json"], {}),
             queued_at=SnapshotStore._parse_datetime(row["queued_at"]),
             started_at=SnapshotStore._parse_datetime(row["started_at"]),
             completed_at=SnapshotStore._parse_datetime(row["completed_at"]),
@@ -2199,7 +2296,7 @@ class SnapshotStore:
                 observations=int(row["observations"]),
                 warning=row["warning"],
                 duration_ms=float(row["duration_ms"]) if row["duration_ms"] is not None else None,
-                payload=json.loads(row["payload_json"]) if row["payload_json"] else None,
+                payload=_json_value(row["payload_json"]) if row["payload_json"] else None,
             )
             for row in rows
         )
@@ -2225,6 +2322,18 @@ class SnapshotStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                if self._postgres and not legacy_unfenced:
+                    # The revision is a compare-and-swap token for all
+                    # materialized inputs. SERIALIZABLE makes a concurrent
+                    # snapshot/facts commit conflict with this transaction
+                    # instead of allowing a stale aggregate to commit after
+                    # the revision was read. The component table lock also
+                    # covers the no-row case: a trigger inserting a first
+                    # revision waits until this CAS transaction commits.
+                    connection.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                    connection.execute(
+                        "LOCK TABLE materialization_component_versions IN SHARE MODE"
+                    )
                 if not legacy_unfenced:
                     self._assert_lease(
                         connection,
@@ -2260,6 +2369,16 @@ class SnapshotStore:
         except LeaseFenceError as exc:
             self._record_lease_fence_event(exc)
             raise
+        except Exception as exc:
+            # SQLAlchemy wraps psycopg's SerializationFailure as an
+            # OperationalError. Normalize both forms to the domain CAS error
+            # so collection callers can retry the rebuild deterministically.
+            message = str(exc).lower()
+            if "could not serialize" in message or "serializationfailure" in message:
+                raise MaterializedAggregateConflict(
+                    "materialized aggregate inputs changed before commit"
+                ) from exc
+            raise
         return value
 
     @staticmethod
@@ -2268,15 +2387,15 @@ class SnapshotStore:
     ) -> MaterializedAggregateRecord | None:
         if row is None:
             return None
-        payload = json.loads(row["payload_json"])
+        payload = _json_value(row["payload_json"], {})
         if payload_checksum(payload) != row["checksum"]:
             raise SnapshotIntegrityError(
                 f"materialized aggregate checksum mismatch: {row['as_of']}"
             )
         return MaterializedAggregateRecord(
-            as_of=date.fromisoformat(row["as_of"]),
+            as_of=_as_date(row["as_of"]),
             payload=payload,
-            generated_at=datetime.fromisoformat(row["generated_at"]),
+            generated_at=_as_datetime(row["generated_at"]),
             checksum=row["checksum"],
         )
 
@@ -2322,9 +2441,42 @@ class SnapshotStore:
         active_leases = frozenset(
             row["dataset"]
             for row in lease_rows
-            if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) > current
+            if (_as_datetime(row["expires_at"]) or datetime.min.replace(tzinfo=timezone.utc)) > current
         )
         return aggregate, limits, active_leases, revision
+
+    # Date relabeling is kept in a small companion module so the normal
+    # collection path remains unchanged.  These facade methods are part of the
+    # SnapshotStore API and import lazily to avoid a module import cycle.
+    def plan_date_relabel(self, source_as_of: date, target_as_of: date, **kwargs: Any) -> Any:
+        from .date_relabel import plan_date_relabel
+
+        return plan_date_relabel(self, source_as_of, target_as_of, **kwargs)
+
+    def relabel_date(self, source_as_of: date, target_as_of: date, **kwargs: Any) -> Any:
+        from .date_relabel import relabel_date
+
+        return relabel_date(self, source_as_of, target_as_of, **kwargs)
+
+    def rollback_date_relabel(self, audit_id: str, **kwargs: Any) -> Any:
+        from .date_relabel import rollback_date_relabel
+
+        return rollback_date_relabel(self, audit_id, **kwargs)
+
+    def get_date_relabel_audit(self, audit_id: str) -> Any:
+        from .date_relabel import get_date_relabel_audit
+
+        return get_date_relabel_audit(self, audit_id)
+
+    def list_date_relabel_audits(self) -> tuple[dict[str, Any], ...]:
+        from .date_relabel import list_date_relabel_audits
+
+        return list_date_relabel_audits(self)
+
+    # Naming aliases retained for scripts that call this operation a
+    # migration rather than a relabel.
+    migrate_snapshot_date = relabel_date
+    migrate_date = relabel_date
 
 
 def cache_state(

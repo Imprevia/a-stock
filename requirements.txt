@@ -10,3 +10,6 @@ PyYAML>=6.0,<7
 jsonschema>=4.23,<5
 markdown-it-py>=3,<5
 bashlex>=0.18,<1
+SQLAlchemy>=2.0,<3
+psycopg[binary,pool]>=3.2,<4
+alembic>=1.13,<2

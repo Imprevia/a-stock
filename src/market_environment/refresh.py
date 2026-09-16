@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from datetime import date, datetime, time as clock_time
+from datetime import date, datetime, time as clock_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,11 @@ from .providers import MarketDataProvider
 from .snapshot_store import LeaseFenceError, LeaseToken, SnapshotRecord, SnapshotStore, cache_state
 
 MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
+# The first continuous trading session starts at 09:30 in Shanghai.  Before
+# that boundary a provider's "latest" snapshot still belongs to the previous
+# session, so callers must use the previous market date instead of today's
+# calendar date.
+MARKET_OPEN_TIME = clock_time(9, 30)
 SUPPORTED_SNAPSHOT_DATASETS = ("breadth", "activeDirection")
 SUCCESS_STATUSES = frozenset({"ok", "fallback", "partial"})
 SUCCESS_CACHE_RESULTS = frozenset({"stored", "reused"})
@@ -29,6 +34,44 @@ def settlement_time() -> clock_time:
         return clock_time(hour, minute)
     except (TypeError, ValueError) as exc:
         raise ValueError("MARKET_ENVIRONMENT_SETTLEMENT_TIME must use HH:MM") from exc
+
+
+def market_open_time() -> clock_time:
+    """Return the Shanghai continuous-session opening boundary.
+
+    Deployments may override this for a market-calendar compatibility profile;
+    the default is the regular 09:30 A-share open.
+    """
+
+    raw = os.getenv("MARKET_ENVIRONMENT_OPEN_TIME", "09:30")
+    try:
+        hour, minute = (int(part) for part in raw.split(":"))
+        return clock_time(hour, minute)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("MARKET_ENVIRONMENT_OPEN_TIME must use HH:MM") from exc
+
+
+def effective_market_date(now: datetime | None = None) -> date:
+    """Return the market date whose data is currently observable.
+
+    The service runs in arbitrary host timezones, so all comparisons are first
+    converted to ``Asia/Shanghai``.  Before the 09:30 open, the latest provider
+    snapshot is from the previous weekday; stepping over weekends prevents a
+    Friday snapshot from being labelled as Saturday/Sunday.  Holidays remain
+    evidence-driven (the provider/session validation reports them explicitly)
+    rather than being guessed here.
+    """
+
+    value = now if now is not None else datetime.now(MARKET_TIME_ZONE)
+    current = value.replace(tzinfo=MARKET_TIME_ZONE) if value.tzinfo is None else value.astimezone(MARKET_TIME_ZONE)
+    # Weekends never have an A-share session, even after the nominal opening
+    # clock.  Keep the effective date on the last weekday until Monday opens.
+    if current.weekday() < 5 and current.time().replace(tzinfo=None) >= market_open_time():
+        return current.date()
+    candidate = current.date() - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 class SnapshotRefresher:
@@ -98,8 +141,8 @@ class SnapshotRefresher:
     def _validate_refresh_boundary(as_of: date, current: datetime, *, force: bool) -> None:
         if force:
             return
-        if as_of != current.date():
-            raise ValueError("current-snapshot refresh requires --as-of to match the Shanghai market date")
+        if as_of != effective_market_date(current):
+            raise ValueError("current-snapshot refresh requires --as-of to match the effective Shanghai market date")
         if current.time().replace(tzinfo=None) < settlement_time():
             raise ValueError("current-snapshot refresh is only allowed after the configured settlement time")
 
@@ -230,6 +273,9 @@ class SnapshotRefresher:
                 return self._record_result(run_id, dataset, as_of, result)
 
             store_started = time.perf_counter()
+            # ``--force`` is an explicit diagnostic path and keeps its
+            # historical/provisional marker semantics: only the current
+            # calendar session after settlement is marked settled here.
             settled = as_of == current.date() and current.time().replace(tzinfo=None) >= settlement_time()
             record = self.store.put(
                 SnapshotRecord(

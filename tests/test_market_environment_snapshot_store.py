@@ -52,6 +52,19 @@ def test_store_initializes_upserts_and_reopens_exact_date(tmp_path) -> None:
     assert SnapshotStore(path).get("breadth", AS_OF).payload == {"value": 4}
 
 
+def test_wal_mode_reopen_allows_collection_run_write(tmp_path) -> None:
+    """Scheduled refreshes must write after reopening a persistent WAL DB."""
+    path = tmp_path / "snapshots.sqlite3"
+    SnapshotStore(path).create_collection_run("run-1", AS_OF, ("core",))
+
+    reopened = SnapshotStore(path)
+    reopened.create_collection_run("run-2", AS_OF, ("core",))
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert connection.execute("SELECT count(*) FROM collection_runs").fetchone()[0] == 2
+
+
 def test_store_rejects_unsupported_schema_and_detects_tampering(tmp_path) -> None:
     path = tmp_path / "snapshots.sqlite3"
     store = SnapshotStore(path)

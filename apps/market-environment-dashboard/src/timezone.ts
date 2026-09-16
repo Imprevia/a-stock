@@ -31,6 +31,10 @@ export interface TimezonePreferencesState {
 const TIMEZONE_ENDPOINT = '/api/preferences/timezone'
 const LOCAL_STORAGE_KEY = 'a-stock.personal-time-zone'
 const DEFAULT_TIMEZONE = 'UTC'
+// Collection attempts are operational market timestamps. Keep this field
+// anchored to the market's business timezone even when a browser is running
+// in another locale or the user has selected a personal display timezone.
+export const MARKET_TIME_ZONE = 'Asia/Shanghai'
 let preferenceRevision = 0
 
 /**

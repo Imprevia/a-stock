@@ -3,6 +3,9 @@
 {{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
 {{- end -}}
 {{- if has $component (list "all" "service") }}
+{{- if or (not .Values.database.enabled) (not .Values.database.existingSecret) }}
+{{- fail "database.existingSecret is required and database.enabled=true for the Dashboard Deployment" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,8 +50,40 @@ spec:
           env:
             - name: TZ
               value: {{ .Values.marketEnvironment.timezone | quote }}
-            - name: MARKET_ENVIRONMENT_SNAPSHOT_PATH
-              value: {{ .Values.marketEnvironment.snapshotPath | quote }}
+            - name: MARKET_ENVIRONMENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.url }}
+            - name: MARKET_ENVIRONMENT_DATABASE_HOST
+              value: {{ include "a-stock.postgresqlName" . | quote }}
+            - name: MARKET_ENVIRONMENT_DATABASE_PORT
+              value: {{ .Values.database.service.port | quote }}
+            - name: MARKET_ENVIRONMENT_DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.database }}
+            - name: MARKET_ENVIRONMENT_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.username }}
+            - name: MARKET_ENVIRONMENT_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKeys.password }}
+            - name: MARKET_ENVIRONMENT_DATABASE_SSLMODE
+              value: {{ .Values.marketEnvironment.database.sslMode | quote }}
+            - name: MARKET_ENVIRONMENT_DB_POOL_SIZE
+              value: {{ .Values.marketEnvironment.database.poolSize | quote }}
+            - name: MARKET_ENVIRONMENT_DB_MAX_OVERFLOW
+              value: {{ .Values.marketEnvironment.database.maxOverflow | quote }}
+            - name: MARKET_ENVIRONMENT_DB_POOL_TIMEOUT
+              value: {{ .Values.marketEnvironment.database.poolTimeoutSeconds | quote }}
+            - name: MARKET_ENVIRONMENT_DB_STATEMENT_TIMEOUT_MS
+              value: {{ .Values.marketEnvironment.database.statementTimeoutMs | quote }}
             - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
               value: {{ ternary "1" "0" .Values.marketEnvironment.persistentCache | quote }}
             - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
@@ -92,21 +127,12 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           volumeMounts:
-            - name: data
-              mountPath: {{ .Values.persistence.mountPath }}
             - name: tmp
               mountPath: /tmp
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
-        - name: data
-          {{- if .Values.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ include "a-stock.pvcName" . }}
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
         - name: tmp
           emptyDir: {}
         {{- with .Values.extraVolumes }}

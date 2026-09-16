@@ -39,3 +39,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "a-stock.dataCollectionName" -}}
 {{- printf "%s-data-collection" (include "a-stock.fullname" .) | trunc 52 | trimSuffix "-" }}
 {{- end }}
+
+{{- define "a-stock.postgresqlName" -}}
+{{- printf "%s-postgresql" (include "a-stock.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "a-stock.postgresqlPvcName" -}}
+{{- printf "%s-postgresql-data" (include "a-stock.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "a-stock.databaseMigrationName" -}}
+{{- printf "%s-database-migration" (include "a-stock.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

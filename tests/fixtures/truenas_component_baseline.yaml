@@ -16,7 +16,7 @@ release:
 persistence:
   enabled: true
   claimName: a-stock-data
-  storageClass: ix-storage-class
+  storageClass: manual-local
   accessModes:
     - ReadWriteOnce
   size: 2Gi

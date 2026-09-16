@@ -67,10 +67,16 @@ class LimitPoolRows(list):
         *,
         actual_as_of: date | None,
         date_warning: str | None = None,
+        date_evidence: str = "response",
+        source: str = "eastmoney-push2ex",
+        source_warning: str | None = None,
     ) -> None:
         super().__init__(rows)
         self.actual_as_of = actual_as_of
         self.date_warning = date_warning
+        self.date_evidence = date_evidence
+        self.source = source
+        self.source_warning = source_warning
 
 
 class MarketDataProvider:
@@ -81,6 +87,8 @@ class MarketDataProvider:
     _ACTIVE_DIRECTION_FALLBACK_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
     _ACTIVE_DIRECTION_PAGE_SIZE = 100
     _ACTIVE_DIRECTION_MIN_ROWS = 30
+    _LIMIT_POOL_PRIMARY_HOST = "https://push2ex.eastmoney.com"
+    _LIMIT_POOL_FALLBACK_HOST = "https://push2delay.eastmoney.com"
 
     def __init__(self, timeout: float = 8.0) -> None:
         self.timeout = timeout
@@ -287,11 +295,16 @@ class MarketDataProvider:
             try:
                 rows = self._fetch_limit_pool(endpoint, sort, as_of)
                 evidence = {
-                    "source": "eastmoney-push2ex",
+                    "source": rows.source,
                     "status": "ok",
                     "actualAsOf": rows.actual_as_of.isoformat() if rows.actual_as_of else None,
+                    "dateEvidence": rows.date_evidence,
                     "rawCount": len(rows),
-                    "warnings": [rows.date_warning] if rows.date_warning else [],
+                    "warnings": [
+                        warning
+                        for warning in (rows.source_warning, rows.date_warning)
+                        if warning
+                    ],
                 }
                 if strict and (rows.date_warning is not None or rows.actual_as_of != as_of):
                     evidence["status"] = "failed"
@@ -308,12 +321,15 @@ class MarketDataProvider:
                 pool_evidence[key] = evidence
                 if on_pool is not None:
                     on_pool(key, dict(evidence))
+                if rows.source_warning:
+                    warnings.append(f"{key}: {rows.source_warning}")
             except Exception as exc:
                 if key not in pool_evidence:
                     evidence = {
                         "source": "eastmoney-push2ex",
                         "status": "failed",
                         "actualAsOf": None,
+                        "dateEvidence": None,
                         "rawCount": None,
                         "warnings": [str(exc)],
                     }
@@ -334,12 +350,19 @@ class MarketDataProvider:
             )
             warnings.append(mismatch_warning)
             date_validation_warnings.append(mismatch_warning)
-        payload = self._limit_payload(as_of, pools, warnings)
+        source, provider_status = self._limit_provider_quality(pool_evidence)
+        payload = self._limit_payload(
+            as_of,
+            pools,
+            warnings,
+            source=source,
+            provider_status=provider_status,
+        )
         normalization = self.normalize_limit_pools(
             pools,
             as_of,
             actual_as_of=actual_as_of,
-            source="eastmoney-push2ex",
+            source=source,
             source_revision="eastmoney-limit-pools-v1",
             rule_version="limits-promotion-v1",
         )
@@ -492,21 +515,15 @@ class MarketDataProvider:
             "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
         }
         payload = self.eastmoney.get_json(url, params)
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("容量方向响应缺少 data")
-        rows = data.get("diff")
-        if isinstance(rows, Mapping):
-            rows = list(rows.values())
-        if not isinstance(rows, list):
-            raise RuntimeError("容量方向返回格式无效")
+        rows = self._ranked_rows(payload, "容量方向")
         valid_rows = [
-            row
+            canonical
             for row in rows
             if isinstance(row, dict)
-            and self._optional_text(row.get("f12")) is not None
-            and self._optional_text(row.get("f14")) is not None
-            and self._optional_float(row.get("f6")) is not None
+            and (canonical := self._canonical_active_direction_row(row)) is not None
+            and self._optional_text(canonical.get("f12")) is not None
+            and self._optional_text(canonical.get("f14")) is not None
+            and self._optional_float(canonical.get("f6")) is not None
         ]
         if len(valid_rows) < self._ACTIVE_DIRECTION_MIN_ROWS:
             raise RuntimeError(
@@ -516,6 +533,61 @@ class MarketDataProvider:
         if any(left < right for left, right in zip(amounts, amounts[1:])):
             raise RuntimeError("容量方向响应未按成交额降序排列")
         return valid_rows
+
+    @classmethod
+    def _ranked_rows(cls, payload: Any, dataset_name: str) -> list[Any]:
+        """Extract ranked rows from the response shapes used by quote endpoints."""
+
+        if not isinstance(payload, Mapping):
+            raise RuntimeError(f"{dataset_name}响应格式无效")
+        data = payload.get("data", payload)
+        if isinstance(data, Mapping):
+            rows = next(
+                (
+                    data[key]
+                    for key in ("diff", "rows", "items", "list")
+                    if key in data
+                ),
+                None,
+            )
+            if rows is None:
+                raise RuntimeError(f"{dataset_name}响应缺少 diff/rows")
+        else:
+            rows = data
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
+        if not isinstance(rows, list):
+            raise RuntimeError(f"{dataset_name}返回格式无效")
+        return rows
+
+    @classmethod
+    def _canonical_active_direction_row(cls, row: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Map documented alternate field names into the Eastmoney row shape."""
+
+        aliases = {
+            "f12": ("f12", "code", "symbol", "security_code", "股票代码"),
+            "f14": ("f14", "name", "security_name", "证券名称"),
+            "f6": ("f6", "amount", "turnover", "turnover_amount", "成交额"),
+            "f100": ("f100", "industry", "industry_name", "行业"),
+            "f2": ("f2", "price", "close", "最新价", "收盘价"),
+            "f3": ("f3", "change_pct", "changePct", "涨跌幅"),
+            "f15": ("f15", "high", "最高"),
+            "f16": ("f16", "low", "最低"),
+        }
+        result = dict(row)
+        for canonical, keys in aliases.items():
+            if (
+                cls._optional_text(result.get(canonical)) is not None
+                or cls._optional_float(result.get(canonical)) is not None
+            ):
+                continue
+            value = next(
+                (row[key] for key in keys[1:] if row.get(key) not in (None, "", "-")),
+                None,
+            )
+            if value is not None:
+                result[canonical] = value
+        return result
 
     def _fetch_eastmoney_breadth_fallback(self, as_of: date, primary_warning: str) -> dict[str, Any]:
         """Derive exact breadth statistics from a capped, sorted fallback endpoint.
@@ -639,11 +711,38 @@ class MarketDataProvider:
         return valid_rows
 
     def _fetch_limit_pool(self, endpoint: str, sort: str, as_of: date) -> LimitPoolRows:
-        url = f"https://push2ex.eastmoney.com/{endpoint}"
+        errors: list[str] = []
+        for index, (host, source) in enumerate(
+            (
+                (self._LIMIT_POOL_PRIMARY_HOST, "eastmoney-push2ex"),
+                (self._LIMIT_POOL_FALLBACK_HOST, "eastmoney-push2ex-delay"),
+            )
+        ):
+            try:
+                rows = self._fetch_limit_pool_from(host, endpoint, sort, as_of, source=source)
+                if rows.date_warning:
+                    raise RuntimeError(rows.date_warning)
+                if index:
+                    rows.source_warning = f"涨跌停池主域不可用，已降级到延迟域：{errors[0]}"
+                return rows
+            except Exception as exc:
+                errors.append(str(exc))
+        raise RuntimeError(f"主域失败：{errors[0]}；延迟域失败：{errors[1]}")
+
+    def _fetch_limit_pool_from(
+        self,
+        host: str,
+        endpoint: str,
+        sort: str,
+        as_of: date,
+        *,
+        source: str,
+    ) -> LimitPoolRows:
+        url = f"{host}/{endpoint}"
         params = {
             "ut": "7eea3edcaed734bea9cbfc24409ed989",
             "dpt": "wz.ztzt",
-            "Pageindex": "0",
+            "pageindex": "0",
             "pagesize": "10000",
             "sort": sort,
             "date": as_of.strftime("%Y%m%d"),
@@ -653,17 +752,60 @@ class MarketDataProvider:
         if not isinstance(data, dict):
             raise RuntimeError("响应没有该交易日的数据")
         rows = data.get("pool")
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
         if not isinstance(rows, list):
             raise RuntimeError("响应缺少 pool")
-        raw_date = data.get("date")
+        raw_date = next(
+            (
+                container[key]
+                for container in (data, payload)
+                for key in ("date", "tradeDate", "trade_date", "asOf", "as_of")
+                if container.get(key) not in (None, "", "-")
+            ),
+            None,
+        )
         actual_as_of = self._parse_limit_date(raw_date)
-        if raw_date in (None, "", "-"):
-            date_warning = "provider response missing top-level session date"
+        if raw_date is None:
+            # The date-addressed push2ex endpoint currently omits the group
+            # date. Binding it to the explicit query is safe for this endpoint
+            # and is retained as structured evidence for audit/readiness.
+            actual_as_of = as_of
+            date_evidence = "request-parameter"
+            date_warning = None
         elif actual_as_of is None:
             date_warning = f"provider response has invalid top-level session date: {raw_date!r}"
+            date_evidence = "invalid-response"
         else:
             date_warning = None
-        return LimitPoolRows(rows, actual_as_of=actual_as_of, date_warning=date_warning)
+            date_evidence = "response"
+        if actual_as_of is not None and actual_as_of != as_of:
+            raise RuntimeError(
+                "provider date mismatch: "
+                f"requested {as_of.isoformat()}, actual {actual_as_of.isoformat()}"
+            )
+        return LimitPoolRows(
+            rows,
+            actual_as_of=actual_as_of,
+            date_warning=date_warning,
+            date_evidence=date_evidence,
+            source=source,
+        )
+
+    @staticmethod
+    def _limit_provider_quality(
+        pool_evidence: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[str, str]:
+        sources = {
+            str(evidence.get("source"))
+            for evidence in pool_evidence.values()
+            if evidence.get("status") == "ok" and evidence.get("source")
+        }
+        if sources == {"eastmoney-push2ex-delay"}:
+            return "eastmoney-push2ex-delay", "fallback"
+        if "eastmoney-push2ex-delay" in sources:
+            return "eastmoney-push2ex-mixed", "fallback"
+        return "eastmoney-push2ex", "partial"
 
     def _fetch_limit_evidence(self, as_of: date) -> dict[str, Any]:
         return self.fetch_chapter01_limit_dataset(as_of).payload
@@ -673,6 +815,9 @@ class MarketDataProvider:
         as_of: date,
         pools: Mapping[str, list[Any] | None],
         warnings: list[str],
+        *,
+        source: str = "eastmoney-push2ex",
+        provider_status: str = "partial",
     ) -> dict[str, Any]:
         malformed_by_pool = {
             pool_name: sum(not isinstance(item, Mapping) for item in rows)
@@ -730,11 +875,18 @@ class MarketDataProvider:
         elif usable_pool_count == 0:
             status, state = "failed", "insufficient"
         elif warnings:
-            status, state = "partial", "partial"
+            status, state = provider_status, "partial"
         elif limit_up_count == failed_count == limit_down_count == 0:
             status, state = "ok", "无触板样本"
         else:
-            status, state = "ok", "已观测"
+            status, state = ("fallback", "已观测") if provider_status == "fallback" else ("ok", "已观测")
+        date_evidence = sorted(
+            {
+                getattr(rows, "date_evidence", "response")
+                for rows in pools.values()
+                if isinstance(rows, LimitPoolRows)
+            }
+        )
         return {
             "limitUpCount": limit_up_count,
             "limitDownCount": limit_down_count,
@@ -742,7 +894,10 @@ class MarketDataProvider:
             "failedLimitUpRatio": round(failed_ratio, 4) if failed_ratio is not None else None,
             "maxStreak": max_streak,
             "state": state,
-            "quality": self._quality("limit-pools", "eastmoney-push2ex", status, observed, as_of, warnings),
+            "quality": {
+                **self._quality("limit-pools", source, status, observed, as_of, warnings),
+                "dateEvidence": date_evidence[0] if len(date_evidence) == 1 else date_evidence,
+            },
         }
 
     @staticmethod
@@ -1110,6 +1265,8 @@ class MarketDataProvider:
         if value in (None, "", "-"):
             return None
         try:
+            if isinstance(value, str):
+                value = value.replace(",", "").strip()
             return float(value)
         except (TypeError, ValueError):
             return None

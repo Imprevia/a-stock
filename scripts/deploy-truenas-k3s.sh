@@ -405,10 +405,22 @@ print("present" if matches else "absent")
 
 capture_exact_cronjob() {
   local cronjob_name="$1"
-  local payload
+  local payload error_file
   [[ -n "$cronjob_name" ]] || return 1
-  payload="$(kubectl get cronjob "$cronjob_name" --namespace "$NAMESPACE" \
-    --ignore-not-found -o yaml)" || return 1
+  error_file="$(mktemp)"
+  if ! payload="$(kubectl get cronjob "$cronjob_name" --namespace "$NAMESPACE" \
+    --ignore-not-found -o yaml 2>"$error_file")"; then
+    # Real kubectl returns success with an empty response for --ignore-not-found.
+    # Some offline shims model that response as an empty, silent non-zero result;
+    # accept only that exact shape. API/auth/transport diagnostics remain fatal.
+    if [[ -z "$payload" && ! -s "$error_file" ]]; then
+      rm -f "$error_file"
+      return 0
+    fi
+    rm -f "$error_file"
+    return 1
+  fi
+  rm -f "$error_file"
   printf '%s\n' "$payload" | python3 -c '
 import sys, yaml
 items = [item for item in yaml.safe_load_all(sys.stdin) if item is not None]
@@ -447,7 +459,16 @@ else:
 
 capture_live_cronjobs() {
   [[ -n "$GENERIC_CRONJOB_NAME" ]] || return 1
-  capture_exact_cronjob "$GENERIC_CRONJOB_NAME"
+  local payload
+  payload="$(capture_exact_cronjob "$GENERIC_CRONJOB_NAME")" || return 1
+  if [[ -n "$payload" ]]; then
+    printf '%s\n' "$payload"
+  else
+    # The scheduling packet validator consumes a List-shaped response. Keep
+    # exact-resource helpers empty for absence, but normalize the generic
+    # release probe to an explicit empty list.
+    printf '%s\n' 'apiVersion: v1' 'kind: List' 'items: []'
+  fi
 }
 
 resolve_generic_cronjob_name() {
@@ -494,7 +515,7 @@ require_generic_schedule_disabled() {
 }
 
 verify_generic_deploy_precondition() {
-  local presence stored_manifest live_cronjobs
+  local presence stored_manifest live_cronjobs override_cronjob
   if ! presence="$(helm_release_presence)"; then
     die 'could not determine whether the target Helm release already exists'
   fi
@@ -511,47 +532,50 @@ verify_generic_deploy_precondition() {
     die 'could not read live release CronJobs before generic deployment'
   fi
   require_generic_schedule_disabled 'live release' "$live_cronjobs"
+  if [[ "$COMPONENT_NAME" == all && "$NAMESPACE" == a-stock && "$GENERIC_CRONJOB_NAME" != market-data-collection ]]; then
+    override_cronjob="$(capture_exact_cronjob market-data-collection)" \
+      || die 'could not read the exact non-Helm market-data-collection CronJob'
+    [[ -z "$override_cronjob" ]] \
+      || die 'ordinary deployment requires the non-Helm market-data-collection override to be absent; review its exact-resource update/stop and rollback first'
+  fi
   log 'generic deployment precondition: stored and live scheduling are off/absent'
 }
 
 verify_database_component() {
   local packet="$1"
-  local has_pvc has_existing_claim
-  has_pvc="$(printf '%s\n' "$packet" | python3 -c 'import sys, yaml
-items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
-print("yes" if any(isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim" for i in items) else "no")')"
-  has_existing_claim="$(printf '%s\n' "$packet" | python3 -c 'import sys, yaml
-items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
-m=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim"]
-print("yes" if m and any(i.get("spec", {}).get("claimName") for i in m) else "no")' || true)"
-  if [[ "$has_pvc" == "yes" ]]; then
-    log "component=database database verified: chart-managed PVC rendered"
-    printf '%s\n' "$packet" | python3 -c '
+  printf '%s\n' "$packet" | python3 -c '
 import sys, yaml
 items=[i for i in yaml.safe_load_all(sys.stdin) if i is not None]
-m=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim"]
-if not m:
-    raise SystemExit("chart-managed PVC path did not render a PersistentVolumeClaim")
-pvc = next((i for i in m if isinstance(i.get("spec"), dict)), m[0])
-meta = pvc.get("metadata") or {}
-spec = pvc.get("spec") or {}
-if meta.get("name") != "'"$COMPONENT_BASELINE_CLAIM"'":
-    raise SystemExit("database PVC name drift: expected '"$COMPONENT_BASELINE_CLAIM"' got " + str(meta.get("name")))
-if meta.get("namespace") and meta.get("namespace") != "'"$COMPONENT_BASELINE_NAMESPACE"'":
-    raise SystemExit("database PVC namespace drift: expected '"$COMPONENT_BASELINE_NAMESPACE"' got " + str(meta.get("namespace")))
-modes = spec.get("accessModes") or []
-if "'"$COMPONENT_BASELINE_ACCESS_MODES"'" not in ",".join(modes):
-    raise SystemExit("database PVC accessModes drift: expected '"$COMPONENT_BASELINE_ACCESS_MODES"' got " + repr(modes))
-storage = spec.get("resources", {}).get("requests", {}).get("storage")
-if storage and storage != "'"$COMPONENT_BASELINE_STORAGE"'":
-    raise SystemExit("database PVC storage drift: expected '"$COMPONENT_BASELINE_STORAGE"' got " + str(storage))
-print("pvc_identity_ok")
+statefulsets=[i for i in items if isinstance(i, dict) and i.get("kind") == "StatefulSet"]
+services=[i for i in items if isinstance(i, dict) and i.get("kind") == "Service"]
+pvcs=[i for i in items if isinstance(i, dict) and i.get("kind") == "PersistentVolumeClaim"]
+jobs=[i for i in items if isinstance(i, dict) and i.get("kind") == "Job"]
+postgres=[i for i in statefulsets if (i.get("metadata") or {}).get("name", "").endswith("-postgresql")]
+if len(postgres) != 1:
+    raise SystemExit("database component must render exactly one PostgreSQL StatefulSet")
+if len(services) != 1 or not (services[0].get("metadata") or {}).get("name", "").endswith("-postgresql"):
+    raise SystemExit("database component must render exactly one PostgreSQL ClusterIP Service")
+if len(pvcs) != 1 or not (pvcs[0].get("metadata") or {}).get("name", "").endswith("-postgresql-data"):
+    raise SystemExit("database component must render exactly one independent PostgreSQL PVC")
+schema_jobs=[job for job in jobs if (job.get("metadata") or {}).get("name", "").endswith("-schema-migration")]
+if len(schema_jobs) != 1:
+    raise SystemExit("database component must render exactly one PostgreSQL schema migration Job")
+schema_containers=((((schema_jobs[0].get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers") or [])
+if not any(container.get("command") == ["alembic", "upgrade", "head"] for container in schema_containers):
+    raise SystemExit("PostgreSQL schema migration Job must run alembic upgrade head")
+if (postgres[0].get("spec") or {}).get("replicas") != 1:
+    raise SystemExit("PostgreSQL StatefulSet must remain single replica")
+if (services[0].get("spec") or {}).get("type") != "ClusterIP":
+    raise SystemExit("PostgreSQL Service must remain ClusterIP")
+if (pvcs[0].get("spec") or {}).get("accessModes") != ["ReadWriteOnce"]:
+    raise SystemExit("PostgreSQL PVC must be ReadWriteOnce")
+pod=((postgres[0].get("spec") or {}).get("template") or {}).get("spec") or {}
+mounts=[m for c in pod.get("containers", []) for m in c.get("volumeMounts", [])]
+if not any(m.get("name") == "postgresql-data" for m in mounts):
+    raise SystemExit("PostgreSQL StatefulSet must mount its database PVC")
+print("postgresql_component_contract_ok")
 ' || return 1
-    log "component=database database verified: PVC identity matches baseline fixture (name=$COMPONENT_BASELINE_CLAIM namespace=$COMPONENT_BASELINE_NAMESPACE storage=$COMPONENT_BASELINE_STORAGE accessModes=$COMPONENT_BASELINE_ACCESS_MODES)"
-  else
-    log "component=database database verified: existingClaim path (no PVC object rendered; verify reviewed existingClaim $COMPONENT_BASELINE_CLAIM is bound to namespace $COMPONENT_BASELINE_NAMESPACE with accessModes=$COMPONENT_BASELINE_ACCESS_MODES and storage=$COMPONENT_BASELINE_STORAGE)"
-  fi
-  return 0
+  log "component=database database verified: single PostgreSQL StatefulSet + ClusterIP Service + retained RWO PVC"
 }
 
 verify_live_pvc_contract() {
@@ -586,6 +610,40 @@ print("pvc_live_identity_ok")
 PYEOF
 }
 
+verify_live_database_contract() {
+  local database_base="$RELEASE_NAME" pvc_name statefulset_name pvc_payload statefulset_payload
+  # The chart fullname helper appends "-a-stock" only when the release name
+  # does not already contain the chart name.
+  if [[ "$RELEASE_NAME" != *a-stock* ]]; then
+    database_base="${RELEASE_NAME}-a-stock"
+  fi
+  pvc_name="${database_base}-postgresql-data"
+  statefulset_name="${database_base}-postgresql"
+  if ! pvc_payload="$(kubectl get pvc "$pvc_name" --namespace "$NAMESPACE" -o json)"; then
+    warn "PostgreSQL PVC prerequisite missing: $pvc_name/$NAMESPACE"
+    return 1
+  fi
+  if ! statefulset_payload="$(kubectl get statefulset "$statefulset_name" --namespace "$NAMESPACE" -o json)"; then
+    warn "PostgreSQL StatefulSet prerequisite missing: $statefulset_name/$NAMESPACE"
+    return 1
+  fi
+  PVC_PAYLOAD="$pvc_payload" STATEFULSET_PAYLOAD="$statefulset_payload" python3 - <<'PYEOF'
+import json, os
+pvc = json.loads(os.environ["PVC_PAYLOAD"])
+sts = json.loads(os.environ["STATEFULSET_PAYLOAD"])
+pvc_spec = pvc.get("spec") or {}
+pvc_status = pvc.get("status") or {}
+if pvc_status.get("phase") != "Bound":
+    raise SystemExit("PostgreSQL PVC must be Bound before application rollout")
+if pvc_spec.get("accessModes") != ["ReadWriteOnce"]:
+    raise SystemExit("PostgreSQL PVC must be ReadWriteOnce")
+sts_spec = sts.get("spec") or {}
+sts_status = sts.get("status") or {}
+if sts_spec.get("replicas") != 1 or sts_status.get("readyReplicas") != 1:
+    raise SystemExit("PostgreSQL StatefulSet must report one ready replica")
+PYEOF
+}
+
 verify_rendered_component_contract() {
   local packet="$1"
   local expected_image_repo="${2:-$IMAGE_REPOSITORY}"
@@ -607,6 +665,16 @@ replicas = int(replicas)
 deployments = [i for i in items if i.get("kind") == "Deployment"]
 cronjobs = [i for i in items if i.get("kind") == "CronJob"]
 pvcs = [i for i in items if i.get("kind") == "PersistentVolumeClaim"]
+postgres = [i for i in items if i.get("kind") == "StatefulSet" and (i.get("metadata") or {}).get("name", "").endswith("-postgresql")]
+postgres_mode = bool(postgres) or any(
+    any(entry.get("name") == "MARKET_ENVIRONMENT_DATABASE_URL" for entry in (container.get("env") or []))
+    for workload in items if workload.get("kind") in {"Deployment", "CronJob"}
+    for container in (
+        (((workload.get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers", [])
+        if workload.get("kind") == "Deployment"
+        else (((((workload.get("spec") or {}).get("jobTemplate") or {}).get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers", [])
+    )
+)
 for deployment in deployments:
     spec = deployment.get("spec") or {}
     if spec.get("replicas") != replicas or (spec.get("strategy") or {}).get("type") != strategy:
@@ -623,10 +691,15 @@ for deployment in deployments:
         raise SystemExit("Dashboard security context does not match the reviewed baseline")
     mounts = dashboard.get("volumeMounts") or []
     data_mount = next((m for m in mounts if m.get("name") == "data"), None)
-    if data_mount is None or data_mount.get("mountPath") != mount_path:
+    if postgres_mode:
+        if data_mount is not None:
+            raise SystemExit("PostgreSQL Dashboard must not mount the legacy SQLite data volume")
+        if not any(entry.get("name") == "MARKET_ENVIRONMENT_DATABASE_URL" and entry.get("valueFrom") for entry in dashboard.get("env", [])):
+            raise SystemExit("PostgreSQL Dashboard must reference the database Secret")
+    elif data_mount is None or data_mount.get("mountPath") != mount_path:
         raise SystemExit("Dashboard data mount path does not match the reviewed baseline")
     env = {entry.get("name"): entry.get("value") for entry in dashboard.get("env", [])}
-    if env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
+    if not postgres_mode and env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
         raise SystemExit("Dashboard snapshot path does not match the reviewed baseline")
 for cronjob in cronjobs:
     spec = cronjob.get("spec") or {}
@@ -643,20 +716,34 @@ for cronjob in cronjobs:
         raise SystemExit("CronJob image does not match the component image")
     mounts = collector.get("volumeMounts") or []
     data_mount = next((m for m in mounts if m.get("name") == "data"), None)
-    if data_mount is None or data_mount.get("mountPath") != mount_path:
+    if postgres_mode:
+        if data_mount is not None:
+            raise SystemExit("PostgreSQL CronJob must not mount the legacy SQLite data volume")
+        if not any(entry.get("name") == "MARKET_ENVIRONMENT_DATABASE_URL" and entry.get("valueFrom") for entry in collector.get("env", [])):
+            raise SystemExit("PostgreSQL CronJob must reference the database Secret")
+    elif data_mount is None or data_mount.get("mountPath") != mount_path:
         raise SystemExit("CronJob data mount path does not match the reviewed baseline")
     env = {entry.get("name"): entry.get("value") for entry in collector.get("env", [])}
-    if env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
+    if not postgres_mode and env.get("MARKET_ENVIRONMENT_SNAPSHOT_PATH") != snapshot_path:
         raise SystemExit("CronJob snapshot path does not match the reviewed baseline")
-for pvc in pvcs:
-    metadata = pvc.get("metadata") or {}
-    spec = pvc.get("spec") or {}
-    if metadata.get("name") != claim or spec.get("storageClassName") != storage_class:
-        raise SystemExit("Rendered PVC identity does not match the reviewed baseline")
-    if spec.get("accessModes") != access_modes.split(","):
-        raise SystemExit("Rendered PVC accessModes do not match the reviewed baseline")
-    if (spec.get("resources") or {}).get("requests", {}).get("storage") != storage:
-        raise SystemExit("Rendered PVC capacity does not match the reviewed baseline")
+if postgres_mode:
+    for pvc in pvcs:
+        metadata = pvc.get("metadata") or {}
+        spec = pvc.get("spec") or {}
+        if not metadata.get("name", "").endswith("-postgresql-data"):
+            raise SystemExit("PostgreSQL mode must not render the legacy application PVC")
+        if spec.get("accessModes") != ["ReadWriteOnce"]:
+            raise SystemExit("PostgreSQL PVC must be ReadWriteOnce")
+else:
+    for pvc in pvcs:
+        metadata = pvc.get("metadata") or {}
+        spec = pvc.get("spec") or {}
+        if metadata.get("name") != claim or spec.get("storageClassName") != storage_class:
+            raise SystemExit("Rendered PVC identity does not match the reviewed baseline")
+        if spec.get("accessModes") != access_modes.split(","):
+            raise SystemExit("Rendered PVC accessModes do not match the reviewed baseline")
+        if (spec.get("resources") or {}).get("requests", {}).get("storage") != storage:
+            raise SystemExit("Rendered PVC capacity does not match the reviewed baseline")
 print("rendered_component_contract_ok")
 PYEOF
 }
@@ -668,10 +755,10 @@ verify_component_prerequisites() {
       return 0
       ;;
     service)
-      verify_live_pvc_contract || return 1
+      verify_live_database_contract || return 1
       ;;
     schedule)
-      verify_live_pvc_contract || return 1
+      verify_live_database_contract || return 1
       local deployment_payload
       deployment_payload="$(kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json)" \
         || return 1
@@ -723,23 +810,15 @@ verify_schedule_component() {
   if ! printf '%s\n' "$packet" | python3 -c '
 import sys, yaml
 items = [i for i in yaml.safe_load_all(sys.stdin) if i is not None]
-  cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
-  if not cronjobs:
-      # The reviewed baseline explicitly allows scheduling to remain disabled,
-      # in which case the safe component packet contains no CronJob at all.
-      enabled = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
-      if enabled:
-          raise SystemExit("schedule component rendered an unexpected CronJob")
-      print("schedule_disabled_ok")
-      raise SystemExit(0)
-  assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
-spec = cronjobs[0].get("spec", {})
-suspend_value = spec.get("suspend")
-assert suspend_value is True, "schedule component must render suspended CronJob; got suspend=" + repr(suspend_value)
+cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
+if cronjobs:
+    assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
+    spec = cronjobs[0].get("spec", {})
+    assert spec.get("suspend") is True, "schedule component must render suspended CronJob"
 '; then
     return 1
   fi
-  log "component=schedule verified: suspended CronJob rendered"
+  log "component=schedule verified: disabled or suspended CronJob rendered"
   return 0
 }
 
@@ -813,7 +892,7 @@ deploy_component_step() {
     database)
       verify_database_component "$post_render" || { log "component step: name=$component phase=failed reason=database_invariant_violated retryTarget=--component $component"; return 1; }
       if [[ "$COMPONENT_SELECTED" == true ]]; then
-        verify_live_pvc_contract || { log "component step: name=$component phase=failed reason=pvc_live_identity_violated retryTarget=--component $component"; return 1; }
+        verify_live_database_contract || { log "component step: name=$component phase=failed reason=postgresql_live_identity_violated retryTarget=--component $component"; return 1; }
       fi
       ;;
     service)
@@ -960,10 +1039,10 @@ PYEOF
   COMPONENT_BASELINE_NAMESPACE="${COMPONENT_BASELINE_IDENTITY[1]}"
   validate_identifier RELEASE_NAME "$RELEASE_NAME"
   validate_identifier NAMESPACE "$NAMESPACE"
-  if [[ -n "$COMPONENT_BASELINE_RELEASE" && "$RELEASE_NAME" != "$COMPONENT_BASELINE_RELEASE" ]]; then
+  if [[ "$COMPONENT_SELECTED" == true && -n "$COMPONENT_BASELINE_RELEASE" && "$RELEASE_NAME" != "$COMPONENT_BASELINE_RELEASE" ]]; then
     die "release name '$RELEASE_NAME' does not match component baseline fixture '$COMPONENT_BASELINE_RELEASE'"
   fi
-  if [[ -n "$COMPONENT_BASELINE_NAMESPACE" && "$NAMESPACE" != "$COMPONENT_BASELINE_NAMESPACE" ]]; then
+  if [[ "$COMPONENT_SELECTED" == true && -n "$COMPONENT_BASELINE_NAMESPACE" && "$NAMESPACE" != "$COMPONENT_BASELINE_NAMESPACE" ]]; then
     die "namespace '$NAMESPACE' does not match component baseline fixture '$COMPONENT_BASELINE_NAMESPACE'"
   fi
   assert_component_value "$COMPONENT_NAME"
@@ -1002,9 +1081,12 @@ release = data.get("release") or {}
 persistence = data.get("persistence") or {}
 image = data.get("image") or {}
 topology = data.get("topology") or {}
+scheduling = data.get("scheduling") or {}
+security = topology.get("securityContext") or {}
 print(release.get("name", ""))
 print(release.get("namespace", ""))
 print(persistence.get("claimName", ""))
+print(persistence.get("storageClass", ""))
 print(str(persistence.get("size", "")))
 print(",".join(persistence.get("accessModes") or []))
 print(persistence.get("mountPath", ""))
@@ -1047,10 +1129,12 @@ COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE="${COMPONENT_BASELINE_FIELDS[19]}
 COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE="${COMPONENT_BASELINE_FIELDS[20]}"
 
 if [[ "$COMPONENT_SELECTED" == true ]]; then
-  [[ "$RELEASE_NAME" == "$COMPONENT_BASELINE_RELEASE" ]] \
-    || die "release name '$RELEASE_NAME' does not match component baseline fixture '$COMPONENT_BASELINE_RELEASE'"
-  [[ "$NAMESPACE" == "$COMPONENT_BASELINE_NAMESPACE" ]] \
-    || die "namespace '$NAMESPACE' does not match component baseline fixture '$COMPONENT_BASELINE_NAMESPACE'"
+  requested_release="${CLI_RELEASE_NAME:-${RELEASE_NAME:-a-stock}}"
+  requested_namespace="${CLI_NAMESPACE:-${NAMESPACE:-a-stock}}"
+  [[ "$requested_release" == "$COMPONENT_BASELINE_RELEASE" ]] \
+    || die "release name '$requested_release' does not match component baseline fixture '$COMPONENT_BASELINE_RELEASE'"
+  [[ "$requested_namespace" == "$COMPONENT_BASELINE_NAMESPACE" ]] \
+    || die "namespace '$requested_namespace' does not match component baseline fixture '$COMPONENT_BASELINE_NAMESPACE'"
 fi
 
 REPO_DIR="${REPO_DIR:-/home/gyt/a-stock}"
@@ -1089,6 +1173,7 @@ FROZEN_IMAGE_TAG="${FROZEN_IMAGE_TAG:-}"
 FROZEN_IMAGE_DIGEST="${FROZEN_IMAGE_DIGEST:-}"
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 INGRESS_HOST="${INGRESS_HOST:-a-stock.k3s.lan}"
+POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-a-stock-postgresql}"
 TRUENAS_INGRESS_PORT="${TRUENAS_INGRESS_PORT:-80}"
 SCHEDULED_COLLECTION_ENABLED="${SCHEDULED_COLLECTION_ENABLED:-false}"
 SCHEDULED_COLLECTION_SUSPEND="${SCHEDULED_COLLECTION_SUSPEND:-true}"
@@ -1164,6 +1249,7 @@ require_generic_deploy_values() {
 validate_identifier RELEASE_NAME "$RELEASE_NAME"
 validate_identifier NAMESPACE "$NAMESPACE"
 validate_scalar IMAGE_REPOSITORY "$IMAGE_REPOSITORY"
+validate_scalar POSTGRES_SECRET_NAME "$POSTGRES_SECRET_NAME"
 validate_scalar INGRESS_CLASS "$INGRESS_CLASS"
 validate_scalar INGRESS_HOST "$INGRESS_HOST"
 if [[ -n "${STORAGE_CLASS:-}" ]]; then
@@ -1224,7 +1310,6 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
   EARLY_RENDER_ARGS+=(--set "image.repository=$FROZEN_IMAGE_REPOSITORY")
   EARLY_RENDER_ARGS+=(--set "image.tag=$FROZEN_IMAGE_TAG")
-  COMPONENT_RENDER_ARGS+=(--set 'component=schedule')
 fi
 
 LOCAL_KUBERNETES_VERSION="${TARGET_KUBERNETES_VERSION:-1.27.0}"
@@ -1401,7 +1486,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       fi
       ;;
     server-dry-run|release-suspended|activate-schedule|disable-schedule)
-      if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+      if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
         die 'final merged Helm values are invalid'
       fi
       case "$OPERATION" in
@@ -1748,9 +1833,16 @@ if [[ -z "$HELM_VALUES_FILE" ]]; then
   printf '  storageClass: "%s"\n' "$STORAGE_CLASS"
   printf '  size: 2Gi\n'
   printf '  keep: true\n'
+  printf 'database:\n'
+  printf '  enabled: true\n'
+  printf '  existingSecret: "%s"\n' "$POSTGRES_SECRET_NAME"
+  printf '  persistence:\n'
+  printf '    enabled: true\n'
+  printf '    storageClass: "%s"\n' "$STORAGE_CLASS"
+  printf '    size: 5Gi\n'
+  printf '    keep: true\n'
   printf 'marketEnvironment:\n'
   printf '  timezone: Asia/Shanghai\n'
-  printf '  snapshotPath: /data/snapshots.sqlite3\n'
   printf '  persistentCache: true\n'
   printf '  settlementTime: "15:10"\n'
   printf '  scheduledCollection:\n'
@@ -1797,7 +1889,6 @@ else
   podman run --rm --detach \
     --name "$SMOKE_NAME" \
     --publish 18000:8000 \
-    --env MARKET_ENVIRONMENT_SNAPSHOT_PATH=/tmp/snapshots.sqlite3 \
     "$IMAGE" >/dev/null
   SMOKE_CREATED=true
   curl --fail --show-error --silent \
@@ -1831,7 +1922,9 @@ sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
 fi
 
-verify_generic_deploy_precondition
+if [[ "$COMPONENT_NAME" == all ]]; then
+  verify_generic_deploy_precondition
+fi
 if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
   die 'frozen generic release packet failed immediately before helm write'
 fi

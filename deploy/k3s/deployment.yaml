@@ -35,8 +35,32 @@ spec:
           env:
             - name: TZ
               value: Asia/Shanghai
-            - name: MARKET_ENVIRONMENT_SNAPSHOT_PATH
-              value: /data/snapshots.sqlite3
+            - name: MARKET_ENVIRONMENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: a-stock-postgresql
+                  key: DATABASE_URL
+            - name: MARKET_ENVIRONMENT_DATABASE_HOST
+              value: market-environment-postgresql
+            - name: MARKET_ENVIRONMENT_DATABASE_PORT
+              value: "5432"
+            - name: MARKET_ENVIRONMENT_DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: a-stock-postgresql
+                  key: POSTGRES_DB
+            - name: MARKET_ENVIRONMENT_DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: a-stock-postgresql
+                  key: POSTGRES_USER
+            - name: MARKET_ENVIRONMENT_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: a-stock-postgresql
+                  key: POSTGRES_PASSWORD
+            - name: MARKET_ENVIRONMENT_DATABASE_SSLMODE
+              value: prefer
             - name: MARKET_ENVIRONMENT_PERSISTENT_CACHE
               value: "1"
             - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
@@ -80,13 +104,8 @@ spec:
               drop:
                 - ALL
           volumeMounts:
-            - name: data
-              mountPath: /data
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: market-environment-data
         - name: tmp
           emptyDir: {}

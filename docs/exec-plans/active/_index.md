@@ -23,6 +23,11 @@
 | `unified-local-timezone-dashboard` | 资深前端工程师 | in-progress | 2026-09-12 |
 | `copy-index-values-and-normalize-default-date` | Codex | completed | 2026-09-13 |
 | `market-environment-multipage-rework` | Codex | in-progress | 2026-09-14 |
+| `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-15 |
+| `fix-market-collection-effective-date-and-timezone` | Codex | completed-with-production-write-code-deploy-pending | 2026-09-15 |
+| `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |
+| `repair-and-deploy-market-services-20260915` | Codex | in-progress | 2026-09-15 |
+| `migrate-sqlite-to-postgresql` | Codex | completed-without-production-write | 2026-09-16 |
 
 ## 说明
 

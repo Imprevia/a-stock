@@ -53,8 +53,10 @@ def emit(path_variable):
 if "get" in args and "cronjob" in args:
     marker = pathlib.Path(os.environ["FAKE_APPLY_MARKER"])
     emit("FAKE_AFTER_CRONJOB" if marker.exists() else "FAKE_CRONJOB")
-elif "get" in args and "pvc" in args:
-    emit("FAKE_PVC")
+elif "get" in args and "secret" in args:
+    emit("FAKE_SECRET")
+elif "get" in args and "service" in args:
+    emit("FAKE_SERVICE")
 elif "apply" in args:
     if "--dry-run=server" not in args:
         pathlib.Path(os.environ["FAKE_APPLY_MARKER"]).write_text("applied", encoding="utf-8")
@@ -91,7 +93,9 @@ def _run_override(
     tmp_path: Path,
     *,
     live: dict | None = None,
-    pvc_phase: str = "Bound",
+    secret_keys: set[str] | None = None,
+    service_type: str = "ClusterIP",
+    service_port: int = 5432,
     host_timezone: str = "Asia/Shanghai",
     controller_environment: str = "",
     apply: bool = False,
@@ -103,7 +107,8 @@ def _run_override(
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
     live_path = tmp_path / "live.yaml"
     after_path = tmp_path / "after.yaml"
-    pvc_path = tmp_path / "pvc.json"
+    secret_path = tmp_path / "secret.json"
+    service_path = tmp_path / "service.json"
     manifest_path = tmp_path / "override.yaml"
     log_path = tmp_path / "kubectl.log"
     marker_path = tmp_path / "applied"
@@ -116,21 +121,24 @@ def _run_override(
         _write_yaml(live_path, live)
     _write_yaml(after_path, after or manifest or _cronjob())
     _write_yaml(manifest_path, manifest or _cronjob())
-    pvc_path.write_text(
-        json.dumps(
-            {
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {"name": "market-environment-data", "namespace": "a-stock"},
-                "spec": {
-                    "accessModes": ["ReadWriteOnce"],
-                    "volumeName": "a-stock-market-environment-data",
-                },
-                "status": {"phase": pvc_phase},
-            }
-        ),
-        encoding="utf-8",
-    )
+    secret_path.write_text(json.dumps({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "a-stock-postgresql", "namespace": "a-stock"},
+        "type": "Opaque",
+        "data": {key: "dGVzdA==" for key in (secret_keys or {
+            "DATABASE_URL", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"
+        })},
+    }), encoding="utf-8")
+    service_path.write_text(json.dumps({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "market-environment-postgresql", "namespace": "a-stock"},
+        "spec": {
+            "type": service_type,
+            "ports": [{"name": "postgresql", "port": service_port, "targetPort": 5432}],
+        },
+    }), encoding="utf-8")
     _write_fake_kubectl(kubectl)
     if sudo:
         _write_fake_sudo(sudo_bin)
@@ -151,7 +159,8 @@ def _run_override(
         "FAKE_APPLY_MARKER": str(marker_path),
         "FAKE_CRONJOB": str(live_path) if live is not None else "",
         "FAKE_AFTER_CRONJOB": str(after_path),
-        "FAKE_PVC": str(pvc_path),
+        "FAKE_SECRET": str(secret_path),
+        "FAKE_SERVICE": str(service_path),
         "FAKE_SUDO_LOG": str(tmp_path / "sudo.log"),
     }
     if sudo:
@@ -184,7 +193,8 @@ def test_override_defaults_to_read_only_validation_and_server_dry_run(tmp_path: 
     assert completed.returncode == 0, completed.stderr
     assert "no resource was changed" in completed.stdout
     assert any(_call_has(call, "get", "cronjob", "market-data-collection") for call in calls)
-    assert any(_call_has(call, "get", "pvc", "market-environment-data") for call in calls)
+    assert any(_call_has(call, "get", "secret", "a-stock-postgresql") for call in calls)
+    assert any(_call_has(call, "get", "service", "market-environment-postgresql") for call in calls)
     apply_calls = [call for call in calls if "apply" in call]
     assert len(apply_calls) == 1
     assert "--dry-run=server" in apply_calls[0]
@@ -205,7 +215,7 @@ def test_override_apply_is_dry_run_then_write_then_exact_readback(tmp_path: Path
     assert "--dry-run=server" not in apply_calls[1]
     cron_reads = [call for call in calls if _call_has(call, "get", "cronjob")]
     assert len(cron_reads) == 2
-    assert not any("pvc" in call and "apply" in call for call in calls)
+    assert not any("pvc" in call for call in calls)
 
 
 def test_override_sudo_passes_explicit_kubeconfig_through_env(tmp_path: Path) -> None:
@@ -220,7 +230,7 @@ def test_override_sudo_passes_explicit_kubeconfig_through_env(tmp_path: Path) ->
     sudo_log = (tmp_path / "sudo.log").read_text(encoding="utf-8").splitlines()
     assert sudo_log
     assert all(line.startswith("env KUBECONFIG=/etc/rancher/k3s/k3s.yaml ") for line in sudo_log)
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 @pytest.mark.parametrize(
@@ -257,7 +267,7 @@ def test_override_refuses_to_create_a_missing_exact_cronjob(tmp_path: Path) -> N
     assert _call_has(calls[0], "get", "cronjob", "market-data-collection")
 
 
-def test_override_rejects_helm_owned_cronjob_before_pvc_or_apply(tmp_path: Path) -> None:
+def test_override_rejects_helm_owned_cronjob_before_database_checks_or_apply(tmp_path: Path) -> None:
     live = _cronjob()
     live["metadata"].setdefault("labels", {})["app.kubernetes.io/managed-by"] = "Helm"
     live["metadata"].setdefault("annotations", {})["meta.helm.sh/release-name"] = "a-stock"
@@ -299,11 +309,35 @@ def test_override_rejects_live_shape_drift_before_apply(tmp_path: Path, mutate, 
     assert not any("apply" in call for call in calls)
 
 
-def test_override_rejects_unbound_pvc_before_server_dry_run(tmp_path: Path) -> None:
-    completed, calls = _run_override(tmp_path, live=_cronjob(), pvc_phase="Pending")
+def test_override_rejects_incomplete_postgresql_secret_before_server_dry_run(tmp_path: Path) -> None:
+    completed, calls = _run_override(
+        tmp_path,
+        live=_cronjob(),
+        secret_keys={"DATABASE_URL"},
+    )
 
     assert completed.returncode != 0
-    assert "PVC is not Bound or has drifted" in completed.stderr
+    assert "database Secret is missing or has drifted" in completed.stderr
+    assert not any("apply" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("service_type", "service_port"),
+    [("NodePort", 5432), ("ClusterIP", 15432)],
+    ids=["node-port", "wrong-port"],
+)
+def test_override_rejects_non_cluster_postgresql_service_before_server_dry_run(
+    tmp_path: Path, service_type: str, service_port: int
+) -> None:
+    completed, calls = _run_override(
+        tmp_path,
+        live=_cronjob(),
+        service_type=service_type,
+        service_port=service_port,
+    )
+
+    assert completed.returncode != 0
+    assert "database Service is missing or has drifted" in completed.stderr
     assert not any("apply" in call for call in calls)
 
 
@@ -320,13 +354,16 @@ def test_override_rejects_manifest_image_drift_before_cluster_access(tmp_path: P
     assert calls == []
 
 
-def test_override_ignores_attempts_to_repoint_frozen_image_or_claim(tmp_path: Path) -> None:
+def test_override_rejects_attempts_to_repoint_frozen_image_or_database_secret(tmp_path: Path) -> None:
     manifest = _cronjob()
     container = manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
     container["image"] = "localhost/a-stock-market-environment:latest"
-    manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]["volumes"][0][
-        "persistentVolumeClaim"
-    ]["claimName"] = "a-stock-data"
+    database_url = next(
+        item
+        for item in manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        if item["name"] == "MARKET_ENVIRONMENT_DATABASE_URL"
+    )
+    database_url["valueFrom"]["secretKeyRef"]["name"] = "other-secret"
 
     completed, calls = _run_override(
         tmp_path,
@@ -334,7 +371,7 @@ def test_override_ignores_attempts_to_repoint_frozen_image_or_claim(tmp_path: Pa
         manifest=manifest,
         extra_env={
             "OPERATOR_OVERRIDE_IMAGE": "localhost/a-stock-market-environment:latest",
-            "OPERATOR_OVERRIDE_CLAIM": "a-stock-data",
+            "OPERATOR_OVERRIDE_SECRET": "other-secret",
             "OPERATOR_OVERRIDE_NAMESPACE": "other",
         },
     )

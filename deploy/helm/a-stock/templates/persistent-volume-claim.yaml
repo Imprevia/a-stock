@@ -2,7 +2,10 @@
 {{- if not (has $component (list "all" "database" "service" "schedule")) -}}
 {{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
 {{- end -}}
-{{- if eq $component "all" }}
+{{- if and (not .Values.database.enabled) (has $component (list "all" "database")) -}}
+{{- fail "database.enabled must remain true; SQLite runtime PVCs are not supported" }}
+{{- end }}
+{{- if and (eq $component "all") (not .Values.database.enabled) }}
 {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -31,7 +34,7 @@ spec:
 {{- else if and .Values.persistence.enabled .Values.persistence.existingClaim }}
 {{- /* reviewed existingClaim path: do not render a PVC object at all */ -}}
 {{- end }}
-{{- else if eq $component "database" }}
+{{- else if and (eq $component "database") (not .Values.database.enabled) }}
 {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim

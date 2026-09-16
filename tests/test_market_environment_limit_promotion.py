@@ -618,6 +618,39 @@ def test_current_provider_date_mismatch_does_not_persist_requested_date(tmp_path
     assert limits["promotionQuality"]["status"] == "insufficient"
 
 
+def test_query_dated_limit_fallback_persists_legacy_snapshot_without_claiming_complete_facts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    provider = MarketDataProvider()
+    store = SnapshotStore(tmp_path / "query-dated-fallback.sqlite3")
+
+    def fake_get_json(url, _params):
+        if url.startswith(provider._LIMIT_POOL_PRIMARY_HOST):
+            raise RuntimeError("primary pool disconnected")
+        return {"data": {"pool": [{"c": "600000"}]}}
+
+    monkeypatch.setattr(provider.eastmoney, "get_json", fake_get_json)
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: MARKET_NOW,
+        rebuild_aggregate=lambda _as_of: None,
+        limits_v1_enabled=True,
+    ).collect(CURRENT, ["limits"])
+
+    snapshot = store.get("limits", CURRENT)
+    manifest = store.get_limit_security_dataset(CURRENT)
+    assert result.tasks[0].status == "partial"
+    assert snapshot is not None
+    assert snapshot.source == "eastmoney-push2ex-delay"
+    assert snapshot.status == "fallback"
+    assert snapshot.payload["quality"]["dateEvidence"] == "request-parameter"
+    assert manifest is not None
+    assert manifest["actual_as_of"] == CURRENT
+    assert manifest["complete"] is False
+
+
 def test_atomic_bundle_rolls_back_snapshot_when_fact_write_fails(tmp_path, monkeypatch) -> None:
     store = SnapshotStore(tmp_path / "atomic.sqlite3")
     result = limit_result(CURRENT, ["600000"])

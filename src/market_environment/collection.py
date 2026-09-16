@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .limit_promotion import limit_v1_enabled
 from .providers import INDEX_SPECS, MarketDataProvider
-from .refresh import MARKET_TIME_ZONE, SUCCESS_STATUSES, settlement_time
+from .refresh import MARKET_TIME_ZONE, SUCCESS_STATUSES, effective_market_date, settlement_time
 from .schemas import PROMOTION_RULE_VERSION
 from .service import MarketEnvironmentService
 from .snapshot_store import (
@@ -210,7 +210,7 @@ class CollectionCoordinator:
                 as_of,
                 now=current.astimezone(ZoneInfo("UTC")),
             )
-            historical_allowed = dataset not in LATEST_ONLY_DATASETS or as_of == current.date()
+            historical_allowed = dataset not in LATEST_ONLY_DATASETS or as_of == effective_market_date(current)
             datasets.append(
                 {
                     "dataset": dataset,
@@ -297,7 +297,7 @@ class CollectionCoordinator:
             raise ValueError(f"unsupported collection datasets: {', '.join(unknown)}")
         if not selected:
             raise ValueError("at least one collection dataset is required")
-        current = self._market_now().date()
+        current = effective_market_date(self._market_now())
         if as_of > current:
             raise ValueError("collection date cannot be later than the Shanghai market date")
         restricted = sorted(set(selected) & LATEST_ONLY_DATASETS)
@@ -703,7 +703,11 @@ class CollectionCoordinator:
         }
         warnings: list[str] = []
         try:
-            quotes = self.provider.fetch_quotes(INDEX_SPECS) if task.as_of == self._market_now().date() else {}
+            quotes = (
+                self.provider.fetch_quotes(INDEX_SPECS)
+                if task.as_of == effective_market_date(self._market_now())
+                else {}
+            )
         except Exception as exc:
             quotes = {}
             warnings.append(f"腾讯实时报价不可用：{exc}")

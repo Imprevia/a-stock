@@ -42,4 +42,23 @@ describe('data collection limits detail', () => {
     expect(wrapper.text()).toContain('需要精确相邻交易日和规范证券身份')
     expect(wrapper.text()).toContain('缺少收盘状态')
   })
+
+  it('renders the latest attempt in the Shanghai market timezone', async () => {
+    const limits = dataset('limits')
+    limits.latestAttempt = {
+      ...limits.latestAttempt!,
+      completedAt: '2026-09-15T00:00:00Z',
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+      asOf: '2026-09-15', manualRefreshEnabled: true,
+      datasets: [dataset('core'), dataset('breadth'), limits, dataset('sectors'), dataset('activeDirection')],
+    }) })))
+    wrapper = mount(DataCollectionView)
+    await flushPromises()
+
+    const attemptTime = wrapper.find('[data-label="最近尝试"] time')
+    expect(attemptTime.exists()).toBe(true)
+    expect(attemptTime.text()).toBe('2026-09-15 08:00:00 GMT+8')
+    expect(wrapper.find('[data-label="最近成功"] span').text()).toBe('2026-09-10 16:00:00 GMT+8')
+  })
 })

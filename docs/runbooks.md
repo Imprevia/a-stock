@@ -4,7 +4,7 @@
 
 `GET /api/market-environment/next-session?as_of=YYYY-MM-DD` 只读本地精确交易日证据。排查时先确认 `trading_sessions` 存在严格大于请求日期的下一真实交易日，再检查该日核心指数和 materialized aggregate；缺失应保持 `pending`/`insufficient` 并记录 warning。该请求不得调用 provider、不得用自然日加一、不得回退旧日期。页面 01 和 09 共用该接口，普通研究页仍不承担采集职责。
 
-复盘句式为临时展示与复制内容，不写入 SQLite；不要添加保存按钮、复盘记录表或 20 日训练进度状态。03、04、07 的未接入证据继续显示真实 `unverified`/`insufficient`。
+复盘句式为临时展示与复制内容，不写入 PostgreSQL；不要添加保存按钮、复盘记录表或 20 日训练进度状态。03、04、07 的未接入证据继续显示真实 `unverified`/`insufficient`。
 
 ## 环境要求
 
@@ -13,7 +13,7 @@
 - git
 - 可选：GitHub Actions（仓库 CI）
 - 可访问通达信 TCP 和腾讯/百度 HTTPS 行情接口的网络
-- SQLite 由 Python 标准库提供；默认快照路径为 `.artifacts/market-environment/snapshots.sqlite3`
+- 运行时数据库为 PostgreSQL（SQLAlchemy 2 + psycopg 3）；开发/生产必须设置 `MARKET_ENVIRONMENT_DATABASE_URL`。SQLite 仅供一次性导入工具使用，迁移输入可放在 `.artifacts/market-environment/snapshots.sqlite3`
 
 安装依赖：
 
@@ -68,9 +68,9 @@ docker save a-stock-market-environment:latest | sudo k3s ctr images import -
 kubectl apply -k deploy/k3s
 ```
 
-默认 Ingress 使用 k3s 内置 Traefik 的 `web` 入口且不限定 Host，可通过任一节点 IP 访问；正式环境应增加域名、TLS 和证书配置。服务必须允许访问通达信 TCP 与腾讯、百度、新浪、东方财富 HTTPS 行情源。Deployment 默认单副本，因为 SQLite、refresh lease、短缓存与 provider limiter 仍是单机边界；不要直接增加副本数。
+默认 Ingress 使用 k3s 内置 Traefik 的 `web` 入口且不限定 Host，可通过任一节点 IP 访问；正式环境应增加域名、TLS 和证书配置。服务必须允许访问通达信 TCP 与腾讯、百度、新浪、东方财富 HTTPS 行情源。Deployment 默认单副本，因为当前 PostgreSQL 为单主、refresh lease/事务 fencing 与 provider limiter 仍是有界单主边界；不要直接增加副本数。
 
-`market-environment-data` PVC 使用 k3s 默认 `local-path` StorageClass，并挂载到 `/data`；API 快照路径为 `/data/snapshots.sqlite3`。该存储适合单节点或 Pod 固定在同一 k3s 节点的部署，不提供多节点共享。删除 PVC 通常会连同 local-path 数据一起回收，执行删除前先备份 SQLite 文件。
+PostgreSQL StatefulSet 独占 `a-stock-postgresql-data` Retain RWO PVC（默认挂载 `/var/lib/postgresql/data`）；Dashboard Deployment 与 CronJob 不挂载任何数据库 PVC。删除数据库 PVC 会破坏运行时状态，执行任何存储操作前必须完成 PostgreSQL 逻辑备份/物理备份并记录 PVC UID；旧 SQLite PVC 只能由迁移 Job 只读挂载并保持归档。
 
 发布检查、日志和回滚：
 
@@ -82,16 +82,16 @@ kubectl -n a-stock rollout history deployment/market-environment-dashboard
 kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 ```
 
-`/api/health` 不访问外部行情源，只用于容器启动、就绪和存活检查。健康检查成功但行情接口返回 503 时，应继续按 provider 网络和降级 warning 排查，而不是重启 Pod。删除工作负载可使用 `kubectl delete -k deploy/k3s`，但该命令也会删除 PVC；需要保留快照时先移除 `persistent-volume-claim.yaml`，或先导出数据再删除。
+`/api/health` 不访问外部行情源，只用于容器启动、就绪和存活检查。健康检查成功但行情接口返回 503 时，应继续按 provider 网络和降级 warning 排查，而不是重启 Pod。不要用 `kubectl delete -k deploy/k3s` 作为回滚；它可能移除应用资源且不负责数据库恢复。回滚应用应使用相同 release 的 atomic upgrade/受审 rollback image，PostgreSQL 数据通过备份恢复或前向修复处理，禁止删除 PVC。
 
 ### 生产定时任务契约（fail-closed 默认）
 
-截至当前，TrueNAS k3s 集群中**观察不到任何 application CronJob**，也**没有 controller 创建的 collection Job**。这不是部署缺陷、不是漏配、也不是 Chart 没渲染对；这是因为生产 CronJob 创建与激活分别要求 **Gate B action authorization** 与 **Gate C operation authorization** 两份独立授权作为 canonical change artifact 记录在案。**仅记录 Gate B / Gate C progression authorization 不构成生产执行授权**——当前状态是"进度授权已记录、操作授权待记录"，不是"永久 off-by-design"决策。完整契约见 `openspec/changes/surface-scheduled-collection-failclosed-contract/specs/after-market-data-collection-scheduling/spec.md` 的 `Fail-closed production scheduling default` requirement。运维与排错请以本契约为准：
+截至 2026-09-15 只读核对，Helm `a-stock` revision 13 **未管理 application CronJob**（stored manifest 仅含 Service/Deployment，computed values 为 `enabled=false / suspend=true`）；但集群中存在**独立、非 Helm-owned** 的 `market-data-collection` operator override CronJob，`suspend=false`，并已派生失败 Job。两条路径不得混为一谈。正式 Helm CronJob 创建与激活分别要求 **Gate B action authorization** 与 **Gate C operation authorization** 两份独立授权作为 canonical change artifact 记录在案。**仅记录 Gate B / Gate C progression authorization 不构成生产执行授权**——当前状态是"进度授权已记录、操作授权待记录"，不是"永久 off-by-design"决策。完整契约见 `openspec/changes/surface-scheduled-collection-failclosed-contract/specs/after-market-data-collection-scheduling/spec.md` 的 `Fail-closed production scheduling default` requirement。运维与排错请以本契约为准：
 
 - `deploy/helm/a-stock/values.yaml`、`deploy/truenas/values-secure-manual-collection.yaml` 以及 `scheduled-off` / `scheduled-suspended` / `scheduled-active` 三个 overlay，未应用额外覆盖时均为 `scheduledCollection.enabled=false / suspend=true`；`market-data-collection-cronjob.yaml` 模板在该默认值下根本不会渲染 CronJob 资源。
 - `scripts/deploy-truenas-k3s.sh` 的通用 install / upgrade / application-rollback 入口在首次 Helm render、image 工作、SSH 或目标 API 访问前，会强制 typed values 等于 `enabled=false / suspend=true`；任何偏离（包括 `enabled=true` 但 `suspend=false`、或空字符串布尔值）都会让入口 `die` 并阻断所有后续写入，不会留下 active 或 identity-drifted 的 CronJob。
 - 只有当 **Gate B action authorization**（覆盖 exact packet 的 admission probe、no-provider canary、suspended application release 与一次 named provider-backed Job）和 **Gate C operation authorization**（覆盖 exact active-overlay apply 与所选 catch-up 行为）**均**作为 canonical change artifact 记录在案后，才能分别创建 suspended 应用 CronJob、执行一次 no-provider canary 与一次 named provider-backed Job，并在显式 catch-up 决策下把 `/spec/suspend` 由 `true` 翻成 `false`。在两份操作授权都尚未记录前，**禁止**用 `kubectl apply`、`helm install/upgrade`、`kubectl patch` 或 `kubectl edit` 直接对 CronJob 资源做改动；任何绕过入口的写入都应被视为偏离契约并立即回退。
-- 排错动作顺序：先用 `helm get values <release> -n <namespace>` 与 `kubectl get cronjob -n <namespace>` 双源核实是否真的没有 application CronJob；若两侧都为空，按"待 Gate B action + Gate C operation 双授权"处理；若有 active 或 suspended 应用 CronJob，必须立即按 `enable-truenas-scheduled-market-collection/tasks.md` 4.x 与 7.x 流程停用、记录证据，不得继续排错为正常状态。
+- 排错动作顺序：先用 `helm get manifest <release> -n <namespace>`、`helm get values <release> -n <namespace>` 与 `kubectl get cronjob -n <namespace>` 区分 Helm-owned 与独立 override；Helm 调度 absent 不代表集群没有采集 Job。Helm-owned 调度偏离须按受审关闭流程处置；独立 override 的失败须保留 Job/Pod 日志、PostgreSQL Service/Secret 和 schema migration 证据，另行冻结 exact-resource 更新/停止 packet 与回滚授权，不得通过通用 Helm 发布或旧 schedule-only 脚本擅自改其镜像、数据库资源或 `suspend`。
 
 ### Helm Chart 与受控发布入口
 
@@ -105,9 +105,11 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 
 Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
 
-TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、复用 `a-stock-data`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。这是负责人显式接受的匿名明文写入口；任何能路由到节点端口的客户端都能触发 provider 调用和 SQLite 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对目标 claim、镜像 tag、集群版本和实际网络边界。
+TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。该 values 必须引用部署前创建的 `database.existingSecret`（至少 `DATABASE_URL`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`）；Dashboard 只通过 PostgreSQL ClusterIP Service 访问数据库，不挂载 SQLite 或 PostgreSQL PVC。匿名 NodePort 写入口是负责人显式接受的例外；任何能路由到节点端口的客户端都能触发 provider 调用和 PostgreSQL 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对数据库 Secret、PostgreSQL claim、镜像 tag、集群版本和实际网络边界。
 
 普通入口在首次 Helm render、构建、镜像传输/导入、SSH 或目标 API 访问前，对 chart defaults 与调用方 baseline 做 typed 深合并校验；最终调度值必须同时为 `enabled=false`、`suspend=true`，`false/false`、字符串布尔值和其他组合一律 fail closed。随后才把 chart、调用方 values 和 overlay 复制到本次运行的只读 packet，并在 packet 首次 render 前重复同一校验。入口从 packet render 解析 release-derived exact CronJob 名称，并按该名称读取 live state，不使用可能因 label drift 漏报资源的 selector。任何构建、镜像传输/导入或 release write 前，必须同时证明 Helm stored manifest 与 exact live CronJob 均 absent；普通部署不得带 scheduling overlay。最终 values 验证后记录 disabled render hash，Helm write 前从同一只读 packet 重渲染并比对，实际 Helm 调用也只读取该 packet。成功写入后必须重新读取 exact server-observed 状态并证明 CronJob 仍不存在。不得继承目标上的历史值、恢复历史 revision、执行原始 uninstall 或绕过入口直接执行 Helm write。
+
+当前 TrueNAS 同时存在固定名 `market-data-collection` 的非 Helm override。普通组件发布的 preflight、镜像工作前、Helm write 前和写后还需核对该 exact 对象；它存在时不得把 Helm release-derived CronJob 的 absent 当作采集层已就绪，也不得用 `--component all` 改动独立对象。该对象使用 PostgreSQL Service/Secret、无数据库 PVC、旧冻结镜像且 `suspend=false`；修复 `readonly database` 需要针对它的新不可变镜像、exact-resource 更新或停止操作与回滚授权，现有 schedule-only `apply-truenas-operator-override.sh` 不能更新镜像或暂停调度。未取得上述授权时普通发布返回 NO-GO；脱机 render 可选任意 release/namespace，但实际组件写入保持 baseline identity 强校验。
 
 如果只读发现显示已有 active 或 suspended application CronJob，普通应用发布和回退必须停止。先用实际版本冻结 baseline + off overlay 和 hashes，取得 rollback-only exact authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>`。其中 digest 是下列 UTF-8、逐行 LF 结尾且保持顺序的 canonical payload 的 SHA-256；入口会在 SSH、目标 API 访问或 release mutation 前重算比较。该引用不能复用 Gate B/C namespace：
 
@@ -148,6 +150,16 @@ helm history a-stock --namespace a-stock
 
 ### TrueNAS 1.20 + VM 1.21 一键发布
 
+TrueNAS 节点的 k3s 服务需要启用 systemd 开机自启；部署前确认并在维护窗口执行：
+
+```bash
+ssh admin@<truenas-host> 'sudo systemctl enable k3s'
+ssh admin@<truenas-host> 'systemctl is-enabled k3s && systemctl is-active k3s'
+```
+
+若节点显示 `NotReady` 且原因为 `NetworkPluginNotReady: cni plugin not initialized`，不要继续
+发布或重试 Helm rollout；先恢复 TrueNAS 管理的 CNI/Multus 清单和网络服务，再重新执行部署。
+
 当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH、SCP 和 netcat，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。默认 `K3S_API_SSH_TUNNEL=true`，脚本把临时 kubeconfig 指向 1.21 回环端口，并经 SSH 转发到 TrueNAS `127.0.0.1:6443`；SSH 服务必须允许该目标的 TCP forwarding。脚本退出时自动关闭隧道，不要求也不建议向局域网开放 `6443/tcp`。
 
 首次配置：
@@ -171,14 +183,14 @@ bash scripts/deploy-truenas-k3s.sh
 同一 Helm release 支持一键和分项操作，组件依赖固定为：
 
 ```text
-database（namespace + SQLite PVC） -> service（Deployment/Service/Ingress） -> schedule（suspended CronJob）
+postgresql（namespace + existingSecret + PostgreSQL StatefulSet/PVC/Service） -> schema migration（Alembic Job） -> service（Deployment/Service/Ingress） -> schedule（suspended CronJob）
 ```
 
 使用前确认 `deploy/truenas/deploy.env` 已设置 `TRUENAS_HOST`、`TRUENAS_SSH_USER`、
 `REMOTE_IMAGE_DIR`（仅 `all`/`service` 需要）、`NAMESPACE`、`RELEASE_NAME`，并提供完整
-baseline values。TrueNAS 当前基线复用 `a-stock-data` 的 RWO PVC，SQLite 文件固定为
-`/data/snapshots.sqlite3`；不要改成 PostgreSQL，也不要在组件操作中删除、替换、扩容或
-重新绑定该 claim。
+baseline values 及预先创建的 `database.existingSecret`。PostgreSQL 数据使用独立 Retain RWO
+claim；旧 SQLite claim 仅作为迁移输入保留。不要让 Dashboard/CronJob 挂载旧 claim，也不要在
+组件操作中删除、替换、扩容或重新绑定 PostgreSQL claim。
 
 ```bash
 # 一键：database -> service -> schedule；无 frozen image 时 schedule 保持 disabled/absent
@@ -191,8 +203,9 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component schedule
 ```
 
-`service` 在写入前必须观察到 namespace、绑定 PVC 和目标镜像；`schedule` 还必须观察到
-service 就绪、共享 PVC 以及目标运行时中与 frozen digest 相符的镜像。任一依赖失败都在
+`service` 在写入前必须观察到 namespace、PostgreSQL StatefulSet/Service 就绪、数据库 PVC
+为 `Bound` 和目标镜像；`schedule` 还必须观察到 service 就绪以及目标运行时中与 frozen digest
+相符的镜像。任一依赖失败都在
 后续写入前返回非零。`all` 按上述顺序逐组件执行，输出每个组件的 `completed`/`failed`
 状态和唯一重试目标；前一组件成功后即使后一组件失败，也保留 PVC 和已成功资源。
 
@@ -203,8 +216,9 @@ service 就绪、共享 PVC 以及目标运行时中与 frozen digest 相符的�
 
 回滚时先按 exact-resource 流程执行 `--disable-schedule`，确认 CronJob 已 absent/suspended，
 再重跑失败的 `service` 或 `all` 组件。不要执行 `helm uninstall`、`kubectl delete pvc` 或
-任何隐式 resize；需要恢复 SQLite 时使用 `sqlite3.Connection.backup()` 导出副本并保留
-PVC UID、PV、容量和 `/data/snapshots.sqlite3` 路径。
+任何隐式 resize。迁移前恢复 SQLite 时才使用 `sqlite3.Connection.backup()` 导出副本；运行时
+数据库恢复必须使用 PostgreSQL 备份/恢复工具，并保留 PostgreSQL PVC UID、PV、容量、备份
+校验和及恢复时间线。
 
 普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再由脚本完成 release write 并等待 Dashboard rollout。普通模式会冻结已验证的 chart/values，按 release-derived exact name 在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，在 Helm write 前重验 live state 与 frozen render hash，并在写后验证同一 postcondition。调度发布不得复用这条构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 Gate C activation 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values 和对应授权。入口不会自动创建 canary/Job；Gate C 还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。
 
@@ -227,7 +241,7 @@ location / {
 
 ### TrueNAS NodePort 手工采集
 
-问题报告为当前线上 Helm revision 7，但该值必须在后续只读 preflight 中与完整 values、镜像 digest、PVC UID 和 controller timezone 一起确认；此前 revision 4/6 的文字不能替代 live evidence。仓库候选只允许将 Service 改为 `NodePort:32001`；镜像、单副本、`a-stock-data`、`/data/snapshots.sqlite3`、安全上下文、关闭的 Ingress/CronJob 均不得改变。
+问题报告为当前线上 Helm revision 7，但该值必须在后续只读 preflight 中与完整 values、镜像 digest、PostgreSQL PVC UID 和 controller timezone 一起确认；此前 revision 4/6 的文字不能替代 live evidence。仓库候选只允许将 Dashboard Service 改为 `NodePort:32001`；镜像、单副本、PostgreSQL StatefulSet/Service、数据库 Secret、安全上下文、关闭的 Ingress/CronJob 均不得改变。
 
 离线检查候选：
 
@@ -239,15 +253,15 @@ helm template a-stock deploy/helm/a-stock --namespace a-stock \
 
 获准发布前，确认节点/集群没有占用 `32001`，并保存 Helm history、获现场确认的当前 revision（问题报告为 7）、完整 values、Service、Deployment、Endpoint/EndpointSlice、运行镜像、Pod 安全上下文、PVC 名称/UID/PV/容量/使用量以及 Ingress/CronJob 状态。检查节点和路由器/防火墙不存在公网映射；没有 ACL 证据时只能把边界描述为“所有可路由网络”。
 
-使用 SQLite `Connection.backup()` 把 `/data/snapshots.sqlite3` 一致性备份到独立 TrueNAS 数据集，记录恢复路径和 SHA-256，并在备份上执行 `PRAGMA quick_check` 与只读查询；不要只复制活动 WAL 数据库主文件。对现场捕获的当前 values 与候选执行 Helm diff，任何 PVC 删除/替换或不变量变化都必须停止发布。
+发布前对 PostgreSQL 执行 `pg_dump --format=custom`（必要时配合受控物理备份），记录数据库 Service、PVC UID/PV、备份路径、SHA-256、schema 版本和恢复演练结果；旧 SQLite before-image 仅在迁移窗口按 `sqlite3.Connection.backup()` 创建。对现场捕获的当前 values 与候选执行 Helm diff，任何 PostgreSQL PVC 删除/替换、Secret 漂移或不变量变化都必须停止发布。
 
-发布只能在单独批准的维护窗口执行一次 Helm upgrade 并等待单个 Deployment ready。随后从预期 LAN 客户端验证 `/api/health`、`/data-collection` 和 provider-free 状态 GET，再提交一次上海市场当天的受支持数据集并验证 202 和合法终态；历史不支持请求仍须返回 422。观察 collection run/task、provider warning/限流、SQLite lock、任务时长与 PVC 增长，并记录实际可达边界和最终 revision。
+发布只能在单独批准的维护窗口执行一次 Helm upgrade 并等待 PostgreSQL StatefulSet ready、schema migration Job 成功及单个 Dashboard Deployment ready。随后从预期 LAN 客户端验证 `/api/health`、`/data-collection` 和 provider-free 状态 GET，再提交一次上海市场当天的受支持数据集并验证 202 和合法终态；历史不支持请求仍须返回 422。观察 collection run/task、provider warning/限流、PostgreSQL lock/连接池、任务时长与数据库 PVC 增长，并记录实际可达边界和最终 revision。
 
-若出现异常请求、provider 压力、SQLite 锁或 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与快照读取。第二步从现场捕获的 pre-release chart、完整 values 与不可变镜像 tag 执行新的 atomic upgrade，并显式保持 scheduled collection disabled/suspended；不得恢复含未知 values 的历史 revision、uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PVC UID、SQLite 完整性和历史读取。
+若出现异常请求、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长，第一步使用审阅后的 values 将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，验证 POST 返回 403 且没有 provider 工作，同时保留 NodePort 健康与 provider-free 快照读取。第二步从现场捕获的 pre-release chart、完整 values 与不可变镜像 tag 执行新的 atomic upgrade，并显式保持 scheduled collection disabled/suspended；不得恢复含未知 values 的历史 revision、uninstall release 或删除/替换 PVC。恢复后复核镜像、副本、安全上下文、PostgreSQL PVC UID、Secret 引用、schema 版本和历史读取。
 
 前端可读性基线：全部可见文字（包括 ECharts 图例、坐标轴和 tooltip）不得小于 `14px`。修改页面样式后需检查 01 至 09 视图，并在桌面与移动宽度确认没有文字重叠、控件截断或页面级横向溢出；宽表自身的横向滚动属于预期行为。
 
-前端时间显示由 `src/timezone.ts` 统一处理，禁止组件自行调用 `Intl.DateTimeFormat` 或 `toLocaleString` 渲染 ISO 时间。`/settings` 的日期与时间页通过可选 `GET/PUT /api/preferences/timezone` 读取/保存个人和工作区 IANA 偏好；后端未部署时个人偏好使用浏览器 localStorage fallback，并在页面提示“接口尚未接入/离线”，不伪造工作区保存成功。验证时间层和设置状态：
+前端时间显示由 `src/timezone.ts` 统一处理，禁止组件自行调用 `Intl.DateTimeFormat` 或 `toLocaleString` 渲染 ISO 时间。`/data-collection` 的“最近尝试”属于市场运行审计字段，固定按 `Asia/Shanghai` 显示，避免部署浏览器使用 UTC 时把盘后采集时间显示成非北京时间；其他页面时间继续按生效时区展示。`/settings` 的日期与时间页通过可选 `GET/PUT /api/preferences/timezone` 读取/保存个人和工作区 IANA 偏好；后端未部署时个人偏好使用浏览器 localStorage fallback，并在页面提示“接口尚未接入/离线”，不伪造工作区保存成功。验证时间层和设置状态：
 
 ```bash
 npm run test --prefix apps/market-environment-dashboard
@@ -269,7 +283,7 @@ curl "http://127.0.0.1:8001/api/market-environment/data-collection?as_of=2026-08
 
 `/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
 
-普通市场环境 GET 优先读取精确日期的 SQLite 数据集快照或 materialized aggregate，不自动启动 provider 采集。五类数据 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止其他结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 store write 计时。
+普通市场环境 GET 优先读取 PostgreSQL 中精确日期的数据集快照或 materialized aggregate，不自动启动 provider 采集。五类数据 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止其他结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 PostgreSQL transaction/store write 计时。
 
 盘后预计算：
 
@@ -280,24 +294,24 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 仅用于显式本地诊断。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
 
-容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
+容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序；数组、键值对象和已登记字段别名统一进入同一校验。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
 
 ### 第 03 页 limits 生态采集与验证
 
-limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时只提供既有 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak` 和本地快照读取；开启前必须在固定 fixture 上通过契约、迁移、幂等、lease/CAS、失败保留、`PRAGMA quick_check` 和 provider-free GET 验证。
+limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时只提供既有 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak` 和 PostgreSQL 快照读取；开启前必须在固定 fixture 上通过契约、Alembic schema、幂等、lease/CAS、失败保留、SQLite 导入源 `PRAGMA quick_check` 和 provider-free GET 验证。
 
-严格 provider 必须验证顶层及逐行实际日期、规范证券身份（交易所限定的 `security_id`）、板块、ST/上市窗口、适用涨跌幅制度、盘中触板与收盘涨停状态。缺少这些字段时，行保留 `invalid_reason` 与排除计数，但不得进入晋级分子/分母、梯队、制度/板块分层或 250 日结论；不得使用证券名称匹配或固定 10% 推断。采集应先解析请求日对应的真实交易日和精确 `previous_as_of`，在两个日期分别保存 `trading_sessions`、`limit_security_datasets`、`limit_security_facts` 与 checksum；不使用自然日减一或其他日期回填。
+严格 provider 必须验证响应/查询绑定的实际日期及逐行日期冲突、规范证券身份（交易所限定的 `security_id`）、板块、ST/上市窗口、适用涨跌幅制度、盘中触板与收盘涨停状态。`push2ex` 缺少顶层日期时，若请求 `date` 明确则记录 `dateEvidence=request-parameter`；缺少证券事实字段的行保留 `invalid_reason` 与排除计数，但不得进入晋级分子/分母、梯队、制度/板块分层或 250 日结论；不得使用证券名称匹配或固定 10% 推断。采集应先解析请求日对应的真实交易日和精确 `previous_as_of`，在两个日期分别保存 `trading_sessions`、`limit_security_datasets`、`limit_security_facts` 与 checksum；不使用自然日减一或其他日期回填。
 
-状态排查应同时查看 `/api/market-environment/data-collection?as_of=<date>` 和 limits snapshot：状态 GET 只读 SQLite、provider 调用数为 0；每个 limits task 显示当前/前一样本日期、实际日期、observations、排除数、checksum、晋级依赖和 warning。单项重试只启动 limits task，不重跑 `core`、`breadth`、`sectors` 或 `activeDirection`。刷新失败只记录 attempt，并保留同日期最后成功值为 `failed-retained` / `degraded`；没有旧值才为 `failed-missing`。
+状态排查应同时查看 `/api/market-environment/data-collection?as_of=<date>` 和 limits snapshot：状态 GET 只读 PostgreSQL、provider 调用数为 0；每个 limits task 显示当前/前一样本日期、实际日期、observations、排除数、checksum、晋级依赖和 warning。单项重试只启动 limits task，不重跑 `core`、`breadth`、`sectors` 或 `activeDirection`。刷新失败只记录 attempt，并保留同日期最后成功值为 `failed-retained` / `degraded`；没有旧值才为 `failed-missing`。
 
 晋级验证必须能审计昨日合资格收盘涨停集合与今日同 `security_id` 的交集。分母为 0 时晋级率为 `null`、质量为 `insufficient`，不得显示 `0%`。近 5 日趋势只读取连续精确快照；有效观测不足 60 或历史不连续时，250 日分位、连续风险、断板/修复和规则周期结论保持 `insufficient` 并显示缺口。`QTS-01-03-01` 至 `QTS-01-03-05` 继续为 `needs-backtest`，页面可展示经验阈值和置信度但不能输出 `validated`。
 
-真实 provider smoke 不属于普通测试，只能在获得明确授权的盘后窗口、隔离 SQLite（例如 `.artifacts/market-environment/limits-smoke.sqlite3`）和本地命令中执行。示例命令必须替换为获批的两日参数，并记录 provider 请求预算、实际/前一交易日、来源、字段覆盖、排除数、warning、dataset/row checksum、耗时和最终 `ok`/`degraded`/`insufficient`/`failed` 质量；禁止写生产 PVC、复用生产数据库或将失败转成成功。
+真实 provider smoke 不属于普通测试，只能在获得明确授权的盘后窗口、隔离 PostgreSQL 数据库和本地命令中执行。SQLite fixture（例如 `.artifacts/market-environment/limits-smoke.sqlite3`）仅用于导入回归，不承载 smoke 运行时状态。示例命令必须替换为获批的两日参数，并记录 provider 请求预算、每池主/延迟来源、`dateEvidence`、实际/前一交易日、来源、字段覆盖、排除数、warning、dataset/row checksum、耗时和最终 `ok`/`fallback`/`degraded`/`insufficient`/`failed` 质量；缺少日期绑定或存在日期冲突时只保留失败审计，不写生产数据库；禁止复用生产数据库或将失败转成成功。
 
 ```bash
 # 仅限已授权的盘后隔离 smoke；普通离线/PR 验证不得执行真实 provider
 MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=1 \
-MARKET_ENVIRONMENT_SNAPSHOT_PATH=.artifacts/market-environment/limits-smoke.sqlite3 \
+MARKET_ENVIRONMENT_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5432/<isolated_db> \
 .venv/bin/python -m src.market_environment.cli snapshots refresh \
   --as-of <获批当前交易日> --dataset limits --force
 ```
@@ -317,9 +331,9 @@ kubectl logs -n a-stock 'job/<job-name>'
 
 不得使用裸 `kubectl patch` 暂停或恢复周期调度；TrueNAS 的正常激活、回退和激活失败补偿都必须走下文受控入口，由入口绑定实际 release-derived CronJob、clean/upstream、冻结 hashes、授权与 live state。紧急停止新调度使用 `--disable-schedule`；若目标状态不确定则保持 NO-GO 并按已审核的 exact-resource incident packet 处置。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由 4.4 冻结的 Gate B packet 给出 exact name/resource/日期，并由覆盖该精确操作的 Gate B authorization 执行。
 
-业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 SQLite，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
+业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 PostgreSQL，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
-Helm 通过 `marketEnvironment.scheduledCollection` 配置，Chart 默认 `enabled=false`、`suspend=true` 且不渲染 CronJob；`suspend=true` 在显式启用时保留资源但不创建新 Job。通用 install/upgrade/application rollback 必须重交完整受控 values 和这两个安全覆盖，不得继承历史 values 或恢复历史 revision。`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并挂载同一 PVC；Gate A 不创建 Job 或解除暂停。
+Helm 通过 `marketEnvironment.scheduledCollection` 配置，Chart 默认 `enabled=false`、`suspend=true` 且不渲染 CronJob；`suspend=true` 在显式启用时保留资源但不创建新 Job。通用 install/upgrade/application rollback 必须重交完整受控 values 和这两个安全覆盖，不得继承历史 values 或恢复历史 revision。`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言不能替代 Gate B 的实际 canary 记录或 Gate C 授权。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并通过同一 PostgreSQL Service/Secret 访问数据库，均不挂载 PVC；Gate A 不创建 Job 或解除暂停。
 
 仓库入口的离线与后续目标模式如下；目标命令只可在对应前置证据和精确环境变量已冻结时运行：
 
@@ -371,12 +385,82 @@ Gate B/Gate C 的推进授权已经记录，但执行仍须严格按以下前置
 
 配置：
 
-- `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：覆盖默认 SQLite 路径。
+### PostgreSQL 迁移与运行时边界
+
+生产 Dashboard Deployment 与盘后 CronJob 只通过 Helm 创建的 PostgreSQL ClusterIP Service 访问数据库，
+不挂载 SQLite 或 PostgreSQL PVC。PostgreSQL StatefulSet 单副本独占 Retain RWO claim；数据库凭据必须由
+部署前置步骤创建 existing Secret，至少包含 `DATABASE_URL`、`POSTGRES_USER`、`POSTGRES_PASSWORD` 和
+`POSTGRES_DB`，Chart 不渲染明文凭据或外部监听器。
+
+迁移前先暂停 CronJob、关闭手工写入并创建 SQLite before-image；迁移 Job 只读挂载旧 SQLite claim，执行
+`python -m src.market_environment.cli database migrate --source /data/snapshots.sqlite3 --backup /tmp/snapshots-before-postgresql.sqlite3`
+进行 dry-run。完成 quick-check、表统计、日期覆盖和 checksum 审核后，才显式增加 `--apply` 并切换
+`MARKET_ENVIRONMENT_DATABASE_URL`。active lease 不迁移为有效所有权，改为可重试状态；旧 SQLite PVC 和备份
+保留但脱离 Dashboard/CronJob，禁止在普通发布中删除。
+
+PostgreSQL 首次写入前失败可恢复旧镜像和 SQLite PVC；首次写入后禁止回切过期 SQLite，必须使用 PostgreSQL
+备份/恢复或前向修复。数据库不可达时服务 fail closed，不创建本地 SQLite 回退文件。
+
+#### Secret、初始化和依赖顺序
+
+Chart 不生成或渲染明文凭据。部署前由受控凭据系统或管理员创建 existing Secret（以下命令仅为本地示例，
+不要把真实密码写入 shell history）：
+
+```bash
+kubectl -n a-stock create secret generic a-stock-postgresql \
+  --from-literal=DATABASE_URL='postgresql+psycopg://<user>:<password>@a-stock-postgresql:5432/<db>' \
+  --from-literal=POSTGRES_USER='<user>' \
+  --from-literal=POSTGRES_PASSWORD='<password>' \
+  --from-literal=POSTGRES_DB='<db>'
+```
+
+Helm render/deploy 必须提供 `database.existingSecret=a-stock-postgresql`（或等价 Secret 名称），并 fail closed
+于缺失 Secret、缺失 key 或 URL 不合法。组件依赖固定为：
+
+```text
+PostgreSQL StatefulSet/ClusterIP Service ready
+  -> Alembic schema migration Job (`alembic upgrade head`) 成功
+  -> Dashboard Deployment rollout
+  -> suspended CronJob render/deploy
+```
+
+StatefulSet 未 ready 或 migration Job 失败时不得 rollout service/schedule；migration Job 使用同一 URL Secret，
+成功后检查 `alembic_version`，并把 Job 日志及 manifest hash 作为切换证据。
+
+#### 备份、恢复与切换边界
+
+切换前暂停 CronJob、设置 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 并等待正在进行的 collection task
+结束；创建不可覆盖的 PostgreSQL `pg_dump --format=custom` 备份，记录 Service、PVC UID/PV、数据库版本、
+`alembic_version`、文件 SHA-256 和恢复演练结果。SQLite before-image 仅由迁移工具在线 `backup()` 生成，
+执行 `quick_check`、行数/主键范围/payload checksum 与日期覆盖校验后才可 `--apply` 导入。
+
+迁移 Job 只读挂载旧 SQLite PVC，导入完成后执行逐表统计与 checksum 校验；active lease 不导入为有效所有权，
+而是标记为过期/可重试并保留 fencing 审计。所有校验通过后才更新 Deployment/CronJob 的 Secret 引用并 rollout，
+执行 provider-free GET、并发 lease/collection 写入和一次受控 CronJob 试运行验证。旧 SQLite PVC 与 before-image
+继续保留但脱离应用挂载，清理另行授权。
+
+PostgreSQL 首次写入前失败时，可恢复旧镜像并继续使用旧 SQLite（仅在尚未产生 PostgreSQL 事实写入的窗口内）；
+一旦 PostgreSQL 产生新写入，禁止把过期 SQLite 当作事实源回切。此后只能从 PostgreSQL 备份恢复或执行前向修复，
+并重新运行 checksum/日期/aggregate 校验。任何恢复都不得删除或覆盖原备份、PVC 或迁移 before-image。
+
+恢复示例（仅对隔离目标执行，禁止指向生产数据库）：
+
+```bash
+export PGHOST="db.example.internal" PGUSER="restore_admin" PGDATABASE="market_restore"
+createdb --host "$PGHOST" --username "$PGUSER" "$PGDATABASE"
+pg_restore --clean --if-exists --no-owner \
+  --dbname="postgresql://${PGUSER:?set PGUSER}:${PGPASSWORD:?set PGPASSWORD}@${PGHOST:?set PGHOST}:5432/${PGDATABASE:?set PGDATABASE}" \
+  "${BACKUP_FILE:?set BACKUP_FILE}"
+```
+
+- `MARKET_ENVIRONMENT_DATABASE_URL`：PostgreSQL 运行时连接 URL（生产必需，通过 Secret 注入）。
+- `MARKET_ENVIRONMENT_DB_POOL_SIZE`、`MARKET_ENVIRONMENT_DB_MAX_OVERFLOW`、`MARKET_ENVIRONMENT_DB_POOL_TIMEOUT`、`MARKET_ENVIRONMENT_DB_STATEMENT_TIMEOUT_MS`：PostgreSQL 连接池和语句超时。
+- `MARKET_ENVIRONMENT_SNAPSHOT_PATH`：仅供一次性 SQLite 导入/日期审计工具使用，不是运行时存储配置。
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
 - `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再按现场捕获的回退基线决定网络入口。
-- `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0`：关闭 limits detail/V1 事实写入和晋级扩展，继续服务旧五字段与本地快照；开启前须完成离线门禁，真实 smoke 只能写隔离 SQLite。
+- `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0`：关闭 limits detail/V1 事实写入和晋级扩展，继续服务旧五字段与 PostgreSQL 快照；开启前须完成离线门禁，真实 smoke 只能写隔离 PostgreSQL 数据库。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
-- SQLite 文件必须位于单机本地文件系统；多主机或网络共享目录不属于当前支持范围。
+- 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard/CronJob 作为共享协调边界。
 
 开发期手工采集 API：
 
@@ -387,7 +471,7 @@ curl "http://127.0.0.1:8001/api/market-environment/collection-runs/<run-id>"
 
 POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task，传 `{"datasets":["breadth"]}` 时只采集单项。父批次允许 `partial`，每个成功 task 独立提交；失败 task 不覆盖同日期旧值。数据采集页 `/data-collection` 只通过 GET 查询本地状态，所有 provider 故障时仍应可打开。历史日期仅允许采集 provider 能验证日期的数据集；无法证明日期的最新快照型数据按钮必须禁用并由 API 返回 422。服务重启后，遗留 collecting task 在 lease 过期后可重新采集。
 
-数据采集页首次加载调用不带 `as_of` 的状态 GET，并用响应 `asOf` 初始化日期控件；该值由后端按 `Asia/Shanghai` 计算，因此在 15:00 前也会选择上海市场当天，使 `breadth`、`sectors` 和 `activeDirection` 可按当前快照能力采集。用户手工切换日期后使用显式 `as_of`，历史限制继续生效。研究看板仍使用下述 15:00 结算日期逻辑，两者不要重新合并。
+数据采集页首次加载调用不带 `as_of` 的状态 GET，并用响应 `asOf` 初始化日期控件；后端按 `Asia/Shanghai` 解析有效市场日：开市前（09:30 前）返回上一工作日对应的真实交易日并跳过周末，节假日或没有可证明实际日期时返回 `insufficient`/拒绝，不猜测日期；开市后才返回上海当天。provider 返回的实际日期必须与目标 `as_of` 一致，无法证明时保持 `insufficient`/`failed`，不得通过改名或复制跨日期数据。用户手工切换日期后使用显式 `as_of`，历史限制继续生效。研究看板仍使用下述 15:00 结算日期逻辑，两者不要重新合并。
 
 研究看板日期控件使用浏览器本地时间计算默认值：15:00 前为前一天，达到 15:00 后为当天；首次核心响应若确认候选日为非交易日，日期控件同步为响应的有效交易日；用户手工选择后不得自动改写。最大值始终为浏览器本地当天。不要改回 `new Date().toISOString().slice(0, 10)`，否则 UTC 转换可能导致日期错位。API 的默认日期与未来日期校验使用 `Asia/Shanghai`。市场广度直接从 `push2delay` 按涨跌幅排序分页定位边界与中位数，成功时 `chapter01.breadth.quality.source` 为 `eastmoney-clist-delay`、状态为 `fallback`。行业板块先请求 `push2`，连接/读取错误、429 和 5xx 有界重试后仍失败再请求 `push2delay`；403 不重试。延迟域成功时保留主域 warning，领涨股名称使用 `f128`，不得显示 `f140` 证券代码。容量方向的 Top-N 响应必须验证排序、最小样本和必需字段。任一采集失败时保留 `null` 或上一次精确日期成功值，并在 `quality.warnings` / `refreshWarning` 记录错误，不能用 0 填充。
 
@@ -403,7 +487,7 @@ POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task
 
 `summary.syncPattern` 只记录五指数当日方向模式；`summary.synchronizationAssessment` 是独立的联合研判，返回总状态、稳定结论码、中文结论、置信度，以及 `breadth`、`trend`、`turnover` 三项确认维度。排查结论时先核对原始模式，再逐项核对上涨占比/中位数、MA20 上下方指数数和 5 日成交额比值/放量下跌数，不能只看最终文案。权重指数领涨不等于个股偏弱，普遍走弱也不自动等于系统性下降。
 
-广度改善或恶化只比较精确上一交易日：服务从核心指数历史取得前一交易日期，再读取该日期的 `breadth` SQLite 快照。上一日记录缺失时 `previousAsOf` 与变化值保持 `null`、维度标记不足且整体置信度不高于中；不得向更早日期回退，普通 GET 的 provider 调用数必须仍为 0。需要补齐时先显式采集缺失交易日，再通过既有 collection/rebuild 路径重建目标日期聚合，不要直接修改 SQLite 或复制其他日期 payload。
+广度改善或恶化只比较精确上一交易日：服务从核心指数历史取得前一交易日期，再读取该日期的 PostgreSQL `breadth` 快照。上一日记录缺失时 `previousAsOf` 与变化值保持 `null`、维度标记不足且整体置信度不高于中；不得向更早日期回退，普通 GET 的 provider 调用数必须仍为 0。需要补齐时先显式采集缺失交易日，再通过既有 collection/rebuild 路径重建目标日期聚合，不要直接修改数据库行或复制其他日期 payload。
 
 第 01 页第四部分使用四问结论条、五指数乘六组合矩阵、选中行证据与盘后收束句。移动端矩阵允许组件内横向滚动，但页面本身不得横向溢出。`dataGaps` 四种 reason 必须显示差异化文案；风险相关缺失不能按安全处理。
 
@@ -445,9 +529,9 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 
 - 镜像 tag 必须写死为节点上已确认存在的 `localhost/a-stock-market-environment:20260906-005226-2075b6e`（digest `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`）。**不要打 `latest` tag**，会污染既有 helm release 的镜像解析。
 - k3s 1.26.6 的 CronJob 不支持 `spec.timeZone`，schedule 由 controller 本地时区解释。目标 `192.168.1.20` 已于 2026-09-13 只读确认 `/etc/localtime` 与 `timedatectl` 均为 `Asia/Shanghai`，且 k3s systemd 环境没有 `TZ` 覆盖，因此盘后 16:30 使用 `30 16 * * 1-5`。若任一时区证据变化，立即停止使用本 override；不要把 `30 8` 当作 UTC 映射。
-- PVC 必须独立：`market-environment-data`（2Gi RWO，StorageClass `manual-local`），不和 helm 装的 `a-stock-data` 共享挂载，避免与 Deployment 抢锁。
+- CronJob 不得挂载数据库 PVC；必须通过 `market-environment-postgresql` ClusterIP Service 和 `a-stock-postgresql` existing Secret 的 `secretKeyRef` 访问 PostgreSQL。PostgreSQL 的 Retain RWO PVC 只能由 StatefulSet 挂载。
 - 不使用 `kubectl apply -k deploy/k3s-native-scheduled/`；该目录属于 Kubernetes 1.27+ native timezone overlay。TrueNAS 1.26 只使用 `deploy/truenas/market-data-collection-cronjob-1.26-controller-shanghai.yaml` 单文件。
-- 不动 helm 装的 `a-stock` Deployment / Service / Ingress / `a-stock-data` PVC。
+- 不动 helm 装的 `a-stock` Deployment / Service / Ingress；历史 `a-stock-data` 或旧 SQLite PVC 只作为归档/迁移输入保留，不由该 override 挂载或修改。
 
 **部署步骤（ssh 到 TrueNAS admin@192.168.1.20 后）：**
 
@@ -457,9 +541,10 @@ timedatectl show -p Timezone
 sudo systemctl show k3s -p Environment --value
 sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob market-data-collection -o yaml
 
-# 2. 现有 PVC/PV 必须保持 Bound；不得为 schedule 修正重建存储
-sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get pvc market-environment-data
-sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl get pv a-stock-market-environment-data
+# 2. PostgreSQL Service/Secret 必须存在且为集群内访问；应用 CronJob 不应出现 PVC
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get service market-environment-postgresql
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get secret a-stock-postgresql
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob market-data-collection -o jsonpath='{.spec.jobTemplate.spec.template.spec.volumes}'
 
 # 3. 使用 fail-closed operator 入口；默认只读校验 + server dry-run，不会写资源
 KUBECONFIG=/etc/rancher/k3s/k3s.yaml \
@@ -473,13 +558,17 @@ KUBECTL_BIN=k3s KUBECTL_SUBCOMMAND=kubectl KUBECTL_SUDO=true \
 bash scripts/apply-truenas-operator-override.sh --apply \
   --manifest deploy/truenas/market-data-collection-cronjob-1.26-controller-shanghai.yaml
 
-# 5. 验证 CronJob 与 PVC 状态
-sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob,pvc
+# 5. 验证 CronJob 与数据库连接引用
+sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob market-data-collection
 ```
 
-该入口还会拒绝缺失的 exact CronJob（不会创建新对象）、Helm ownership、非 `Bound` 的独立 PVC、非 `Asia/Shanghai` 的主机或 controller `TZ`、冻结镜像/安全上下文/独立 claim 漂移，并在 apply 后再次读取 exact CronJob 验证 `30 16 * * 1-5`、`suspend=false` 和冻结镜像。它不会调用 PVC/PV/Deployment/Service 的写操作；若检查失败，不得改用裸 `kubectl apply` 绕过入口。
+该入口还会拒绝缺失的 exact CronJob（不会创建新对象）、Helm ownership、缺失或错误类型的 PostgreSQL Service/Secret、包含数据库 PVC 的 CronJob、非 `Asia/Shanghai` 的主机或 controller `TZ`、冻结镜像/安全上下文/连接引用漂移，并在 apply 后再次读取 exact CronJob 验证 `30 16 * * 1-5`、`suspend=false` 和冻结镜像。它不会调用数据库 StatefulSet/PVC/Service/Secret 的写操作；若检查失败，不得改用裸 `kubectl apply` 绕过入口。
 
 周末可从 CronJob 派生一次唯一命名的 smoke Job；预期 `scheduled-refresh` 返回 `skipped` 且不访问 provider。只有交易日 16:30 的自然触发才能验证真实采集。记录日志后按 exact Job 名称清理临时 smoke；不要用宽标签删除。
+
+若 Job 已成功调度但日志在 `SnapshotStore.create_collection_run` 报 PostgreSQL 连接拒绝、schema 未迁移或事务超时，先保留失败 Job、Pod 日志、数据库连接参数（不含密码）和 migration Job 证据；不要创建本地 SQLite 回退文件、删除 PVC 或重跑 provider。先确认 PostgreSQL StatefulSet/Service ready、existingSecret 引用正确、`alembic_version` 已到 `head`，再按 exact-resource 授权流程更新 CronJob，更新后用一次受控交易日触发验证写入。
+
+当前旧镜像替换使用专用入口 `scripts/update-truenas-operator-override-image.sh`：它要求显式传入节点 containerd 已导入的新 immutable tag，校验 live exact CronJob 仍为旧镜像、非 Helm-owned、`suspend=false`、`30 16 * * 1-5`、PostgreSQL Service/Secret 引用和完整安全上下文，先执行 server-side dry-run；只有带 `--apply` 才更新 collector image。该入口不创建/删除 CronJob，不改变调度状态，不触碰数据库 StatefulSet/PVC/Service/Secret。原 `scripts/apply-truenas-operator-override.sh` 仍仅用于固定旧镜像的 schedule-only 修正。
 
 **回滚：** 若 schedule 修正需紧急停止，仅删除 exact `market-data-collection` CronJob；不要删除 PVC/PV/StorageClass。静态 PV 的 `Retain` 语义不会因删 PVC 自动清理底层数据，任何存储删除另行授权。
 
@@ -515,10 +604,10 @@ sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob,pvc
 - **同步模式与最终结论不同**：这是两阶段模型的预期行为。`syncPattern` 记录指数方向，`synchronizationAssessment.status` 说明广度、趋势和成交额是否确认；查看 `dimensions` 中的实际值和 reason，不要改写原始模式。
 - **同步上涨但显示“反驳”**：检查上涨占比是否不高于 45% 且中位数小于 0；这代表指数上涨没有得到多数个股确认，不应改成全面强势。
 - **普遍走弱但未显示系统性下降**：必须同时满足弱广度、至少三个指数位于 MA20 下方和至少三个指数放量下跌。缺少或未命中任一维度时只保留普遍走弱风险提示。
-- **上一交易日广度为不足**：从指数 history 确认 `previousAsOf`，再检查 SQLite 是否存在该精确日期的 `breadth` 成功快照；更早快照不会被采用，GET 也不会自动联网补采。
+- **上一交易日广度为不足**：从指数 history 确认 `previousAsOf`，再检查 PostgreSQL 是否存在该精确日期的 `breadth` 成功快照；更早快照不会被采用，GET 也不会自动联网补采。
 - **第 01 章证据显示 `missing` / `partial`**：先看对应对象的 `quality.warnings`。历史日期缺少广度、板块或成交额榜是当前快照源的预期边界；东方财富 403 或空 `data` 也必须保留缺失状态，不能用空数组伪造为 0。只有接口成功且明确返回空 `pool` 时，涨跌停计数才可为 0。
 - **章节显示 `cacheState=stale`**：查看 `snapshotFetchedAt` 和 `refreshWarning`；旧值仍对应同一交易日，但后台刷新失败或尚在进行。不要删除旧快照后用其他日期数据替代。
-- **refresh 一直显示被占用**：检查同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 SQLite。
+- **refresh 一直显示被占用**：检查 PostgreSQL 中同 dataset/date 的 lease；正常 lease 会在有界时间后过期。仅在确认没有刷新进程后使用 CLI 强制重试，不要直接修改 lease/fencing 字段。
 - **数据采集批次显示 `partial`**：查看每个 task 的 warning；成功 task 已独立保存，只对失败行执行重新采集，不要删除整批成功快照。
 - **最近采集失败但数据仍可用**：这是 `failed-retained`，页面继续服务同日期最后成功值并展示刷新错误；只有 `failed-missing` 才表示该日期没有可用数据。
 - **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 是否被显式设为 `0`，并检查所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
@@ -528,7 +617,9 @@ sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml k3s kubectl -n a-stock get cronjob,pvc
 - **节假日出现 failed/partial**：第一版预期会在周一至周五节假日触发；确认没有跨日期 snapshot 后保留审计记录，不要伪造当天成功。
 - **行业板块采集偶发 `RemoteDisconnected`**：确认请求经过共享串行门；主域会先执行有限连接重试，再降级到 `push2delay`。若两个域都失败，查看 task warning 和同日期 snapshot 是否触发 `failed-retained`，不要删除旧值或跨日期回填。
 - **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。
-- **需要紧急回滚持久缓存**：设置 `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0` 并重启 API；原 SQLite 文件保留用于诊断，不需要删除。
+- **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连或载荷无效，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。
+- **涨跌停生态采集为 `failed-missing`**：逐池检查 `push2ex` 主域和兼容延迟域的请求记录。延迟池成功时必须在池证据中记录 fallback 来源和主域错误；缺少顶层日期但请求 `date` 明确时应记录 `dateEvidence=request-parameter`，显式行日期冲突、池格式无效或两端点均失败时仍保持 `failed`/`insufficient`，不得把空响应当作 0 或跨日期回填。
+- **需要紧急回滚持久缓存**：设置 `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0` 并重启 API；PostgreSQL 数据库和旧 SQLite 归档均保留用于诊断，不需要删除。
 - **指数价格异常**：检查实时腾讯报价是否可用。沪市歧义代码没有实时交叉校验时，mootdx/百度结果会被拒绝，避免错误股票数据进入页面。
 - **hook 报 `\r` 相关错误**：`.githooks/*` 行尾被改为 CRLF，恢复 LF（`.gitattributes` 已强制 `eol=lf`，重新 checkout 即可）。
 - **gate 误报需要紧急绕过**：优先修文档；确需绕过用 commit message 标记（`[skip-plan]` / `[no-docs]` + 理由）或环境变量（见 `AGENTS.md` 逃生口）。

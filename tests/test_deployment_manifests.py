@@ -260,6 +260,8 @@ def _render_helm(*arguments: str) -> list[dict]:
             str(CHART_DIR),
             "--namespace",
             "a-stock",
+            "--set",
+            "database.existingSecret=a-stock-postgresql",
             *arguments,
         ],
         check=True,
@@ -278,6 +280,8 @@ def _render_helm_error(*arguments: str) -> str:
             str(CHART_DIR),
             "--namespace",
             "a-stock",
+            "--set",
+            "database.existingSecret=a-stock-postgresql",
             *arguments,
         ],
         check=False,
@@ -304,8 +308,11 @@ def _resource(documents: list[dict], kind: str) -> dict:
     return next(document for document in documents if document.get("kind") == kind)
 
 
-def _environment(container: dict) -> dict[str, str]:
-    return {item["name"]: item["value"] for item in container["env"]}
+def _environment(container: dict) -> dict[str, object]:
+    return {
+        item["name"]: item["value"] if "value" in item else item.get("valueFrom")
+        for item in container["env"]
+    }
 
 
 def _fenced_blocks(content: str, language: str) -> list[str]:
@@ -738,7 +745,7 @@ def _is_generic_deploy_entrypoint(command: tuple[str, ...]) -> bool:
     )
 
 
-def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary() -> None:
+def test_native_kustomize_cronjob_uses_postgresql_and_security_boundary() -> None:
     kustomization = _load_yaml(K3S_DIR / "kustomization.yaml")
     native_kustomization = _load_yaml(K3S_NATIVE_OVERLAY / "kustomization.yaml")
     deployment = _load_yaml(K3S_DIR / "deployment.yaml")
@@ -761,8 +768,9 @@ def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary
     assert cron_spec["jobTemplate"]["spec"]["backoffLimit"] == 0
     assert cron_spec["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
     assert cron_container["image"] == deployment_container["image"]
-    assert cron_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == deployment_pod["volumes"][0]["persistentVolumeClaim"]["claimName"]
-    assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
+    assert all("persistentVolumeClaim" not in volume for volume in cron_pod["volumes"])
+    assert all("persistentVolumeClaim" not in volume for volume in deployment_pod["volumes"])
+    assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0] == {"name": "tmp", "mountPath": "/tmp"}
     assert cron_container["command"] == [
         "python",
         "-m",
@@ -782,11 +790,76 @@ def test_native_kustomize_cronjob_uses_dashboard_image_pvc_and_security_boundary
     assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
     assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert _environment(cron_container) == _environment(deployment_container)
-    assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
+    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in _environment(cron_container)
+    assert _environment(cron_container)["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
     assert any(
         cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"].get(key) != value
         for key, value in service["spec"]["selector"].items()
     )
+
+
+def test_k3s_postgresql_statefulset_owns_database_pvc_and_schema_job_precedes_apps() -> None:
+    """The native k3s bundle keeps the RWO claim exclusive to PostgreSQL.
+
+    The schema Job must be part of the database bootstrap set and the
+    application manifests must not regain a SQLite/PVC mount while the
+    collector is enabled by the native scheduled overlay.
+    """
+    kustomization = _load_yaml(K3S_DIR / "kustomization.yaml")
+    resources = kustomization["resources"]
+    assert resources.index("postgresql-pvc.yaml") < resources.index("postgresql-schema-migration-job.yaml")
+    assert resources.index("postgresql-schema-migration-job.yaml") < resources.index("deployment.yaml")
+
+    pvc = _load_yaml(K3S_DIR / "postgresql-pvc.yaml")
+    service = _load_yaml(K3S_DIR / "postgresql-service.yaml")
+    statefulset = _load_yaml(K3S_DIR / "postgresql-statefulset.yaml")
+    migration = _load_yaml(K3S_DIR / "postgresql-schema-migration-job.yaml")
+    deployment = _load_yaml(K3S_DIR / "deployment.yaml")
+    cronjob = _load_yaml(K3S_NATIVE_OVERLAY / "market-data-collection-cronjob.yaml")
+
+    assert pvc["kind"] == "PersistentVolumeClaim"
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert pvc["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+    assert service["spec"]["type"] == "ClusterIP"
+    assert "nodePort" not in service["spec"]["ports"][0]
+
+    stateful_pod = statefulset["spec"]["template"]["spec"]
+    assert statefulset["spec"]["replicas"] == 1
+    assert stateful_pod["containers"][0]["image"].startswith("postgres@sha256:")
+    assert stateful_pod["containers"][0]["volumeMounts"] == [
+        {"name": "postgresql-data", "mountPath": "/var/lib/postgresql/data"}
+    ]
+    assert stateful_pod["volumes"] == [
+        {
+            "name": "postgresql-data",
+            "persistentVolumeClaim": {"claimName": "market-environment-postgresql-data"},
+        }
+    ]
+    assert all(
+        env["valueFrom"]["secretKeyRef"]["name"] == "a-stock-postgresql"
+        for env in stateful_pod["containers"][0]["env"]
+        if "valueFrom" in env
+    )
+
+    migration_pod = migration["spec"]["template"]["spec"]
+    migration_container = migration_pod["containers"][0]
+    assert migration_container["command"] == ["alembic", "upgrade", "head"]
+    assert migration_container["env"] == [
+        {
+            "name": "MARKET_ENVIRONMENT_DATABASE_URL",
+            "valueFrom": {
+                "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
+            },
+        }
+    ]
+    assert all("persistentVolumeClaim" not in volume for volume in migration_pod.get("volumes", []))
+
+    for pod in (
+        deployment["spec"]["template"]["spec"],
+        cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"],
+    ):
+        assert all("persistentVolumeClaim" not in volume for volume in pod["volumes"])
+        assert all("snapshots.sqlite3" not in str(volume) for volume in pod["volumes"])
 
 
 def test_truenas_126_controller_shanghai_override_is_frozen_and_isolated() -> None:
@@ -817,12 +890,26 @@ def test_truenas_126_controller_shanghai_override_is_frozen_and_isolated() -> No
         "snapshots",
         "scheduled-refresh",
     ]
-    assert _environment(cron_container) == {
-        "TZ": "Asia/Shanghai",
-        "MARKET_ENVIRONMENT_SNAPSHOT_PATH": "/data/snapshots.sqlite3",
-        "MARKET_ENVIRONMENT_PERSISTENT_CACHE": "1",
-        "MARKET_ENVIRONMENT_SETTLEMENT_TIME": "15:10",
+    environment = _environment(cron_container)
+    assert environment["TZ"] == "Asia/Shanghai"
+    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in environment
+    assert environment["MARKET_ENVIRONMENT_DATABASE_URL"] == {
+        "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
     }
+    assert environment["MARKET_ENVIRONMENT_DATABASE_HOST"] == "market-environment-postgresql"
+    assert environment["MARKET_ENVIRONMENT_DATABASE_PORT"] == "5432"
+    assert environment["MARKET_ENVIRONMENT_DATABASE_NAME"] == {
+        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_DB"}
+    }
+    assert environment["MARKET_ENVIRONMENT_DATABASE_USER"] == {
+        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_USER"}
+    }
+    assert environment["MARKET_ENVIRONMENT_DATABASE_PASSWORD"] == {
+        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_PASSWORD"}
+    }
+    assert environment["MARKET_ENVIRONMENT_DATABASE_SSLMODE"] == "prefer"
+    assert environment["MARKET_ENVIRONMENT_PERSISTENT_CACHE"] == "1"
+    assert environment["MARKET_ENVIRONMENT_SETTLEMENT_TIME"] == "15:10"
     assert cron_pod["automountServiceAccountToken"] is False
     assert cron_pod["restartPolicy"] == "Never"
     assert cron_pod["securityContext"] == {
@@ -837,8 +924,8 @@ def test_truenas_126_controller_shanghai_override_is_frozen_and_isolated() -> No
         "readOnlyRootFilesystem": True,
         "capabilities": {"drop": ["ALL"]},
     }
-    assert cron_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "market-environment-data"
-    assert cron_pod["volumes"][1] == {"name": "tmp", "emptyDir": {}}
+    assert cron_pod["volumes"] == [{"name": "tmp", "emptyDir": {}}]
+    assert all("persistentVolumeClaim" not in volume for volume in cron_pod["volumes"])
 
 
 def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> None:
@@ -870,6 +957,43 @@ def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_fails_closed_without_existing_database_secret() -> None:
+    completed = subprocess.run(
+        [str(HELM_BINARY), "template", "a-stock", str(CHART_DIR), "--namespace", "a-stock"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "database.existingSecret is required" in completed.stderr
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_fails_closed_when_postgresql_component_is_disabled() -> None:
+    completed = subprocess.run(
+        [
+            str(HELM_BINARY),
+            "template",
+            "a-stock",
+            str(CHART_DIR),
+            "--namespace",
+            "a-stock",
+            "--set",
+            "database.enabled=false",
+            "--set",
+            "marketEnvironment.scheduledCollection.enabled=false",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "SQLite runtime PVCs are not supported" in completed.stderr
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 def test_helm_component_database_renders_pvc_only() -> None:
     chart_managed = tmp_chart_managed_values() if False else _chart_managed_values()
     documents = _render_helm(
@@ -880,7 +1004,8 @@ def test_helm_component_database_renders_pvc_only() -> None:
     kinds = [document.get("kind") for document in documents]
     assert "PersistentVolumeClaim" in kinds
     assert "Deployment" not in kinds
-    assert "Service" not in kinds
+    assert "Service" in kinds
+    assert "StatefulSet" in kinds
     assert "Ingress" not in kinds
     assert "CronJob" not in kinds
 
@@ -917,14 +1042,133 @@ def test_helm_component_schedule_renders_only_suspended_cronjob() -> None:
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
-def test_helm_component_database_existingclaim_renders_no_pvc_object() -> None:
+def test_helm_component_database_uses_independent_postgresql_pvc() -> None:
     documents = _render_helm(
         "--kube-version", "1.26.6",
         "--set", "component=database",
         "--values", str(TRUENAS_DIRECT_ACCESS_VALUES),
     )
 
-    assert all(document.get("kind") != "PersistentVolumeClaim" for document in documents)
+    pvc = _resource(documents, "PersistentVolumeClaim")
+    assert pvc["metadata"]["name"].endswith("-postgresql-data")
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_database_bootstrap_uses_existing_secret_and_schema_hook() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.26.6",
+        "--set",
+        "component=database",
+        "--values",
+        str(TRUENAS_DIRECT_ACCESS_VALUES),
+    )
+
+    # A Secret is deliberately never rendered by this chart: operators must
+    # create the credential Secret before Helm is invoked.
+    assert all(document.get("kind") != "Secret" for document in documents)
+
+    pvc = _resource(documents, "PersistentVolumeClaim")
+    service = _resource(documents, "Service")
+    statefulset = _resource(documents, "StatefulSet")
+    migration = _resource(documents, "Job")
+
+    assert pvc["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert service["spec"]["type"] == "ClusterIP"
+    assert "nodePort" not in service["spec"]["ports"][0]
+    assert statefulset["spec"]["replicas"] == 1
+    db_container = statefulset["spec"]["template"]["spec"]["containers"][0]
+    assert db_container["image"].startswith("postgres@sha256:")
+    assert db_container["readinessProbe"]["exec"]["command"][0:2] == ["sh", "-c"]
+    assert db_container["livenessProbe"]["exec"]["command"][0:2] == ["sh", "-c"]
+    assert db_container["volumeMounts"][0]["name"] == "postgresql-data"
+    assert statefulset["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"].endswith(
+        "-postgresql-data"
+    )
+
+    assert migration["metadata"]["annotations"]["helm.sh/hook"] == "post-install,post-upgrade"
+    assert migration["metadata"]["annotations"]["helm.sh/hook-weight"] == "-5"
+    migration_container = migration["spec"]["template"]["spec"]["containers"][0]
+    assert migration_container["command"] == ["alembic", "upgrade", "head"]
+    assert migration_container["env"] == [
+        {
+            "name": "MARKET_ENVIRONMENT_DATABASE_URL",
+            "valueFrom": {
+                "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
+            },
+        }
+    ]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_rejects_non_rwo_postgresql_storage() -> None:
+    completed = subprocess.run(
+        [
+            str(HELM_BINARY),
+            "template",
+            "a-stock",
+            str(CHART_DIR),
+            "--namespace",
+            "a-stock",
+            "--set",
+            "database.existingSecret=a-stock-postgresql",
+            "--set",
+            "database.persistence.accessModes[0]=ReadWriteMany",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "database.persistence.accessModes must be exactly ReadWriteOnce" in completed.stderr
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_sqlite_import_job_is_explicit_read_only_and_secret_backed() -> None:
+    documents = _render_helm(
+        "--set",
+        "database.migration.enabled=true",
+        "--set",
+        "database.migration.sourceClaim=legacy-snapshots",
+        "--set",
+        "database.migration.sourcePath=/data/snapshots.sqlite3",
+        "--set",
+        "database.migration.apply=true",
+    )
+
+    jobs = [document for document in documents if document.get("kind") == "Job"]
+    import_jobs = [job for job in jobs if job["metadata"]["name"].endswith("-database-migration")]
+    assert len(import_jobs) == 1
+    job = import_jobs[0]
+    assert job["metadata"]["annotations"]["helm.sh/hook-weight"] == "10"
+    pod = job["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["command"] == ["python", "-m", "src.market_environment.cli", "database", "migrate"]
+    assert container["args"] == [
+        "--source",
+        "/data/snapshots.sqlite3",
+        "--backup",
+        "/tmp/snapshots-before-postgresql.sqlite3",
+        "--apply",
+    ]
+    assert container["env"] == [
+        {
+            "name": "MARKET_ENVIRONMENT_DATABASE_URL",
+            "valueFrom": {
+                "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
+            },
+        }
+    ]
+    source_mount = next(mount for mount in container["volumeMounts"] if mount["name"] == "legacy-sqlite")
+    assert source_mount == {"name": "legacy-sqlite", "mountPath": "/data", "readOnly": True}
+    source_volume = next(volume for volume in pod["volumes"] if volume["name"] == "legacy-sqlite")
+    assert source_volume == {
+        "name": "legacy-sqlite",
+        "persistentVolumeClaim": {"claimName": "legacy-snapshots"},
+    }
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -1104,10 +1348,6 @@ def test_helm_render_matrix_covers_every_profile_and_state(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        (
-            ("--set", "persistence.enabled=false"),
-            "marketEnvironment.scheduledCollection.enabled requires persistence.enabled=true",
-        ),
         (
             ("--set", "marketEnvironment.scheduledCollection.timezoneStrategy=unknown"),
             "marketEnvironment.scheduledCollection.timezoneStrategy must be native or controller",
@@ -1310,7 +1550,12 @@ def test_helm_render_supports_node_port_on_kubernetes_126() -> None:
         "service.nodePort=32001",
     )
 
-    service = _resource(documents, "Service")
+    service = next(
+        document
+        for document in documents
+        if document.get("kind") == "Service"
+        and document.get("spec", {}).get("ports", [{}])[0].get("port") == 80
+    )
     assert service["spec"]["type"] == "NodePort"
     assert service["spec"]["ports"][0]["nodePort"] == 32001
 
@@ -1324,7 +1569,12 @@ def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() 
         str(TRUENAS_DIRECT_ACCESS_VALUES),
     )
     deployment = _resource(documents, "Deployment")
-    service = _resource(documents, "Service")
+    service = next(
+        document
+        for document in documents
+        if document.get("kind") == "Service"
+        and document.get("spec", {}).get("ports", [{}])[0].get("port") == 80
+    )
     pod = deployment["spec"]["template"]["spec"]
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     manual_refresh = [
@@ -1333,9 +1583,13 @@ def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() 
 
     assert deployment["spec"]["replicas"] == 1
     assert container["image"] == "localhost/a-stock-market-environment:20260905-1904b66"
-    assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "a-stock-data"
-    assert container["volumeMounts"][0] == {"name": "data", "mountPath": "/data"}
-    assert _environment(container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
+    assert all("persistentVolumeClaim" not in volume for volume in pod["volumes"])
+    assert all(mount.get("name") != "data" for mount in container["volumeMounts"])
+    environment = _environment(container)
+    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in environment
+    assert environment["MARKET_ENVIRONMENT_DATABASE_URL"] == {
+        "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
+    }
     assert pod["securityContext"]["runAsNonRoot"] is True
     assert pod["securityContext"]["runAsUser"] == 10001
     assert pod["securityContext"]["runAsGroup"] == 10001
@@ -1347,7 +1601,8 @@ def test_truenas_direct_access_values_preserve_runtime_and_storage_invariants() 
     assert service["spec"]["type"] == "NodePort"
     assert service["spec"]["ports"][0]["nodePort"] == 32001
     assert manual_refresh == [{"name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "value": "1"}]
-    assert all(document.get("kind") not in {"Ingress", "CronJob", "PersistentVolumeClaim"} for document in documents)
+    assert all(document.get("kind") not in {"Ingress", "CronJob"} for document in documents)
+    assert _resource(documents, "StatefulSet")["spec"]["replicas"] == 1
 
 
 def test_truenas_disabled_profiles_explicitly_lock_both_safety_booleans() -> None:
@@ -1439,7 +1694,11 @@ def test_truenas_scheduling_overlays_only_change_reviewed_scheduling_fields() ->
         assert cron_pod["volumes"][0] == deployment_pod["volumes"][0]
         assert cron_container["volumeMounts"][0] == deployment_container["volumeMounts"][0]
         assert _environment(cron_container) == _environment(deployment_container)
-        assert _environment(cron_container)["MARKET_ENVIRONMENT_SNAPSHOT_PATH"] == "/data/snapshots.sqlite3"
+        environment = _environment(cron_container)
+        assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in environment
+        assert environment["MARKET_ENVIRONMENT_DATABASE_URL"] == {
+            "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
+        }
         assert cron_pod["automountServiceAccountToken"] is False
         assert cron_pod["securityContext"] == deployment_pod["securityContext"]
         assert cron_pod["securityContext"]["runAsNonRoot"] is True

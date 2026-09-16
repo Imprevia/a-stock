@@ -32,7 +32,7 @@ from .calculations import (
     range_position,
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
-from .refresh import SnapshotRefresher
+from .refresh import SnapshotRefresher, effective_market_date
 from .limit_promotion import limit_v1_enabled, without_promotion_fields
 from .limit_ecosystem import build_limit_ecosystem
 from .schemas import LimitEvidence, MarketEnvironmentResponse
@@ -66,8 +66,10 @@ _MATERIALIZED_LIMITS_STATE_KEY = "_limitsSnapshotState"
 _MATERIALIZED_REBUILD_ATTEMPTS = 3
 
 
-def market_today() -> date:
-    return datetime.now(MARKET_TIME_ZONE).date()
+def market_today(now: datetime | None = None) -> date:
+    """Return the effective Shanghai market date, not a pre-open calendar date."""
+
+    return effective_market_date(now)
 
 
 class MarketEnvironmentService:
@@ -742,7 +744,7 @@ class MarketEnvironmentService:
         cache_key: tuple[str, str],
     ) -> dict[str, Any]:
         as_of = core["effectiveDate"]
-        allow_current_snapshot = core["requestedAsOf"] == market_today()
+        allow_current_snapshot = core["requestedAsOf"] == effective_market_date(self._market_now())
         try:
             if group == "breadth" and callable(fetch := getattr(self.provider, "fetch_chapter01_breadth", None)):
                 value = {"breadth": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
@@ -896,7 +898,7 @@ class MarketEnvironmentService:
         return value.astimezone(MARKET_TIME_ZONE)
 
     def _allows_current_snapshot(self, core: dict[str, Any]) -> bool:
-        return core["requestedAsOf"] == self._market_now().date()
+        return core["requestedAsOf"] == effective_market_date(self._market_now())
 
     def _load_legacy_chapter(self, core: dict[str, Any]) -> dict[str, Any]:
         cache_key = (core["requestedAsOf"].isoformat(), "legacy")
@@ -909,7 +911,10 @@ class MarketEnvironmentService:
             value = self._missing_chapter_provider_data(as_of, "provider 未实现第 01 章扩展接口")
         else:
             try:
-                value = fetch(as_of, allow_current_snapshot=core["requestedAsOf"] == market_today())
+                value = fetch(
+                    as_of,
+                    allow_current_snapshot=core["requestedAsOf"] == effective_market_date(self._market_now()),
+                )
             except Exception as exc:
                 value = self._missing_chapter_provider_data(as_of, f"第 01 章扩展接口失败：{exc}")
         self._cache_set(self._chapter_cache, cache_key, value)

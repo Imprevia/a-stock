@@ -7,12 +7,28 @@ from src.market_environment.calculations import Bar
 from src.market_environment.cli import main as cli_main
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.providers import INDEX_SPECS, MarketDataProvider, ProviderResult
-from src.market_environment.refresh import MARKET_TIME_ZONE
+from src.market_environment.refresh import MARKET_TIME_ZONE, effective_market_date
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
 
 AS_OF = date(2026, 9, 3)
 AFTER_MARKET = datetime(2026, 9, 3, 15, 20, tzinfo=MARKET_TIME_ZONE)
+
+
+def test_collection_rejects_current_calendar_date_before_open_and_accepts_previous_session(tmp_path) -> None:
+    pre_open = datetime(2026, 9, 15, 9, 0, tzinfo=MARKET_TIME_ZONE)
+    provider = CollectionProvider()
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    coordinator = CollectionCoordinator(provider, store, now=lambda: pre_open)
+
+    assert effective_market_date(pre_open) == date(2026, 9, 14)
+    with pytest.raises(ValueError, match="collection date cannot be later"):
+        coordinator.start_run(date(2026, 9, 15), ["breadth"])
+
+    result = coordinator.collect(date(2026, 9, 14), ["breadth"])
+    assert result.run.status == "success"
+    assert store.get("breadth", date(2026, 9, 14)) is not None
+    assert store.get("breadth", date(2026, 9, 15)) is None
 
 
 def quality(dataset: str, as_of: date, status: str = "ok") -> dict:
@@ -432,6 +448,34 @@ def test_scheduled_refresh_rejects_pre_settlement_without_provider_calls(
     assert payload["status"] == "rejected"
     assert "settlement" in payload["error"]
     assert payload["datasets"] == []
+    assert provider.calls == []
+
+
+def test_scheduled_refresh_pre_open_reports_previous_market_date_without_provider_calls(
+    tmp_path,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(
+        provider,
+        SnapshotStore(tmp_path / "snapshots.sqlite3"),
+        rebuild_aggregate=lambda _as_of: None,
+    )
+    pre_open = datetime(2026, 9, 15, 9, 0, tzinfo=MARKET_TIME_ZONE)
+
+    exit_code = cli_main(
+        ["snapshots", "scheduled-refresh"],
+        coordinator=coordinator,
+        now=lambda: pre_open,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["asOf"] == "2026-09-14"
+    assert payload["status"] == "rejected"
+    assert "settlement" in payload["error"]
     assert provider.calls == []
 
 

@@ -1,0 +1,19 @@
+{{- if and .Values.database.enabled (has (default "all" .Values.component) (list "all" "database")) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "a-stock.postgresqlName" . }}
+  labels:
+    {{- include "a-stock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: {{ .Values.database.service.port }}
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "a-stock.postgresqlName" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

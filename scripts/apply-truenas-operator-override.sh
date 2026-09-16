@@ -11,11 +11,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_MANIFEST="$SCRIPT_DIR/../deploy/truenas/market-data-collection-cronjob-1.26-controller-shanghai.yaml"
 MANIFEST="${OPERATOR_OVERRIDE_MANIFEST:-$DEFAULT_MANIFEST}"
 # These identities are intentionally constants. An operator override must not
-# be repointed at the Helm-owned PVC or at a different workload by environment.
+# be repointed at a different workload, database Service, or Secret by
+# environment. The CronJob has no database volume; all runtime state is
+# reached through the in-cluster PostgreSQL Service and Secret.
 NAMESPACE="a-stock"
 CRONJOB_NAME="market-data-collection"
 EXPECTED_IMAGE="localhost/a-stock-market-environment:20260906-005226-2075b6e"
-EXPECTED_CLAIM="market-environment-data"
+EXPECTED_DATABASE_SERVICE="market-environment-postgresql"
+EXPECTED_DATABASE_SECRET="a-stock-postgresql"
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 KUBECTL_SUBCOMMAND="${KUBECTL_SUBCOMMAND:-}"
 KUBECTL_SUDO="${KUBECTL_SUDO:-false}"
@@ -33,8 +36,10 @@ Usage: bash scripts/apply-truenas-operator-override.sh [--apply]
 
 The default operation is read-only validation plus a server-side dry-run.
 Pass --apply only after reviewing the dry-run output. The script requires an
-existing exact, non-Helm-owned market-data-collection CronJob and a Bound
-market-environment-data PVC. It refuses to create or delete resources.
+existing exact, non-Helm-owned market-data-collection CronJob, the in-cluster
+PostgreSQL Service, and an existing Secret with the database connection keys.
+The CronJob must not mount a database PVC. It refuses to create or delete
+resources.
 
 For TrueNAS k3s, run with KUBECTL_BIN=k3s KUBECTL_SUBCOMMAND=kubectl and, when
 needed, KUBECTL_SUDO=true KUBECONFIG=/etc/rancher/k3s/k3s.yaml.
@@ -115,8 +120,9 @@ validate_yaml() {
     cat > "$input_file"
   fi
   local status
-  if EXPECTED_IMAGE="$EXPECTED_IMAGE" EXPECTED_CLAIM="$EXPECTED_CLAIM" \
-    NAMESPACE="$NAMESPACE" CRONJOB_NAME="$CRONJOB_NAME" MODE="$mode" \
+  if EXPECTED_IMAGE="$EXPECTED_IMAGE" EXPECTED_DATABASE_SERVICE="$EXPECTED_DATABASE_SERVICE" \
+    EXPECTED_DATABASE_SECRET="$EXPECTED_DATABASE_SECRET" NAMESPACE="$NAMESPACE" \
+    CRONJOB_NAME="$CRONJOB_NAME" MODE="$mode" \
     "$PYTHON_BIN" - "$input_file" <<'PY'
 import json
 import os
@@ -183,28 +189,45 @@ if container.get("command") != ["python", "-m", "src.market_environment.cli", "s
 if pod.get("restartPolicy") != "Never":
     raise SystemExit("override restartPolicy must be Never")
 expected_environment = {
-    "TZ": "Asia/Shanghai",
-    "MARKET_ENVIRONMENT_SNAPSHOT_PATH": "/data/snapshots.sqlite3",
-    "MARKET_ENVIRONMENT_PERSISTENT_CACHE": "1",
-    "MARKET_ENVIRONMENT_SETTLEMENT_TIME": "15:10",
+    "TZ": {"name": "TZ", "value": "Asia/Shanghai"},
+    "MARKET_ENVIRONMENT_DATABASE_URL": {
+        "name": "MARKET_ENVIRONMENT_DATABASE_URL",
+        "valueFrom": {"secretKeyRef": {"name": os.environ["EXPECTED_DATABASE_SECRET"], "key": "DATABASE_URL"}},
+    },
+    "MARKET_ENVIRONMENT_DATABASE_HOST": {
+        "name": "MARKET_ENVIRONMENT_DATABASE_HOST",
+        "value": os.environ["EXPECTED_DATABASE_SERVICE"],
+    },
+    "MARKET_ENVIRONMENT_DATABASE_PORT": {"name": "MARKET_ENVIRONMENT_DATABASE_PORT", "value": "5432"},
+    "MARKET_ENVIRONMENT_DATABASE_NAME": {
+        "name": "MARKET_ENVIRONMENT_DATABASE_NAME",
+        "valueFrom": {"secretKeyRef": {"name": os.environ["EXPECTED_DATABASE_SECRET"], "key": "POSTGRES_DB"}},
+    },
+    "MARKET_ENVIRONMENT_DATABASE_USER": {
+        "name": "MARKET_ENVIRONMENT_DATABASE_USER",
+        "valueFrom": {"secretKeyRef": {"name": os.environ["EXPECTED_DATABASE_SECRET"], "key": "POSTGRES_USER"}},
+    },
+    "MARKET_ENVIRONMENT_DATABASE_PASSWORD": {
+        "name": "MARKET_ENVIRONMENT_DATABASE_PASSWORD",
+        "valueFrom": {"secretKeyRef": {"name": os.environ["EXPECTED_DATABASE_SECRET"], "key": "POSTGRES_PASSWORD"}},
+    },
+    "MARKET_ENVIRONMENT_DATABASE_SSLMODE": {"name": "MARKET_ENVIRONMENT_DATABASE_SSLMODE", "value": "prefer"},
+    "MARKET_ENVIRONMENT_PERSISTENT_CACHE": {"name": "MARKET_ENVIRONMENT_PERSISTENT_CACHE", "value": "1"},
+    "MARKET_ENVIRONMENT_SETTLEMENT_TIME": {"name": "MARKET_ENVIRONMENT_SETTLEMENT_TIME", "value": "15:10"},
 }
-environment = {entry.get("name"): entry.get("value") for entry in (container.get("env") or [])}
+environment = {entry.get("name"): entry for entry in (container.get("env") or [])}
 if environment != expected_environment:
     raise SystemExit("override environment drifted")
 volumes = pod.get("volumes") or []
 if volumes != [
-    {"name": "data", "persistentVolumeClaim": {"claimName": os.environ["EXPECTED_CLAIM"]}},
     {"name": "tmp", "emptyDir": {}},
 ]:
     raise SystemExit("override volumes drifted")
 mounts = container.get("volumeMounts") or []
 if mounts != [
-    {"name": "data", "mountPath": "/data"},
     {"name": "tmp", "mountPath": "/tmp"},
 ]:
     raise SystemExit("override volume mounts drifted")
-if volumes[0]["persistentVolumeClaim"].get("claimName") != os.environ["EXPECTED_CLAIM"]:
-    raise SystemExit("override must mount the independent market-environment-data PVC")
 if pod.get("automountServiceAccountToken") is not False:
     raise SystemExit("override must disable service-account token automount")
 security = pod.get("securityContext") or {}
@@ -258,12 +281,47 @@ PY
   return "$status"
 }
 
-validate_pvc() {
+validate_database_secret() {
   local input_file
   input_file="$(mktemp)"
   cat > "$input_file"
   local status
-  if EXPECTED_CLAIM="$EXPECTED_CLAIM" NAMESPACE="$NAMESPACE" "$PYTHON_BIN" - "$input_file" <<'PY'
+  if EXPECTED_DATABASE_SECRET="$EXPECTED_DATABASE_SECRET" NAMESPACE="$NAMESPACE" "$PYTHON_BIN" - "$input_file" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    payload = json.load(stream)
+metadata = payload.get("metadata") or {}
+if payload.get("kind") != "Secret":
+    raise SystemExit("database lookup returned a non-Secret object")
+if metadata.get("name") != os.environ["EXPECTED_DATABASE_SECRET"] or metadata.get("namespace") != os.environ["NAMESPACE"]:
+    raise SystemExit("database Secret identity does not match the exact override Secret")
+if payload.get("type") not in (None, "Opaque"):
+    raise SystemExit("database Secret must be Opaque")
+required = {"DATABASE_URL", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"}
+data = payload.get("data") or {}
+missing = sorted(required - set(data))
+if missing:
+    raise SystemExit("database Secret is missing required keys: " + ",".join(missing))
+print(json.dumps({"name": metadata["name"], "keys": sorted(data)}, sort_keys=True))
+PY
+  then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f -- "$input_file"
+  return "$status"
+}
+
+validate_database_service() {
+  local input_file
+  input_file="$(mktemp)"
+  cat > "$input_file"
+  local status
+  if EXPECTED_DATABASE_SERVICE="$EXPECTED_DATABASE_SERVICE" NAMESPACE="$NAMESPACE" "$PYTHON_BIN" - "$input_file" <<'PY'
 import json
 import os
 import sys
@@ -272,18 +330,16 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     payload = json.load(stream)
 metadata = payload.get("metadata") or {}
 spec = payload.get("spec") or {}
-status = payload.get("status") or {}
-if payload.get("kind") != "PersistentVolumeClaim":
-    raise SystemExit("PVC lookup returned a non-PVC object")
-if metadata.get("name") != os.environ["EXPECTED_CLAIM"] or metadata.get("namespace") != os.environ["NAMESPACE"]:
-    raise SystemExit("PVC identity does not match the independent override claim")
-if status.get("phase") != "Bound":
-    raise SystemExit("independent override PVC must be Bound")
-if "ReadWriteOnce" not in (spec.get("accessModes") or []):
-    raise SystemExit("independent override PVC must be ReadWriteOnce")
-if not spec.get("volumeName"):
-    raise SystemExit("independent override PVC is missing its bound PV")
-print(json.dumps({"phase": status["phase"], "volume": spec["volumeName"]}, sort_keys=True))
+if payload.get("kind") != "Service":
+    raise SystemExit("database lookup returned a non-Service object")
+if metadata.get("name") != os.environ["EXPECTED_DATABASE_SERVICE"] or metadata.get("namespace") != os.environ["NAMESPACE"]:
+    raise SystemExit("database Service identity does not match the exact override Service")
+if spec.get("type") != "ClusterIP":
+    raise SystemExit("database Service must remain ClusterIP")
+ports = spec.get("ports") or []
+if not any(item.get("port") == 5432 for item in ports if isinstance(item, dict)):
+    raise SystemExit("database Service must expose PostgreSQL port 5432")
+print(json.dumps({"name": metadata["name"], "type": spec["type"]}, sort_keys=True))
 PY
   then
     status=0
@@ -303,12 +359,17 @@ existing_cronjob="$(kubectl_run -n "$NAMESPACE" get cronjob "$CRONJOB_NAME" -o y
 printf '%s\n' "$existing_cronjob" | validate_yaml live - >/dev/null \
   || die 'existing CronJob is Helm-owned or has an unsupported shape/drift'
 
-pvc_json="$(kubectl_run -n "$NAMESPACE" get pvc "$EXPECTED_CLAIM" -o json 2>/dev/null)" \
-  || die "could not read exact PVC $NAMESPACE/$EXPECTED_CLAIM"
-printf '%s\n' "$pvc_json" | validate_pvc \
-  || die 'independent override PVC is not Bound or has drifted'
+secret_json="$(kubectl_run -n "$NAMESPACE" get secret "$EXPECTED_DATABASE_SECRET" -o json 2>/dev/null)" \
+  || die "could not read exact database Secret $NAMESPACE/$EXPECTED_DATABASE_SECRET"
+printf '%s\n' "$secret_json" | validate_database_secret \
+  || die 'database Secret is missing or has drifted'
 
-log "exact target verified: CronJob=$NAMESPACE/$CRONJOB_NAME PVC=$NAMESPACE/$EXPECTED_CLAIM"
+service_json="$(kubectl_run -n "$NAMESPACE" get service "$EXPECTED_DATABASE_SERVICE" -o json 2>/dev/null)" \
+  || die "could not read exact database Service $NAMESPACE/$EXPECTED_DATABASE_SERVICE"
+printf '%s\n' "$service_json" | validate_database_service \
+  || die 'database Service is missing or has drifted'
+
+log "exact target verified: CronJob=$NAMESPACE/$CRONJOB_NAME PostgreSQLService=$NAMESPACE/$EXPECTED_DATABASE_SERVICE Secret=$NAMESPACE/$EXPECTED_DATABASE_SECRET"
 kubectl_run -n "$NAMESPACE" apply --dry-run=server \
   --field-manager=a-stock-operator-override -f "$MANIFEST" \
   || die 'server-side dry-run failed'
@@ -335,4 +396,4 @@ if image != __import__("os").environ["EXPECTED_IMAGE"]:
     raise SystemExit("post-apply image is not the frozen image")
 print("postcondition=exact CronJob schedule=30 16 * * 1-5 suspend=false")
 '
-log 'operator override applied; PVC/PV/Deployment/Service were read-only and untouched'
+log 'operator override applied; PostgreSQL Secret/Service/Deployment were read-only and untouched'

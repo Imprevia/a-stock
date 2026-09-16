@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: market-environment-postgresql-schema
+  namespace: a-stock
+  labels:
+    app.kubernetes.io/name: market-environment-postgresql-schema
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: a-stock
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: market-environment-postgresql-schema
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: a-stock
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: schema-migration
+          image: a-stock-market-environment:latest
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: MARKET_ENVIRONMENT_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: a-stock-postgresql
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

@@ -3,12 +3,31 @@ import json
 from types import SimpleNamespace
 
 from src.market_environment import cli
-from src.market_environment.refresh import MARKET_TIME_ZONE, SnapshotRefresher
+from src.market_environment.refresh import MARKET_TIME_ZONE, SnapshotRefresher, effective_market_date
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
 
 AS_OF = date(2026, 9, 2)
 AFTER_MARKET = datetime(2026, 9, 2, 15, 20, tzinfo=MARKET_TIME_ZONE)
+
+
+def test_effective_market_date_uses_previous_weekday_before_open() -> None:
+    monday_pre_open = datetime(2026, 9, 7, 9, 29, 59, tzinfo=MARKET_TIME_ZONE)
+    saturday_pre_open = datetime(2026, 9, 5, 9, 0, tzinfo=MARKET_TIME_ZONE)
+    saturday_after_open = datetime(2026, 9, 5, 16, 0, tzinfo=MARKET_TIME_ZONE)
+    at_open = datetime(2026, 9, 7, 9, 30, tzinfo=MARKET_TIME_ZONE)
+
+    assert effective_market_date(monday_pre_open) == date(2026, 9, 4)
+    assert effective_market_date(saturday_pre_open) == date(2026, 9, 4)
+    assert effective_market_date(saturday_after_open) == date(2026, 9, 4)
+    assert effective_market_date(at_open) == date(2026, 9, 7)
+
+
+def test_effective_market_date_normalizes_aware_input_to_shanghai() -> None:
+    # 01:29 UTC is 09:29 Shanghai and must still resolve to the previous day.
+    utc_pre_open = datetime(2026, 9, 15, 1, 29, 59, tzinfo=timezone.utc)
+
+    assert effective_market_date(utc_pre_open) == date(2026, 9, 14)
 
 
 def quality(dataset: str, status: str = "ok", observations: int = 3, *, as_of: date = AS_OF) -> dict:

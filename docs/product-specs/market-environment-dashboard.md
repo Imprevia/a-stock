@@ -16,9 +16,10 @@
 - 页面依次查看指数结构、市场广度、涨跌停生态、分层亏钱效应、行业主线、容量方向、事件、环境归类和综合判断。
 - 首屏先展示指数结构；扩展章节证据按当前二级文档需要加载，切换页面不应被未访问数据集阻塞。
 - 每个数据集同时展示来源、状态和 warning；缺失或未核实证据保持 `null` / `insufficient` / `unverified`。
-- 日期时间统一按生效时区显示本地日期、时间和 UTC 偏移，悬停可查看原始 UTC ISO8601；解析优先级为个人偏好、工作区偏好、浏览器 IANA 时区，均不可用时显式显示 UTC。偏好设置页支持 IANA 时区选择、持久化以及无效值、权限不足、离线和接口失败状态。
+- 日期时间统一按生效时区显示本地日期、时间和 UTC 偏移，悬停可查看原始 UTC ISO8601；解析优先级为个人偏好、工作区偏好、浏览器 IANA 时区，均不可用时显式显示 UTC。数据采集页“最近尝试”是市场运行审计字段，固定使用 `Asia/Shanghai`，不随浏览器或个人时区切换。偏好设置页支持 IANA 时区选择、持久化以及无效值、权限不足、离线和接口失败状态。
 - 开发阶段通过独立的 `/data-collection` 数据管理页查看精确日期的五类数据状态，可单项重新采集或一键采集全部数据；普通研究页面不承担数据采集职责。
-- 数据采集页首次打开时使用后端返回的上海市场当天，避免研究页 15:00 前默认上一日期的规则禁用 latest-only 数据集；用户手工选择历史日期后仍严格展示 provider 日期限制。
+- 数据采集页首次打开时由后端按上海时区解析有效市场日：开市前（09:30 前）选择上一工作日对应的真实交易日并跳过周末；节假日或实际日期无证据时返回 `insufficient`/拒绝，provider 返回的实际日期必须与目标日期一致；开市后才选择上海当天。这样不会把尚未开始的当日误标为已完成，也不会把上一交易日行情伪装成当天；用户手工选择历史日期后仍严格展示 provider 日期限制。
+- 已确认的盘前误标可在隔离 SQLite 副本通过 `snapshots relabel-date` dry-run 后显式 `--apply` 重标；流程同步快照、任务、涨跌停事实与聚合，校验 checksum/目标冲突并留下可回滚审计，不允许普通采集路径自动跨日期改名或覆盖目标日期已有成功值。
 - k3s/Helm 部署的业务触发目标为上海时区工作日 16:30；Kubernetes 1.27+ 的 `native` 策略使用 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 `controller` 策略省略该字段并只接受经证据验证的 UTC/上海 controller 映射。定时任务与手工采集共享同一任务、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采。
 
 ## 范围
@@ -39,7 +40,7 @@
 - 数据采集页覆盖核心指数、市场广度、涨跌停生态、行业板块和容量方向，并分别展示当前可用状态与最近采集结果；核心指数可展开查看五个指数子项。
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
 - 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 SQLite 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
-- 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业与容量方向主域失败后允许降级到兼容延迟域，并保留实际来源和主域失败 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。
+- 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 盘后定时采集使用与 Dashboard 相同镜像和 SQLite PVC，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
 - 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，再由 exact Gate B action authorization 覆盖的 no-provider canary 实际观察预测触发，配置断言不能替代 canary 证据。canary 通过只允许继续非覆盖备份、suspended release 和一个已命名 provider-backed Job；Gate B 证据被接受并形成明确 catch-up 选择的 Gate C operation authorization、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
@@ -64,7 +65,7 @@
 ### 第 03 页数据与发布边界
 
 - limits detail/V1 写入开关 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 默认关闭；关闭时旧五字段路径和本地快照继续可读，开启前须通过迁移、幂等、lease/CAS、`PRAGMA quick_check`、provider-free GET、失败保留和前端状态验证。
-- 严格 provider 必须证明顶层/逐行实际日期、规范证券身份、交易所/板块、ST/上市窗口、适用涨跌幅制度及收盘涨停状态；不完整字段只能保留旧事实，不能生成晋级、梯队、分层或 250 日结论。
+- 严格 provider 必须证明响应/查询绑定的实际日期以及所有可见逐行日期不冲突，并尽可能证明规范证券身份、交易所/板块、ST/上市窗口、适用涨跌幅制度及收盘涨停状态；仅由请求日期绑定而缺少证券事实字段时，可以恢复旧五字段和审计快照，但不能生成晋级、梯队、分层或 250 日结论。日期冲突、无效日期或池无法解析时仍拒绝 V1 完整事实。
 - 当前日与前一日由精确相邻交易日解析器确定，不使用自然日减一、跨日期回填或浏览器端重新抓取。失败采集只记录审计 warning，不覆盖成功快照。
 - 真实 provider smoke 仅在显式授权的隔离 SQLite 和盘后命令执行，记录来源、两日实际日期、覆盖率、排除数、checksum 和质量；证明不足时保持 `failed` / `degraded` / `insufficient`，不改变规则校准状态。
 - 回滚顺序为先关闭 limits detail/V1 写入，再恢复应用版本；保留 PVC、旧聚合、`trading_sessions`、`limit_security_facts` 和校验和，不删除数据库或用其他日期替代。
@@ -107,7 +108,7 @@
 - 同步性研判在桌面和 390px 移动视口均完整显示模式、三项确认、结论和风险；移动端确认项纵向排列，不出现文字重叠或小于 14px 的可见文字。
 - 数据采集页在桌面和 390px 移动视口中保持日期、状态、进度和操作可读，不出现控件重叠；采集期间保留旧数据而不是全屏阻塞。
 - TrueNAS 直连候选启用手工采集时，完整 values render 为固定 `NodePort:32001`，且文档与验收不得将可路由网络误述为经过认证、授权或仅限特定客户端。
-- 15:00 前首次打开数据采集页时，默认日期为后端上海市场当天且 `sectors` 等 latest-only 数据集可采；研究页仍默认上一日期。
+- 开市前（09:30 前）首次打开数据采集页时，默认日期为后端解析的上一工作日对应的真实交易日（周末跳过）；节假日或 provider 日期证据不足时保持 `insufficient`/`failed` 并拒绝写入，不得将前一日数据写入当日键。开市后才可按上海当天采集 `sectors` 等 latest-only 数据集；研究页仍保持 15:00 前默认上一日期的规则。
 - 行业主域瞬态失败时按有界策略恢复或降级到延迟域；两个端点均失败时只允许保留同日期成功快照，并区分 `failed-retained` 与 `failed-missing`。
 - 行业 `leader` 字段来自 provider 的名称字段，不返回领涨股证券代码。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。

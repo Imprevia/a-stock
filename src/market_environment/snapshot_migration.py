@@ -1,0 +1,41 @@
+"""Backward-compatible import surface for local snapshot migrations."""
+
+from .date_relabel import (
+    ConflictPolicy,
+    DateRelabelConflict,
+    DateRelabelEntry,
+    DateRelabelError,
+    DateRelabelPlan,
+    DateRelabelResult,
+    DateRelabeler,
+    get_date_relabel_audit,
+    list_date_relabel_audits,
+    plan_date_relabel,
+    migrate_date,
+    migrate_snapshot_date,
+    relabel_snapshots,
+    relabel_snapshot_dates,
+    relabel_date,
+    rollback_date_relabel,
+    snapshot_date_relabel,
+)
+
+__all__ = [
+    "ConflictPolicy",
+    "DateRelabelConflict",
+    "DateRelabelEntry",
+    "DateRelabelError",
+    "DateRelabelPlan",
+    "DateRelabelResult",
+    "DateRelabeler",
+    "get_date_relabel_audit",
+    "list_date_relabel_audits",
+    "plan_date_relabel",
+    "migrate_date",
+    "migrate_snapshot_date",
+    "relabel_snapshots",
+    "relabel_snapshot_dates",
+    "relabel_date",
+    "rollback_date_relabel",
+    "snapshot_date_relabel",
+]
