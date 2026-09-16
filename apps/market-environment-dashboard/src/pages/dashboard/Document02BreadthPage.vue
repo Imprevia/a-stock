@@ -9,7 +9,7 @@
  * through emit.
  */
 import { AlertTriangle, Copy, CircleAlert } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 
 import BreadthHistoryChartPanel from '../../components/charts/BreadthHistoryChartPanel.vue'
 import { useDocumentContext } from '../../composables/useDocumentContext'
@@ -40,12 +40,61 @@ const breadthBar = computed(() => {
 
 const breadthWidthLabelOptions = ['同向增强', '同向走弱', '指数强个股弱', '指数弱个股修复', '混合', '数据不足']
 
-const emit = defineEmits<{
-  copyVerification: []
-}>()
+// Clipboard is a pure UI behavior — self-contained, no store writes.
+const copyStatus = ref<{ state: 'success' | 'error'; message: string } | null>(null)
+let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
 
-function onCopyVerification(): void {
-  emit('copyVerification')
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Continue to the local fallback for HTTP origins or denied permissions.
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  textarea.remove()
+  return copied
+}
+
+async function copyVerification(): Promise<void> {
+  const item = breadth.value
+  if (!item) return
+  const text = [
+    `今日宽度标签：${item.widthLabel || '数据不足'}`,
+    `核心证据：上涨占比 ${formatPosition(item.advanceRatio)}，涨跌幅中位数 ${item.medianReturn == null ? '--' : formatPct(item.medianReturn)}，与指数 ${verification.value.consistencyHint}。`,
+    `下一交易日只验证：上涨占比和中位数是否继续同向。`,
+    `确认条件：${verification.value.confirm}`,
+    `失效条件：${verification.value.invalidate}`,
+  ].join('\n')
+  const success = await writeClipboard(text)
+  copyStatus.value = {
+    state: success ? 'success' : 'error',
+    message: success ? '已复制验证项' : '复制验证项失败',
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
+onBeforeUnmount(() => {
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+})
+
+function formatPct(value: number | null | undefined): string {
+  return value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
 }
 
 function formatRatio(value: number | null | undefined): string {
@@ -219,8 +268,9 @@ function changeTone(value: number | null | undefined): 'positive' | 'negative' |
   <section class="panel analysis-panel">
     <div class="panel-heading">
       <div><span class="panel-kicker">次交易日验证</span><h2>延续还是失效</h2></div>
-      <button class="text-button" type="button" @click="onCopyVerification">复制验证项</button>
+      <button class="text-button" type="button" @click="copyVerification">复制验证项</button>
     </div>
+    <p v-if="copyStatus" class="copy-status" :class="copyStatus.state">{{ copyStatus.message }}</p>
     <p class="breadth-verification">
       今日宽度标签：<strong>{{ breadth?.widthLabel || '数据不足' }}</strong><br />
       核心证据：上涨占比 {{ formatPosition(breadth?.advanceRatio) }}，涨跌幅中位数 {{ breadth?.medianReturn == null ? '--' : `${breadth.medianReturn > 0 ? '+' : ''}${breadth.medianReturn.toFixed(2)}%` }}，与指数 {{ verification.consistencyHint }}。<br />

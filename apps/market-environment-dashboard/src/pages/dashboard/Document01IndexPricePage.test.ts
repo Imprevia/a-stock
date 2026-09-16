@@ -1,5 +1,9 @@
 // @vitest-environment happy-dom
 
+
+vi.mock('echarts', () => ({
+  init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
+}))
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

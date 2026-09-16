@@ -8,6 +8,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import App from './App.vue'
 import type { SynchronizationAssessment, SynchronizationDimensionStatus } from './types'
 import { applyLegacyHashRedirect } from './router/legacy-redirect'
+import { registerRouterGuards } from './router/guards'
 import { routes } from './router/routes'
 
 const mockEchartsSetOption = vi.hoisted(() => vi.fn())
@@ -177,6 +178,7 @@ async function mountScenario(assessment: SynchronizationAssessment) {
 
   setActivePinia(createPinia())
   const router = createRouter({ history: createMemoryHistory(), routes })
+  registerRouterGuards(router)
   await router.push('/dashboard/01')
   await router.isReady()
   mountedWrapper = mount(App, { global: { plugins: [router] } })
@@ -390,7 +392,13 @@ describe('chart lifecycle', () => {
     vi.unstubAllGlobals()
   })
 
-  it('recreates charts after section loading replaces their DOM nodes', async () => {
+  it('disposes chart instances when navigating away and recreates them on return', async () => {
+    // Phase C semantics: chapter charts are owned by the per-chapter
+    // components via useChartLifecycle. Navigating between chapters
+    // unmounts the previous chapter (disposing its echarts instances) and
+    // mounts the next one (initialising fresh instances) — the same
+    // no-instance-leak contract the old inline App.vue upheld with its
+    // dispose/recreate choreography.
     const assessment = synchronizationAssessment()
     const coreSummary = {
       synchronization: 'fixture',
@@ -406,35 +414,47 @@ describe('chart lifecycle', () => {
       summary: coreSummary,
       chapter01: chapter(),
     }
-    let resolveChapter!: (value: unknown) => void
-    const chapterResponse = new Promise((resolve) => { resolveChapter = resolve })
     vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
       ok: true,
-      json: async () => url.includes('chapter-01') ? chapterResponse : response,
+      json: async () => url.includes('chapter-01')
+        ? {
+            asOf: response.asOf,
+            generatedAt: response.generatedAt,
+            summary: { ...coreSummary, synchronizationAssessment: assessment },
+            chapter01: chapter(),
+          }
+        : response,
     })))
 
     setActivePinia(createPinia())
     const testRouter = createRouter({ history: createMemoryHistory(), routes })
+    registerRouterGuards(testRouter)
     await testRouter.push('/dashboard/01')
     await testRouter.isReady()
     mountedWrapper = mount(App, { global: { plugins: [testRouter] } })
     await flushPromises()
+    await flushPromises()
 
+    // Chapter 01 mounts two charts (price + volume).
     expect(mockEchartsInit).toHaveBeenCalledTimes(2)
     expect(mockEchartsSetOption).toHaveBeenCalledTimes(2)
 
-    resolveChapter({
-      asOf: response.asOf,
-      generatedAt: response.generatedAt,
-      summary: { ...coreSummary, synchronizationAssessment: assessment },
-      chapter01: chapter(),
-    })
+    // Navigate to chapter 02: chapter 01 unmounts (dispose x2) and the
+    // breadth history chart mounts (init once more).
+    await testRouter.push('/dashboard/02')
     await flushPromises()
     await flushPromises()
 
     expect(mockEchartsDispose).toHaveBeenCalledTimes(2)
-    expect(mockEchartsInit).toHaveBeenCalledTimes(4)
-    expect(mockEchartsSetOption).toHaveBeenCalledTimes(4)
+    expect(mockEchartsInit).toHaveBeenCalledTimes(3)
+    // Back to chapter 01: the breadth chart is disposed (its unmount) and
+    // chapter 01's two charts are recreated from scratch.
+    await testRouter.push('/dashboard/01')
+    await flushPromises()
+    await flushPromises()
+
+    expect(mockEchartsDispose).toHaveBeenCalledTimes(3)
+    expect(mockEchartsInit).toHaveBeenCalledTimes(5)
   })
 })
 

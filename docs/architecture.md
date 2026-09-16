@@ -283,3 +283,15 @@ tests/                              公式、服务层和 API 契约测试
 - `Document09AssessmentPage.vue`：唯一结论（分数 / 置信度 / 覆盖率）+ 证据链 + 风险否决 + 次日确认 + NextSessionPanel(mode="summary")。meta.section 为 null，不触发预拉。3 tests。
 
 测试边界：19 文件 / 108 tests / 全绿（95 基线 + 13 个新测试）。Phase B 全部 9 章节组件就绪，Phase C 进入 App.vue 收尾与嵌套路由接入。
+
+### Phase C — App.vue 收尾与嵌套路由（2026-09-16，frontend-component-split）
+
+- **App.vue**：从 ~1020 行缩至 ~48 行的纯壳（app-shell + `<Sidebar/>` + `<Topbar/>` + `<RouterView/>` + 时区偏好初始化）。不再持有任何 dashboard 状态、fetch 逻辑、ECharts 实例、章节模板或派生 computed。
+- **嵌套路由**（`router/routes.ts`）：`/dashboard` 父级挂 `DashboardLayout`；9 个 children `01`..`09` 各自声明 `meta.section`（01→summary、02→breadth、03→limits、04→limits、05→sectors、06→activeDirection、07→null、08→summary、09→null）与 `meta.documentId`。`/dashboard` 空路径重定向到 `/dashboard/01`；catch-all 保持重定向。
+- **守卫**（`router/guards.ts`）：单一 `registerRouterGuards(router)` 工厂——(1) legacy `#document-N` hash 一次性重写；(2) 进入 `/dashboard/*` 且 store 无数据时 `await market.loadCore()`（阻塞）；(3) 目标章节 `meta.section` 非空且未加载时 `void market.loadSection(section)`（不阻塞）。生产 `index.ts` 与测试共用同一工厂。
+- **DashboardLayout**：document header（按路由派生 documentId 与章节元数据）+ evidence strip（时区经 `preferences.effectiveTimeZone` 显式传入纯 `formatDateTime`）+ section 级 loading/error 面板（由 `meta.section` 与 `market.loadedSections` 联合派生）+ `<RouterView>` + 两条 warning band（本节证据边界 / 数据质量提醒）。章节组件的 `selectIndex` / `refreshSection` emit 在 `<RouterView>` 的 slot props 上统一接线到 `market.setSelectedCode` / `market.loadSection(section, true)`。`onMounted` 有 `!market.data` 兜底 loadCore（直接挂载测试路径）。
+- **Document01**：图表从 slot 改为内嵌 `IndexPriceChartPanel` / `VolumeChartPanel`；剪贴板（指数值 / 涨跌幅 / 复盘句）判定为纯 UI 行为收编进组件，不再 emit；唯一保留的 store 写是 `selectIndex` emit。`app.test.ts` 的 chart lifecycle 测试重写为「路由切换 dispose/init」契约（01→02→01，init 2→3→5、dispose 0→2→3），替代旧的"section loading 替换 DOM"时序断言。
+- **Document02**：验证项复制同样收编为组件内剪贴板行为。
+- **删除**：`components/DashboardPlaceholder.vue`（无引用）。`App.vue` 的手写路由、`currentView`、`popstate`、`pushState`、hash 解析、9 章节内联模板、3 个 ECharts 闭包变量与 5 个图表函数全部移除。
+
+验证：19 文件 / 108 tests / 全绿；`npm run build` 通过（单 chunk 警告为 echarts 全量打包，非回归）；`python scripts/check-docs-contract.py --mode=full` 通过。

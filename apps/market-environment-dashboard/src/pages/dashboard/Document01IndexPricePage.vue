@@ -2,26 +2,18 @@
 /**
  * Document01IndexPricePage — 第 01 章 指数、趋势位置和成交额。
  *
- * Extracted from App.vue's inline `v-else-if="selectedDocumentId === '01'"`
- * block in Phase B-01 of frontend-component-split. Reads exclusively from
- * `useMarketStore()` so the component can be mounted independently of
- * App.vue (Phase C will replace the App.vue inline block with this
- * component via the router). Writes (selectedIndex / date change /
- * section reload) go through emit so the App.vue route shell can stay in
- * charge of `market.setSelectedCode` / `market.setDate` /
- * `market.loadSection`.
- *
- * Per spec `frontend-document-context`:
- * - reads ONLY from market getters + the read-only `useDocumentContext`
- *   composable; never calls `market.setXxx` / `market.loadXxx`
- * - the chart panels live as sibling components (IndexPriceChartPanel /
- *   VolumeChartPanel) wired in by the parent route shell; this component
- *   passes down `:history` / `:dates` so each chart owns its ECharts
- *   instance via useChartLifecycle.
+ * Phase C of frontend-component-split: charts are embedded directly
+ * (IndexPriceChartPanel / VolumeChartPanel own their echarts instances
+ * via useChartLifecycle) and clipboard actions are self-contained —
+ * copying is a pure UI behavior that does not touch the store. The only
+ * store write left is the selected index, which emits `selectIndex` up
+ * to DashboardLayout per the frontend-document-context boundary.
  */
-import { computed } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import { AlertTriangle, Copy, TrendingDown, TrendingUp } from 'lucide-vue-next'
 
+import IndexPriceChartPanel from '../../components/charts/IndexPriceChartPanel.vue'
+import VolumeChartPanel from '../../components/charts/VolumeChartPanel.vue'
 import NextSessionPanel from '../../next-session-panel.vue'
 import ReviewSentencePanel from '../../review-sentence-panel.vue'
 import { useDocumentContext } from '../../composables/useDocumentContext'
@@ -37,38 +29,97 @@ const chapter = computed(() => market.chapter)
 const combinationOverview = computed(() => market.combinationOverview)
 const synchronizationAssessment = computed(() => market.synchronizationAssessment)
 const reviewSentence = computed(() => market.reviewSentence)
-const nextSessionComparison = computed(() => market.nextSessionComparison)
 
 const emit = defineEmits<{
   selectIndex: [code: string]
-  copyIndexField: [index: NonNullable<typeof selectedIndex.value>, field: 'value' | 'change']
-  copyReviewSentence: []
-  loadCurrentSection: [force: boolean]
 }>()
 
 const combinationDefinitions = [
   { key: 'bottom_repair', condition: '低位、重回短期均线、温和放量', state: '底部修复或启动尝试' },
-  { key: 'uptrend', condition: '均线多头、位置抬升、量能稳定', state: '上升趋势或或主升阶段' },
+  { key: 'uptrend', condition: '均线多头、位置抬升、量能稳定', state: '上升趋势或主升阶段' },
   { key: 'breakout', condition: '区间高位、放量突破、收盘较强', state: '趋势加速或突破确认' },
   { key: 'high_divergence', condition: '区间高位、巨量滞涨、冲高回落', state: '高位分歧或派发风险' },
   { key: 'rotation', condition: '均线缠绕、量能忽高忽低', state: '震荡轮动' },
   { key: 'trend_damage', condition: '跌破关键均线、放量下跌', state: '趋势破坏或退潮' },
 ]
 
+const chartDates = computed(() => (selectedIndex.value?.history ?? []).map((item) => item.date.slice(5)))
+
+// ── clipboard ────────────────────────────────────────────────────────
+const copyStatus = ref<{ key: string; state: 'success' | 'error'; message: string } | null>(null)
+let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
+
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Continue to the local fallback for HTTP origins or denied permissions.
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  textarea.remove()
+  return copied
+}
+
+function copyStatusFor(code: string, field: 'value' | 'change') {
+  return copyStatus.value?.key === `${code}:${field}` ? copyStatus.value : null
+}
+
+async function copyIndexField(index: NonNullable<typeof selectedIndex.value>, field: 'value' | 'change'): Promise<void> {
+  const text = field === 'value' ? index.close.toFixed(2) : formatPct(index.changePct)
+  const label = field === 'value' ? '指数' : '涨跌幅'
+  const success = await writeClipboard(text)
+  copyStatus.value = {
+    key: `${index.code}:${field}`,
+    state: success ? 'success' : 'error',
+    message: success ? `已复制${index.name}的${label}` : `复制${index.name}的${label}失败`,
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
+async function copyReviewSentence(): Promise<void> {
+  const sentence = reviewSentence.value?.fullSentence
+  if (!sentence) return
+  const success = await writeClipboard(sentence)
+  copyStatus.value = {
+    key: 'review-sentence',
+    state: success ? 'success' : 'error',
+    message: success ? '已复制完整复盘句' : '复制完整复盘句失败',
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
+onBeforeUnmount(() => {
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+})
+
+// ── formatting helpers (chapter-local) ──────────────────────────────
+function changeTone(value: number) { return value > 0 ? 'positive' : value < 0 ? 'negative' : 'flat' }
+function formatPct(value: number | null | undefined) { return value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%` }
+function formatRatio(value: number | null | undefined) { return value == null ? '--' : `${value.toFixed(2)}x` }
+function formatVolumePrice(ratio: number | null | undefined, state: string | null | undefined) { return [formatRatio(ratio), state].filter(Boolean).join(' ') }
+function formatCount(value: number | null | undefined) { return value == null ? '--' : value.toLocaleString('zh-CN') }
+function formatAmount(value: number | null | undefined) { return value == null ? '--' : Math.abs(value) >= 100000000 ? `${(value / 100000000).toFixed(1)} 亿` : `${(value / 10000).toFixed(0)} 万` }
+function formatPosition(value: number | null | undefined) { return value == null ? '--' : `${(value * 100).toFixed(0)}%` }
+
 function onCardSelect(code: string): void {
   emit('selectIndex', code)
-}
-
-function onCopyIndexField(index: NonNullable<typeof selectedIndex.value>, field: 'value' | 'change'): void {
-  emit('copyIndexField', index, field)
-}
-
-function onCopyReviewSentence(): void {
-  emit('copyReviewSentence')
-}
-
-function onReloadSection(): void {
-  emit('loadCurrentSection', true)
 }
 </script>
 
@@ -88,20 +139,23 @@ function onReloadSection(): void {
     >
       <div class="card-top"><span>{{ index.name }}</span><span class="code">{{ index.code }}</span></div>
       <div class="card-price">
-        <button class="copy-field copy-value" type="button" :aria-label="`复制${index.name}指数`" :title="`复制${index.name}指数`" @click.stop="onCopyIndexField(index, 'value')" @keydown.stop>
+        <button class="copy-field copy-value" type="button" :aria-label="`复制${index.name}指数`" :title="`复制${index.name}指数`" @click.stop="copyIndexField(index, 'value')" @keydown.stop>
           <strong>{{ index.close.toFixed(2) }}</strong>
           <Copy :size="13" aria-hidden="true" />
+          <span v-if="copyStatusFor(index.code, 'value')" class="copy-result" :class="{ error: copyStatusFor(index.code, 'value')?.state === 'error' }">{{ copyStatusFor(index.code, 'value')?.state === 'success' ? '已复制' : '失败' }}</span>
         </button>
-        <button class="copy-field copy-change" type="button" :aria-label="`复制${index.name}涨跌幅`" :title="`复制${index.name}涨跌幅`" @click.stop="onCopyIndexField(index, 'change')" @keydown.stop>
-          <span :class="ctx.qualityTone(index.dataQuality as never)">{{ index.changePct.toFixed(2) }}%</span>
+        <button class="copy-field copy-change" type="button" :aria-label="`复制${index.name}涨跌幅`" :title="`复制${index.name}涨跌幅`" @click.stop="copyIndexField(index, 'change')" @keydown.stop>
+          <span :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</span>
           <Copy :size="13" aria-hidden="true" />
+          <span v-if="copyStatusFor(index.code, 'change')" class="copy-result" :class="{ error: copyStatusFor(index.code, 'change')?.state === 'error' }">{{ copyStatusFor(index.code, 'change')?.state === 'success' ? '已复制' : '失败' }}</span>
         </button>
       </div>
       <div class="card-bottom">
         <span>{{ index.trendState }}</span>
-        <span>{{ index.volumePriceState ?? '--' }}</span>
+        <span>{{ formatVolumePrice(index.amountRatio5, index.volumePriceState) }}</span>
       </div>
     </article>
+    <div class="copy-live-region" role="status" aria-live="polite" aria-atomic="true">{{ copyStatus?.message ?? '' }}</div>
   </section>
 
   <section class="workspace-grid">
@@ -114,9 +168,9 @@ function onReloadSection(): void {
           {{ selectedIndex?.trendState }}
         </span>
       </div>
-      <slot name="price-chart" />
+      <IndexPriceChartPanel :history="selectedIndex?.history ?? []" :dates="chartDates" :source="selectedIndex?.dataQuality.source ?? ''" />
       <div class="volume-heading"><span>60 日成交额</span><span>金额单位：元</span></div>
-      <slot name="volume-chart" />
+      <VolumeChartPanel :history="selectedIndex?.history ?? []" :dates="chartDates" />
       <div class="chart-footnote">
         <span>日 K 线与 MA5 / MA10 / MA20 / MA60</span>
         <span>来源：{{ selectedIndex?.dataQuality.source }}</span>
@@ -129,10 +183,10 @@ function onReloadSection(): void {
       <div v-if="selectedIndex" class="metric-stack">
         <div class="metric-row"><span>MA5 / MA10</span><strong>{{ selectedIndex.movingAverages.ma5?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma10?.toFixed(2) ?? '--' }}</strong></div>
         <div class="metric-row"><span>MA20 / MA60</span><strong>{{ selectedIndex.movingAverages.ma20?.toFixed(2) ?? '--' }} <small>/</small> {{ selectedIndex.movingAverages.ma60?.toFixed(2) ?? '--' }}</strong></div>
-        <div class="metric-row"><span>20 日位置</span><strong>{{ ((selectedIndex.rangePosition20 ?? 0) * 100).toFixed(0) }}%<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div>
-        <div class="metric-row"><span>60 日位置</span><strong>{{ ((selectedIndex.rangePosition60 ?? 0) * 100).toFixed(0) }}%<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div>
-        <div class="metric-row"><span>成交额 / 5日</span><strong>{{ (selectedIndex.amountRatio5 ?? 0).toFixed(2) }}x</strong></div>
-        <div class="metric-row"><span>成交额 / 20日</span><strong>{{ (selectedIndex.amountRatio20 ?? 0).toFixed(2) }}x</strong></div>
+        <div class="metric-row"><span>20 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition20) }}<em>{{ selectedIndex.rangePosition20Label }}</em></strong></div>
+        <div class="metric-row"><span>60 日位置</span><strong>{{ formatPosition(selectedIndex.rangePosition60) }}<em>{{ selectedIndex.rangePosition60Label }}</em></strong></div>
+        <div class="metric-row"><span>成交额 / 5日</span><strong>{{ formatRatio(selectedIndex.amountRatio5) }}</strong></div>
+        <div class="metric-row"><span>成交额 / 20日</span><strong>{{ formatRatio(selectedIndex.amountRatio20) }}</strong></div>
       </div>
     </article>
   </section>
@@ -156,8 +210,8 @@ function onReloadSection(): void {
       <article class="synchronization-dimension" :class="synchronizationAssessment.dimensions.breadth.status">
         <header><div><span>参与面</span><h3>市场广度</h3></div><strong>{{ ctx.dimensionStatusLabel(synchronizationAssessment.dimensions.breadth.status) }}</strong></header>
         <dl>
-          <div><dt>上涨占比</dt><dd>{{ ((synchronizationAssessment.dimensions.breadth.advanceRatio ?? 0) * 100).toFixed(0) }}%</dd></div>
-          <div><dt>涨跌幅中位数</dt><dd>{{ synchronizationAssessment.dimensions.breadth.medianReturn == null ? '--' : `${synchronizationAssessment.dimensions.breadth.medianReturn > 0 ? '+' : ''}${synchronizationAssessment.dimensions.breadth.medianReturn.toFixed(2)}%` }}</dd></div>
+          <div><dt>上涨占比</dt><dd>{{ formatPosition(synchronizationAssessment.dimensions.breadth.advanceRatio) }}</dd></div>
+          <div><dt>涨跌幅中位数</dt><dd>{{ formatPct(synchronizationAssessment.dimensions.breadth.medianReturn) }}</dd></div>
         </dl>
         <p v-if="synchronizationAssessment.dimensions.breadth.comparisonStatus === 'available'" class="synchronization-comparison">
           较 {{ synchronizationAssessment.dimensions.breadth.previousAsOf }}：上涨占比 {{ ctx.formatRatioDelta(synchronizationAssessment.dimensions.breadth.advanceRatioDelta) }}，中位数 {{ ctx.formatReturnDelta(synchronizationAssessment.dimensions.breadth.medianReturnDelta) }}
@@ -178,8 +232,8 @@ function onReloadSection(): void {
       <article class="synchronization-dimension" :class="synchronizationAssessment.dimensions.turnover.status">
         <header><div><span>成交额</span><h3>量能确认</h3></div><strong>{{ ctx.dimensionStatusLabel(synchronizationAssessment.dimensions.turnover.status) }}</strong></header>
         <dl>
-          <div><dt>五指数中位比值</dt><dd>{{ (synchronizationAssessment.dimensions.turnover.medianAmountRatio5 ?? 0).toFixed(2) }}x</dd></div>
-          <div><dt>成长组中位比值</dt><dd>{{ (synchronizationAssessment.dimensions.turnover.growthMedianAmountRatio5 ?? 0).toFixed(2) }}x</dd></div>
+          <div><dt>五指数中位比值</dt><dd>{{ formatRatio(synchronizationAssessment.dimensions.turnover.medianAmountRatio5) }}</dd></div>
+          <div><dt>成长组中位比值</dt><dd>{{ formatRatio(synchronizationAssessment.dimensions.turnover.growthMedianAmountRatio5) }}</dd></div>
           <div><dt>放量上涨 / 下跌</dt><dd>{{ synchronizationAssessment.dimensions.turnover.volumeBackedAdvanceCount }} / {{ synchronizationAssessment.dimensions.turnover.volumeBackedDeclineCount }}</dd></div>
         </dl>
         <p v-if="synchronizationAssessment.dimensions.turnover.reason" class="synchronization-reason">{{ ctx.reasonLabel(synchronizationAssessment.dimensions.turnover.reason) }}</p>
@@ -195,8 +249,8 @@ function onReloadSection(): void {
     </div>
   </section>
 
-  <ReviewSentencePanel :sentence="reviewSentence" :data-gaps="chapter?.dataGaps" @copy="onCopyReviewSentence" />
-  <NextSessionPanel :comparison="nextSessionComparison" />
+  <ReviewSentencePanel :sentence="reviewSentence" :data-gaps="chapter?.dataGaps" @copy="copyReviewSentence" />
+  <NextSessionPanel :comparison="market.nextSessionComparison" />
 
   <details class="panel combination-overview-panel learn-more">
     <summary>再学：六类指数组合矩阵和详细证据</summary>
@@ -218,9 +272,9 @@ function onReloadSection(): void {
           </thead>
           <tbody>
             <tr v-for="index in indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="onCardSelect(index.code)">
-              <th>{{ index.name }}<small>{{ index.changePct > 0 ? '+' : '' }}{{ index.changePct.toFixed(2) }}%</small></th>
+              <th>{{ index.name }}<small>{{ formatPct(index.changePct) }}</small></th>
               <td v-for="item in combinationDefinitions" :key="item.key" :class="{ matched: index.combination.matched && index.combination.key === item.key }">
-                <span v-if="index.combination.matched && index.combination.key === item.key">{{ ((index.rangePosition60 ?? 0) * 100).toFixed(0) }}% · {{ (index.amountRatio5 ?? 0).toFixed(2) }}x</span>
+                <span v-if="index.combination.matched && index.combination.key === item.key">{{ formatPosition(index.rangePosition60) }} · {{ formatRatio(index.amountRatio5) }}</span>
                 <span v-else>--</span>
               </td>
             </tr>
@@ -248,23 +302,17 @@ function onReloadSection(): void {
         <tbody>
           <tr v-for="index in indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="onCardSelect(index.code)">
             <td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td>
-            <td>{{ index.changePct > 0 ? '+' : '' }}{{ index.changePct.toFixed(2) }}%</td>
+            <td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td>
             <td>{{ index.close.toFixed(2) }}</td>
             <td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td>
-            <td><strong>{{ ((index.rangePosition20 ?? 0) * 100).toFixed(0) }}%</strong><span>{{ index.rangePosition20Label }}</span></td>
-            <td><strong>{{ ((index.rangePosition60 ?? 0) * 100).toFixed(0) }}%</strong><span>{{ index.rangePosition60Label }}</span></td>
-            <td>{{ index.amount >= 100000000 ? `${(index.amount / 100000000).toFixed(1)} 亿` : `${(index.amount / 10000).toFixed(0)} 万` }}</td>
-            <td>{{ (index.amountRatio5 ?? 0).toFixed(2) }}x / {{ (index.amountRatio20 ?? 0).toFixed(2) }}x</td>
+            <td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td>
+            <td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td>
+            <td>{{ formatAmount(index.amount) }}</td>
+            <td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td>
             <td><span v-if="index.volumePriceState" class="state-chip">{{ index.volumePriceState }}</span><span v-else>--</span></td>
           </tr>
         </tbody>
       </table>
     </div>
-  </section>
-
-  <section v-if="market.error" class="state-panel error-panel" role="alert">
-    <span>⚠</span>
-    <div><strong>本节证据暂时不可用</strong><p>{{ market.error }}</p></div>
-    <button class="text-button" type="button" @click="onReloadSection">重新加载</button>
   </section>
 </template>

@@ -782,3 +782,23 @@ Document07EventsPage 的事件时间用纯 formatDateTime 并显式传入 prefer
 ### 09 章空态语义
 
 assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证据链 / 当前未返回已触发的风险否决 / 数据不足，等待新增证据。测试与 UI 均按这四个固定文案断言，改动文案需同步 Document09AssessmentPage.test.ts。
+
+## 嵌套路由守卫与章节预拉（2026-09-16 frontend-component-split Phase C）
+
+/dashboard 现为嵌套路由：父级 DashboardLayout，9 个 children 各带 meta.section。守卫在 router/guards.ts 的 registerRouterGuards(router) 工厂中注册，生产入口与测试共用。
+
+### 守卫行为
+
+- legacy hash（#document-N）一次性重写为 /dashboard/N。
+- 进入 /dashboard/* 且 market.data 为空 → await market.loadCore()（阻塞，首次进入必须有核心数据）。
+- 目标章节 meta.section 非空且未在 market.loadedSections → void market.loadSection(section)（不阻塞，fire-and-forget）。
+- 07、09 两章 meta.section = null，不触发预拉。
+
+### 章节写操作边界
+
+章节组件唯一允许的 store 写通道是 emit 上抛：selectIndex（01 章选指数）与 refreshSection（03 章刷新）由 DashboardLayout 在 RouterView 的 slot props 上统一接线。剪贴板复制（01 章指数值/涨跌幅/复盘句、02 章验证项）为纯 UI 行为，组件内部消化，不经过 store。
+
+### 测试挂载约定（更新）
+
+- app.test.ts 挂 App 时必须 createRouter + registerRouterGuards（守卫不再挂在测试自建 router 上会直接导致 loadCore 不执行、页面停在 loading 态）。
+- chart lifecycle 测试语义已更新：路由切换时旧章节组件卸载（dispose 其 echarts 实例）、新章节挂载（init 新实例），断言 init/dispose 累计次数（01→02→01 为 init 2→3→5、dispose 0→2→3）。
