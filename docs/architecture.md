@@ -264,3 +264,10 @@ tests/                              公式、服务层和 API 契约测试
 - `limits-page.test.ts` 改造：从 `mount(App)` 改为 `mount(Document03LimitsPage)`；预填走 `market.loadCore()` + `market.loadSection('limits')`（03 章数据来自 `chapter-01?section=limits`，与 01/02 的 core 直出不同）；刷新按钮的写操作在 mount 时通过 `onRefreshSection` prop 接线回 `market.loadSection('limits', true)`，验证了 emit 边界。
 
 测试边界：13 文件 / 92 tests / 全绿（B-03 不新增测试文件；limits-page 4 条断言随组件化迁移，总数不变）。
+
+### Phase B-04 章节组件（2026-09-16，frontend-component-split）
+
+- `pages/dashboard/Document04TierRiskPage.vue`：第 04 章全部 2 个 section（高/中/低位 + 修复率 4 张指标卡、分层风险质量面板）。数据来自 core 直出的 `chapter01.tierRisk`——与 03 章不同，无需 section 预拉。只读 `useMarketStore()` + `useDocumentContext()`；质量警告沿用原 `quality.warning || fallback` 单数语义。
+- `Document04TierRiskPage.test.ts`：3 tests——指标卡与修复率渲染、tierRisk 缺失时的 fallback 文案、quality.warning 单数字段的显示。
+
+测试边界：14 文件 / 95 tests / 全绿（92 基线 + 3 个 Document04 新测试）。

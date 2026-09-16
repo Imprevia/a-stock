@@ -764,3 +764,9 @@ composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字
 - 组件内刷新按钮不直接调 store action，只 emit('refreshSection')。
 - 测试在 mount 时通过 onRefreshSection prop 接线回 market.loadSection('limits', true)，验证 emit 边界的完整性。
 - 刷新失败场景（fixture 第二次 chapter-01 返回 502）：store 的 sectionStates.limits 落入 error phase，组件的 limits-refresh-error 块显示 detail 并保留旧证据，与原 App.vue 行为一致。
+
+## Document04 fixture 约定（2026-09-16 frontend-component-split Phase B-04）
+
+第 04 章 tierRisk 的质量警告读取 quality.warning（单数），不是 quality.warnings（复数）。fixture 只写 warnings 数组时页面不显示警告文本，测试会失败。两个都写最安全。
+
+第 04 章数据来自 core 直出（chapter01.tierRisk），独立挂载时直接 market.data = fixture 即可，无需 loadSection。
