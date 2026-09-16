@@ -1221,6 +1221,18 @@ class MarketDataProvider:
             "medianReturn": None,
             "state": "insufficient",
             "quality": cls._quality("market-breadth", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+            # New 02-page fields; null when breadth itself is missing.
+            "declineRatio": None,
+            "advanceDeclineSpread": None,
+            "advanceRatioPercentile": None,
+            "medianReturnPercentile": None,
+            "spreadPercentile": None,
+            "momentum": None,
+            "momentumPercentile": None,
+            "indexConsistent": None,
+            "widthLabel": "数据不足",
+            "widthLabelReason": "上涨、下跌或平盘样本均不可用，无法判断市场宽度。",
+            "history": None,
         }
 
     @classmethod

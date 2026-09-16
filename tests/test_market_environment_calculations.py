@@ -1,9 +1,14 @@
 from datetime import date, timedelta
 
+import pytest
+
 from src.market_environment.calculations import (
     Bar,
     amount_ratio,
     advance_efficiency_percentile,
+    breadth_index_consistency,
+    breadth_momentum,
+    breadth_width_label,
     build_summary_sentence,
     build_market_review_evidence,
     build_review_sentence,
@@ -342,3 +347,89 @@ def test_market_review_sentence_uses_market_level_slots_and_preserves_missing_re
     assert breadth_segment["value"] == "数据不足"
     assert breadth_segment["reason"] == "missing-today"
     assert "同步上涨" in sentence["fullSentence"]
+
+
+def test_breadth_momentum_computes_six_day_delta() -> None:
+    # mean(t-2..t) = mean(0.55, 0.6, 0.65) = 0.60
+    # mean(t-5..t-3) = mean(0.4, 0.45, 0.5) = 0.45
+    # delta = 0.15 (allow float drift).
+    assert breadth_momentum([0.4, 0.45, 0.5, 0.55, 0.6, 0.65]) == pytest.approx(0.15)
+
+
+def test_breadth_momentum_returns_none_with_insufficient_window() -> None:
+    assert breadth_momentum([0.4, 0.45, 0.5]) is None
+
+
+def test_breadth_momentum_returns_none_when_trailing_window_has_null() -> None:
+    # None in the last 6 entries must short-circuit.
+    assert breadth_momentum([0.4, None, 0.5, 0.55, 0.6, 0.65]) is None
+
+
+def test_breadth_index_consistency_majority_aligned() -> None:
+    assert breadth_index_consistency([0.5, 0.3, 0.1, -0.2, 0.05], 0.4) is True
+
+
+def test_breadth_index_consistency_divided() -> None:
+    # 3/5 same sign as median => True (majority).
+    assert breadth_index_consistency([0.5, 0.3, 0.1, -0.4, -0.2], 0.4) is True
+    # 2/5 same sign => minority => False.
+    assert breadth_index_consistency([0.5, 0.3, -0.4, -0.2, -0.1], 0.4) is False
+
+
+def test_breadth_index_consistency_handles_missing_index_change() -> None:
+    # 2 non-null values both same sign as median => True.
+    assert breadth_index_consistency([None, 0.5, None, 0.3, None], 0.4) is True
+
+
+def test_breadth_index_consistency_requires_median() -> None:
+    assert breadth_index_consistency([0.5, 0.3], None) is None
+
+
+def test_breadth_index_consistency_returns_none_when_all_indices_missing() -> None:
+    assert breadth_index_consistency([None, None, None], 0.4) is None
+
+
+def test_breadth_width_label_data_insufficient_when_ratio_missing() -> None:
+    label, reason = breadth_width_label(None, 0.0, [0.1, 0.2], 0.5, 0.0)
+    assert label == "数据不足"
+    assert "缺失" in reason
+
+
+def test_breadth_width_label_index_strong_breadth_weak() -> None:
+    label, reason = breadth_width_label(
+        0.3, -0.01, [0.5, 0.3, 0.1, 0.2, 0.05], 0.5, 0.0
+    )
+    assert label == "指数强个股弱"
+    assert "权重" in reason
+
+
+def test_breadth_width_label_index_weak_breadth_repair() -> None:
+    label, reason = breadth_width_label(
+        0.6, 0.005, [-0.5, -0.3, -0.1, 0.2, -0.05], 0.4, -0.01
+    )
+    assert label == "指数弱个股修复"
+    assert "修复" in reason
+
+
+def test_breadth_width_label_same_direction_strengthening() -> None:
+    label, reason = breadth_width_label(
+        0.7, 0.01, [0.5, 0.3, 0.1, 0.05, -0.05], 0.5, 0.0
+    )
+    assert label == "同向增强"
+    assert "改善" in reason
+
+
+def test_breadth_width_label_same_direction_weakening() -> None:
+    label, reason = breadth_width_label(
+        0.3, -0.01, [-0.5, -0.3, -0.1, -0.05, 0.05], 0.5, 0.0
+    )
+    assert label == "同向走弱"
+    assert "恶化" in reason
+
+
+def test_breadth_width_label_mixed_when_no_clear_signal() -> None:
+    label, reason = breadth_width_label(
+        0.4, 0.005, [-0.05, -0.03, -0.01, 0.01, 0.02], 0.45, 0.005
+    )
+    assert label == "混合"
+    assert "未形成" in reason

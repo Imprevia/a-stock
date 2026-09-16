@@ -22,6 +22,9 @@ from .calculations import (
     classify_volume_price,
     advance_efficiency_percentile,
     bullish_alignment_ratio,
+    breadth_index_consistency,
+    breadth_momentum,
+    breadth_width_label,
     build_summary_sentence,
     build_market_review_evidence,
     build_review_sentence,
@@ -35,7 +38,7 @@ from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from .refresh import SnapshotRefresher, effective_market_date
 from .limit_promotion import limit_v1_enabled, without_promotion_fields
 from .limit_ecosystem import build_limit_ecosystem
-from .schemas import LimitEvidence, MarketEnvironmentResponse
+from .schemas import BreadthHistoryEvidence, BreadthHistoryPoint, EvidenceQuality, LimitEvidence, MarketEnvironmentResponse, MetricQuality
 from .snapshot_store import (
     LIMIT_DETAIL_CHECKSUM_KEY,
     MATERIALIZED_COMPONENT_REVISION_KEY,
@@ -943,6 +946,7 @@ class MarketEnvironmentService:
         dominant_trend = core["summary"]["dominantTrend"]
 
         breadth = provider_data["breadth"]
+        breadth = self._enrich_breadth(breadth, as_of, analyses)
         limits = provider_data["limits"]
         sectors = provider_data["sectors"]
         active_direction = provider_data["activeDirection"]
@@ -1044,6 +1048,17 @@ class MarketEnvironmentService:
                 "medianReturn": None,
                 "state": "insufficient",
                 "quality": {**quality, "dataset": "market-breadth"},
+                "declineRatio": None,
+                "advanceDeclineSpread": None,
+                "advanceRatioPercentile": None,
+                "medianReturnPercentile": None,
+                "spreadPercentile": None,
+                "momentum": None,
+                "momentumPercentile": None,
+                "indexConsistent": None,
+                "widthLabel": "数据不足",
+                "widthLabelReason": "市场广度快照不可用，无法派生宽度标签与历史证据。",
+                "history": None,
             },
             "limits": {
                 "limitUpCount": None,
@@ -1298,3 +1313,232 @@ class MarketEnvironmentService:
     @staticmethod
     def _synchronization(analyses: list[dict]) -> str:
         return MarketEnvironmentService._sync_pattern(analyses)["label"]
+
+    def _enrich_breadth(
+        self,
+        breadth: dict[str, Any],
+        as_of: date,
+        analyses: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Derive the 02-page breadth fields from the snapshot store.
+
+        Pulls the latest 5 breadth snapshots (excluding today) from
+        ``snapshot_store`` and the live index ``changePct`` values from
+        ``analyses`` to fill the new optional fields. All operations are
+        defensive: missing history returns ``None``, missing index change
+        rows propagate ``None``, and the input dict is mutated in place
+        but returned for chaining.
+        """
+
+        advance_count = breadth.get("advanceCount")
+        decline_count = breadth.get("declineCount")
+        flat_count = breadth.get("flatCount")
+        valid_count = breadth.get("validCount")
+        advance_ratio = breadth.get("advanceRatio")
+        median_return = breadth.get("medianReturn")
+
+        # Derived ratios. Use ``0 / 0`` semantics: None when denominator is
+        # unknown or zero. Round to four decimals to mirror the existing
+        # advanceRatio contract.
+        if decline_count is not None and valid_count:
+            breadth["declineRatio"] = round(decline_count / valid_count, 4)
+        else:
+            breadth.setdefault("declineRatio", None)
+
+        if advance_count is not None and decline_count is not None and valid_count:
+            breadth["advanceDeclineSpread"] = round(
+                (advance_count - decline_count) / valid_count, 4
+            )
+        else:
+            breadth.setdefault("advanceDeclineSpread", None)
+
+        # Index consistency and width label.
+        index_changes: list[float | None] = [
+            item.get("changePct") for item in analyses if isinstance(item, dict)
+        ]
+        previous_ratio = None
+        previous_median = None
+        history_records = self._breadth_history_records(as_of, exclude_today=True, limit=5)
+        if history_records:
+            previous = history_records[-1]
+            previous_ratio = previous.get("advanceRatio")
+            previous_median = previous.get("medianReturn")
+        breadth["indexConsistent"] = breadth_index_consistency(index_changes, median_return)
+        width_label, width_reason = breadth_width_label(
+            advance_ratio,
+            median_return,
+            index_changes,
+            previous_ratio,
+            previous_median,
+        )
+        breadth["widthLabel"] = width_label
+        breadth["widthLabelReason"] = width_reason
+
+        # 5-day momentum needs a trailing 6-entry advanceRatio series.
+        recent_ratios: list[float | None] = []
+        if previous_ratio is not None:
+            recent_ratios.append(previous_ratio)
+        for record in reversed(history_records[:-1]):
+            recent_ratios.insert(0, record.get("advanceRatio"))
+        if advance_ratio is not None:
+            recent_ratios.append(advance_ratio)
+        recent_ratios = recent_ratios[-6:]
+        breadth["momentum"] = breadth_momentum(recent_ratios)
+
+        # Build the 250-day rolling samples for percentiles. The service
+        # reuses breadth snapshots stored in PostgreSQL; when fewer than 60
+        # observations are available we mark ``confidence="insufficient"``
+        # exactly as ``_metric_percentile`` would for an index metric.
+        history_payloads = self._breadth_history_records(as_of, exclude_today=False, limit=250)
+        ratios_sample = [item.get("advanceRatio") for item in history_payloads]
+        medians_sample = [item.get("medianReturn") for item in history_payloads]
+        spreads_sample = [item.get("advanceDeclineSpread") for item in history_payloads]
+        momentums_sample = [
+            breadth_momentum(
+                [item.get("advanceRatio") for item in history_payloads[max(0, index - 5):index + 1]]
+            )
+            for index in range(len(history_payloads))
+        ]
+        breadth["advanceRatioPercentile"] = self._percentile_value(ratios_sample)
+        breadth["medianReturnPercentile"] = self._percentile_value(medians_sample)
+        breadth["spreadPercentile"] = self._percentile_value(spreads_sample)
+        breadth["momentumPercentile"] = self._percentile_value(
+            [value for value in momentums_sample if value is not None]
+        )
+
+        # Build the 5-point history payload the dashboard renders. Today
+        # is intentionally excluded from ``points`` so the table only shows
+        # the previous five trading days; the dashboard renders the live
+        # snapshot separately in the recap card and 5-day trend chart.
+        points: list[BreadthHistoryPoint] = [
+            self._build_history_point(record) for record in history_records[-5:]
+        ]
+        coverage = round(len(history_payloads) / 250.0, 4) if history_payloads else 0.0
+        history_observations = len(history_payloads) + (1 if advance_ratio is not None else 0)
+        history_quality_status = "insufficient" if history_observations < 60 else "ok"
+        breadth["history"] = BreadthHistoryEvidence(
+            points=points,
+            validObservations=history_observations,
+            requiredObservations=60,
+            windowDays=250,
+            coverage=coverage if points else 0.0,
+            percentile250={
+                "advanceRatio": breadth.get("advanceRatioPercentile"),
+                "medianReturn": breadth.get("medianReturnPercentile"),
+                "advanceDeclineSpread": breadth.get("spreadPercentile"),
+                "momentum": breadth.get("momentumPercentile"),
+            },
+            quality=MetricQuality(
+                status=history_quality_status,
+                reason="insufficient-history" if history_quality_status == "insufficient" else None,
+                observations=history_observations,
+                asOf=as_of.isoformat(),
+                source=breadth.get("quality", {}).get("source"),
+                warnings=[],
+            ),
+        ).model_dump(mode="json", exclude_none=False)
+        return breadth
+
+    @staticmethod
+    def _percentile_value(samples: list[float | None]) -> float | None:
+        valid = [float(value) for value in samples if value is not None]
+        if len(valid) < 60:
+            return None
+        current = valid[-1]
+        rank = sum(value <= current for value in valid) / len(valid)
+        return round(rank, 4)
+
+    def _breadth_history_records(
+        self,
+        as_of: date,
+        *,
+        exclude_today: bool,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if self.snapshot_store is None:
+            return []
+        try:
+            dates = self.snapshot_store.list_snapshot_dates("breadth", through=as_of)
+        except SnapshotIntegrityError as exc:
+            logger.warning(
+                "breadth history lookup rejected",
+                extra={"event": "breadth_history_invalid", "as_of": as_of.isoformat(), "error": str(exc)},
+            )
+            return []
+        ordered: list[dict[str, Any]] = []
+        for snapshot_date in dates:
+            if exclude_today and snapshot_date == as_of:
+                continue
+            try:
+                record = self.snapshot_store.get("breadth", snapshot_date)
+            except SnapshotIntegrityError as exc:
+                logger.warning(
+                    "breadth history snapshot rejected",
+                    extra={
+                        "event": "breadth_history_snapshot_invalid",
+                        "as_of": snapshot_date.isoformat(),
+                        "error": str(exc),
+                    },
+                )
+                continue
+            if record is None:
+                continue
+            payload = copy.deepcopy(record.payload)
+            payload.setdefault("asOf", snapshot_date.isoformat())
+            ordered.append(payload)
+            if len(ordered) >= limit:
+                break
+        # list_snapshot_dates returns DESC; reorder to ASC for windowed math.
+        ordered.sort(key=lambda item: item.get("asOf", ""))
+        return ordered
+
+    @staticmethod
+    def _build_history_point(record: dict[str, Any]) -> BreadthHistoryPoint:
+        quality = record.get("quality") or {}
+        history_quality = EvidenceQuality(
+            dataset=quality.get("dataset", "market-breadth"),
+            source=quality.get("source", "eastmoney-clist"),
+            provider=quality.get("provider", quality.get("source", "eastmoney-clist")),
+            status=quality.get("status", "insufficient"),
+            observations=quality.get("observations", 0),
+            asOf=quality.get("asOf"),
+            warning=quality.get("warning"),
+            warnings=list(quality.get("warnings") or []),
+            cacheState=quality.get("cacheState"),
+            snapshotFetchedAt=quality.get("snapshotFetchedAt"),
+            refreshing=quality.get("refreshing"),
+            refreshWarning=quality.get("refreshWarning"),
+        )
+        return BreadthHistoryPoint(
+            asOf=record.get("asOf"),
+            advanceCount=record.get("advanceCount"),
+            declineCount=record.get("declineCount"),
+            flatCount=record.get("flatCount"),
+            validCount=record.get("validCount"),
+            advanceRatio=record.get("advanceRatio"),
+            declineRatio=record.get("declineRatio"),
+            advanceDeclineSpread=record.get("advanceDeclineSpread"),
+            medianReturn=record.get("medianReturn"),
+            momentum=record.get("momentum"),
+            widthLabel=record.get("widthLabel"),
+            indexConsistent=record.get("indexConsistent"),
+            quality=history_quality,
+        )
+
+    @staticmethod
+    def _breadth_history_quality(breadth: dict[str, Any]) -> Any:
+        quality = breadth.get("quality") or {}
+        return EvidenceQuality(
+            dataset=quality.get("dataset", "market-breadth"),
+            source=quality.get("source", "eastmoney-clist"),
+            provider=quality.get("provider", quality.get("source", "eastmoney-clist")),
+            status=quality.get("status", "insufficient"),
+            observations=quality.get("observations", 0),
+            asOf=quality.get("asOf"),
+            warning=quality.get("warning"),
+            warnings=list(quality.get("warnings") or []),
+            cacheState=quality.get("cacheState"),
+            snapshotFetchedAt=quality.get("snapshotFetchedAt"),
+            refreshing=quality.get("refreshing"),
+            refreshWarning=quality.get("refreshWarning"),
+        )

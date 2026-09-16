@@ -40,6 +40,7 @@
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
 - 交易规则工程平台已实现：330 条覆盖清单、第 01 章 49 条 YAML 规则、确定性执行、证据、回测骨架、CLI 和两条 GitHub Actions workflow。
 - 固定快照生成 49 条 trace；新增三条规则不进入 `QTS-01-00-01`，既有规则 trace 保持不变。
+- `rework-market-breadth-page`（2026-09-16）已完成第 02 页复盘重构：`BreadthEvidence` 与 `BreadthAnalysis` 同步扩展 11 个字段（`declineRatio` / `advanceDeclineSpread` / 3 个 250 日分位 / `momentum` / `momentumPercentile` / `indexConsistent` / `widthLabel` / `widthLabelReason` / `history` / `percentile250`），新增 `BreadthHistoryPoint` 模型；`_enrich_breadth` 通过 `snapshot_store.get("breadth", date)` 拉取最近 5 个交易日历史快照计算 250 日滚动分位、5 日动量、指数广度一致性与 6 档宽度标签（含自然语言依据）；02 页由 2 section 替换为 5 section（复盘卡 / 量化证据 / 近 5 日趋势 / 指数一致性矩阵 / 次交易日验证项 + 质量元数据），新增独立 `breadthChart` ECharts 双轴折线；前端测试 46 项通过（含 7 项新增 breadth-page 渲染 + 390px viewport），Python 测试 278 项通过（市场环境 + 交易规则），docs-contract fast/full 通过；不修改 `QTS-01-02-01..05` 规则 ID、阈值与权重，`rules validate` 仍输出 49 条规则，不引入新 provider、新 API 路由、新 PostgreSQL schema 或新采集任务。
 
 ## 进行中
 

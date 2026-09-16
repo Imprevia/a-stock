@@ -312,6 +312,41 @@ class ChapterDocument(BaseModel):
     ruleVersion: str
 
 
+class BreadthHistoryPoint(BaseModel):
+    """One trading day's breadth snapshot used in the 02-page history table."""
+
+    asOf: str
+    advanceCount: int | None = Field(default=None, ge=0)
+    declineCount: int | None = Field(default=None, ge=0)
+    flatCount: int | None = Field(default=None, ge=0)
+    validCount: int | None = Field(default=None, ge=0)
+    advanceRatio: float | None = Field(default=None, ge=0, le=1)
+    declineRatio: float | None = Field(default=None, ge=0, le=1)
+    advanceDeclineSpread: float | None = Field(default=None, ge=-1, le=1)
+    medianReturn: float | None = None
+    momentum: float | None = None
+    widthLabel: str | None = None
+    indexConsistent: bool | None = None
+    quality: EvidenceQuality
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_date(cls, value: str) -> str:
+        return _validate_iso_date(value) or value
+
+
+class BreadthHistoryEvidence(BaseModel):
+    """Rolling 250-day window plus the last five exact trading-day observations."""
+
+    points: list[BreadthHistoryPoint] = Field(default_factory=list)
+    validObservations: int = Field(default=0, ge=0)
+    requiredObservations: int = Field(default=60, ge=0)
+    windowDays: int = Field(default=250, ge=0)
+    coverage: float | None = Field(default=None, ge=0, le=1)
+    percentile250: dict[str, float | None] = Field(default_factory=dict)
+    quality: MetricQuality | None = None
+
+
 class BreadthEvidence(BaseModel):
     advanceCount: int | None
     declineCount: int | None
@@ -321,6 +356,18 @@ class BreadthEvidence(BaseModel):
     medianReturn: float | None
     state: str
     quality: EvidenceQuality
+    # Rollout fields for the 02-page rework; all optional, null when not derivable.
+    declineRatio: float | None = Field(default=None, ge=0, le=1)
+    advanceDeclineSpread: float | None = Field(default=None, ge=-1, le=1)
+    advanceRatioPercentile: float | None = Field(default=None, ge=0, le=1)
+    medianReturnPercentile: float | None = Field(default=None, ge=0, le=1)
+    spreadPercentile: float | None = Field(default=None, ge=0, le=1)
+    momentum: float | None = None
+    momentumPercentile: float | None = Field(default=None, ge=0, le=1)
+    indexConsistent: bool | None = None
+    widthLabel: str | None = None
+    widthLabelReason: str | None = None
+    history: BreadthHistoryEvidence | None = None
 
 
 class LimitEvidence(BaseModel):

@@ -620,6 +620,111 @@ def _metric_percentile(values: Sequence[float], *, window: int = 250, minimum: i
     return {"value": _percentile_rank(sample, valid[-1]), "confidence": confidence, "reason": None}
 
 
+def breadth_momentum(
+    advance_ratios: Sequence[float | None],
+    *,
+    lookback: int = 3,
+    prior_lookback: int = 3,
+) -> float | None:
+    """Compute the 6-day breadth momentum used by QTS-01-02-04.
+
+    Formula: ``mean(advanceRatio[t-2..t]) - mean(advanceRatio[t-5..t-3])``,
+    where ``t`` is the latest observation. The function inspects only the
+    trailing ``lookback + prior_lookback`` entries of ``advance_ratios``;
+    any ``None`` in that window makes the result ``None`` so callers never
+    see a derived number built on incomplete inputs.
+    """
+
+    window = lookback + prior_lookback
+    if len(advance_ratios) < window:
+        return None
+    trailing = list(advance_ratios)[-window:]
+    if any(value is None for value in trailing):
+        return None
+    recent = trailing[-lookback:]
+    previous = trailing[:-lookback]
+    return sum(float(value) for value in recent) / lookback - sum(
+        float(value) for value in previous
+    ) / prior_lookback
+
+
+def breadth_index_consistency(
+    index_change_pcts: Sequence[float | None],
+    median_return: float | None,
+) -> bool | None:
+    """Return True when a majority of indices agree with the breadth median.
+
+    ``None`` is propagated when either ``median_return`` is missing or every
+    supplied index change is missing; a single index with a non-null value is
+    enough to decide (its sign must match the median).
+    """
+
+    if median_return is None:
+        return None
+    values = [float(value) for value in index_change_pcts if value is not None]
+    if not values:
+        return None
+    same_sign = sum(1 for value in values if (value > 0) == (median_return > 0))
+    return same_sign > len(values) / 2
+
+
+def breadth_width_label(
+    advance_ratio: float | None,
+    median_return: float | None,
+    index_change_pcts: Sequence[float | None],
+    previous_advance_ratio: float | None,
+    previous_median_return: float | None,
+) -> tuple[str, str]:
+    """Pick one of six width labels plus a one-sentence reason.
+
+    Order (short-circuit): 数据不足 → 指数强个股弱 → 指数弱个股修复 →
+    同向增强 → 同向走弱 → 混合. Returns the label and a natural-language
+    reason suitable for the dashboard.
+    """
+
+    if advance_ratio is None or median_return is None:
+        return ("数据不足", "上涨占比或涨跌幅中位数缺失，无法判断市场宽度。")
+    indices = [float(value) for value in index_change_pcts if value is not None]
+    if not indices:
+        return ("数据不足", "5 个指数涨跌幅全部缺失，无法判断指数方向。")
+    rising_index_count = sum(1 for value in indices if value > 0)
+    falling_index_count = sum(1 for value in indices if value < 0)
+    index_direction = "上涨" if rising_index_count > falling_index_count else ("下跌" if falling_index_count > rising_index_count else "震荡")
+    pct = advance_ratio * 100
+    median_pct = median_return
+    if index_direction == "上涨" and (advance_ratio < 0.4 or median_return < 0):
+        return (
+            "指数强个股弱",
+            f"多数指数上涨，但上涨占比 {pct:.0f}%、中位数 {median_pct:+.2f}% 显示个股偏弱，疑似权重拉指数。",
+        )
+    if index_direction == "下跌" and advance_ratio >= 0.5 and median_return >= 0:
+        return (
+            "指数弱个股修复",
+            f"多数指数下跌，但上涨占比 {pct:.0f}%、中位数 {median_pct:+.2f}% 为正，少数权重拖累指数、多数个股修复。",
+        )
+    same_direction = (
+        (index_direction == "上涨" and median_return > 0)
+        or (index_direction == "下跌" and median_return < 0)
+    )
+    if same_direction and previous_advance_ratio is not None and previous_median_return is not None:
+        advance_improved = advance_ratio >= previous_advance_ratio
+        median_improved = median_return >= previous_median_return
+        if advance_improved and median_improved:
+            return (
+                "同向增强",
+                f"上涨占比 {pct:.0f}% 与中位数 {median_pct:+.2f}% 同为{index_direction}且较前一日共同改善。",
+            )
+        if not advance_improved and not median_improved:
+            return (
+                "同向走弱",
+                f"上涨占比 {pct:.0f}% 与中位数 {median_pct:+.2f}% 同为{index_direction}且较前一日共同恶化。",
+            )
+    return (
+        "混合",
+        f"上涨占比 {pct:.0f}% 与中位数 {median_pct:+.2f}% 方向不一致或接近中性，宽度未形成单边结论。",
+    )
+
+
 def ma20_slope_percentile(bars: list[Bar]) -> dict[str, object]:
     slopes = [value for index in range(len(bars)) if (value := _slope(bars[: index + 1], 20)) is not None]
     return _metric_percentile(slopes)

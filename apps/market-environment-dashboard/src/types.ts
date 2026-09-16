@@ -219,6 +219,32 @@ export interface ChapterDocument {
   ruleVersion?: string
 }
 
+export interface BreadthHistoryPoint {
+  asOf: string
+  advanceCount: number | null
+  declineCount: number | null
+  flatCount: number | null
+  validCount: number | null
+  advanceRatio: number | null
+  declineRatio: number | null
+  advanceDeclineSpread: number | null
+  medianReturn: number | null
+  momentum: number | null
+  widthLabel: string | null
+  indexConsistent: boolean | null
+  quality: DataSetQuality
+}
+
+export interface BreadthHistoryEvidence {
+  points: BreadthHistoryPoint[]
+  validObservations: number
+  requiredObservations: number
+  windowDays: number
+  coverage: number | null
+  percentile250: Record<string, number | null>
+  quality: MetricQuality | null
+}
+
 export interface BreadthAnalysis {
   advanceCount: number | null
   declineCount: number | null
@@ -228,6 +254,17 @@ export interface BreadthAnalysis {
   medianReturn: number | null
   state: string
   quality: DataSetQuality
+  declineRatio: number | null
+  advanceDeclineSpread: number | null
+  advanceRatioPercentile: number | null
+  medianReturnPercentile: number | null
+  spreadPercentile: number | null
+  momentum: number | null
+  momentumPercentile: number | null
+  indexConsistent: boolean | null
+  widthLabel: string | null
+  widthLabelReason: string | null
+  history: BreadthHistoryEvidence | null
 }
 
 export interface LimitAnalysis {

@@ -10,6 +10,10 @@
 
 > 状态：**已落地第 01 章市场环境看板与交易规则工程平台首期**。产品范围见 `docs/product-specs/market-environment-dashboard.md` 与 `docs/product-specs/trading-rule-engineering.md`；看板视觉与交互约束见 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
 
+### 第 02 页市场广度派生边界（2026-09-16）
+
+第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照基础上，由 `MarketEnvironmentService._enrich_breadth` 在每次章节请求时串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 `SnapshotStore.list_snapshot_dates("breadth")` + `SnapshotStore.get("breadth", date)`，与第 01 章 `syncPattern` / `next-session` 共用同一快照读取路径；不引入新的 provider、API 路由、PostgreSQL schema 或采集任务。所有新字段为可空，缺失样本数 < 60 时整段标注 `insufficient`，不补 0。前端 02 页由 2 section 替换为 5 section（复盘卡 / 量化证据 / 近 5 日趋势 / 指数一致性矩阵 / 次交易日验证项 + 质量元数据）；新增独立 `breadthChart` ECharts 实例，与指数 K 线 `chart` / 成交量 `volumeChart` 数据源和生命周期独立。`QTS-01-02-01..05` 的规则 ID、阈值、权重与 YAML 保持不变。
+
 ## 系统角色
 
 市场环境看板面向盘后研究，前端用于选择交易日、比较指数、查看解释和在开发阶段管理数据采集；后端负责行情获取、指标计算、数据质量标记、独立任务协调、快照持久化和降级。

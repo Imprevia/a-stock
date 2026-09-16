@@ -852,3 +852,166 @@ def test_local_core_uses_existing_breadth_snapshot_for_synchronization_without_p
     assert provider.fetch_calls == 0
     assert provider.chapter_calls == []
     MarketEnvironmentResponse.model_validate(payload)
+
+def test_enrich_breadth_fills_derived_fields_without_history(tmp_path) -> None:
+    service = MarketEnvironmentService.__new__(MarketEnvironmentService)
+    service.snapshot_store = None
+    breadth = {
+        "advanceCount": 3212,
+        "declineCount": 1489,
+        "flatCount": 87,
+        "validCount": 4788,
+        "advanceRatio": 0.6708,
+        "medianReturn": 0.0084,
+        "state": "多数上涨",
+        "quality": {
+            "dataset": "market-breadth",
+            "source": "eastmoney-clist",
+            "provider": "eastmoney-clist",
+            "status": "partial",
+            "observations": 4788,
+            "asOf": "2026-09-16",
+            "warnings": [],
+        },
+    }
+    analyses = [
+        {"name": "上证指数", "changePct": 0.62},
+        {"name": "沪深300", "changePct": 0.71},
+        {"name": "深证成指", "changePct": 0.38},
+        {"name": "创业板指", "changePct": -0.15},
+        {"name": "中证500", "changePct": 0.09},
+    ]
+    enriched = service._enrich_breadth(breadth, date(2026, 9, 16), analyses)
+    # Decline ratio and spread are populated.
+    assert enriched["declineRatio"] == pytest.approx(0.3110, abs=1e-4)
+    assert enriched["advanceDeclineSpread"] == pytest.approx(0.3598, abs=1e-4)
+    # 4/5 indices align with the positive median.
+    assert enriched["indexConsistent"] is True
+    # Without previous-day history, no directional label can be picked.
+    assert enriched["widthLabel"] == "混合"
+    assert enriched["widthLabelReason"]
+# Momentum and percentiles are None when fewer than 60 history samples exist.
+    assert enriched["momentum"] is None
+    for field in ("advanceRatioPercentile", "medianReturnPercentile", "spreadPercentile", "momentumPercentile"):
+        assert enriched[field] is None
+    history = enriched["history"]
+    assert history["validObservations"] == 1
+    assert history["requiredObservations"] == 60
+    assert history["windowDays"] == 250
+    assert history["coverage"] == pytest.approx(0.0)
+    assert history["quality"]["status"] == "insufficient"
+    assert history["percentile250"]["advanceRatio"] is None
+    # No prior breadth snapshots => history table is empty; today is
+    # rendered in the recap card and trend chart instead.
+    assert history["points"] == []
+
+
+def test_enrich_breadth_reads_five_day_history(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots.sqlite")
+    target_date = date(2026, 9, 16)
+    fetched_at = datetime(2026, 9, 16, 16, 30, tzinfo=MARKET_TIME_ZONE)
+    for offset in range(1, 6):
+        history_date = target_date - timedelta(days=offset)
+        payload = {
+            "asOf": history_date.isoformat(),
+            "advanceCount": 3000 + offset,
+            "declineCount": 1500 - offset,
+            "flatCount": 90,
+            "validCount": 4590,
+            "advanceRatio": round((3000 + offset) / 4590, 4),
+            "medianReturn": 0.001 * offset,
+            "state": "多数上涨",
+            "quality": {
+                "dataset": "market-breadth",
+                "source": "eastmoney-clist",
+                "provider": "eastmoney-clist",
+                "status": "ok",
+                "observations": 4590,
+                "asOf": history_date.isoformat(),
+                "warnings": [],
+            },
+        }
+        store.put(
+            SnapshotRecord(
+                dataset="breadth",
+                as_of=history_date,
+                payload=payload,
+                source="fixture",
+                status="ok",
+                observations=4590,
+                warnings=(),
+                fetched_at=fetched_at,
+                settled=True,
+            )
+        )
+    service = MarketEnvironmentService(
+        snapshot_store=store,
+        persistent_cache=True,
+        now=lambda: fetched_at,
+    )
+    breadth = {
+        "advanceCount": 3212,
+        "declineCount": 1489,
+        "flatCount": 87,
+        "validCount": 4788,
+        "advanceRatio": 0.6708,
+        "medianReturn": 0.0084,
+        "state": "多数上涨",
+        "quality": {
+            "dataset": "market-breadth",
+            "source": "eastmoney-clist",
+            "provider": "eastmoney-clist",
+            "status": "partial",
+            "observations": 4788,
+            "asOf": target_date.isoformat(),
+            "warnings": [],
+        },
+    }
+    analyses = [
+        {"name": "上证指数", "changePct": 0.62},
+        {"name": "沪深300", "changePct": 0.71},
+        {"name": "深证成指", "changePct": 0.38},
+        {"name": "创业板指", "changePct": -0.15},
+        {"name": "中证500", "changePct": 0.09},
+    ]
+    enriched = service._enrich_breadth(breadth, target_date, analyses)
+    assert enriched["momentum"] is not None
+    history = enriched["history"]
+    assert len(history["points"]) == 5
+    assert {point["asOf"] for point in history["points"]} == {
+        (target_date - timedelta(days=offset)).isoformat() for offset in range(1, 6)
+    }
+    # No 250-day sample => percentiles stay None with insufficient status.
+    assert enriched["advanceRatioPercentile"] is None
+    assert history["quality"]["status"] == "insufficient"
+    # Width label must include the previous-day ratio context.
+    assert enriched["widthLabel"] in {"同向增强", "同向走弱", "混合", "数据不足", "指数强个股弱", "指数弱个股修复"}
+
+
+def test_enrich_breadth_history_writes_round_trip_through_service() -> None:
+    service = MarketEnvironmentService.__new__(MarketEnvironmentService)
+    service.snapshot_store = None
+    breadth = {
+        "advanceCount": 0,
+        "declineCount": 0,
+        "flatCount": 0,
+        "validCount": 0,
+        "advanceRatio": None,
+        "medianReturn": None,
+        "state": "insufficient",
+        "quality": {
+            "dataset": "market-breadth",
+            "source": "eastmoney-clist",
+            "provider": "eastmoney-clist",
+            "status": "missing",
+            "observations": 0,
+            "asOf": "2026-09-16",
+            "warnings": ["广度快照不可用"],
+        },
+    }
+    enriched = service._enrich_breadth(breadth, date(2026, 9, 16), [])
+    assert enriched["widthLabel"] == "数据不足"
+    assert enriched["declineRatio"] is None
+    assert enriched["advanceDeclineSpread"] is None
+    assert enriched["indexConsistent"] is None
+    assert enriched["history"]["validObservations"] == 0

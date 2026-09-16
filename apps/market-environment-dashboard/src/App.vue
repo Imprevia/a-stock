@@ -78,8 +78,10 @@ let copyStatusTimer: ReturnType<typeof setTimeout> | null = null
 let initialDatePending = true
 const chartElement = ref<HTMLElement | null>(null)
 const volumeChartElement = ref<HTMLElement | null>(null)
+const breadthChartElement = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 let volumeChart: echarts.ECharts | null = null
+let breadthChart: echarts.ECharts | null = null
 let requestSequence = 0
 let sectionEpoch = 0
 const sectionRequestSequences = Object.fromEntries(chapterSections.map((section) => [section, 0])) as Record<Chapter01Section, number>
@@ -122,10 +124,152 @@ const breadthBar = computed(() => {
     decline: (item.declineCount / item.validCount) * 100,
   }
 })
+const breadthWidthLabelOptions = ['同向增强', '同向走弱', '指数强个股弱', '指数弱个股修复', '混合', '数据不足']
+function bandScore(percentile: number): string {
+  if (percentile <= 0.2) return '0 分'
+  if (percentile <= 0.4) return '25 分'
+  if (percentile <= 0.6) return '50 分'
+  if (percentile <= 0.8) return '75 分'
+  return '100 分'
+}
+const breadthHistoryRows = computed(() => breadth.value?.history?.points ?? [])
+const breadthRuleRows = computed(() => {
+  const item = breadth.value
+  const percentilePct = (value: number | null | undefined) => value == null ? 0 : Math.round(value * 100)
+  const percentileLabel = (value: number | null | undefined) => value == null ? '--' : `P${Math.round(value * 100)}`
+  const scoreLabel = (value: number | null | undefined) => value == null ? '--' : bandScore(value)
+  return [
+    {
+      id: 'QTS-01-02-01',
+      title: '上涨占比',
+      valueLabel: item?.advanceRatio == null ? '--' : formatPosition(item.advanceRatio),
+      percentilePct: percentilePct(item?.advanceRatioPercentile),
+      percentileLabel: percentileLabel(item?.advanceRatioPercentile),
+      scoreLabel: scoreLabel(item?.advanceRatioPercentile),
+      weightLabel: '30%',
+    },
+    {
+      id: 'QTS-01-02-02',
+      title: '涨跌差率',
+      valueLabel: item?.advanceDeclineSpread == null ? '--' : `${item.advanceDeclineSpread > 0 ? '+' : ''}${(item.advanceDeclineSpread * 100).toFixed(0)}pp`,
+      percentilePct: percentilePct(item?.spreadPercentile),
+      percentileLabel: percentileLabel(item?.spreadPercentile),
+      scoreLabel: scoreLabel(item?.spreadPercentile),
+      weightLabel: '20%',
+    },
+    {
+      id: 'QTS-01-02-03',
+      title: '涨跌幅中位数',
+      valueLabel: item?.medianReturn == null ? '--' : formatPct(item.medianReturn),
+      percentilePct: percentilePct(item?.medianReturnPercentile),
+      percentileLabel: percentileLabel(item?.medianReturnPercentile),
+      scoreLabel: scoreLabel(item?.medianReturnPercentile),
+      weightLabel: '30%',
+    },
+    {
+      id: 'QTS-01-02-04',
+      title: '5 日动量',
+      valueLabel: item?.momentum == null ? '--' : `${item.momentum > 0 ? '+' : ''}${(item.momentum * 100).toFixed(1)}pp`,
+      percentilePct: percentilePct(item?.momentumPercentile),
+      percentileLabel: percentileLabel(item?.momentumPercentile),
+      scoreLabel: scoreLabel(item?.momentumPercentile),
+      weightLabel: '10%',
+    },
+    {
+      id: 'QTS-01-02-05',
+      title: '指数广度一致',
+      valueLabel: item?.indexConsistent == null ? '--' : (item.indexConsistent ? '一致' : '背离'),
+      percentilePct: item?.indexConsistent === true ? 100 : 0,
+      percentileLabel: item?.indexConsistent == null ? '--' : (item.indexConsistent ? 'P100' : 'P0'),
+      scoreLabel: item?.indexConsistent == null ? '--' : (item.indexConsistent ? '100 分' : '0 分'),
+      weightLabel: '10%',
+    },
+  ]
+})
+const breadthRuleSummary = computed(() => {
+  const item = breadth.value
+  const scoreValues = [
+    item?.advanceRatioPercentile,
+    item?.spreadPercentile,
+    item?.medianReturnPercentile,
+    item?.momentumPercentile,
+  ].filter((value): value is number => value != null)
+  const indexScore = item?.indexConsistent === true ? 100 : item?.indexConsistent === false ? 0 : null
+  const weights = [0.3, 0.2, 0.3, 0.1, 0.1]
+  const available: Array<number | null> = [
+    scoreValues[0] ?? null,
+    scoreValues[1] ?? null,
+    scoreValues[2] ?? null,
+    scoreValues[3] ?? null,
+    indexScore,
+  ]
+  const usable = available.filter((value): value is number => value != null)
+  if (!usable.length) return { score: '--', confidence: '数据不足', coverage: '0%', missing: '上涨占比 / 涨跌差率 / 中位数 / 5 日动量 / 指数一致全部缺失' }
+  const weighted = available.reduce((sum, value, index) => sum + (value ?? 0) * weights[index], 0) / available.reduce((sum, value, index) => sum + (value == null ? 0 : weights[index]), 0)
+  const confidence = usable.length >= 5 ? '高' : usable.length >= 3 ? '中' : '低'
+  const coverage = `${Math.round((usable.length / 5) * 100)}%`
+  const missingList: string[] = []
+  if (item?.advanceRatioPercentile == null) missingList.push('上涨占比分位')
+  if (item?.spreadPercentile == null) missingList.push('涨跌差率分位')
+  if (item?.medianReturnPercentile == null) missingList.push('中位数分位')
+  if (item?.momentumPercentile == null) missingList.push('5 日动量分位')
+  if (item?.indexConsistent == null) missingList.push('指数一致性')
+  return { score: `${weighted.toFixed(1)} 分`, confidence, coverage, missing: missingList.length ? missingList.join('、') : '无' }
+})
+const breadthIndexConsistencyRows = computed(() => {
+  const item = breadth.value
+  const medianSign = item?.medianReturn == null ? null : Math.sign(item.medianReturn)
+  const medianDirection = medianSign == null ? '--' : medianSign > 0 ? '↑' : medianSign < 0 ? '↓' : '→'
+  return (data.value?.indices ?? []).map((index) => {
+    const change = index.changePct
+    const changeSign = change == null ? null : Math.sign(change)
+    const indexDirection = changeSign == null ? '--' : changeSign > 0 ? '↑' : changeSign < 0 ? '↓' : '→'
+    const consistent = changeSign != null && medianSign != null ? changeSign === medianSign : null
+    const hint = consistent == null
+      ? `${index.name}涨跌缺失`
+      : consistent
+        ? `${index.name}同步${indexDirection === '↑' ? '偏强' : '偏弱'}`
+        : `${index.name}与广度${indexDirection === '↑' ? '强' : '弱'}背离`
+    return {
+      code: index.code,
+      name: index.name,
+      changePct: change,
+      indexDirection,
+      medianDirection,
+      consistent,
+      hint,
+    }
+  })
+})
+const breadthConsistencySummary = computed(() => {
+  const rows = breadthIndexConsistencyRows.value.filter((row) => row.consistent != null)
+  if (!rows.length) return '数据不足'
+  const same = rows.filter((row) => row.consistent).length
+  if (same === rows.length) return `${same} / ${rows.length} 强一致`
+  if (same >= rows.length - 1) return `${same} / ${rows.length} 多数一致`
+  return `${same} / ${rows.length} 权重分歧`
+})
+const breadthVerification = computed(() => {
+  const item = breadth.value
+  if (!item?.advanceRatio || item.medianReturn == null) {
+    return { confirm: '数据不足，等待新增证据', invalidate: '数据不足，等待新增证据', consistencyHint: '缺失' }
+  }
+  const sameDirection = (item.indexConsistent ?? false) ? '一致' : '背离'
+  const medianFloor = item.advanceRatio >= 0.6 ? '+0.50%' : '+0.30%'
+  const confirm = `上涨占比 ≥ 60% 且中位数 ≥ ${medianFloor}`
+  const invalidate = '上涨占比 < 40% 或中位数 < -0.30%'
+  return { confirm, invalidate, consistencyHint: sameDirection }
+})
+const breadthWarnings = computed(() => {
+  const item = breadth.value
+  const warnings = [item?.quality?.warning, ...(item?.quality?.warnings ?? [])]
+  return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))]
+})
+const breadthCopyStatus = computed(() => copyStatus.value?.key === 'breadth-verification' ? copyStatus.value : null)
 const sectionWarning = computed(() => {
   const section = activeSection.value
   if (!section || !loadedSections.value.includes(section)) return ''
-  if (section === 'breadth' && breadthBar.value) return breadth.value?.quality.warning ?? ''
+  if (section === 'breadth' && breadth.value?.quality) return breadth.value.quality.warning ?? ''
   if (section === 'sectors' && chapter.value?.sectors?.rows?.length) return chapter.value.sectors.quality.warning ?? ''
   if (section === 'activeDirection' && chapter.value?.activeDirection?.topStocks?.length) return chapter.value.activeDirection.quality.warning ?? ''
   return ''
@@ -322,6 +466,7 @@ async function loadData() {
     loading.value = false
     await nextTick()
     renderChart()
+    renderBreadthChart()
   }
   if (shouldLoadSection) void loadCurrentSection()
 }
@@ -436,6 +581,60 @@ function renderChart() {
   })
 }
 
+function renderBreadthChart() {
+  if (selectedDocumentId.value !== '02' || !breadthChartElement.value) return
+  breadthChart ??= echarts.init(breadthChartElement.value)
+  const rows = breadthHistoryRows.value
+  const dates = rows.map((row) => row.asOf.slice(5))
+  const todayLabel = data.value?.asOf?.slice(5) ?? ''
+  const todayAdvance = breadth.value?.advanceRatio == null ? null : Number((breadth.value.advanceRatio * 100).toFixed(2))
+  const todayMedian = breadth.value?.medianReturn == null ? null : Number(breadth.value.medianReturn.toFixed(2))
+  const advanceSeries = rows.map((row) => row.advanceRatio == null ? null : Number((row.advanceRatio * 100).toFixed(2)))
+  if (todayAdvance != null && !advanceSeries.length) advanceSeries.push(todayAdvance)
+  const medianSeries = rows.map((row) => row.medianReturn == null ? null : Number(row.medianReturn.toFixed(2)))
+  if (todayMedian != null && !medianSeries.length) medianSeries.push(todayMedian)
+  if (todayLabel && !dates.includes(todayLabel)) dates.push(todayLabel)
+  if (!dates.length) {
+    breadthChart.clear()
+    return
+  }
+  breadthChart.setOption({
+    animation: false,
+    grid: { top: 32, right: 56, bottom: 36, left: 56 },
+    legend: { top: 0, left: 0, textStyle: { color: '#68727e', fontSize: 14 } },
+    tooltip: { trigger: 'axis', confine: true, textStyle: { fontSize: 14 } },
+    xAxis: { type: 'category', data: dates, boundaryGap: true, axisLabel: { color: '#8a939e', fontSize: 14 }, axisLine: { lineStyle: { color: '#dfe4e8' } } },
+    yAxis: [
+      { type: 'value', name: '上涨占比 %', nameTextStyle: { color: '#4f5b56', fontSize: 13 }, axisLabel: { color: '#8a939e', fontSize: 14 }, splitLine: { lineStyle: { color: '#edf0f2' } } },
+      { type: 'value', name: '中位数 %', nameTextStyle: { color: '#4f5b56', fontSize: 13 }, axisLabel: { color: '#8a939e', fontSize: 14 }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: '上涨占比', type: 'line', data: advanceSeries, showSymbol: true, symbolSize: 8, lineStyle: { width: 2, color: '#257153' }, itemStyle: { color: '#257153' } },
+      { name: '涨跌幅中位数', type: 'line', yAxisIndex: 1, data: medianSeries, showSymbol: true, symbolSize: 8, lineStyle: { width: 2, color: '#c45b55' }, itemStyle: { color: '#c45b55' } },
+    ],
+  })
+}
+
+async function copyBreadthVerification() {
+  const item = breadth.value
+  if (!item) return
+  const text = [
+    `今日宽度标签：${item.widthLabel || '数据不足'}`,
+    `核心证据：上涨占比 ${item.advanceRatio == null ? '--' : formatPosition(item.advanceRatio)}，涨跌幅中位数 ${item.medianReturn == null ? '--' : formatPct(item.medianReturn)}，与指数 ${breadthVerification.value.consistencyHint}。`,
+    `下一交易日只验证：上涨占比和中位数是否继续同向。`,
+    `确认条件：${breadthVerification.value.confirm}`,
+    `失效条件：${breadthVerification.value.invalidate}`,
+  ].join('\n')
+  const success = await writeClipboard(text)
+  copyStatus.value = {
+    key: 'breadth-verification',
+    state: success ? 'success' : 'error',
+    message: success ? '已复制验证项' : '复制验证项失败',
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = null }, 2200)
+}
+
 function selectDocument(id: string) {
   navigateTo('dashboard')
   selectedDocumentId.value = id
@@ -458,12 +657,20 @@ function handleDateChange() {
   initialDatePending = false
   void loadData()
 }
-function resizeCharts() { chart?.resize(); volumeChart?.resize() }
+function resizeCharts() {
+  chart?.resize()
+  volumeChart?.resize()
+  breadthChart?.resize()
+}
 function disposeCharts() {
   chart?.dispose()
   volumeChart?.dispose()
   chart = null
   volumeChart = null
+}
+function disposeBreadthChart() {
+  breadthChart?.dispose()
+  breadthChart = null
 }
 
 watch(selectedIndex, async () => {
@@ -474,6 +681,7 @@ watch(selectedIndex, async () => {
 })
 watch(selectedDocumentId, async (documentId) => {
   if (documentId !== '01') disposeCharts()
+  if (documentId === '02') disposeBreadthChart()
   if (documentId === '01' && sectionLoading.value) {
     void loadCurrentSection()
     return
@@ -481,7 +689,13 @@ watch(selectedDocumentId, async (documentId) => {
   await nextTick()
   if (documentId === '01' && activeSectionState.value?.phase === 'loading') return
   renderChart()
+  if (documentId === '02') renderBreadthChart()
   void loadCurrentSection()
+})
+watch([breadthHistoryRows, () => breadth.value?.advanceRatio, () => breadth.value?.medianReturn, () => data.value?.asOf], async () => {
+  if (selectedDocumentId.value !== '02') return
+  await nextTick()
+  renderBreadthChart()
 })
 watch(activeSectionState, async (state, previous) => {
   if (state?.phase === 'loading') {
@@ -507,6 +721,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('popstate', handlePopState)
   if (copyStatusTimer) clearTimeout(copyStatusTimer)
   disposeCharts()
+  disposeBreadthChart()
 })
 </script>
 
@@ -595,10 +810,145 @@ onBeforeUnmount(() => {
             <section class="panel table-panel"><div class="panel-heading"><div><span class="panel-kicker">横向比较</span><h2>五大指数指标表</h2></div></div><div class="table-scroll"><table><thead><tr><th>指数</th><th>涨跌幅</th><th>收盘价</th><th>MA20 / MA60</th><th>20日位置</th><th>60日位置</th><th>成交额</th><th>5日 / 20日</th><th>量价状态</th></tr></thead><tbody><tr v-for="index in data.indices" :key="index.code" :class="{ active: selectedIndex?.code === index.code }" @click="selectIndex(index.code)"><td><strong>{{ index.name }}</strong><span>{{ index.code }}</span></td><td :class="changeTone(index.changePct)">{{ formatPct(index.changePct) }}</td><td>{{ index.close.toFixed(2) }}</td><td>{{ index.movingAverages.ma20?.toFixed(2) ?? '--' }} / {{ index.movingAverages.ma60?.toFixed(2) ?? '--' }}</td><td><strong>{{ formatPosition(index.rangePosition20) }}</strong><span>{{ index.rangePosition20Label }}</span></td><td><strong>{{ formatPosition(index.rangePosition60) }}</strong><span>{{ index.rangePosition60Label }}</span></td><td>{{ formatAmount(index.amount) }}</td><td>{{ formatRatio(index.amountRatio5) }} / {{ formatRatio(index.amountRatio20) }}</td><td><span v-if="index.volumePriceState" class="state-chip">{{ index.volumePriceState }}</span><span v-else>--</span></td></tr></tbody></table></div></section>
           </template>
 
-          <template v-else-if="selectedDocumentId === '02'">
+<template v-else-if="selectedDocumentId === '02'">
             <p class="page-flow-label">事实 → 判断 → 质量边界</p>
-            <section class="metric-grid four"><article class="metric-card"><span>上涨家数</span><strong class="positive">{{ formatCount(breadth?.advanceCount) }}</strong></article><article class="metric-card"><span>下跌家数</span><strong class="negative">{{ formatCount(breadth?.declineCount) }}</strong></article><article class="metric-card"><span>上涨占比</span><strong>{{ breadth?.advanceRatio == null ? '--' : formatPosition(breadth.advanceRatio) }}</strong></article><article class="metric-card"><span>涨跌幅中位数</span><strong :class="changeTone(breadth?.medianReturn ?? 0)">{{ formatPct(breadth?.medianReturn) }}</strong></article></section>
-            <section class="two-column-grid"><article class="panel analysis-panel"><div class="panel-heading"><div><span class="panel-kicker">全 A 参与面</span><h2>市场广度分布</h2></div><span class="quality-badge" :class="qualityTone(breadth?.quality)">{{ qualityLabel(breadth?.quality) }}</span></div><div v-if="breadthBar" class="breadth-visual"><div class="breadth-bar"><i class="advance" :style="{ width: `${breadthBar.advance}%` }" /><i class="flat-bar" :style="{ width: `${breadthBar.flat}%` }" /><i class="decline" :style="{ width: `${breadthBar.decline}%` }" /></div><div class="breadth-legend"><span><i class="advance" />上涨 {{ formatCount(breadth?.advanceCount) }}</span><span><i class="flat-bar" />平盘 {{ formatCount(breadth?.flatCount) }}</span><span><i class="decline" />下跌 {{ formatCount(breadth?.declineCount) }}</span></div></div><div v-else class="empty-evidence"><Database :size="22" /><strong>市场广度数据不足</strong><p>{{ breadth?.quality.warning || '全 A 上涨、下跌和平盘样本尚未返回。' }}</p></div></article><article class="panel rule-panel"><div class="panel-heading"><div><span class="panel-kicker">组合判定</span><h2>{{ breadth?.state || '数据不足' }}</h2></div></div><p>指数与全 A 中位数同向时才具备广度一致性；缺少全市场样本时不形成强弱结论。</p><div class="source-row"><span>数据源</span><strong>{{ breadth?.quality.source || '--' }}</strong></div></article></section>
+
+            <section class="panel analysis-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">盘后复盘卡</span><h2>上涨、下跌、平盘与中位数</h2></div>
+                <span class="quality-badge" :class="qualityTone(breadth?.quality)">{{ qualityLabel(breadth?.quality) }}</span>
+              </div>
+              <section class="metric-grid six">
+                <article class="metric-card"><span>上涨家数</span><strong class="positive">{{ formatCount(breadth?.advanceCount) }}</strong></article>
+                <article class="metric-card"><span>上涨占比</span><strong>{{ breadth?.advanceRatio == null ? '--' : formatPosition(breadth.advanceRatio) }}</strong></article>
+                <article class="metric-card"><span>下跌家数</span><strong class="negative">{{ formatCount(breadth?.declineCount) }}</strong></article>
+                <article class="metric-card"><span>下跌占比</span><strong>{{ breadth?.declineRatio == null ? '--' : formatPosition(breadth.declineRatio) }}</strong></article>
+                <article class="metric-card"><span>平盘家数</span><strong>{{ formatCount(breadth?.flatCount) }}</strong></article>
+                <article class="metric-card"><span>涨跌家数差</span><strong :class="changeTone(breadth?.advanceDeclineSpread ?? 0)">{{ breadth?.advanceDeclineSpread == null ? '--' : `${breadth.advanceDeclineSpread > 0 ? '+' : ''}${(breadth.advanceDeclineSpread * 100).toFixed(0)}pp` }}</strong></article>
+              </section>
+              <section class="metric-grid three">
+                <article class="metric-card"><span>全 A 涨跌幅中位数</span><strong :class="changeTone(breadth?.medianReturn ?? 0)">{{ formatPct(breadth?.medianReturn) }}</strong></article>
+                <article class="metric-card"><span>5 日动量</span><strong :class="changeTone(breadth?.momentum ?? 0)">{{ breadth?.momentum == null ? '--' : `${breadth.momentum > 0 ? '+' : ''}${(breadth.momentum * 100).toFixed(1)}pp` }}</strong></article>
+                <article class="metric-card"><span>指数广度一致</span><strong :class="breadth?.indexConsistent === true ? 'positive' : breadth?.indexConsistent === false ? 'negative' : ''">{{ breadth?.indexConsistent == null ? '--' : breadth.indexConsistent ? '一致' : '背离' }}</strong></article>
+              </section>
+              <div class="breadth-width-pills" role="group" aria-label="宽度标签">
+                <span class="panel-kicker" style="margin-right:6px;">宽度标签</span>
+                <button v-for="label in breadthWidthLabelOptions" :key="label" type="button" :class="{ active: breadth?.widthLabel === label }">{{ label }}</button>
+              </div>
+              <p v-if="breadth?.widthLabelReason" class="breadth-reason">{{ breadth.widthLabelReason }}</p>
+            </section>
+
+            <section class="panel analysis-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">量化证据 · QTS-01-02-01..05</span><h2>五条规则的当前值与分位</h2></div>
+              </div>
+              <div class="table-scroll">
+                <table class="limits-table breadth-rules-table">
+                  <thead><tr><th>规则</th><th>当前值</th><th>250 日分位</th><th>得分</th><th>权重</th></tr></thead>
+                  <tbody>
+                    <tr v-for="rule in breadthRuleRows" :key="rule.id">
+                      <td><strong>{{ rule.id }}</strong><span>{{ rule.title }}</span></td>
+                      <td>{{ rule.valueLabel }}</td>
+                      <td>
+                        <span class="rule-percentile-bar" :title="rule.percentileLabel"><i :style="{ width: `${rule.percentilePct}%` }" /></span>
+                        <small>{{ rule.percentileLabel }}</small>
+                      </td>
+                      <td><strong>{{ rule.scoreLabel }}</strong></td>
+                      <td>{{ rule.weightLabel }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <dl class="breadth-rules-summary">
+                <div><dt>加权得分</dt><dd>{{ breadthRuleSummary.score }}</dd></div>
+                <div><dt>置信度</dt><dd>{{ breadthRuleSummary.confidence }}</dd></div>
+                <div><dt>覆盖率</dt><dd>{{ breadthRuleSummary.coverage }}</dd></div>
+                <div><dt>缺失输入</dt><dd>{{ breadthRuleSummary.missing }}</dd></div>
+              </dl>
+            </section>
+
+            <section class="panel analysis-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">近 5 日宽度趋势</span><h2>已验证交易日</h2></div>
+                <span class="quality-badge" :class="metricQualityTone(breadth?.history?.quality?.status)">{{ metricQualityLabel(breadth?.history?.quality?.status) }}</span>
+              </div>
+              <p v-if="breadth?.history?.validObservations != null && breadth.history.validObservations < 5" class="limits-null-note">近 5 日观察仅 {{ formatCount(breadth.history.validObservations) }} / 5</p>
+              <div v-if="breadthHistoryRows.length" class="table-scroll">
+                <table class="limits-table history-table">
+                  <thead><tr><th>日期</th><th>上涨家数</th><th>下跌家数</th><th>涨跌差</th><th>上涨占比</th><th>下跌占比</th><th>中位数</th><th>5 日动量</th><th>宽度标签</th><th>指数一致</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in breadthHistoryRows" :key="row.asOf">
+                      <td><strong>{{ row.asOf }}</strong></td>
+                      <td>{{ formatCount(row.advanceCount) }}</td>
+                      <td>{{ formatCount(row.declineCount) }}</td>
+                      <td>{{ row.advanceDeclineSpread == null ? '--' : `${row.advanceDeclineSpread > 0 ? '+' : ''}${(row.advanceDeclineSpread * 100).toFixed(0)}pp` }}</td>
+                      <td>{{ row.advanceRatio == null ? '--' : formatPosition(row.advanceRatio) }}</td>
+                      <td>{{ row.declineRatio == null ? '--' : formatPosition(row.declineRatio) }}</td>
+                      <td>{{ row.medianReturn == null ? '--' : formatPct(row.medianReturn) }}</td>
+                      <td>{{ row.momentum == null ? '--' : `${row.momentum > 0 ? '+' : ''}${(row.momentum * 100).toFixed(1)}pp` }}</td>
+                      <td>{{ row.widthLabel || '--' }}</td>
+                      <td>{{ row.indexConsistent == null ? '--' : row.indexConsistent ? '一致' : '背离' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="empty-evidence compact"><Database :size="22" /><strong>历史窗口不足</strong><p>只展示精确交易日快照，不使用其他日期回填。当前有效观察 {{ formatCount(breadth?.history?.validObservations) }} / {{ formatCount(breadth?.history?.requiredObservations ?? 60) }}。</p></div>
+              <div ref="breadthChartElement" class="breadth-history-chart" aria-label="近 5 日宽度趋势折线"></div>
+            </section>
+
+            <section class="panel analysis-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">指数 × 广度</span><h2>五个指数与广度一致性</h2></div>
+              </div>
+              <div class="table-scroll">
+                <table class="breadth-consistency-table">
+                  <thead><tr><th>指数</th><th>涨跌幅</th><th>指数方向</th><th>中位数方向</th><th>一致</th><th>提示</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in breadthIndexConsistencyRows" :key="row.code">
+                      <td><strong>{{ row.name }}</strong></td>
+                      <td :class="changeTone(row.changePct ?? 0)">{{ formatPct(row.changePct) }}</td>
+                      <td>{{ row.indexDirection }}</td>
+                      <td>{{ row.medianDirection }}</td>
+                      <td :class="row.consistent === true ? 'consistent-yes' : row.consistent === false ? 'consistent-no' : ''">{{ row.consistent == null ? '--' : row.consistent ? '✓ 一致' : '✗ 背离' }}</td>
+                      <td>{{ row.hint }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="breadth-consistency-summary">综合判定：{{ breadthConsistencySummary }}</p>
+            </section>
+
+            <section class="panel analysis-panel">
+              <div class="panel-heading">
+                <div><span class="panel-kicker">次交易日验证</span><h2>延续还是失效</h2></div>
+                <button class="text-button" type="button" @click="copyBreadthVerification">复制验证项</button>
+              </div>
+              <p class="breadth-verification">
+                今日宽度标签：<strong>{{ breadth?.widthLabel || '数据不足' }}</strong><br/>
+                核心证据：上涨占比 {{ breadth?.advanceRatio == null ? '--' : formatPosition(breadth.advanceRatio) }}，涨跌幅中位数 {{ breadth?.medianReturn == null ? '--' : formatPct(breadth.medianReturn) }}，与指数 {{ breadthVerification.consistencyHint }}。<br/>
+                下一交易日只验证：上涨占比和中位数是否继续同向。<br/>
+                确认条件：{{ breadthVerification.confirm }}<br/>
+                失效条件：{{ breadthVerification.invalidate }}
+              </p>
+              <p v-if="breadthCopyStatus" class="copy-status" :class="breadthCopyStatus.state">{{ breadthCopyStatus.message }}</p>
+              <section class="limits-quality-band" aria-label="市场广度质量">
+                <div class="limits-quality-primary">
+                  <div><span>所选交易日</span><strong>{{ data.asOf }}</strong></div>
+                  <div><span>数据质量</span><strong>{{ qualityCodeLabel(breadth?.quality) }}</strong></div>
+                  <div><span>数据源</span><strong>{{ breadth?.quality?.source || '--' }}</strong></div>
+                  <div><span>缓存状态</span><strong>{{ cacheStateLabel(breadth?.quality?.cacheState) }}</strong></div>
+                </div>
+                <div class="limits-quality-secondary">
+                  <div><span>样本实际日期</span><strong>{{ breadth?.quality?.asOf || '--' }}</strong></div>
+                  <div><span>有效观察数</span><strong>{{ formatCount(breadth?.quality?.observations) }}</strong></div>
+                  <div><span>抓取时间</span><strong :title="formatDateTimeTitle(breadth?.quality?.snapshotFetchedAt)">{{ formatEvidenceTime(breadth?.quality?.snapshotFetchedAt) }}</strong></div>
+                  <div><span>历史覆盖</span><strong>{{ formatCount(breadth?.history?.validObservations) }} / {{ formatCount(breadth?.history?.requiredObservations ?? 60) }}</strong></div>
+                </div>
+                <div v-if="breadthWarnings.length" class="limits-warning-block">
+                  <AlertTriangle :size="17" /><div><strong>数据警告</strong><span>{{ breadthWarnings.join('；') }}</span></div>
+                </div>
+              </section>
+            </section>
           </template>
 
           <template v-else-if="selectedDocumentId === '03'">
