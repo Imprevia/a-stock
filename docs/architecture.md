@@ -271,3 +271,15 @@ tests/                              公式、服务层和 API 契约测试
 - `Document04TierRiskPage.test.ts`：3 tests——指标卡与修复率渲染、tierRisk 缺失时的 fallback 文案、quality.warning 单数字段的显示。
 
 测试边界：14 文件 / 95 tests / 全绿（92 基线 + 3 个 Document04 新测试）。
+
+### Phase B-05 ~ B-09 章节组件（2026-09-16，frontend-component-split）
+
+剩余五个章节全部拆为独立页面组件，形态与 B-04 一致（core 直出、只读 store 与 composable、无 section 预拉）：
+
+- `Document05SectorsPage.vue`：行业轮动表（板块 / 涨跌幅 / 上涨下跌 / 主力净额 / 领涨股）+ 空态 fallback。3 tests。
+- `Document06ActiveDirectionPage.vue`：容量资金 Top 表（个股 / 涨跌幅 / 成交额 / 方向 / 收盘位置）+ summary 与空态。2 tests。
+- `Document07EventsPage.vue`：事件台账（来源 / 时间 / 已核实徽章）+ 调整边界面板。事件时间用纯 `formatDateTime` 显式传 `preferences.effectiveTimeZone`。2 tests。
+- `Document08EnvironmentClassifyPage.vue`：当前环境标签（environmentLabel）+ 证据一致性列表。3 tests。
+- `Document09AssessmentPage.vue`：唯一结论（分数 / 置信度 / 覆盖率）+ 证据链 + 风险否决 + 次日确认 + NextSessionPanel(mode="summary")。meta.section 为 null，不触发预拉。3 tests。
+
+测试边界：19 文件 / 108 tests / 全绿（95 基线 + 13 个新测试）。Phase B 全部 9 章节组件就绪，Phase C 进入 App.vue 收尾与嵌套路由接入。

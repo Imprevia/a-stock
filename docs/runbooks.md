@@ -770,3 +770,15 @@ composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字
 第 04 章 tierRisk 的质量警告读取 quality.warning（单数），不是 quality.warnings（复数）。fixture 只写 warnings 数组时页面不显示警告文本，测试会失败。两个都写最安全。
 
 第 04 章数据来自 core 直出（chapter01.tierRisk），独立挂载时直接 market.data = fixture 即可，无需 loadSection。
+
+## Document05-09 章节组件约定（2026-09-16 frontend-component-split Phase B-05..B-09）
+
+第 05 至 09 章均为 core 直出章节：独立挂载时 market.data = fixture 即可，无需 loadSection。第 09 章 meta.section = null，页面依赖已加载状态，不触发自己的预拉；NextSessionPanel(mode=summary) 读 market.nextSessionComparison。
+
+### 事件时间显示
+
+Document07EventsPage 的事件时间用纯 formatDateTime 并显式传入 preferences.effectiveTimeZone；fixture 的 publishedAt 必须带时区后缀（Z 或 +08:00），否则 parseTimestamp 按 '--' 处理，页面显示"时间未标注"。
+
+### 09 章空态语义
+
+assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证据链 / 当前未返回已触发的风险否决 / 数据不足，等待新增证据。测试与 UI 均按这四个固定文案断言，改动文案需同步 Document09AssessmentPage.test.ts。
