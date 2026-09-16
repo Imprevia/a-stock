@@ -232,3 +232,16 @@ tests/                              公式、服务层和 API 契约测试
 - `App.vue` 内联的 9 章节模板仍内联（由 `selectedDocumentId` 切换）；`market` store 未挂载到 `App.vue` 的 ref（仍是设计稿）。完整迁移与组件拆分推迟到 `frontend-component-split` change（2026-09-16-frontend-component-split）：Phase A 抽 composable、Phase B 按章节顺序拆 `Document01`..`Document09`、Phase C App.vue 收尾 + 嵌套路由升级、Phase D 文档同步 + archive。
 - 后端 `/api/market-environment` 全量端点（不在当前调用链上）保留为兼容接口。
 - 历史模式 SPA fallback 的 Ingress / NodePort 具体配置在 Phase 4 增补（不在本次交付范围）。
+
+### Phase A 基础设施（2026-09-16，frontend-component-split）
+
+`frontend-component-split` Phase A 已落地以下 composables 与未挂载组件。它们**尚未接入 `App.vue` 或路由**——Phase B / C 才替换 App.vue 的内联对应部分。
+
+- `composables/useChartLifecycle.ts`：单个 echarts 实例的生命周期管理（`onMounted` init + setOption，`watch` 重画，`window.addEventListener('resize')` resize，`onBeforeUnmount` dispose）。不持有全局闭包变量；调用方按 `<script setup>` 内 `const lc = useChartLifecycle(el, () => optionFactory())` 形式获取 `{ resize, dispose }`。Phase B 的 `IndexPriceChartPanel.vue` / `VolumeChartPanel.vue` / `BreadthHistoryChartPanel.vue` 直接消费此 composable。
+- `composables/useFormatDateTime.ts`：纯日期/时区工具（`formatDateTime`、`parseTimestamp`、`isSupportedTimeZone`、`formatDateTimeTitle`、`formatLocalDate`、`getDefaultMarketDate`）。调用方**必须显式传 `timeZone` 选项**——不再隐式从 module-scope reactive 读取。
+- `composables/useDocumentContext.ts`：章节公共派生与 label 字典的只读聚合（breadth 5 行规则 + 一致性 + 验证 + warnings；limits history/stratifications/warnings/promotionGap；qualityLabel / reasonLabel / environmentLabel / gapLabel / formatRatioDelta 等）。`useMarketStore()` 仅在 setup 顶层调用一次，暴露的全部是 `ComputedRef` 与纯函数——章节组件不能借它写 `market`。
+- `components/Sidebar.vue`：从 `App.vue` 模板 `<aside class="sidebar">` 整块迁出。`useRoute()` 派生激活态，`router.push` 切换路径，`useNavigationStore` 控制抽屉开关。
+- `components/Topbar.vue`：从 `App.vue` 模板 `<header class="topbar">` 整块迁出。日期选择器 `@change` 改用 `market.setDate(market.selectedDate)`；面包屑用 `useRoute()` 派生。
+- `pages/dashboard/DashboardLayout.vue`：`/dashboard/:documentId` 嵌套路由的共享壳（document header + evidence strip + breadcrumb + `<RouterView/>`）。`onMounted` 调 `market.loadCore()`（若 `market.data` 为 null）。从 `preferences.effectiveTimeZone` 读取时区给 `evidence-strip` 的 generatedAt 显示。Phase C 才接入路由——目前 `/dashboard/:documentId(0[1-9])` 仍指向 `DashboardPlaceholder.vue`。
+
+测试边界：12 文件 / 86 tests / 全绿。其中 18 个新测试（`useChartLifecycle` 4 个 + `useDocumentContext` 10 个 + 其他已被新 composable 间接覆盖的边界）。

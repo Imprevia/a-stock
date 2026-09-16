@@ -698,3 +698,44 @@ pm run dev --prefix apps/market-environment-dashboard 后浏览器访问 http://
 - https://host/#some-anchor → 不动（路由按当前路径解析）
 - 已经处于 /dashboard/03 的链接 → 不重复重写
 - SPA fallback 不会与 legacy hash 冲突：fallback 服务返回 index.html 后前端 router 接管，legacy-redirect 在路由解析的 eforeEach 阶段生效。
+
+## ECharts 生命周期（2026-09-16 frontend-component-split Phase A）
+
+市场环境看板前端 ECharts 实例通过 composables/useChartLifecycle.ts 统一管理。每个图表面板组件（IndexPriceChartPanel / VolumeChartPanel / BreadthHistoryChartPanel）在 <script setup> 顶层调：
+
+`	s
+const lc = useChartLifecycle(elementRef, () => optionFactory(props))
+``n
+### 行为
+
+- onMounted 调 echarts.init(elementRef.value) + setOption(optionFactory())。
+- 若传入第三个参数 watchSources，则 watch(watchSources, () => setOption(optionFactory())))) 在数据源变化时重画（不重建实例）。
+- window.addEventListener('resize', resize) 监听浏览器 resize，触发 chart.resize()，不 dispose。
+- onBeforeUnmount 调 chart.dispose() 并清空引用——实例随组件生命周期一起销毁，不再有全局协调。
+
+### 调用方约束
+
+- **绝不**在组件外持有 let chart: echarts.ECharts | null = null 闭包变量；composable 自己负责。
+- **绝不**在父组件里同时存在多个 chart 实例共享一个 DOM 节点——每个 panel 一个 ref + 一个 composable。
+- 旧版 App.vue 里的 chart / volumeChart / breadthChart 三个全局闭包变量与 renderChart / disposeCharts / resizeCharts / renderBreadthChart / disposeBreadthChart 函数在 Phase C（App.vue 收尾）时删除。Phase A 只新增 composable，不动 App.vue。
+
+### 调试
+
+- 图表不显示：检查 elementRef.value 在 onMounted 时是否非 null（happy-dom 下 <div ref=...> 立即可用）。
+- 图表不响应数据变化：检查 watchSources 是否返回 reactive 引用；直接传对象会丢失响应性。
+- 图表 resize 后位置错乱：检查 chart.setOption(optionFactory(), { notMerge: true }) —— notMerge 确保选项整体替换而非合并。
+
+## useDocumentContext 边界（2026-09-16 frontend-component-split Phase A）
+
+composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字典聚合。
+
+### 边界
+
+- **仅暴露** ComputedRef 与纯函数：breadth / limits 派生、quality / reason / environment / gap label 字典、formatRatioDelta / formatReturnDelta。
+- **绝不暴露**任何 setXxx / loadXxx 写操作。章节组件如需触发刷新 / 日期变更等写操作，必须通过 defineExpose / emit 委托给 DashboardLayout 或 App.vue 路由壳。
+- useMarketStore() 仅在 setup 顶层调用一次（不暴露给外部）。
+
+### 调试
+
+- 章节测试报错 Cannot read properties of undefined：检查 setActivePinia(createPinia()) 后是否手动 market.data = fixture 预填；composable 派生全部基于 market.breadth / market.limits，store 为 null 时返回空数组/默认值。
+- 测试通过但运行时报 isSupportedTimeZone 异常：检查 fixtures 里的 timezone 字段是否使用 IANA 标准名（如 Asia/Shanghai），而非 CST / GMT+8。
