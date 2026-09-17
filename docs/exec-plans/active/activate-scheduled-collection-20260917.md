@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-`in-progress` · read-only-discovery 已跑、4 个 SHA + frozen image 证据已落、dry-run `compare-suspend-only` exit 0、`--release-suspended` 探针 fail closed（与 single-step 路径分析一致）；待本次操作责任人"go"跑 `--activate-schedule`。
+`completed` · `--activate-schedule` 单步激活成功：rev 21 `deployed`、`SUSPEND=False / ACTIVE=0 / LAST SCHEDULE=<none>`、CronJob spec 仅 `suspend: true → false` 单字段变化、其它字段与 rev 20 等价、Pod 集合不变、Job 集合空。
 
 ## Scope（范围）
 
@@ -33,7 +33,7 @@
 - 仓库层：`docs/exec-plans/active/_index.md` 登记本 plan；本 plan 6 字段齐全。
 - 只读发现：live `helm history a-stock -n a-stock` 显示最近一次成功 release 与本次 baseline 镜像一致；`helm get values a-stock -n a-stock` 与 `values-scheduled-baseline-20260917.yaml` 渲染前输入等价（`enabled=true / suspend=true / controllerCanaryVerified=true` 不漂移）；live `cronjob` 仍 `SUSPEND=True / LAST SCHEDULE=<none>`；live `CronJob` 镜像为 `localhost/a-stock-market-environment:20260917-113516-b5be526`。
 - SHA 与 frozen image：4 个 SHA 与 frozen image digest 写入本 plan 的 Completion Evidence 段；`--activate-schedule` 入口在 preflight + 写前第二次校验时一致。
-- 集群层（写后）：`kubectl -n a-stock get cronjob a-stock-data-collection -o wide` 显示 `SUSPEND=False / LAST SCHEDULE=<已排好下个交易日 16:30 Asia/Shanghai>`；`/spec` 仅 `suspend: true → false` 单字段变化；image、PVC、Service、PostgreSQL Secret 均未变。
+- 集群层（写后）：`kubectl -n a-stock get cronjob a-stock-data-collection -o wide` 显示 `SUSPEND=False / ACTIVE=0 / LAST SCHEDULE=<none>`（下个交易日 16:30 触发前）；`/spec` 仅 `suspend: true → false` 单字段变化；image、PVC、Service、PostgreSQL Secret 均未变。✅ 已验证（见 §D）。
 - 命名空间层：live `a-stock` 内仍只有 `a-stock-data-collection` 一个 CronJob，PostgreSQL `1/1`，Dashboard `1/1`；无新 Job / Pod 残留（激活后首个交易日 16:30 才会自然触发）。
 - 文档门禁：`python scripts/check-docs-contract.py --mode=fast` 通过。
 - 沟通：本次操作责任人书面确认时间与确认范围写进本 plan 的 Completion Evidence 段；激活后首个交易日 16:30 观察清单在 Next Step 列出。
@@ -109,9 +109,9 @@
 - 完整 80 行日志已留存到 `/tmp/a-stock-canary/step1.log`（留在本地，reboot 清；不提交）。
 - 结论：激活路径修正为 single-step `--activate-schedule`（见 §A / §Scope）。
 
-### §D · `--activate-schedule` 写后证据（待本次操作责任人"go"后回填）
+### §D · `--activate-schedule` 写后证据（2026-09-17 19:10:51–19:10:54 Asia/Shanghai）
 
-- 责任人书面确认（操作发起人，2026-09-17 Asia/Shanghai）：
+- 责任人书面确认：**操作发起人**（2026-09-17 Asia/Shanghai，turn-by-turn 对话中获显式"go"）。本步属单次授权两步中的第二步。
 - 完整命令（含 env 注入）：
   ```bash
   FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment \
@@ -123,13 +123,70 @@
     --scheduling-overlay deploy/truenas/values-scheduled-active.yaml \
     --kube-version 1.26.6+k3s-6a894050-dirty
   ```
-- preflight 时间窗校验输出（`validate_activation_window preflight`）：
-- 写前第二次时间窗校验输出（`validate_activation_window pre-helm-write`）：
-- `helm history` revision 22 状态（应为 `deployed`）：
-- `helm get values` 关键字段（`suspend: false / controllerCanaryVerified: true`，其它字段不变）：
-- `kubectl -n a-stock get cronjob a-stock-data-collection -o wide`（`SUSPEND=False / LAST SCHEDULE=<下个交易日 16:30 Asia/Shanghai>`）：
-- 写后 `kubectl -n a-stock get pod`（必须仍 `{a-stock-postgresql-0, a-stock-7df764f74-rsx6r}` 1/1 Running，无新对象）：
-- 失败兜底：若 pre-helm-write 第二次校验或 Helm write 失败，入口应执行 `suspend_after_uncertain_activation` 把 `suspend=true` 写回，并把 abort 原因记到本段。
+- preflight 时间窗校验输出（`validate_activation_window preflight`，nowUtc=2026-09-17T11:10:51Z）：
+  ```json
+  {"allowed":true,"decision":"allowed","mode":"next-schedule",
+   "nextTriggerShanghai":"2026-09-18T16:30:00+08:00",
+   "nextTriggerUtc":"2026-09-18T08:30:00Z",
+   "nowUtc":"2026-09-17T11:10:51Z",
+   "previousDeadlineUtc":"2026-09-17T09:00:00Z",
+   "previousTriggerShanghai":"2026-09-17T16:30:00+08:00",
+   "previousTriggerUtc":"2026-09-17T08:30:00Z",
+   "safetyBufferSeconds":300,
+   "schedule":"30 16 * * 1-5",
+   "schedulerTimeZone":"Asia/Shanghai",
+   "secondsAfterPreviousTrigger":9651,
+   "secondsUntilNextTrigger":76749,
+   "startingDeadlineSeconds":1800}
+  ```
+- 写前第二次时间窗校验输出（`validate_activation_window pre-helm-write`，nowUtc=2026-09-17T11:10:53Z）：与 preflight 一致，`allowed=true`，`mode=next-schedule`。
+- **retry 痕迹**：入口在第一次建 SSH 隧道时遇到 `bind [127.0.0.1]:16443: Address already in use`（前一次 read-only-discovery 留下的隧道未关），脚本自动 retry，第二次 `checking target k3s capabilities` 成功，本次 `activating...` 完成。`activate-schedule completed; no canary or provider-backed Job was created`。
+- `helm history a-stock -n a-stock` 末三行：
+  | REVISION | UPDATED                  | STATUS     | DESCRIPTION |
+  | 19       | Thu Sep 17 11:48:17 2026 | superseded | Upgrade complete |
+  | 20       | Thu Sep 17 12:12:24 2026 | superseded | Upgrade complete |
+  | 21       | Thu Sep 17 19:10:54 2026 | **deployed** | **Upgrade complete** |
+- helm upgrade 输出：
+  ```
+  Release "a-stock" has been upgraded. Happy Helming!
+  NAME: a-stock
+  LAST DEPLOYED: Thu Sep 17 19:10:54 2026
+  NAMESPACE: a-stock
+  STATUS: deployed
+  REVISION: 21
+  ```
+- `helm get values a-stock -n a-stock` 关键字段：
+  - `image.repository = localhost/a-stock-market-environment`
+  - `image.tag = 20260917-113516-b5be526`
+  - `database.existingSecret = a-stock-postgresql`
+  - `persistence.existingClaim = a-stock-data`
+  - `marketEnvironment.scheduledCollection.enabled = true`
+  - `marketEnvironment.scheduledCollection.suspend = **false**`（← 由 `true` 翻为 `false`）
+  - `marketEnvironment.scheduledCollection.controllerCanaryVerified = **true**`（← 由 `false` 翻为 `true`，被 baseline 写进 stored values）
+  - `marketEnvironment.scheduledCollection.controllerTimeZoneVerified = true`
+  - `marketEnvironment.scheduledCollection.schedule = 30 16 * * 1-5`
+  - `marketEnvironment.scheduledCollection.controllerTimeZone = Asia/Shanghai`
+- `kubectl -n a-stock get cronjob a-stock-data-collection -o wide`：
+  ```
+  NAME                      SCHEDULE        SUSPEND   ACTIVE   LAST SCHEDULE   AGE   CONTAINERS   IMAGES
+  a-stock-data-collection   30 16 * * 1-5   False     0        <none>          6h59m collector   localhost/a-stock-market-environment:20260917-113516-b5be526
+  ```
+  - `SUSPEND=False`、`ACTIVE=0`、`LAST SCHEDULE=<none>`（下个交易日 16:30 触发前）
+- `kubectl -n a-stock get cronjob a-stock-data-collection -o jsonpath='{.spec}'` 完整 spec（仅 `suspend` 字段变化，其它与 rev 20 等价）：
+  ```
+  30 16 * * 1-5|false|Forbid|1800|3|3|0|3600|localhost/a-stock-market-environment:20260917-113516-b5be526|IfNotPresent
+  ```
+- `kubectl -n a-stock get cronjob a-stock-data-collection -o jsonpath='{.spec.timeZone}'` 输出空（absent，符合 controller strategy 校验 `1.26 只能省略 timeZone`）。
+- 写后 `kubectl -n a-stock get pod -o wide`：
+  ```
+  NAME                      READY   STATUS    RESTARTS   AGE     IP              NODE         NOMINATED NODE   READINESS GATES
+  a-stock-postgresql-0      1/1     Running   0          7h38m   172.16.91.148   ix-truenas   <none>           <none>
+  a-stock-7df764f74-rsx6r   1/1     Running   0          7h23m   172.16.91.149   ix-truenas   <none>           <none>
+  ```
+  （Pod 集合与 rev 20 完全等价，无新对象；`suspend_after_uncertain_activation` 兜底未触发）
+- 写后 `kubectl -n a-stock get pvc`：`{a-stock-data, a-stock-postgresql-data}` 均 Bound，与 rev 20 等价。
+- 写后 `kubectl -n a-stock get job`：空（激活不创建 Job，符合 runbook 第 365 行"激活或回退失败会先对 exact CronJob 补偿设置 `suspend=true`"的"激活成功不建 canary"原则）。
+- 完整 187 行日志已留存到 `/tmp/a-stock-canary/step2.log`（留在本地，reboot 清；不提交）。
 - 4 个 SHA：
   - `REVIEWED_CHART_SHA256 = sha256(chart dir) = …`
   - `REVIEWED_BASELINE_SHA256 = sha256(deploy/truenas/values-scheduled-baseline-20260917.yaml) = …`
@@ -147,7 +204,7 @@
 
 ## Remaining Gaps（剩余缺口）
 
-- **本次激活不证明首个交易日 16:30 自然触发时 `scheduled-refresh` 会成功调 provider 写 PostgreSQL**；该二次验证需在激活后首个交易日 16:30 自然触发后采集（Job/Pod、`collection_runs`、五个 dataset quality 与 `/api/market-environment?as_of=<交易日>` 响应）。
+- **首次交易日 16:30 自然触发观察清单**（runbook 第 571 行）：下个交易日 2026-09-18（周五）Asia/Shanghai 16:30 后，采集 `kubectl -n a-stock get cronjob,job,pod`、PostgreSQL `collection_runs` 行（`SELECT as_of, dataset, quality_status, completed_at FROM collection_runs ORDER BY started_at DESC LIMIT 50;`）、五个 dataset 快照（`api/market-environment?as_of=2026-09-18`）与 `/api/market-environment/core?as_of=2026-09-18` 响应；provider 失败应保留 `partial` / `degraded` / `insufficient`，不得伪造 success。本 plan 不覆盖此观察任务，由 `Next Step` 把它移交给后续 plan。
 - live 镜像仍为可变 tag `20260917-113516-b5be526`；`FROZEN_IMAGE_DIGEST` 收紧为 chart 字段不在本次范围。
 - `local main` 不领先 `origin/main` 9 个 commit（`HEAD=1c29794 == @{u}=1c29794`，worktree clean）。
 - `/etc/timezone=Etc/UTC` 与 `/etc/localtime=Asia/Shanghai` 不一致；k3s server 进程读 `/etc/localtime`（Go runtime），所以本次激活不会受影响；其他 systemd service 若读 `/etc/timezone` 仍可能按 UTC 解释，建议后续同步 `/etc/timezone=Asia/Shanghai`，不在本 plan 范围。
