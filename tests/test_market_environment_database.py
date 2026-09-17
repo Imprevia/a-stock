@@ -178,14 +178,28 @@ def test_postgres_import_retry_deduplicates_identity_audits_and_expired_lease_ev
     source = tmp_path / "import-retry.sqlite3"
     owner = f"import-retry-{uuid.uuid4().hex}"
     as_of = date(2099, 12, 31)
+    now = datetime.now(timezone.utc)
     source_store = SnapshotStore(source)
     source_store.acquire_lease("core", as_of, owner, lease_seconds=300)
+    dataset = f"import-retry-{uuid.uuid4().hex}"
+    record = SnapshotRecord(
+        dataset=dataset,
+        as_of=as_of,
+        payload={"up": 1},
+        source="fixture",
+        status="success",
+        observations=1,
+        warnings=(),
+        fetched_at=now,
+    )
+    source_store.put(record)
+    source_store.put(record)
     with sqlite3.connect(source) as connection:
         connection.execute(
             "INSERT INTO lease_fence_events"
             "(dataset, as_of, owner, generation, token, operation, reason, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("core", as_of.isoformat(), owner, 1, "fixture-token", "fixture", "fixture", NOW.isoformat()),
+            ("core", as_of.isoformat(), owner, 1, "fixture-token", "fixture", "fixture", now.isoformat()),
         )
 
     first = import_sqlite(source, database_url=url, apply=True)
@@ -203,5 +217,13 @@ def test_postgres_import_retry_deduplicates_identity_audits_and_expired_lease_ev
             ),
             {"as_of": as_of, "owner": owner},
         ).scalar_one()
+        revision = connection.execute(
+            text(
+                "SELECT revision FROM materialization_component_versions "
+                "WHERE component_kind='snapshot' AND dataset=:dataset AND as_of=:as_of"
+            ),
+            {"dataset": dataset, "as_of": as_of},
+        ).scalar_one()
     assert count == 1
+    assert revision == 2
     verifier.engine.dispose()  # type: ignore[union-attr]

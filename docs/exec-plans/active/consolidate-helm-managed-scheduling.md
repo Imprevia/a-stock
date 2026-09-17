@@ -59,7 +59,7 @@
 
 ## Remaining Gaps（剩余缺口）
 
-- 2026-09-17 首次生产 SQLite import dry-run 失败：容器以 UID 10001 运行，但 migration Job 未应用 chart 的 `podSecurityContext`，root-owned `emptyDir /tmp` 无法创建 before-image，CLI 返回 `unable to open database file`。需为 Job 补齐 Pod 级 `fsGroup`、增加渲染回归断言，并在重新 dry-run 通过后才允许 `--apply`。
+- 2026-09-17 首次生产 SQLite import dry-run 发现两个 fail-closed 缺陷：migration Job 缺少 Pod 级 `fsGroup`，且 WAL 源在只读 PVC 上需以 `immutable=1` 打开；两项修复后 dry-run 已通过。首次 `--apply` 又由校验器安全回滚：导入 snapshot 时 PostgreSQL trigger 先创建 revision=1，通用 `ON CONFLICT DO NOTHING` 无法恢复源库 revision=2。需让 `materialization_component_versions` 冲突时取 source/target 最大 revision，并在重试集成测试中覆盖该场景后重新构建迁移镜像。
 - 集群侧操作未执行：当前目标不满足 Helm CronJob 的 PostgreSQL 前置条件（缺少 `a-stock-postgresql` Service/StatefulSet/Secret）。必须先按 `migrate-sqlite-to-postgresql` runbook 完成 database component、schema migration 与 service cutover，验证 Dashboard 已通过 PostgreSQL 工作，再单独执行本计划的 `--release-suspended`。
 - `scripts/deploy-truenas-k3s.sh` 对 `--release-suspended` 强制 clean worktree；当前仓库包含本计划及前序 Gate A/B/C 清理的未提交改动，需先审阅并提交，再执行生产写入。不得用临时绕过方式禁用该保护。
 - 2026-09-17 生产发布中发现冻结镜像校验把 CRI `status.imageID`（image config digest）错误等同于 containerd named image Target.digest（manifest digest）；docker archive 导入时两者分别为 `sha256:f2b301...` 与 `sha256:ace2e9...`。validator 已修为：Pod/Deployment 精确 tag + Pod Ready + 合法 CRI imageID，containerd 单独校验 tag→reviewed manifest digest，不再比较不同语义的 digest。

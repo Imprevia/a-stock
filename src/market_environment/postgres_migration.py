@@ -164,9 +164,17 @@ def import_sqlite(
                     ]
                     assignments = ", ".join(f":{column}" for column in columns)
                     names = ", ".join(columns)
-                    statement = text(
-                        f"INSERT INTO {table} ({names}) VALUES ({assignments}) ON CONFLICT DO NOTHING"
-                    )
+                    if table == "materialization_component_versions":
+                        statement = text(
+                            f"INSERT INTO {table} ({names}) VALUES ({assignments}) "
+                            "ON CONFLICT(component_kind, dataset, as_of) DO UPDATE "
+                            "SET revision = GREATEST("
+                            "materialization_component_versions.revision, EXCLUDED.revision)"
+                        )
+                    else:
+                        statement = text(
+                            f"INSERT INTO {table} ({names}) VALUES ({assignments}) ON CONFLICT DO NOTHING"
+                        )
                     # Identity-backed audit/event tables do not have a stable
                     # primary key in the SQLite source (the source ``id`` is
                     # intentionally omitted above).  ``ON CONFLICT DO
