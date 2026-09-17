@@ -48,7 +48,7 @@ marketEnvironment:
     schedule: "30 16 * * 1-5"
     controllerTimeZone: Asia/Shanghai
     controllerTimeZoneVerified: true
-    controllerCanaryVerified: false
+    controllerCanaryVerified: true
 
 extraEnv:
   - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED

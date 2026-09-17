@@ -17,6 +17,8 @@
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 | `local-development-port-8001` | Codex | completed | 2026-09-04 |
 | `consolidate-helm-managed-scheduling` | Codex | completed | 2026-09-17 |
+| `canary-1-26-controller-timezone-20260917` | 操作发起人 | completed (canary 范围内) | 2026-09-17 |
+| `canary-verified-20260917` | 操作发起人 | completed (controllerCanaryVerified 翻转为 true) | 2026-09-17 |
 | `fix-scheduled-collection-stability-and-override` | Codex | completed-without-production-write | 2026-09-13 |
 | `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
 | `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |
