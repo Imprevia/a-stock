@@ -570,6 +570,11 @@ kubectl delete pv a-stock-market-environment-data
 - 回退只允许 `--disable-schedule` 或 `helm rollback a-stock <合并前 revision>`。不得执行 raw `helm uninstall`，不得重建独立 CronJob。
 - 激活后第一次交易日 16:30 必须观察 Job/Pod、PostgreSQL collection run、dataset quality 与 `/api/market-environment` 响应；provider 失败保留 `partial` / `degraded` / `insufficient`，不得伪造 success。
 
+2026-09-17 生产基线为 Helm revision 20：`a-stock-postgresql` 与 Dashboard 均 Ready，唯一 CronJob
+`a-stock-data-collection` 为 Helm-owned 且 `suspend=true`。SQLite 历史已导入 PostgreSQL；验收读取使用
+`/api/market-environment?as_of=2026-09-16` 和 `/api/market-environment/core?as_of=2026-09-16`，均返回
+200、5 个指数且无顶层 data gap。盘中默认当天尚未采集时返回 503 属于 exact-date fail-closed，不得改为静默回退。
+
 ## 验证矩阵
 
 | 检查 | 命令 / 方法 | 证据位置 | 必需 |

@@ -16,7 +16,7 @@
 | `index-combination-rework` | Codex | completed | 2026-09-04 |
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 | `local-development-port-8001` | Codex | completed | 2026-09-04 |
-| `consolidate-helm-managed-scheduling` | Codex | completed-without-production-write | 2026-09-17 |
+| `consolidate-helm-managed-scheduling` | Codex | completed | 2026-09-17 |
 | `fix-scheduled-collection-stability-and-override` | Codex | completed-without-production-write | 2026-09-13 |
 | `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
 | `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |

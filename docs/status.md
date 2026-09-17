@@ -44,13 +44,12 @@
 
 ## 进行中
 
-- SQLite 到 PostgreSQL 迁移实现已完成：已加入 SQLAlchemy/psycopg/Alembic 配置、原生 DATE/TIMESTAMPTZ/JSONB schema、SQLite 指纹/导入 CLI、Helm StatefulSet/ClusterIP/PVC/Secret 合同、schema migration Job，以及 TrueNAS operator override 的 PostgreSQL Service/Secret 合同；全量离线测试、部署渲染、文档和 OpenSpec 门禁通过。Helm/TrueNAS 运行时通过 Secret 注入 PostgreSQL URL 并 fail-closed；SQLite seam 仅保留给显式离线 fixture 和一次性导入工具。生产迁移、真实 provider smoke 和生产写入仍未执行，需独立维护窗口授权。
-
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
-- `consolidate-helm-managed-scheduling` 仓库层已完成：operator override 清单/脚本和专用 `market-environment-data` PVC/PV 模板已删除，suspended/active overlay 对齐 live controller `Asia/Shanghai` 的 `30 16 * * 1-5`，全量离线 577 passed / 3 skipped，docs-contract full 通过。2026-09-17 只读发现确认 legacy CronJob 已 absent，但目标 namespace 尚无 `a-stock-postgresql` Service/Secret/StatefulSet；Helm CronJob 依赖 PostgreSQL，因此生产调度写入 fail-closed 阻断。`manual-local` SC 同时承载生产 `a-stock-data` 和其它 namespace 的 PV，必须保留；专用 PVC/PV/目录清理要等 PostgreSQL cutover + suspended CronJob 精确读回后执行。
 
 ## 最近完成
 
+- `consolidate-helm-managed-scheduling`（2026-09-17）已完成仓库与生产验收：Helm revision 20 含唯一且 suspended 的 `a-stock-data-collection`；PostgreSQL、Dashboard 均 Ready，SQLite 历史已通过逐表 checksum 导入，最新已采集日 API 返回有效数据；全量测试 581 passed / 3 skipped，docs-contract full 通过。`manual-local` 因仍承载共享 PV 保留；调度激活与首次自然触发仍属后续授权范围。
+- 2026-09-17 完成 TrueNAS PostgreSQL 生产切换与 SQLite 历史导入：生产 dry-run 发现并修复 migration Job `fsGroup`、只读 WAL `immutable=1` 和 revision trigger 冲突；隔离 PostgreSQL 16.4 集成测试 11 项通过，正式导入 `snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`，最新历史日 API 200。
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
 - Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
 - 市场环境看板 live server 已确认是 k3s `v1.26.6+k3s-6a894050-dirty`，主机时区 `Asia/Shanghai` 且 NTP 已同步；冻结镜像为 `localhost/a-stock-market-environment:20260906-005226-2075b6e` / `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`。Helm revision、Dashboard imageID 与网络边界不在本次 schedule-only override 范围，仍按后续受控 preflight 复核。
@@ -91,4 +90,4 @@
 
 ## 最后更新
 
-2026-09-16
+2026-09-17

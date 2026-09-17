@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-`in-progress` · PostgreSQL、Dashboard 与 suspended Helm CronJob 已发布；旧 SQLite 数据导入的首次 dry-run 暴露 migration Job 的 `/tmp` emptyDir 缺少 Pod 级 `fsGroup`，当前正在修复并重新验证，CronJob 保持 `suspend=true`。
+`completed` · PostgreSQL、Dashboard、历史数据迁移与 suspended Helm CronJob 已在 TrueNAS k3s 发布并通过运行时核对；全量测试与文档门禁通过，CronJob 按计划保持 `suspend=true`。
 
 ## Scope（范围）
 
@@ -21,7 +21,7 @@
 ## Acceptance（验收）
 
 - 仓库层：`deploy/truenas/values-scheduled-suspended.yaml` / `values-scheduled-active.yaml` 的 `schedule` 均为 `30 16 * * 1-5`、`controllerTimeZone: Asia/Shanghai`；`values-scheduled-baseline-20260917.yaml` 锁定的镜像 tag、database secret、persistence existingClaim 与 baseline 一致；旧 PVC/PV/CronJob 模板已删除，**共享 `manual-local` StorageClass 保留**；`docs/runbooks.md` 新增 `### Helm schedule 组件（合并所有权）` 章节；active plan 6 字段齐全；`enable-scheduled-collection-direct-apply.md` 与 `enable-truenas-scheduled-market-collection.md` 已归档到 `docs/exec-plans/completed/`。
-- 集群层（由本次操作责任人在窗口内执行）：legacy `market-data-collection` absent，集群中只有 release-derived `a-stock-data-collection` CronJob，`app.kubernetes.io/managed-by=Helm`，`SUSPEND=True`，schedule `30 16 * * 1-5`，无 `spec.timeZone`（controller 策略）；镜像与上一份 release 一致 `localhost/a-stock-market-environment:20260917-113516-b5be526`；无 `market-environment-data` PVC、`a-stock-market-environment-data` PV；共享 `manual-local` SC 保留且仍用于 `a-stock-data`；`helm list -n a-stock` revision +1；`/api/health` 与首页 200；`/api/snapshots` 返回有效数据；`python scripts/check-docs-contract.py --mode=full`、`pytest -q`、1.26 Helm render 与 `python scripts/render-k3s.py --kube-version 1.27.0` 通过。
+- 集群层：legacy `market-data-collection` absent，集群中只有 release-derived `a-stock-data-collection` CronJob，`app.kubernetes.io/managed-by=Helm`，`SUSPEND=True`，schedule `30 16 * * 1-5`，无 `spec.timeZone`（controller 策略）；镜像与上一份 release 一致 `localhost/a-stock-market-environment:20260917-113516-b5be526`；无 `market-environment-data` PVC、`a-stock-market-environment-data` PV；共享 `manual-local` SC 保留且仍用于 `a-stock-data`；Helm revision 20 deployed；`/api/health`、首页以及 `/api/market-environment?as_of=2026-09-16` 均返回 200 和有效数据。
 
 ## Completion Evidence（完成证据）
 
@@ -31,46 +31,25 @@
 - 删除 legacy 独立 CronJob/PVC/PV/SC 模板、operator override 两个脚本及其专测；部署清单测试改为断言 Helm overlay 的 `30 16`。
 - `helm lint deploy/helm/a-stock -f deploy/truenas/values-scheduled-baseline-20260917.yaml --set component=schedule --kube-version 1.26.6` 通过；`helm template` 输出 `a-stock-data-collection`、`suspend: true`、`schedule: 30 16 * * 1-5`、无 `spec.timeZone`、镜像 tag 正确。
 - `python3 scripts/render-k3s.py --kube-version 1.27.0` 通过并输出 native CronJob `timeZone: Asia/Shanghai` + `30 16 * * 1-5`。原计划中的 `--baseline-values` 不是该脚本支持的参数，1.26 baseline 改由 Helm lint/template 验证。
-- focused 部署测试：`295 passed`；全量离线 pytest：`577 passed, 3 skipped, 2 warnings`；`openspec validate --changes --strict`：6 passed / 0 failed；`python3 scripts/check-docs-contract.py --mode=full`：通过（代码 4 / 文档 15 / plan 7）；`git diff --check` 通过。
+- 最终全量 pytest：`581 passed, 3 skipped, 2 warnings`；隔离 PostgreSQL 16.4 集成测试：`11 passed`；`python3 scripts/check-docs-contract.py --mode=full`：通过（代码 8 / 文档 17 / plan 7）；1.26 Helm lint/template、`python3 scripts/render-k3s.py --kube-version 1.27.0` 与 `git diff --check` 均通过。
 
-**集群只读发现（2026-09-17 10:24，Asia/Shanghai）：**
+**集群写入与运行时证据（2026-09-17，Asia/Shanghai）：**
 
-- `bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component schedule --read-only-discovery` 成功连接 `admin@192.168.1.20`，目标为 k3s `1.26.6+k3s-6a894050-dirty`，Helm release `a-stock` revision 14 deployed。
-- live Helm values 为 `component: service`、`scheduledCollection.enabled=false / suspend=true`；Deployment/Service 健康，镜像 `localhost/a-stock-market-environment:20260917-113516-b5be526`。
-- legacy `market-data-collection` CronJob 已 absent；release-derived `a-stock-data-collection` 也 absent。因此无需执行原计划的 legacy CronJob delete，但 Helm schedule 仍未发布。
-- 节点已有目标镜像，containerd digest `sha256:77d4e40015d21ea0c96b8eb6d51651fbdbe9ac4a1d2acf62f0f03c276dbe9a95`。
-- `a-stock` namespace **没有** `a-stock-postgresql` Service、StatefulSet 或 Secret；live Dashboard 仍挂载 `a-stock-data` 的 `/data/snapshots.sqlite3`。Helm CronJob 模板强制引用 PostgreSQL Service/Secret，当前不满足发布前置条件，故未执行 `--release-suspended`。
-- `market-data-verify` Job 仍存在但状态为 Failed（BackoffLimitExceeded），引用 `market-environment-data` PVC；清理 PVC 前必须先精确删除该 Job。
-- `market-environment-data` PVC 与 `a-stock-market-environment-data` PV 仍 Bound；目录 `/mnt/xiaomi/app-data/a-stock-market-environment` 为 `0777 root:root`。
-- `manual-local` StorageClass 同时承载 `a-stock-data`（生产 Dashboard）与其它 namespace 的 `manual-postgres-pv`；删除它会破坏现有资源。与用户计划相比，此项已安全收敛为“保留共享 SC，只清理专用 PVC/PV/目录”。
-
-**集群写入证据（待 PostgreSQL 前置完成后回填）：**
-
-- 本地：`pytest` 套件结果（`tests/test_truenas_scheduling_guard.py`、`tests/test_deployment_manifests.py`、`tests/test_scheduling_packet_validator.py`、`tests/test_truenas_operator_override.py`）。
-- 本地：`python scripts/render-k3s.py --kube-version 1.26.6` 输出 native/overlay CronJob 渲染。
-- 本地：`python scripts/check-docs-contract.py --mode=full` 输出（代码 / 文档 / plan 行数与 Gate 4 检查）。
-- 集群（待用户执行后回填）：
-  - 写入前 `kubectl get cronjob,pvc,pv,sc,job -n a-stock` 截图与 `/tmp/legacy-cronjob-snapshot.yaml`。
-  - 删除独立 CronJob 后 `kubectl get cronjob -n a-stock` 仅剩 Helm-owned `a-stock-data-collection` 一份。
-  - `helm list -n a-stock` revision +1；`kubectl get cronjob a-stock-data-collection -n a-stock -o yaml` 含 `helm.sh/release-name: a-stock` 与 `app.kubernetes.io/managed-by: Helm`。
-  - 清理后 `kubectl get pvc,pv -A | grep -E "market-environment-data|a-stock-market-environment-data"` 为空；`manual-local` SC 仍存在且 `a-stock-data` 绑定不变。
-  - 节点 `ls -la /mnt/xiaomi/app-data/` 截图，权限恢复。
-  - `/api/health` 200、首页 200、`/api/snapshots` 返回有效数据。
+- Helm revision 19 完成 PostgreSQL + Dashboard 切换；revision 20 通过 `--release-suspended` 创建唯一的 `a-stock-data-collection`。stored manifest 含 1 个 CronJob，live 读回为 Helm-owned、`suspend=true`、`30 16 * * 1-5`、无 `spec.timeZone`、`Forbid`、deadlines 1800/3600，镜像为 baseline tag。
+- PostgreSQL 16.4 StatefulSet 与 Dashboard Deployment 均为 `1/1 Ready`；`a-stock-postgresql-data` 为 5Gi Retain RWO Bound PVC，`a-stock-data` 仅保留为旧 SQLite 迁移输入。schema migration 为 `0001_postgresql_initial`。
+- SQLite source SHA-256 `c7375ffef7b668f20d4be48f19a94a23dcbdffbfaf038031a699eee31eafde84`，`quick_check=ok`。导入最终状态 `applied`，`snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`、`collection_runs=31`，所有有数据表 `verified=true`，active lease 为 0。
+- 生产 dry-run 暴露并修复三项问题：migration Pod 缺少 `fsGroup=10001`；只读 WAL 源需在停写和哈希固定后使用 `immutable=1`；revision trigger 与通用 `DO NOTHING` 冲突。隔离 PostgreSQL 16.4 集成测试 `11 passed`，正式导入第一次校验失败时完整回滚，第二次通过。
+- `market-data-verify`、`market-environment-data` PVC、`a-stock-market-environment-data` PV 与 exact 主机旧目录已清理；共享 `manual-local` 因仍承载 `a-stock-data` 和 `multica/manual-postgres-pv` 保留。
+- `/api/health` 与首页返回 200；`/api/market-environment?as_of=2026-09-16`、`/api/market-environment/core?as_of=2026-09-16` 均返回 200，包含 5 个指数且 `dataGaps=0`。盘中默认 2026-09-17 请求按 exact-date 契约返回 503，不回退旧日期。
 
 ## Remaining Gaps（剩余缺口）
 
-- 2026-09-17 首次生产 SQLite import dry-run 发现两个 fail-closed 缺陷：migration Job 缺少 Pod 级 `fsGroup`，且 WAL 源在只读 PVC 上需以 `immutable=1` 打开；两项修复后 dry-run 已通过。首次 `--apply` 又由校验器安全回滚：导入 snapshot 时 PostgreSQL trigger 先创建 revision=1，通用 `ON CONFLICT DO NOTHING` 无法恢复源库 revision=2。需让 `materialization_component_versions` 冲突时取 source/target 最大 revision，并在重试集成测试中覆盖该场景后重新构建迁移镜像。
-- 集群侧操作未执行：当前目标不满足 Helm CronJob 的 PostgreSQL 前置条件（缺少 `a-stock-postgresql` Service/StatefulSet/Secret）。必须先按 `migrate-sqlite-to-postgresql` runbook 完成 database component、schema migration 与 service cutover，验证 Dashboard 已通过 PostgreSQL 工作，再单独执行本计划的 `--release-suspended`。
-- `scripts/deploy-truenas-k3s.sh` 对 `--release-suspended` 强制 clean worktree；当前仓库包含本计划及前序 Gate A/B/C 清理的未提交改动，需先审阅并提交，再执行生产写入。不得用临时绕过方式禁用该保护。
-- 2026-09-17 生产发布中发现冻结镜像校验把 CRI `status.imageID`（image config digest）错误等同于 containerd named image Target.digest（manifest digest）；docker archive 导入时两者分别为 `sha256:f2b301...` 与 `sha256:ace2e9...`。validator 已修为：Pod/Deployment 精确 tag + Pod Ready + 合法 CRI imageID，containerd 单独校验 tag→reviewed manifest digest，不再比较不同语义的 digest。
-- legacy CronJob 当前已 absent，无需删除。迁移后的写入顺序调整为：数据库前置验证 → `--release-suspended` → 验证 `a-stock-data-collection` Helm ownership → 删除 Failed `market-data-verify` Job → 删除专用 PVC/PV → 删除 exact 主机目录。共享 `manual-local` SC 必须保留。
-- 镜像 tag `20260917-113516-b5be526` 是按 `tagPattern: "%Y%m%d-%H%M%S-%h"` 生成的可变 tag，本次仍按既有流程锁定 tag（不强制 digest）。进一步加固 digest 锁定不在本计划范围。
-- 主机 `/mnt/xiaomi/app-data` 原权限如非默认，需要在删除子目录后同步恢复（操作前先记录现权限）。
-- 既有 dirty 工作树（来自前序 Gate A/B/C 清理与归档）按 AGENTS.md 不 stash/reset/checkout；本计划合并前对 overlay 的字段更新会与这些 dirty 共存。
+- CronJob 按计划保持 `suspend=true`，尚未执行 controller timezone canary，也未验证首次自然 16:30 触发；这不是本次 suspended release 的失败。激活必须另行取得授权并走 `--activate-schedule`。
+- 应用与 CronJob 仍锁定 `20260917-113516-b5be526` 可变 tag；迁移修复镜像 `20260917-124501-31c3ea2` 仅用于一次性 Job。后续可扩 chart 的 `image.digest` contract，但不在本计划范围。
+- PostgreSQL chart 仍声明官方 `postgres:16.4` digest，而离线导入后依赖本地 containerd alias。运行日志已确认 PostgreSQL 16.4；后续应改为可审计 mirror repository + 实际 manifest digest。
 
 ## Next Step（下一步）
 
-1. 先按 `migrate-sqlite-to-postgresql` runbook 发布 `database` component、创建/验证 `a-stock-postgresql` Secret、执行 schema migration，并完成 Dashboard service cutover；该步骤不属于本次 schedule ownership 合并的授权范围。
-2. PostgreSQL 前置完成后，在 16:30 之外用已冻结的镜像三元组执行 `--release-suspended`，验证 Helm-owned `a-stock-data-collection`。
-3. 只在新 CronJob 精确读回后，删除 Failed `market-data-verify` Job、专用 PVC/PV 与 exact 主机目录；保留共享 `manual-local` SC。
-4. 观察下一交易日 CronJob 实际状态；保持 `suspend=true` fail-closed 直至专门通过 `--activate-schedule` 入口激活。
+1. 保持 `suspend=true`，在单独变更中完成 controller timezone canary、catch-up 决策与书面授权后，才允许通过 `--activate-schedule` 激活。
+2. 激活后的首个交易日 16:30 观察 Job/Pod、PostgreSQL collection run、五个 dataset quality 与 API exact-date 响应。
+3. 单独加固 PostgreSQL 离线镜像的 repository/digest 证据，不改变现有 PVC 或已导入历史数据。
