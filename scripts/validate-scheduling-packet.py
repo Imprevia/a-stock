@@ -397,6 +397,8 @@ def image_id_digest(image_id: Any) -> str:
         scheme, digest = image_id.split("://", 1)
         if not scheme or not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
             fail("running Dashboard imageID has an invalid scheme")
+    elif re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        digest = image_id
     else:
         fail("running Dashboard imageID must contain an explicit digest reference")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
