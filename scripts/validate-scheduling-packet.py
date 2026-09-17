@@ -501,8 +501,31 @@ def verify_runtime_image(
             dashboard_pods.append(pod)
             continue
 
-        collector_specs = named_entries(pod, ("spec", "containers"), "collector")
         owner = controller_owner(pod)
+        labels = metadata_value(pod, "labels")
+        postgresql_specs = named_entries(pod, ("spec", "containers"), "postgresql")
+        postgresql_statuses = named_entries(
+            pod, ("status", "containerStatuses"), "postgresql"
+        )
+        if (
+            isinstance(labels, dict)
+            and labels.get("app.kubernetes.io/component") == "postgresql"
+        ):
+            status = pod.get("status") or {}
+            if (
+                len(postgresql_specs) != 1
+                or len(postgresql_statuses) != 1
+                or postgresql_statuses[0].get("ready") is not True
+                or status.get("phase") != "Running"
+                or owner is None
+                or owner.get("kind") != "StatefulSet"
+                or owner.get("name") != f"{release_name}-postgresql"
+                or not isinstance(owner.get("uid"), str)
+            ):
+                fail("release PostgreSQL Pod is not a ready StatefulSet-owned database Pod")
+            continue
+
+        collector_specs = named_entries(pod, ("spec", "containers"), "collector")
         if (
             len(collector_specs) != 1
             or owner is None

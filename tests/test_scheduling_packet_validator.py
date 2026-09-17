@@ -603,6 +603,39 @@ def test_runtime_image_accepts_current_dashboard_and_ignores_retained_collector(
     assert completed.returncode == 0, completed.stderr
 
 
+def test_runtime_image_accepts_ready_release_postgresql_pod(tmp_path: Path) -> None:
+    payloads = _runtime_payloads()
+    payloads[2]["items"].append(
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "a-stock-postgresql-0",
+                "uid": "postgresql-pod",
+                "labels": {**LABELS, "app.kubernetes.io/component": "postgresql"},
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "kind": "StatefulSet",
+                        "name": "a-stock-postgresql",
+                        "uid": "postgresql-statefulset",
+                        "controller": True,
+                    }
+                ],
+            },
+            "spec": {"containers": [{"name": "postgresql", "image": "postgres:16.4"}]},
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [{"name": "postgresql", "ready": True}],
+            },
+        }
+    )
+
+    completed = _run_runtime(tmp_path, payloads)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_runtime_image_rejects_two_dashboard_pods(tmp_path: Path) -> None:
     payloads = _runtime_payloads()
     duplicate = copy.deepcopy(payloads[2]["items"][0])
