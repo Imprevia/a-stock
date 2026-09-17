@@ -54,7 +54,7 @@ The service component SHALL deploy the Dashboard Deployment, Service, and config
 
 ### Requirement: Safe scheduled-collection component
 
-The schedule component SHALL deploy the existing `scheduled-refresh` CronJob using the same image, PVC, timezone, environment, and restricted security settings as the Dashboard. The component operation SHALL default to a suspended CronJob or no CronJob according to the reviewed baseline, and SHALL NOT activate production scheduling by boolean configuration alone; activation MUST continue through the existing reviewed Gate B/Gate C workflow.
+The schedule component SHALL deploy the existing `scheduled-refresh` CronJob using the same image, PVC, timezone, environment, and restricted security settings as the Dashboard. The component operation SHALL default to a suspended CronJob or no CronJob according to the reviewed baseline, and SHALL NOT activate production scheduling by boolean configuration alone; activation MUST continue through the dedicated `--release-suspended` / `--activate-schedule` entry points with explicit operator confirmation.
 
 #### Scenario: Schedule component is deployed safely
 - **WHEN** an operator selects the schedule component with valid service and storage prerequisites and no activation authorization

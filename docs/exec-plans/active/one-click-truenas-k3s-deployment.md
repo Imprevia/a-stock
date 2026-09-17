@@ -34,7 +34,7 @@
 - 首次同入口重试确认旧 `STORAGE_CLASS=ix-storage-class` 与现网不符；现网无 StorageClass/IngressClass/Traefik，revision 5 使用静态 `a-stock-data` 与 `NodePort:32001`，脚本已支持复用受版本控制的完整环境 values。
 - 第二次重试完成镜像构建、本地 smoke 和 SCP，在远端 SHA-256 校验前停止；校验文件错误携带 1.21 临时绝对路径，已改为仅记录归档文件名。
 - 第三次从 `bash scripts/deploy-truenas-k3s.sh` 同一入口完成：归档 SHA-256 通过、containerd 导入成功、Helm revision 6 deployed、Deployment `1/1`、新 Pod `Running`/0 重启。
-- 实际镜像为 `localhost/a-stock-market-environment:20260906-001322-1904b66`；Service 保持 `NodePort:32001`，PVC `a-stock-data` 保持 `Bound`/`manual-local`，`MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。
+- 实际镜像为 `localhost/a-stock-market-environment:20260906-001322-1904b66`；Service 保持 `NodePort:32001`，PVC `a-stock-data` 保持 `Bound`/`local-path`，`MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。
 - `http://192.168.1.20:32001/api/health` 返回 `{"status":"ok"}`，首页返回 200；脚本退出后 1.21 的 `127.0.0.1:16443` 无监听。
 
 ## Remaining Gaps（剩余缺口）

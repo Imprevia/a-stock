@@ -62,7 +62,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 `MARKET_ENVIRONMENT_DATABASE_URL` 访问 PostgreSQL。旧 SQLite PVC 仅由一次性迁移 Job 只读挂载。
 `service` 依赖 PostgreSQL StatefulSet/Service ready、数据库 PVC `Bound` 和可用镜像，`schedule` 还依赖已验证的 service 与
 `FROZEN_IMAGE_REPOSITORY/TAG/DIGEST`；`all` 未提供 frozen image 时会记录 skipped 并保持
-schedule disabled/absent。没有 Gate B/Gate C 授权时不会启动 Job；失败时按输出的组件重试目标
+schedule disabled/absent。service 默认不启动 schedule Job；专用调度入口 `--release-suspended` / `--activate-schedule` / `--disable-schedule` 才会切换到 suspended/active overlay。失败时按输出的组件重试目标
 重跑，绝不删除 PVC。
 
 首次部署前先创建 `database.existingSecret`，再等待 PostgreSQL StatefulSet/ClusterIP ready；Helm 的
@@ -86,7 +86,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
 
 应用回退不恢复历史 Helm revision。检出已审阅的回退 commit，使用新的不可变 rollback image tag 和同一普通入口重建 disabled 状态。写入、rollout 或写后读取失败时，入口必须返回非零，并将意外 active CronJob 精确补偿为 suspended 后验证 absent/suspended；无法验证时状态为 uncertain/NO-GO。失败后仍须返回审核后的 `--disable-schedule` 流程，不能直接重试普通发布。
 
-Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 只能使用经过 controller 时区证据验证的 `controller` 策略，它省略该字段，并把上海 16:30 映射为 `Etc/UTC` 的 `30 8 * * 1-5` 或 `Asia/Shanghai` 的 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PostgreSQL Service/Secret，均不挂载数据库 PVC，采集五类市场环境数据；只有受控 Gate B/Gate C 入口可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用完整 baseline 且不带 scheduling overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL 静态 PV/PVC 并通过数据库 values 引用。
+Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 使用经过 controller 时区证据验证的 `controller` 策略，省略该字段，并在当前 TrueNAS controller `Asia/Shanghai` 下把上海 16:30 固定为 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PostgreSQL Service/Secret，均不挂载数据库 PVC，采集五类市场环境数据；所有 CronJob 均由 Helm release 统一管理，只有受控专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用完整 baseline 且不带 scheduling overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL 静态 PV/PVC 并通过数据库 values 引用。
 
 ## 交易规则平台
 

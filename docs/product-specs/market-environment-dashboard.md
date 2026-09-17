@@ -43,7 +43,7 @@
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 盘后定时采集使用与 Dashboard 相同镜像和 SQLite PVC，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
-- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，再由 exact Gate B action authorization 覆盖的 no-provider canary 实际观察预测触发，配置断言不能替代 canary 证据。canary 通过只允许继续非覆盖备份、suspended release 和一个已命名 provider-backed Job；Gate B 证据被接受并形成明确 catch-up 选择的 Gate C operation authorization、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
+- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，并通过 no-provider canary 实际观察预测触发（配置断言不能替代 canary 证据）。canary 通过后，允许继续非覆盖备份、suspended release 和一次命名 provider-backed Job；本次操作责任人书面确认 release/namespace/镜像 digest 与明确 catch-up 行为、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
 - 通用部署必须在首个 render、build、image、环境或目标访问前校验最终合并值是 typed `enabled=false,suspend=true`。`--disable-schedule` 必须使用 rollback-only canonical-digest authorization ref，且 active-to-off 的失败补偿按 release-derived exact API name 工作：label/shape drift 不能阻止紧急暂停，读回无法证明 absent/typed suspended 时保持 uncertain/NO-GO。
 - 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
 
@@ -113,10 +113,10 @@
 - 行业 `leader` 字段来自 provider 的名称字段，不返回领涨股证券代码。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。
 - 容量方向延迟域不足 30 个有效样本、缺少代码/名称/成交额或未按成交额非递增排列时必须拒绝保存；两个端点均失败时只保留同日期成功快照，不得跨日期替代。
-- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection`；1.26 controller 兼容路径的 no-provider canary 只能证明触发映射并进入 Gate B 后半序列，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、Gate B evidence acceptance、明确 catch-up 的 Gate C operation authorization 与 suspend-only live diff 全部通过后才可激活。
+- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection`；1.26 controller 兼容路径的 no-provider canary 只能证明触发映射，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、本次操作责任人书面确认（明确 catch-up 行为）与 suspend-only live diff 全部通过后才可激活。
 - scheduled-refresh 在结算时间前拒绝运行，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态和每项 warning 可在 `/data-collection` 查看。
 - CronJob 与手工触发同日期同数据集时不产生重复 provider 调用；异常退出后的 task 按现有 lease 过期规则恢复。
 - 禁用或暂停定时采集不影响 Dashboard、本地快照读取、手工 CLI 或开发期开关控制的 HTTP 采集。
-- 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过 Gate B/Gate C 恢复 active schedule。
+- 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过专用调度入口恢复 active schedule。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。

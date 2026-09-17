@@ -1,13 +1,16 @@
-# Overlay for Gate B's reviewed suspended CronJob packet only. The evidence
-# flags are configuration assertions and must be replaced with actual preflight
-# and canary evidence before any production submission.
+# Overlay for the reviewed --release-suspended CronJob packet only.
+# Schedule and controllerTimeZone reflect the live TrueNAS k3s 1.26.6 controller
+# (host TZ Asia/Shanghai) observed on 2026-09-13: schedule 30 16 * * 1-5 with
+# controllerTimeZone Asia/Shanghai. chart validator matches this combination.
+# controllerCanaryVerified stays false so any --activate-schedule transition must
+# provide canary evidence through the dedicated entry point.
 marketEnvironment:
   scheduledCollection:
     enabled: true
     suspend: true
     timezoneStrategy: controller
     timeZone: Asia/Shanghai
-    schedule: "30 8 * * 1-5"
-    controllerTimeZone: Etc/UTC
+    schedule: "30 16 * * 1-5"
+    controllerTimeZone: Asia/Shanghai
     controllerTimeZoneVerified: true
     controllerCanaryVerified: false

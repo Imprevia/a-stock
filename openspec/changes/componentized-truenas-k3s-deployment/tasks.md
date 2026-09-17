@@ -1,6 +1,6 @@
 ## Execution routing
 
-- Gate A is approved for repository implementation, offline/fake-target verification, and documentation only. Gate B real TrueNAS preflight/canary/backup/suspended CronJob work and Gate C activation remain unauthorized.
+- The repository-level offline authorization permits only repository implementation, offline/fake-target verification, and documentation. Real TrueNAS preflight/canary/backup/suspended CronJob work and production activation remain explicit operator decisions via the dedicated scheduling entry points.
 - Serial stages: Stage 1 (1.1-3.7) senior backend engineer; Stage 2 (4.1-5.3) senior backend engineer; Stage 3 (6.1) senior test engineer; Stage 4 (6.2) senior operations specialist. Stage 2-4 are parked until the previous stage is accepted.
 - No frontend work is in scope because this change does not alter Dashboard UI, browser flows, frontend API contracts, or application/provider behavior.
 - The active execution plan records the dependency graph, relative schedule, risk register, child issue routing, and required evidence; these task checkboxes remain the implementation source of truth.

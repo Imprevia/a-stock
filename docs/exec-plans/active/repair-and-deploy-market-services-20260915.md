@@ -12,7 +12,7 @@ TrueNAS k3s 生产发布预检、离线修复与 exact-resource 授权交接。
 
 - 核对 Helm stored manifest、独立 operator override CronJob、两个 PVC、镜像和失败 Job 的真实状态，明确各自的发布所有权。
 - 离线校验当前候选代码、部署入口、Helm Chart、前后端测试及 docs contract，不将未提交代码或旧镜像冒充 reviewed frozen image。
-- 获得针对非 Helm CronJob 镜像更新/暂停与必要回滚的 exact-resource 操作授权，使用受审入口保持调度状态和独立 PVC 身份；正式 Helm Gate B/C 不得借此跳过。
+- 获得针对非 Helm CronJob 镜像更新/暂停与必要回滚的 exact-resource 操作授权，使用受审入口保持调度状态和独立 PVC 身份；专用调度入口（`--release-suspended` / `--activate-schedule`）不得借此跳过。
 - 满足 release 前置条件后依次发布 database、service、schedule（默认 disabled/absent），核对 rollout、健康接口、镜像 ID、PVC UID 与调度 postcondition。缺少精确授权或发现 drift 时停在 NO-GO。
 
 ## Completion Evidence（完成证据）
@@ -29,9 +29,9 @@ TrueNAS k3s 生产发布预检、离线修复与 exact-resource 授权交接。
 ## Remaining Gaps（剩余缺口）
 
 - 下一交易日 16:30 的自然 CronJob 触发仍需按运维观察窗口确认；本次已用同一新镜像和真实 provider 的盘后受控采集验证 SQLite 写入。
-- 工作树仍不是 clean reviewed HEAD；本次服务发布使用 dirty candidate，正式 Helm Gate B/C 仍未授权，正式 Helm 调度仍保持 disabled/suspended fail-closed。
+- 工作树仍不是 clean reviewed HEAD；本次服务发布使用 dirty candidate，专用调度入口仍未获得本次操作责任人书面确认，正式 Helm 调度仍保持 disabled/suspended fail-closed。
 - 后续可独立更新上述部署 guard 测试夹具，使其显式表达“独立 override absent 或 exact 可读”的新契约。
 
 ## Next Step（下一步）
 
-下一交易日观察 CronJob 自然触发；若需正式 Helm 调度，另行完成 Gate B/Gate C 授权，不得把本次 operator override 结果作为授权替代。
+下一交易日观察 CronJob 自然触发；若需正式 Helm 调度，由本次操作责任人书面确认 release/namespace/镜像 digest/catch-up 行为后通过专用调度入口执行，不得把本次 operator override 结果作为授权替代。

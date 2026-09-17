@@ -8,7 +8,7 @@ The supported TrueNAS k3s entry point can publish the complete market-environmen
 - Make `all` apply components in dependency order: namespace/SQLite PVC, Dashboard service resources, then the scheduled-collection CronJob.
 - Define the database component as the existing SQLite PVC at `/data/snapshots.sqlite3`; do not introduce PostgreSQL, a database container, or destructive PVC replacement.
 - Add preflight, dependency, idempotence, and postcondition checks for each target so a component cannot silently run without its required namespace, PVC, image, or service resources.
-- Keep scheduled collection fail-closed: component deployment may create a suspended CronJob, while production activation continues through the existing reviewed Gate B/Gate C workflow.
+- Keep scheduled collection fail-closed: component deployment may create a suspended CronJob, while production activation continues through the dedicated `--release-suspended` / `--activate-schedule` entry points with explicit operator confirmation.
 - Reuse the existing TrueNAS image build, checksum, transfer, k3s containerd import, Helm/Kubernetes access, and rollback safety boundaries where applicable.
 - Add offline/fake-target tests and update the deployment runbook, architecture, repository guide, and active execution plan with component commands and recovery behavior.
 
@@ -32,7 +32,7 @@ The supported TrueNAS k3s entry point can publish the complete market-environmen
 
 ## Approval and execution boundaries
 
-- Gate A is approved for repository implementation, offline/fake-target verification, and documentation synchronization only.
-- Gate B (real TrueNAS read-only preflight, exact admission/canary, backup, or suspended CronJob work) and Gate C (real schedule activation) remain unauthorized for this change. They require separate action-level authorization and evidence.
+- The repository-level offline authorization permits only repository implementation, offline/fake-target verification, and documentation synchronization for this change.
+- Production CronJob activation (real TrueNAS read-only preflight, exact admission/canary, backup, or suspended CronJob work) remains an explicit operator decision through the dedicated scheduling entry points, with the operator recording release/namespace/镜像 digest / catch-up behavior as the change artifact.
 - There is no frontend scope: this change does not alter Dashboard UI, browser flows, frontend API contracts, or market-environment application behavior. Work is limited to the deployment script, Helm rendering, deployment tests, and operator documentation.
 - The execution order is serial: implementation, offline verification, independent test acceptance, then a read-only operations plan. `all` itself remains `database -> service -> schedule`.

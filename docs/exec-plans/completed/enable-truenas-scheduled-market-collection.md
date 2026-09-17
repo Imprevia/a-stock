@@ -1,19 +1,19 @@
-# TrueNAS k3s 1.26 盘后定时采集 Gate A 实施与缺陷修复计划
+# TrueNAS k3s 1.26 盘后定时采集实现与缺陷修复计划
 
 ## Stage（阶段）
 
-Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；GYT-47 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例。GYT-52 随后于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。实现与测试范围固定在 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；其后的 `b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 和冻结的 clean review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 均为 docs-only wrappers。Gate B/Gate C 仍要求独立 exact action/operation authorization；本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
+Stage 4 NO-GO 回流修复已完成。`GYT-52` 已拒绝已推送主线 `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc`；`GYT-47` 已在该干净主线后继上关闭四项发布安全缺陷、补齐对抗负例。`GYT-52` 随后于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出仓库内离线授权（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`），该授权仅覆盖仓库实现与离线验证。实现与测试范围固定在 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；其后的 `b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 和冻结的 clean review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 均为 docs-only wrappers。本任务不访问生产、不调用真实 provider，也不执行任何集群读写。
 
 ## Status（状态）
 
-`gate-a-go-awaiting-gate-b-action`：GYT-52 已于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。实现与测试证据绑定 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；clean/review/evidence tip 为 `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，其余 wrapper lineage 不改变实现范围。Gate A GO 仅允许进入 Gate B 精确 packet 准备；Gate B/C 仍分别要求 action/operation authorization，生产访问与写操作尚未执行。
+`offline-impl-authorized`：仓库内离线授权由 `GYT-52` 于 2026-09-10 对 clean exact `origin/main=main=HEAD=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。实现与测试证据绑定 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac`；clean/review/evidence tip 为 `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，其余 wrapper lineage 不改变实现范围。该离线授权仅允许进入生产 CronJob 激活的 packet 准备；生产调度激活或回退仍需本次操作责任人书面确认并通过专用调度入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）执行，生产访问与写操作尚未执行。
 
 ## Context（上下文）
 
 - Parent：`GYT-45`（issue `01a07ca1-a97b-70c2-9e65-9d2cccd337cc`）。
-- Gate A approval：成员于 2026-09-08（Asia/Shanghai）在评论 `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` 回复“批准”；Mika 在 `01a07e3d-5a77-7972-a9cd-360c9d41dc84` 记录 Gate A 决策。
+- 仓库内离线授权：成员于 2026-09-08（Asia/Shanghai）在评论 `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` 回复“批准”；Mika 在 `01a07e3d-5a77-7972-a9cd-360c9d41dc84` 记录该决策。
 - Approved change：`openspec/changes/enable-truenas-scheduled-market-collection/`。
-- Gate A 只授权仓库实现与离线验证。成员随后在 GYT-47 评论 `01a07fcd-9140-7aa7-b05a-83485a7ed8c7` 写明“Gate B/Gate C 授权”，该推进授权现可在 GYT-52 Gate A GO 后按顺序使用：先完成只读 preflight、精确 Gate B packet 审核及 action authorization；Gate B 证据被接受且明确选择 `next-schedule` 或 `immediate catch-up` 后，Gate C 才可执行。
+- 该离线授权只覆盖仓库实现与离线验证，不构成生产 CronJob 激活或回退的执行授权。生产激活由本次操作责任人书面确认后按专用调度入口执行。
 
 ## Scope（范围）
 
@@ -33,7 +33,7 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 
 - 不修改应用 API、dataset、provider 行为、SQLite schema、collector 语义、NodePort 或 manual collection。
 - 不访问生产集群、TrueNAS 主机或生产 SQLite/PVC，不调用真实 provider，不构建或发布生产镜像。
-- 不执行 Gate B/Gate C 动作；不以 Gate A 批准推导任何生产权限。
+- 不执行生产 CronJob 激活、unsuspend 或回退；不以仓库内离线授权推导任何生产权限。
 
 ## Assumptions（排期假设）
 
@@ -45,20 +45,20 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 
 | Stage / 时间 | 里程碑 | 负责人 | 依赖 | 验收证据 | 状态 |
 |---|---|---|---|---|---|
-| Stage 1 / D0 | Gate A 计划与分配 | 资深项目经理 | Gate A approval | approval trace、OpenSpec/active plan、串行 backlog、strict validation | accepted |
+| Stage 1 / D0 | 离线授权计划与分配 | 资深项目经理 | 离线授权 | approval trace、OpenSpec/active plan、串行 backlog、strict validation | accepted |
 | Stage 2 / D1 | Clean baseline + 文档事实对齐（`GYT-47`） | 资深后端工程师 | Stage 1 accepted；reviewed clean commit/worktree | 精确 baseline SHA；README/product spec/architecture/runbook/status 一致；staged fast docs-contract 通过 | completed after remediation |
 | Stage 2 / D2-D3 | Helm/TrueNAS/部署入口实现（`GYT-47`） | 资深后端工程师 | 文档先行门禁通过 | tasks 2.1-2.8；focused render/deployment tests；无应用/前端/生产 diff | completed at exact `cd26dff3e6bebe012198dcd38074c354c1a9afac` |
 | Stage 3 / D4 | 离线全矩阵与评审包（`GYT-48`） | 资深后端工程师 | `GYT-47` reviewed | tasks 3.1-3.8；Helm/OpenSpec/docs/full test/diff gate；clean reviewable diff | fresh evidence complete on exact remediation candidate |
-| Stage 4 / D5 | 独立 Gate A 验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean review tip | GO on exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` (`01a08af1-2842-7c07-80a6-2af49b91e196`); Gate B preparation may proceed |
-| Gate B | 生产验证 | 未分配 | GYT-52 Gate A GO + Stage 3 accepted + exact packet review + exact action authorization | tasks 4.x-5.x 指定证据 | Gate A GO recorded; blocked on target access, packet review, and action authorization |
-| Gate C | 周期激活 | 未分配 | Gate B evidence accepted + catch-up choice + exact operation authorization | suspend-only live diff + next trigger evidence | progression authorized; blocked by prerequisites |
+| Stage 4 / D5 | 独立离线授权验收（`GYT-52`） | 独立测试工程师 | new clean GYT-47/GYT-48 candidate | 通用发布负例、全量离线门禁、exact clean review tip | GO on exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` (`01a08af1-2842-7c07-80a6-2af49b91e196`); production enablement preparation may proceed |
+| Production enablement | 生产 CronJob 激活 | 未分配 | 离线授权 + Stage 3 accepted + 本次操作责任人书面确认 + 专用调度入口 | release/namespace/镜像 digest + catch-up 行为记录 | offline authorization recorded; blocked on operator confirmation and dedicated scheduling entry point |
+| Production rollback | 生产回退 | 未分配 | 本次操作责任人书面确认 + `--disable-schedule` rollback ref | exact CronJob 已 absent/suspended | blocked on rollback-v1 reference |
 
 ## Task Breakdown And Dependencies（任务拆分与依赖）
 
-1. Stage 1：项目经理记录 Gate A、工件边界、风险、计划与研发分配；不改代码。
+1. Stage 1：项目经理记录离线授权、工件边界、风险、计划与研发分配；不改代码。
 2. Stage 2 / `GYT-47`：后端在 exact `0b319c1` 后继隔离 worktree 中先同步 active plan、OpenSpec 2.8/3.8、architecture、runbook 和 status，再实现四项回流修复；文档未通过 staged fast gate 时禁止代码改动。
-3. Stage 3 / `GYT-48`：本轮由 GYT-47 补齐与修复直接相关的固定离线负例和全量证据；该证据已随 GYT-52 对 exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 的 Gate A GO 被接受，旧 SHA 仍不作为当前主线证据。
-4. Gate B/Gate C：GYT-52 Gate A GO 与推进授权已记录，但本轮不执行生产动作；仍须完成 read-only preflight、精确 packet 审核及覆盖 exact actions 的 Gate B authorization，Gate C 还需接受 Gate B 证据并形成明确 catch-up 选择的最终 operation authorization。
+3. Stage 3 / `GYT-48`：本轮由 GYT-47 补齐与修复直接相关的固定离线负例和全量证据；该证据已随 GYT-52 对 exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 的仓库内离线授权被接受，旧 SHA 仍不作为当前主线证据。
+4. 生产 CronJob 激活：仓库内离线授权已记录，但本轮不执行生产动作；仍须完成 read-only preflight、精确 packet 审核与本次操作责任人书面确认，并在专用调度入口（`--release-suspended` / `--activate-schedule`）中显式选择 catch-up 行为。
 
 ## Risks（风险）
 
@@ -67,25 +67,25 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 | 当前 shared tree 含大量重叠 dirty files | diff 无法归属，gate 可能只验证旧提交 | Stage 2 只在已记录的隔离 branch/worktree 活跃修复；禁止 reset/stash 或带入 shared tree 改动 | PM + Backend |
 | 现有 README/docs 对 1.26/1.27、revision 6/7 和直接 unsuspend 的表述冲突 | 实施依据不一致 | Stage 2 完成 OpenSpec 1.3 remediation；revision 7 仅记为 issue 报告，待前置验收后使用已记录 permission 做只读预检验证 | Backend |
 | canary 证据如何进入 fail-closed 校验未定义为具体配置契约 | 可能需要扩大批准设计 | 先按既有人工 gate 和 suspended 边界实现；若必须新增外部配置/API 字段，停止并提交架构差异复审 | Backend + Architect |
-| Gate B 默认字段 allowlist、备份方法/空间阈值和 stop thresholds 尚未量化 | 后续 GO/NO-GO 不可重复判定 | 在 Gate B 请求包中先定义；任何生产动作前必须审核，Gate A 不代填生产事实 | Release owner |
-| 误将 backlog 提升或把推进授权解释为跳过门禁 | 越权生产动作被触发 | Stage 3 需 Stage 2 independent GO；Gate B/C 即使获推进授权也必须逐项满足精确 packet 和证据门禁 | PM |
-| 通用 Helm install/upgrade/rollback/uninstall 继承、恢复或移除 release | 在 Gate B/Gate C 外创建周期任务，或绕过受控退役边界；`--atomic` 失败可自动恢复旧 active revision | 通用写操作只通过受支持入口；按 release-derived exact name 读取 live CronJob，不依赖可漂移 label；写前同时证明 Helm stored manifest 与 live release 的 CronJob 已 absent/off；使用已验证只读 chart packet完成 Helm write；失败、信号和写后读取异常均证明 CronJob 仍 absent/suspended；禁止 `--reuse-values`、裸 `helm rollback`、原始 `helm uninstall` 和文档中的原始 Helm 写命令 | Backend + Release owner |
-| rollback 仅有布尔 intent、没有精确授权引用 | 可在未绑定 operation/release/namespace/packet 的情况下移除调度 | `--disable-schedule` 同时要求独立布尔 intent 与格式受限的 canonical authorization reference；禁止复用 Gate B/C 引用，并在任何目标访问前绑定 exact operation/release/namespace/reviewed packet hashes | Backend + Release owner |
+| 生产 CronJob 激活的字段 allowlist、备份方法/空间阈值和 stop thresholds 尚未量化 | 后续 GO/NO-GO 不可重复判定 | 在生产 packet 中先定义；任何生产动作前必须审核，离线授权不代填生产事实 | Release owner |
+| 误将 backlog 提升或把推进授权解释为跳过门禁 | 越权生产动作被触发 | Stage 3 需 Stage 2 independent GO；生产 CronJob 激活即使获离线授权也必须逐项满足精确 packet 和证据门禁 | PM |
+| 通用 Helm install/upgrade/rollback/uninstall 继承、恢复或移除 release | 在专用调度入口外创建周期任务，或绕过受控退役边界；`--atomic` 失败可自动恢复旧 active revision | 通用写操作只通过受支持入口；按 release-derived exact name 读取 live CronJob，不依赖可漂移 label；写前同时证明 Helm stored manifest 与 live release 的 CronJob 已 absent/off；使用已验证只读 chart packet完成 Helm write；失败、信号和写后读取异常均证明 CronJob 仍 absent/suspended；禁止 `--reuse-values`、裸 `helm rollback`、原始 `helm uninstall` 和文档中的原始 Helm 写命令 | Backend + Release owner |
+| rollback 仅有布尔 intent、没有精确授权引用 | 可在未绑定 operation/release/namespace/packet 的情况下移除调度 | `--disable-schedule` 同时要求独立布尔 intent 与格式受限的 canonical authorization reference；禁止复用其它授权命名空间，并在任何目标访问前绑定 exact operation/release/namespace/reviewed packet hashes | Backend + Release owner |
 | active-to-off 在 Helm/信号/post-read 失败后恢复 active | 错误路径继续产生周期任务且结果不可证明 | 写前锁定 release-derived exact CronJob；所有退出路径执行至多一次精确 suspend 补偿并读回 absent/suspended，无法证明时返回 uncertain/NO-GO | Backend |
-| shell 文档审计漏过二次解释或动态 action | 文档可隐藏 Gate 外 Helm 写命令 | brace/glob、`eval`、stdin-fed shell、动态 executable/action 与未知 Helm plugin/action 全部 fail closed，并以合成对抗负例锁定 | Backend |
+| shell 文档审计漏过二次解释或动态 action | 文档可隐藏专用调度入口外的 Helm 写命令 | brace/glob、`eval`、stdin-fed shell、动态 executable/action 与未知 Helm plugin/action 全部 fail closed，并以合成对抗负例锁定 | Backend |
 | ordinary deploy 接受 disabled 但 unsuspended values | 后续值继承或原子回滚可能恢复 active 调度 | 在 build、image、env/SSH 和 target access 前校验最终 typed Helm values 必须精确为 `enabled=false,suspend=true` | Backend |
 
 ## Acceptance（验收）
 
-- OpenSpec 和本 plan 可追溯记录 Gate A 批准、里程碑、依赖、风险、负责人、验收证据和下一检查点。
+- OpenSpec 和本 plan 可追溯记录仓库内离线授权、里程碑、依赖、风险、负责人、验收证据和下一检查点。
 - 实际仓库研发只分配给现有资深后端工程师，没有新建 specialist。GYT-47 remediation 与 GYT-48 已批准 Stage 3 提交均从 exact `0b319c1` 主线祖先重放；任务交付必须以冻结 review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` fast-forward 合入本地 `main`，再在合入后的精确 SHA 重跑适用门禁并只推送 `origin/main`。GYT-21 与其他 issue 的提交未进入该任务链；独立复验仍绑定 implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only tip 的明确关系。
 - 显式记录“无前端范围”及依据，没有向资深前端工程师创建无效任务。
 - 八项 NO-GO 阻塞均有修复位置、负例、离线命令和输出摘要，并绑定新的完整 clean HEAD；rejected HEAD 不作为 Stage 3 基线。
 - 部署入口在网络、构建或写操作前，以最终合并后的 typed Helm values 校验授权、`enabled`、`suspend`、业务时区和目标 release/namespace；离线非法输入不得读取 env、发起 SSH 或调用目标 API。
-- server-side dry-run 仅允许目标 namespace 中精确的 suspended CronJob 和必要 verb；实际 suspended release 拒绝 dirty/drift 并复用冻结镜像；Gate C 仅接受审阅后的 `spec.suspend` 单字段差异。
-- Helm 无覆盖默认 render 不包含 CronJob；README、TrueNAS 教程和 runbook 的通用发布只调用受支持的 fail-closed 入口，不包含原始 Helm 写命令、`--reuse-values` 或裸 `helm rollback`。通用入口在 Helm stored manifest 与 live release 已 off/absent 时才允许写入；已 active/suspended 的 release 必须先走受审 `--disable-schedule`。只有 exact Gate B packet 与 Gate C 入口可表达 suspended/active scheduling state。
+- server-side dry-run 仅允许目标 namespace 中精确的 suspended CronJob 和必要 verb；实际 suspended release 拒绝 dirty/drift 并复用冻结镜像；激活仅接受审阅后的 `spec.suspend` 单字段差异。
+- Helm 无覆盖默认 render 不包含 CronJob；README、TrueNAS 教程和 runbook 的通用发布只调用受支持的 fail-closed 入口，不包含原始 Helm 写命令、`--reuse-values` 或裸 `helm rollback`。通用入口在 Helm stored manifest 与 live release 已 off/absent 时才允许写入；已 active/suspended 的 release 必须先走受审 `--disable-schedule`。只有专用调度入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）可表达 suspended/active scheduling state。
 - 文档命令审计覆盖 CommonMark 更长 closing fence 与 info attrs、`sudo -n`/`env`/`command` 包装、Helm 全局参数前置、独立 install/uninstall/rollback、续行、pipe/条件语法、shell 分隔符与 inline comment；安全关键参数必须位于实际执行 token 中，注释文字不能满足断言，归档部署设计也纳入回归范围。
-- `--disable-schedule` 只有在独立、非空、受限字符且 canonical binding 覆盖 exact operation/release/namespace/Kubernetes version/reviewed HEAD/chart/baseline/overlay/render hashes 的 rollback authorization reference 下才可继续；布尔 intent 或 Gate B/C 引用不能替代，所有不匹配负例在 target spy 零调用前失败。
+- `--disable-schedule` 只有在独立、非空、受限字符且 canonical binding 覆盖 exact operation/release/namespace/Kubernetes version/reviewed HEAD/chart/baseline/overlay/render hashes 的 rollback authorization reference 下才可继续；布尔 intent 或其它授权命名空间引用不能替代，所有不匹配负例在 target spy 零调用前失败。
 - active-to-off 的 Helm failure、HUP/INT/TERM、post-capture/compare/final exact-get 失败和补偿失败负例均绑定 release-derived exact CronJob，成功只在 exact readback 证明 absent 后返回；其他路径证明 absent/suspended 或明确 uncertain/NO-GO。
 - ordinary deploy 在首次 Helm render、build、image work、SSH 或 target API access 前拒绝任何非 typed `enabled=false,suspend=true` 组合；文档命令审计对 brace/glob、`eval`、stdin-fed shell、动态 Helm executable/action 和未知 plugin/action fail closed。
 - 本轮没有生产访问、真实 provider 调用、部署、备份、CronJob/Job 创建或激活；OpenSpec strict、docs-contract、focused tests 与 `git diff --check` 的实际结果如实记录。
@@ -93,7 +93,7 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 ## Completion Evidence（完成证据）
 
 - 2026-09-08：已读取 parent approval thread、OpenSpec proposal/spec/design/tasks、active plan index、architecture、runbook、repository guide、status 和工作树状态。
-- 2026-09-08：Gate A approval evidence 已定位为 `GYT-45` 评论 `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` 与 `01a07e3d-5a77-7972-a9cd-360c9d41dc84`。
+- 2026-09-08：仓库内离线授权 evidence 已定位为 `GYT-45` 评论 `01a07e3a-141c-71ac-b30b-0f06cf0c4a8b` 与 `01a07e3d-5a77-7972-a9cd-360c9d41dc84`。
 - 2026-09-08：已确认现有资深后端工程师 ID `032a9aa5-2728-4ae7-b707-4175a957bb9c`；无前端任务。
 - 2026-09-08：已在 parent `GYT-45` 下创建 `GYT-47`（Stage 2 implementation，issue `01a07e48-7b5a-712b-b22b-dcd3c8b1ba17`）与 `GYT-48`（Stage 3 offline verification，issue `01a07e48-7bd4-7a56-b7a6-7f9322520306`），均分配给资深后端工程师并保持 `backlog`，未触发执行。
 - 2026-09-08：`openspec validate enable-truenas-scheduled-market-collection --strict --json` 通过（1/1）；active plan 六个必需字段齐全；full docs-contract 通过（代码 5 / 文档 7 / plan 2）；`git diff --check` 通过。
@@ -107,24 +107,24 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 - 2026-09-08：reviewable Stage 2 implementation commit 为 `4b334051de43f09ef44fd2753f7b6a64510c5738`（`GYT-47: add scheduled collection compatibility`）；该独立 branch 已推送，未创建 PR，因为运行环境未安装 `gh` CLI。
 - 2026-09-08：在 review-evidence commit 前再次运行 `python3 scripts/check-docs-contract.py --mode=full`，通过（代码 4 / 文档 8 / plan 2）；strict OpenSpec validation 仍通过（1/1）。
 - 2026-09-08：独立审阅冻结 baseline `bb0de075c4336e6a4532b38f221b043d9859f590` 与 HEAD `5cc6e7f97e24a38c72adb84aa88b4cc693e9b969` 并给出 NO-GO；原 focused 证据不再构成 Stage 2 验收，必须修复后生成新的 clean HEAD 再审。
-- 2026-09-08：Gate B/Gate C 推进授权已在评论 `01a07fcd-9140-7aa7-b05a-83485a7ed8c7` 记录；当前任务仍禁止生产访问和写操作，且授权不能提前满足 GYT-47 独立 GO、GYT-48、精确 Gate B packet 或 Gate C catch-up 选择。
+- 2026-09-08：推进授权已在评论 `01a07fcd-9140-7aa7-b05a-83485a7ed8c7` 记录；当前任务仍禁止生产访问和写操作，且该授权不能提前满足 GYT-47 独立 GO、GYT-48 或生产 CronJob 激活的 packet 准备。
 - 2026-09-09：NO-GO #1 已关闭：native offline cron 解析使用局部 IFS、严格五字段检查和显式非零退出；非法 schedule 测试证明不会读取 env 或调用目标工具。
 - 2026-09-09：NO-GO #2/#3 已关闭：Chart JSON schema 与 template 都要求四个调度字段为 boolean，并锁定 `marketEnvironment.timezone=Asia/Shanghai`；字符串 boolean 与非上海时区负例通过。
 - 2026-09-09：NO-GO #4 已关闭：入口在 SSH/build/write 前检查 merged typed render；普通 deploy 只能是 disabled，调度模式按目标 state/authorization ref 拒绝，`GIT_UPDATE=true` 在任何目标或更新命令前失败。
 - 2026-09-09：NO-GO #5 已关闭：server dry-run 只提取一个目标 release/namespace 的 `suspend=true` CronJob，只检查并使用 `create cronjobs.batch`，active overlay 在 target access 前失败。
-- 2026-09-09：NO-GO #6 已关闭：actual release 要求 clean HEAD=upstream 与 chart/baseline/overlay/render hashes，使用本次只读 snapshot 消除 TOCTOU，比较 Helm record 与 API live state，严格绑定 Deployment→ReplicaSet→ready Pod、containerd tag 与 imageID digest，使用 `--atomic` 并执行写后 postcondition；Gate C 异常补偿暂停 exact CronJob。
+- 2026-09-09：NO-GO #6 已关闭：actual release 要求 clean HEAD=upstream 与 chart/baseline/overlay/render hashes，使用本次只读 snapshot 消除 TOCTOU，比较 Helm record 与 API live state，严格绑定 Deployment→ReplicaSet→ready Pod、containerd tag 与 imageID digest，使用 `--atomic` 并执行写后 postcondition；激活异常补偿暂停 exact CronJob。
 - 2026-09-09：NO-GO #7 已关闭：`/version` 使用 JSON/SemVer 解析（含 prerelease+build），actual release/namespace/version 贯穿 render、target read 和 write；binding hashes 输出为单行日志。
-- 2026-09-09：NO-GO #8 已关闭：status/plan/product/architecture/runbook/OpenSpec 统一为 progression/read-only permission、frozen packet 后 exact Gate B action authorization、Gate B evidence 后 exact Gate C operation authorization；删除裸 active patch/Job 与未知状态 Helm 命令。
+- 2026-09-09：NO-GO #8 已关闭：status/plan/product/architecture/runbook/OpenSpec 统一为 progression/read-only permission、frozen packet 后本次操作责任人书面确认、接收证据后专用调度入口执行；删除裸 active patch/Job 与未知状态 Helm 命令。
 - 2026-09-09：Kustomize base 已移除 CronJob；`deploy/k3s-native-scheduled/` 由 `scripts/render-k3s.py` 在 kubectl 调用前强制 Kubernetes 1.27+。1.26 fake kubectl 零调用负例与 1.27 正例通过。
 - 2026-09-09：focused deployment/guard/validator suite `63 passed`；全库 `204 passed, 2 warnings`（现有 FastAPI/Starlette deprecation）；`bash -n`、Python `py_compile`、Helm 1.26 suspended lint、Kustomize base/native render、OpenSpec strict 1/1、docs-contract full（代码 4 / 文档 8 / plan 2）及 `git diff --check` 通过。
 - 2026-09-09：所有验证均为本地固定 values、fake kubectl/ssh/containerd/provider 与离线 render；没有访问 TrueNAS/生产 Kubernetes、调用真实 provider、读取生产 SQLite/PVC、执行 server dry-run 或生产写操作。
-- 2026-09-09：首轮 remediation candidate `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 已提交并推送，工作树 clean 且 `HEAD == @{upstream}`；baseline diff 不含 `src/`、`apps/`、provider、dataset 或 SQLite schema。三路独立只读审阅仍给出 NO-GO：非法 SemVer 可到达 kubectl/target path，Gate C 未强制 1800 秒 missed-schedule window，Helm 成功后的部分读取/信号异常未统一补偿暂停，runbook 仍有裸写命令且事实源状态落后。
-- 2026-09-09：successor 修复使用严格 SemVer 2.0.0 并按 precedence 拒绝 `1.27.0-rc.1` 低于 stable 1.27.0；malformed/core 前导零/numeric prerelease 前导零负例均证明 kubectl/target 零调用。Gate C validator 从 active packet 计算 weekday previous/next trigger、1800 秒 deadline、UTC/上海审计时间和固定 300 秒 safety buffer；两种 catch-up mode 的 weekday/weekend/边界正负例通过。
+- 2026-09-09：首轮 remediation candidate `e6ae0c09be62b483b3e5f45a122acbb8f4c2fc3e` 已提交并推送，工作树 clean 且 `HEAD == @{upstream}`；baseline diff 不含 `src/`、`apps/`、provider、dataset 或 SQLite schema。三路独立只读审阅仍给出 NO-GO：非法 SemVer 可到达 kubectl/target path，激活未强制 1800 秒 missed-schedule window，Helm 成功后的部分读取/信号异常未统一补偿暂停，runbook 仍有裸写命令且事实源状态落后。
+- 2026-09-09：successor 修复使用严格 SemVer 2.0.0 并按 precedence 拒绝 `1.27.0-rc.1` 低于 stable 1.27.0；malformed/core 前导零/numeric prerelease 前导零负例均证明 kubectl/target 零调用。激活校验从 active packet 计算 weekday previous/next trigger、1800 秒 deadline、UTC/上海审计时间和固定 300 秒 safety buffer；两种 catch-up mode 的 weekday/weekend/边界正负例通过。
 - 2026-09-09：activation 写前建立 release-derived exact CronJob fail-safe guard；Helm failure、Helm success 后 live capture/read/compare/final get failure 与 HUP/INT/TERM 都统一在 EXIT 路径补偿 `suspend=true`，成功完成全部 postcondition 后才清 guard。combined deployment/validator/guard suite `104 passed`；独立全库复跑 `204 passed, 2 warnings`。
 - 2026-09-09：加入 successor 负例后的主线全库复跑为 `244 passed, 1 failed, 2 warnings`；唯一失败是 baseline-identical 的 `test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU，`src/market_environment/` 与该测试均无本 issue diff。独立审阅已确认竞态发生在第二请求“读缺失”与“获取 lease”之间，并曾在相同 deployment candidate 上跑出 `204 passed`；本任务不以重试或放宽断言掩盖，也不越界修改应用层。
 - 2026-09-09：candidate `58f5c4a986387ddeeb2f2f352f7fc9e3f0a775b6` 已提交、推送且 clean/upstream 一致，但最终复审仍为 NO-GO：Helm template 的 `>=1.27.0-0` 接受 native `1.27.0-rc.1`，且早期通过的 activation-window decision 可能在 live/read/render 工作期间老化，必须在 Helm write 前重验。其余补偿、strict parser 与原八项边界未发现新阻塞。
 - 2026-09-09：第二轮 successor remediation 已把 Helm native comparator 收紧为 `>=1.27.0`，并将 raw `--kube-version` 传入 scheduling packet validator；严格 SemVer precedence 使 `1.27.0-rc.1` 在 env、SSH、kubectl 或目标 API 前失败。
-- 2026-09-09：Gate C 在早期 preflight 后，于 live/image/diff/re-render/hash 检查完成且 Helm write 尚未开始时再次校验 activation window；第二次校验失败的负例证明 Helm write 与 compensation patch 均为零，Helm failure 和 final CronJob get failure 负例各证明仅执行一次 exact `suspend=true` compensation。
+- 2026-09-09：激活校验在早期 preflight 后，于 live/image/diff/re-render/hash 检查完成且 Helm write 尚未开始时再次校验 activation window；第二次校验失败的负例证明 Helm write 与 compensation patch 均为零，Helm failure 和 final CronJob get failure 负例各证明仅执行一次 exact `suspend=true` compensation。
 - 2026-09-09：更新后的 scheduling packet/deployment guard/deployment manifest focused suite `117 passed`；`bash -n`、Python `py_compile`、Helm 1.26 suspended strict lint 和 `git diff --check` 通过。完整门禁与 successor SHA 待本轮冻结步骤记录。
 - 2026-09-09：候选冻结前门禁通过：OpenSpec strict 1/1、docs-contract fast（代码 3 / 文档 4 / plan 1）与 full（代码 8 / 文档 9 / plan 2）、Helm 1.26 controller suspended lint/render、Helm 1.27 native render、Kustomize Dashboard base/native 1.27 render。Helm 3.21.4 会把 `--kube-version 1.27.0-rc.1` 规范化为 stable capabilities，因此受支持部署入口额外把 raw 版本交给 strict packet validator；对应 focused 负例已证明在 target access 前拒绝。
 - 2026-09-09：全库复跑为 `257 passed, 1 failed, 2 warnings`；唯一失败仍是 baseline-identical 的 `tests/test_market_environment_service.py::test_persistent_cold_requests_share_one_cross_service_refresh` 冷加载 TOCTOU，冻结 baseline 到候选的 diff 不含 `src/market_environment/` 或该测试。本 issue 保留该真实结果，不重试、放宽断言或越界修改应用层。
@@ -141,9 +141,9 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 - 2026-09-09：GYT-48 review candidate 为 `552fc4b4aa883ea2e482877de33e42fb8a33d641`。在该提交上，`openspec validate enable-truenas-scheduled-market-collection --strict --json` 为 1/1，`PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-docs-contract.py --mode=full` 通过（代码 1 / 文档 4 / plan 1），native/controller Helm lint/template 与 `git diff --check dd1277b86d04ed3a5d2cabe41c558d6de9049c09..HEAD` 均通过。环境没有 `python` 命令（原写法 exit 127），因此使用仓库支持的 `python3` 执行同一 gate 脚本。
 - 2026-09-09：`git diff --name-status dd1277b86d04ed3a5d2cabe41c558d6de9049c09..552fc4b4aa883ea2e482877de33e42fb8a33d641` 仅包含 `tests/test_deployment_manifests.py`、OpenSpec planning artifacts、active plan/index、runbook 与 status 共 8 个文件；`git diff --name-only bb0de075c4336e6a4532b38f221b043d9859f590..552fc4b4aa883ea2e482877de33e42fb8a33d641 -- src apps trading-rules` 为空，不含 application API、provider、dataset、SQLite schema、frontend 或生产状态变更。
 - 2026-09-09：review branch `agent/backend/gyt-48-scheduled-collection-offline-verification` 已推送至 `origin`，包含计划先行提交 `200cae2`、测试/文档候选 `552fc4b` 与离线 gate 证据提交 `95af911`。环境未安装 `gh`，因此未创建 PR；GitHub 已返回该分支的 pull/new 评审入口。
-- 2026-09-09：两路独立只读复审最终均为 GO：测试复审确认 3 x 3 matrix、exact template/schema failure messages 与 Kustomize/Helm/TrueNAS 不变量完整；文档复审确认 GYT-47/GYT-48 状态、3.1-3.4 证据和 Gate B/Gate C 权限边界一致。
-- 2026-09-09：本阶段未访问 TrueNAS/生产 Kubernetes，未调用真实 provider，未读取生产 SQLite/PVC，未运行 server-side dry-run，未创建 canary/CronJob/Job、备份、release 或解除暂停；后续任何生产动作仍受 actual-version packet review 与 exact Gate B/Gate C 门禁约束。
-- 2026-09-09：GYT-52 对冻结 HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 Stage 4 NO-GO：Chart 默认 `enabled=true`，README 与 TrueNAS 教程仍提供 `--reuse-values` 和裸 `helm rollback`，可在 Gate B/Gate C 外继承或恢复 active CronJob。GYT-47 已重新打开，GYT-48/GYT-52 回到 `backlog`；本次返工以该 clean HEAD 为精确 baseline。
+- 2026-09-09：两路独立只读复审最终均为 GO：测试复审确认 3 x 3 matrix、exact template/schema failure messages 与 Kustomize/Helm/TrueNAS 不变量完整；文档复审确认 GYT-47/GYT-48 状态、3.1-3.4 证据和专用调度入口权限边界一致。
+- 2026-09-09：本阶段未访问 TrueNAS/生产 Kubernetes，未调用真实 provider，未读取生产 SQLite/PVC，未运行 server-side dry-run，未创建 canary/CronJob/Job、备份、release 或解除暂停；后续任何生产动作仍受 actual-version packet review 与本次操作责任人书面确认约束。
+- 2026-09-09：GYT-52 对冻结 HEAD `b231ef4507e4003d2a5d3fe3a25ec1d659d7cb75` 给出 Stage 4 NO-GO：Chart 默认 `enabled=true`，README 与 TrueNAS 教程仍提供 `--reuse-values` 和裸 `helm rollback`，可在专用调度入口外继承或恢复 active CronJob。GYT-47 已重新打开，GYT-48/GYT-52 回到 `backlog`；本次返工以该 clean HEAD 为精确 baseline。
 - 2026-09-09：返工计划先行更新并两次通过 staged fast docs-contract：仅 active plan 时为代码 0 / 文档 1 / plan 1；同步 README、产品规格、architecture、runbook、status 与 OpenSpec 后为代码 0 / 文档 7 / plan 1。文档先于 Helm 和测试文件修改。
 - 2026-09-09：Chart 默认改为 `enabled=false`、`suspend=true`，TrueNAS baseline/off overlay 显式锁定相同布尔值。README、TrueNAS 教程和 runbook 的通用 install/upgrade/application rollback 均重交完整环境 values、显式 disabled/suspended 并使用 atomic upgrade；不再提供 `--reuse-values` 或裸 `helm rollback`，历史 revision 仅用于审计。
 - 2026-09-09：部署文档测试现在解析 README、TrueNAS 教程和 runbook 的 fenced Bash 多行命令，逐条拒绝 release-value inheritance 与 historical rollback，并验证完整 values、两个安全覆盖和 atomic write；另覆盖 TrueNAS YAML 示例、默认无 CronJob、baseline/off 双布尔值及 prior active values 被通用 off 覆盖。
@@ -183,15 +183,15 @@ Gate A / Stage 4 NO-GO 回流修复已完成。GYT-52 已拒绝已推送主线 `
 
 ## Remaining Gaps（剩余缺口）
 
-- GYT-52 对旧 exact `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 提出的四项阻塞已在本轮实现与对抗负例中关闭；其后已于 2026-09-10 对 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。旧 `0cd9b31`/`0b319c1` 的 GO 或测试结果仍不能迁移为当前验收证据。
+- GYT-52 对旧 exact `0b319c1501d6706f0be4eb680c46dd0d66f2c4dc` 提出的四项阻塞已在本轮实现与对抗负例中关闭；其后已于 2026-09-10 对 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出仓库内离线授权（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。旧 `0cd9b31`/`0b319c1` 的 GO 或测试结果仍不能迁移为当前验收证据。
 - 共享 worktree 仍不是 clean implementation baseline；本次整合只在新隔离 worktree 和临时本地 `main` worktree 中执行，未 stash/reset/覆盖共享树改动。
 - Stage 2 既往八项阻塞和 Stage 4 通用发布/命令审计回流已在原 exact candidate `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 关闭并取得三路独立 GO；其获准内容与 GYT-48 已批准提交现已重放到新主线 lineage。GYT-52 已对最终 `origin/main=b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 独立复验并给出 GO；旧 SHA 的 GO 不自动迁移。
-- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU，materialized local read 也在最终并行全量门禁中出现一次 `0.877854s > 0.5s` 的性能断言失败；两项源文件和测试均与当时的 `origin/main` 相同，不由 GYT-47 引入。GYT-21 已按授权排除；这些应用层性能/竞态问题不构成 GYT-52 Gate A 阻塞，但后续修复必须单独记录并补跑全量测试，不能通过重跑或放宽断言掩盖。
+- baseline 的跨 service 冷加载存在“旧 missing 观察后晚到 worker 再取 lease”的应用层 TOCTOU，materialized local read 也在最终并行全量门禁中出现一次 `0.877854s > 0.5s` 的性能断言失败；两项源文件和测试均与当时的 `origin/main` 相同，不由 GYT-47 引入。GYT-21 已按授权排除；这些应用层性能/竞态问题不构成 GYT-52 离线授权阻塞，但后续修复必须单独记录并补跑全量测试，不能通过重跑或放宽断言掩盖。
 - `9478ff0fd946993ae582b75dbb3287cf3a818aea`、`8ef80b7ea42ce7e72ea3262f1e1d5390e2ed0213`、`3c4d2dc056b9f70e3966407fda18f976841475db`、`437b03989ddf279757c7c5e92580493c65eca62d`、`18062563728da8409cac9c38d5238286ece79370`、`f3fb0203f7bd97e434836ef9bfe209b31720e625`、`09e29c59bee3bce2720b14d0636281a186577840` 与 `b16785c815081981f9df2dd9fbfcac88d7a0a7bd` 均是被替代的历史候选，`0ab44479923ca461c0fe000865f26cc56a7ef2be` 被本地对抗审查替代；原 lineage 中仅 `0cd9b31fc3f3a35dc404f6bafe8af8f87dc66ca2` 取得三路 GO，本次重放后的 SHA 必须重新绑定验收。
 - GYT-48 已完成且其四个 Stage 3 提交已整合；GYT-52 已对最终推送主线 `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 完成 Stage 4 独立复验并给出 GO。
-- controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续 Gate B 精确 packet 中待采集或冻结的事实；推进授权不能替代这些证据。
-- 生产定时任务契约（fail-closed 默认）：截至当前，k3s 集群中观察不到任何 application CronJob、也无 controller 创建的 collection Job，这不是部署事故，也不是漏配。生产 CronJob 创建与激活分别要求 Gate B action authorization 与 Gate C operation authorization 两份独立授权作为 canonical change artifact 记录在案；仅记录 Gate B / Gate C progression authorization 不构成生产执行授权，当前状态是"进度授权已记录、操作授权待记录"，不是"永久 off-by-design"。Chart、TrueNAS baseline 与三个 overlay 默认均为 `scheduledCollection.enabled=false / suspend=true`；`scripts/deploy-truenas-k3s.sh` 的通用 release 入口在首次 Helm render、image 工作或目标 API 访问前，typed values 不是这一对就会 `die` 并阻断任何写入；在 Gate B action authorization 与 Gate C operation authorization 均作为 canonical change artifact 记录在案前，不得创建或 unsuspend CronJob，也不得出现 controller-created Job。契约细节见 `openspec/changes/surface-scheduled-collection-failclosed-contract/specs/after-market-data-collection-scheduling/spec.md` 的 `Fail-closed production scheduling default` requirement；后续 K3s 部署、审计或排错请以本契约为准，避免把"未跑"误判为"漏配"，但也不要把它解读为永久禁用决策——它反映的是 Gate B action 与 Gate C operation 双授权当前未到位。
+- controller runtime timezone、canary、production revision、image digest、PVC identity、备份目标、验证日期和 stop thresholds 仍是后续生产 packet 中待采集或冻结的事实；任何推进授权不能替代这些证据。
+- 生产定时任务契约（fail-closed 默认）：截至当前，k3s 集群中观察不到任何 application CronJob、也无 controller 创建的 collection Job，这不是部署事故，也不是漏配。Chart、TrueNAS baseline 与三个 overlay 默认均为 `scheduledCollection.enabled=false / suspend=true`；`scripts/deploy-truenas-k3s.sh` 的通用 release 入口在首次 Helm render、image 工作或目标 API 访问前，typed values 不是这一对就会 `die` 并阻断任何写入。生产 CronJob 创建与激活由本次操作责任人书面确认 release/namespace/镜像 digest/catch-up 行为后，通过专用调度入口（`--release-suspended` / `--activate-schedule`）执行；不得通过裸 `kubectl apply` / `helm install|upgrade` / `kubectl patch` 直接改动 CronJob，也不得出现 controller-created Job。后续 K3s 部署、审计或排错以本契约为准。
 
 ## Next Step（下一步）
 
-implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only evidence wrappers 已冻结；GYT-52 已于 2026-09-10 对最终 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。下一步是仅在生产访问和精确 Gate B action authorization 具备后准备/审核 Gate B packet；Gate C 仍需 Gate B 证据接受和明确 operation authorization，当前不执行生产动作。
+implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 与 docs-only evidence wrappers 已冻结；`GYT-52` 已于 2026-09-10 对最终 clean exact `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出仓库内离线授权（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。下一步是在生产访问和本次操作责任人书面确认具备后准备/审核生产 CronJob 激活 packet；当前不执行生产动作。

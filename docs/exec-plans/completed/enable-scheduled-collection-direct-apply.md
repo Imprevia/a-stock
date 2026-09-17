@@ -71,7 +71,7 @@
 
 - live server 为 k3s `v1.26.6+k3s-6a894050-dirty`；主机 `timedatectl` 与 `/etc/localtime` 均为 `Asia/Shanghai`，k3s systemd 环境没有 `TZ` 覆盖，controller 使用上海本地时区解释无 `spec.timeZone` 的 CronJob。
 - live CronJob 仍为 `schedule=30 8 * * 1-5`、`suspend=false`、冻结镜像 digest `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`，但创建 45 小时后 `lastScheduleTime` 仍为空，也没有 controller 派生 Job；因此 `30 8` 在本目标实际表示上海 08:30，原“UTC=上海 16:30”假设已被 live 证据否定。
-- `market-environment-data` PVC 与 `a-stock-market-environment-data` PV 仍为 `Bound`；节点仍存在冻结镜像。正式 Helm/Gate B/Gate C 链路未被调用，本次只修正既有 override 的 schedule。
+- `market-environment-data` PVC 与 `a-stock-market-environment-data` PV 仍为 `Bound`；节点仍存在冻结镜像。正式 Helm 调度链路未被调用，本次只修正既有 override 的 schedule。
 
 **schedule 修正与周末 smoke（2026-09-13 09:24 / Asia/Shanghai）:**
 
@@ -94,7 +94,7 @@
 
 - 本计划未创建 application CronJob 之外的任何集群资源；helm 装的 `a-stock` Deployment 仍跑 `20260906-005226-2075b6e`，本计划不动它。
 - shared working tree 不 clean：包含 `AGENTS.md`、`docs/runbooks.md`、`docs/status.md`、`openspec/changes/surface-scheduled-market-collection/tasks.md` 与 `openspec/changes/archive/2026-09-11-surface-scheduled-collection-failclosed-contract/*` 的既有 M/A（这些均非本计划引入），按 AGENTS.md 不 stash/reset/checkout。
-- `enable-truenas-scheduled-market-collection` 已取得 GYT-52 Gate A GO，但 Gate B/Gate C 仍需独立 exact action/operation authorization；本计划只是**临时 operator override 路径**而非正式 Helm 发布替代。两套方案通过非 Helm ownership 隔离并存，operator override 也不得绕过专用脚本的 fail-closed 校验。
+- 生产调度激活仍需本次操作责任人书面确认并通过专用调度入口执行；本计划只是**临时 operator override 路径**而非正式 Helm 发布替代。两套方案通过非 Helm ownership 隔离并存，operator override 也不得绕过专用脚本的 fail-closed 校验。
 - 本计划**超出原方案边界的写操作**（operator override 已承担后果）：
   1. 新建集群级 StorageClass `manual-local`（`provisioner: kubernetes.io/no-provisioner`，`Immediate`，`Retain`）。
   2. 新建集群级 PV `a-stock-market-environment-data`（hostPath `/mnt/xiaomi/app-data/a-stock-market-environment`，2Gi RWO，Retain）。
@@ -113,4 +113,4 @@
 
 1. 等下一个交易日（周一 2026-09-14）16:30 上海由 CronJob 自然触发；观察 Job、Pod 日志和 SQLite mtime，确认真实 collect。
 2. 若周一触发失败，保留 partial/failed 证据并评估不可变镜像升级；不得把 `latest` 应用于现有 override。
-3. 后续清理既有 `market-data-verify` 残留，并把 override 迁回完成 Gate B/Gate C 的受控 Helm 链路后再归档本计划。
+3. 后续清理既有 `market-data-verify` 残留，并把 override 迁回完成专用调度入口受控的 Helm 链路后再归档本计划。

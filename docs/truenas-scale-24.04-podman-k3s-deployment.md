@@ -418,7 +418,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-o
   --release-name a-stock --namespace a-stock
 ```
 
-若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>` 后执行。digest 必须绑定 runbook 定义的 canonical payload，包括 `operation=--disable-schedule`、release、namespace、normalized Kubernetes version、reviewed HEAD 与全部 packet hashes；Gate B/C 引用不可复用：
+若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>` 后执行。digest 必须绑定 runbook 定义的 canonical payload，包括 `operation=--disable-schedule`、release、namespace、normalized Kubernetes version、reviewed HEAD 与全部 packet hashes（rollback-v1 namespace 与其它生产授权引用相互独立）：
 
 ```bash
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \

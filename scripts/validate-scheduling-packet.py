@@ -293,7 +293,7 @@ def compare_suspend_only(
     current_index = indexed(current)
     desired_index = indexed(desired)
     if current_index.keys() != desired_index.keys():
-        fail("Gate C resource set differs from the suspended release")
+        fail("active release contains drift outside the suspended resource set")
 
     for key in current_index:
         before = copy.deepcopy(current_index[key])
@@ -302,7 +302,7 @@ def compare_suspend_only(
             before["spec"].pop("suspend", None)
             after["spec"].pop("suspend", None)
         if before != after:
-            fail(f"Gate C contains drift outside CronJob spec.suspend: {key}")
+            fail(f"suspended release contains drift outside CronJob spec.suspend: {key}")
 
 
 def compare_remove_cronjob(

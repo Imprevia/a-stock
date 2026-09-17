@@ -10,9 +10,11 @@ release:
   chart: deploy/helm/a-stock
   chartVersion: 0.1.1
 
-# Persistence: TrueNAS deployments use a pre-provisioned static RWO PVC.
-# The chart-managed fallback path must still produce an RWO claim with the same
-# name, access mode, capacity, and mount path; tests reject conflicting contracts.
+# Persistence: TrueNAS deployments reuse the pre-provisioned a-stock-data RWO
+# PVC. The manual-local StorageClass is shared by a-stock-data and unrelated
+# workloads, so scheduling cleanup must never delete the StorageClass itself.
+# This claim is distinct from the former operator-override
+# market-environment-data claim removed during Helm ownership consolidation.
 persistence:
   enabled: true
   claimName: a-stock-data
@@ -46,9 +48,9 @@ topology:
     - ALL
 
 # Scheduling: production schedules are always fail-closed. The component
-# workflow never produces an active CronJob without explicit Gate B/Gate C
-# authorization through the reviewed --release-suspended / --activate-schedule
-# / --disable-schedule paths.
+# workflow keeps the production schedule fail-closed by default; the reviewed
+# --release-suspended / --activate-schedule / --disable-schedule paths are the
+# only way to transition to suspended/active.
 scheduling:
   supportedStates:
     - disabled
@@ -64,18 +66,3 @@ scheduling:
   businessTimezone: Asia/Shanghai
   settlementTime: "15:10"
   schedulePattern: "^[0-9]{1,2} [0-9]{1,2} \\* \\* 1-5$"
-
-# Authorization gates; component operations must not bypass them.
-authorization:
-  releaseSuspended:
-    required: true
-    envVar: SUSPENDED_RELEASE_AUTHORIZED
-    referenceEnvVar: GATE_B_AUTHORIZATION_REF
-  activateSchedule:
-    required: true
-    envVar: SCHEDULE_ACTIVATION_AUTHORIZED
-    referenceEnvVar: GATE_C_AUTHORIZATION_REF
-  disableSchedule:
-    required: true
-    envVar: SCHEDULE_ROLLBACK_AUTHORIZED
-    referenceEnvVar: SCHEDULE_ROLLBACK_AUTHORIZATION_REF

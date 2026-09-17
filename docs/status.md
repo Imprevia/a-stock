@@ -33,7 +33,7 @@
   - 数据采集管理已通过 124 个 Python 测试、11 个前端测试和生产构建；当前市场日行业真实 smoke 在主域断连后由 `eastmoney-clist-delay` 成功返回 100 条记录。
   - 已提供单镜像 k3s 部署配置：`deploy/k3s/` 保留历史清单，`deploy/helm/a-stock/` 提供 PostgreSQL StatefulSet/ClusterIP/Secret 引用、应用资源与调度参数；运行时仅 PostgreSQL 持久化，应用工作负载不挂载数据库 PVC。
   - TrueNAS k3s 组件化部署已落地：`scripts/deploy-truenas-k3s.sh --component all|database|service|schedule` 共享一个 Helm release，`all` 固定按 `database -> service -> schedule` 执行；database 使用 PostgreSQL Retain RWO PVC，service/schedule 仅通过 existingSecret 连接配置访问，旧 SQLite PVC 仅作为迁移输入保留。离线 manifest 与 TrueNAS scheduling guard 套件未访问真实 TrueNAS、provider 或生产 PVC。
-  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享 PostgreSQL、task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现。生产 Gate B/Gate C 仍保持 fail-closed。
+  - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享 PostgreSQL、task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现。生产调度保持 fail-closed 默认（`enabled=false / suspend=true`）。
   - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。旧结构化 CommonMark/Bash AST 审计和发布测试结果均为历史证据：它们未覆盖 canonical rollback binding、label/shape drift 下的 active-to-off 补偿，以及 stdin/source/alias 等二次解释路径。focused/deployment/guard 与 fake-provider 测试范围绑定 `cd26dff3e6bebe012198dcd38074c354c1a9afac`；全库、OpenSpec、docs-contract、clean/review 证据绑定冻结 docs-only review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，旧 SHA 结果不作为当前验收。
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
@@ -46,15 +46,13 @@
 
 - SQLite 到 PostgreSQL 迁移实现已完成：已加入 SQLAlchemy/psycopg/Alembic 配置、原生 DATE/TIMESTAMPTZ/JSONB schema、SQLite 指纹/导入 CLI、Helm StatefulSet/ClusterIP/PVC/Secret 合同、schema migration Job，以及 TrueNAS operator override 的 PostgreSQL Service/Secret 合同；全量离线测试、部署渲染、文档和 OpenSpec 门禁通过。Helm/TrueNAS 运行时通过 Secret 注入 PostgreSQL URL 并 fail-closed；SQLite seam 仅保留给显式离线 fixture 和一次性导入工具。生产迁移、真实 provider smoke 和生产写入仍未执行，需独立维护窗口授权。
 
-- `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 待归档。
-  - `enable-truenas-scheduled-market-collection` 的 Stage 4 NO-GO 回流实现已完成：implementation parent `cd26dff3e6bebe012198dcd38074c354c1a9afac` 关闭 rollback authorization binding、active-to-off fail-safe、文档 shell 审计与 ordinary typed-value 前置拒绝；`b13ed06fb729cc3a2c52908ba45136717bf18bed`、`7d74b8b`、`0717d840d8c2777bef666a208d28ebe4288c77c1` 及冻结 tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead` 仅为 docs-only evidence wrappers。focused suite `323 passed`、全库离线 `464 passed, 2 warnings`，代码/测试归属 parent，clean/review 归属冻结 tip；GYT-52 已于 2026-09-10 对 `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO（评论 `01a08af1-2842-7c07-80a6-2af49b91e196`）。GYT-50 当前因生产访问/用户选择取消，Gate B/Gate C 仍需分别取得 exact action/operation authorization；当前不执行生产动作。
-- 生产定时任务 fail-closed 契约：Helm release 仍未创建或管理 application CronJob，Gate B action authorization 与 Gate C operation authorization 尚待记录，正式链路保持 fail-closed；GYT-52 Gate A GO 已解除 Gate A 阻塞，但不构成 Gate B/C 操作授权。TrueNAS 集群另有一条不归 Helm ownership 的 operator override CronJob；它不能作为 Gate B/Gate C 已完成的证据。Chart、TrueNAS baseline 与三个 overlay 默认 `scheduledCollection.enabled=false / suspend=true`，`scripts/deploy-truenas-k3s.sh` 通用入口的安全约束不变。
+- `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
+- `consolidate-helm-managed-scheduling` 仓库层已完成：operator override 清单/脚本和专用 `market-environment-data` PVC/PV 模板已删除，suspended/active overlay 对齐 live controller `Asia/Shanghai` 的 `30 16 * * 1-5`，全量离线 577 passed / 3 skipped，docs-contract full 通过。2026-09-17 只读发现确认 legacy CronJob 已 absent，但目标 namespace 尚无 `a-stock-postgresql` Service/Secret/StatefulSet；Helm CronJob 依赖 PostgreSQL，因此生产调度写入 fail-closed 阻断。`manual-local` SC 同时承载生产 `a-stock-data` 和其它 namespace 的 PV，必须保留；专用 PVC/PV/目录清理要等 PostgreSQL cutover + suspended CronJob 精确读回后执行。
 
 ## 最近完成
 
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
-- Operator override 临时绕过路径：2026-09-13 已确认 controller 继承主机 `Asia/Shanghai`，并使用独立 operator CronJob 维护调度时间；该历史路径不再作为运行时 SQLite 事实源，PostgreSQL 切换后必须改用 PostgreSQL Secret/Service，旧 SQLite 仅保留归档。生产写入与真实 provider 验证仍需新的受控授权。
-  - 定时采集稳定性修复已完成：当前代码使用 PostgreSQL 事务/lease，不再依赖 SQLite WAL 或共享 PVC；`scripts/apply-truenas-operator-override.sh` 仍以 exact 非 Helm-owned CronJob 为边界，默认只读 + server dry-run，显式 `--apply` 后 exact readback。离线测试通过；Gate B/Gate C 生产授权和 PostgreSQL 生产切换仍未改变。
+- Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
 - 市场环境看板 live server 已确认是 k3s `v1.26.6+k3s-6a894050-dirty`，主机时区 `Asia/Shanghai` 且 NTP 已同步；冻结镜像为 `localhost/a-stock-market-environment:20260906-005226-2075b6e` / `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`。Helm revision、Dashboard imageID 与网络边界不在本次 schedule-only override 范围，仍按后续受控 preflight 复核。
 - `complete-limit-ecosystem-dashboard-parity` 的第 03 页完整涨跌停生态看板实现与受控验证已完成：契约、事实表迁移、严格 provider、相邻交易日晋级、梯队/制度/交易所分层、近 5 日与 60/250 日覆盖、前端状态和离线门禁均已落地；隔离 smoke 因 provider 缺少顶层交易日字段而 `failed-missing`，`promotionQuality=insufficient`，未写生产 PostgreSQL。limits detail/V1 开关默认关闭，旧五字段仍是兼容基线。
 - `complete-limit-ecosystem-dashboard-parity` 的第 03 页完整涨跌停生态看板实现与受控验证已完成：契约、事实表迁移、严格 provider、相邻交易日晋级、梯队/制度/交易所分层、近 5 日与 60/250 日覆盖、前端状态和离线门禁均已落地；隔离 smoke 因 provider 缺少顶层日期字段而 `failed-missing`，`promotionQuality=insufficient`，未写生产 PostgreSQL。limits detail/V1 开关默认关闭，旧五字段仍是兼容基线；已验证 `push2ex` 缺顶层日期时的查询绑定路径和逐池延迟降级。
@@ -83,7 +81,7 @@
 ## 下一步
 
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集下一检查点是 Gate B 精确 packet 的只读 preflight、审核与 action authorization；GYT-52 已对 `b1907e63ab81ca9c5e1d9d5531aadbf3118f2998` 给出 Gate A GO，但 Gate B 证据接受后仍须形成明确 `next-schedule` 或 `immediate catch-up` 的 Gate C operation authorization，且 live diff 仅允许已审阅的 `spec.suspend: true -> false`。
+- 定时采集下一检查点是受审 packet 的只读 preflight、审核与生产激活决策；激活或回退由本次操作责任人书面确认后通过专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）执行，候选 diff 仅允许已审阅的 `spec.suspend: true -> false` 字段变化。生产 CronJob 激活或回退必须由本次操作责任人书面确认。
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。

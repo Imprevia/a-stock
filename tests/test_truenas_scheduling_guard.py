@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deploy-truenas-k3s.sh"
 VALIDATOR = ROOT / "scripts" / "validate-scheduling-packet.py"
@@ -22,14 +21,12 @@ ACTIVE = ROOT / "deploy" / "truenas" / "values-scheduled-active.yaml"
 OFF = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
 HELM = shutil.which("helm")
 
-
 def _values_with_database_secret(tmp_path: Path) -> Path:
     values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
     values["database"]["existingSecret"] = "a-stock-postgresql"
     path = tmp_path / "values-with-database-secret.yaml"
     path.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
     return path
-
 
 def _write_native_overlay(path: Path, *, schedule: str = "30 16 * * 1-5") -> None:
     path.write_text(
@@ -42,7 +39,6 @@ def _write_native_overlay(path: Path, *, schedule: str = "30 16 * * 1-5") -> Non
         encoding="utf-8",
     )
 
-
 def _run_validator(command: str, payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["python3", str(VALIDATOR), command, *arguments],
@@ -51,7 +47,6 @@ def _run_validator(command: str, payload: str, *arguments: str) -> subprocess.Co
         text=True,
         check=False,
     )
-
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
@@ -67,7 +62,6 @@ def test_version_parser_accepts_realistic_kubernetes_json(payload: str, expected
     assert completed.returncode == 0
     assert completed.stdout.strip() == expected
 
-
 @pytest.mark.parametrize(
     "payload",
     [
@@ -82,7 +76,6 @@ def test_version_parser_rejects_malformed_or_missing_git_version(payload: str) -
 
     assert completed.returncode != 0
     assert "version" in completed.stderr.lower()
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_native_offline_render_exits_without_loading_environment(tmp_path: Path) -> None:
@@ -112,7 +105,6 @@ def test_native_offline_render_exits_without_loading_environment(tmp_path: Path)
     assert "effectiveShanghai=16:30" in completed.stdout
     assert "environment file" not in completed.stderr
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_native_offline_render_rejects_kubernetes_prerelease_boundary(tmp_path: Path) -> None:
     overlay = tmp_path / "native-suspended.yaml"
@@ -141,7 +133,6 @@ def test_native_offline_render_rejects_kubernetes_prerelease_boundary(tmp_path: 
     assert "offline scheduling packet validation failed" in completed.stderr
     assert "environment file" not in completed.stderr
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_invalid_offline_cron_stops_before_environment_or_target_access(tmp_path: Path) -> None:
     overlay = tmp_path / "invalid-schedule.yaml"
@@ -169,7 +160,6 @@ def test_invalid_offline_cron_stops_before_environment_or_target_access(tmp_path
     assert "offline scheduling render failed" in completed.stderr
     assert "environment file" not in completed.stderr
 
-
 def _write_target_spies(tmp_path: Path) -> tuple[Path, Path]:
     marker = tmp_path / "target-calls"
     fake_bin = tmp_path / "bin"
@@ -193,7 +183,6 @@ def _write_target_spies(tmp_path: Path) -> tuple[Path, Path]:
     helm.chmod(0o755)
     return fake_bin, marker
 
-
 def _write_env(path: Path, repo: Path, baseline: Path, overlay: Path | None) -> None:
     lines = [
         f"REPO_DIR={repo}",
@@ -205,7 +194,6 @@ def _write_env(path: Path, repo: Path, baseline: Path, overlay: Path | None) -> 
     if overlay is not None:
         lines.append(f"SCHEDULING_OVERLAY_FILE={overlay}")
     path.write_text("\n".join([*lines, ""]), encoding="utf-8")
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_active_packet_is_rejected_before_server_dry_run_target_access(tmp_path: Path) -> None:
@@ -232,7 +220,6 @@ def test_active_packet_is_rejected_before_server_dry_run_target_access(tmp_path:
     assert "must be suspended, got active" in completed.stderr
     assert not marker.exists()
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_ordinary_deploy_rejects_enabled_schedule_before_target_access(tmp_path: Path) -> None:
     fake_bin, marker = _write_target_spies(tmp_path)
@@ -258,7 +245,6 @@ def test_ordinary_deploy_rejects_enabled_schedule_before_target_access(tmp_path:
     assert completed.returncode != 0
     assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
     assert not marker.exists()
-
 
 def test_ordinary_deploy_rejects_disabled_unsuspended_values_before_render_or_access(
     tmp_path: Path,
@@ -294,7 +280,6 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_values_before_render_or_ac
     assert "before Helm rendering" in completed.stderr
     assert not marker.exists()
 
-
 def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_access(
     tmp_path: Path,
 ) -> None:
@@ -329,7 +314,6 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_acces
     assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
     assert "before Helm rendering" in completed.stderr
     assert not marker.exists()
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
@@ -371,7 +355,6 @@ def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
     assert helm_calls.read_text(encoding="utf-8").splitlines() == ["lint", "template"]
     assert not target_marker.exists()
 
-
 def _render(chart: Path, baseline: Path, overlay: Path, state: str) -> str:
     assert HELM is not None
     return subprocess.run(
@@ -393,7 +376,6 @@ def _render(chart: Path, baseline: Path, overlay: Path, state: str) -> str:
         text=True,
         check=True,
     ).stdout
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path: Path) -> None:
@@ -475,7 +457,6 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
     assert rejected.returncode != 0
     assert "drift outside CronJob spec.suspend" in rejected.stderr
 
-
 def _chart_hash(repo: Path) -> str:
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "--", "deploy/helm/a-stock"],
@@ -489,7 +470,6 @@ def _chart_hash(repo: Path) -> str:
         digest = hashlib.sha256((repo / relative).read_bytes()).hexdigest()
         lines.extend(f"{digest}  {relative}\n".encode())
     return hashlib.sha256(lines).hexdigest()
-
 
 def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, str]:
     repo = tmp_path / "repo"
@@ -541,7 +521,6 @@ def _prepare_reviewed_repo(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path
     ).stdout.strip()
     return repo, *copied_values, head
 
-
 def test_git_update_is_rejected_before_any_target_or_update_command(tmp_path: Path) -> None:
     fake_bin, marker = _write_target_spies(tmp_path)
     env_file = tmp_path / "deploy.env"
@@ -560,7 +539,6 @@ def test_git_update_is_rejected_before_any_target_or_update_command(tmp_path: Pa
     assert completed.returncode != 0
     assert "GIT_UPDATE=true is unsupported" in completed.stderr
     assert not marker.exists()
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Path) -> None:
@@ -587,7 +565,6 @@ def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Pa
     assert completed.returncode != 0
     assert "invalid Kubernetes version" in completed.stderr
     assert not marker.exists()
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path: Path) -> None:
@@ -619,7 +596,6 @@ def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path:
     assert "operation server-dry-run rejected the final scheduling state" in completed.stderr
     assert not marker.exists()
 
-
 def _cronjob_list(rendered: str) -> dict:
     return {
         "apiVersion": "v1",
@@ -630,7 +606,6 @@ def _cronjob_list(rendered: str) -> dict:
             if document and document.get("kind") == "CronJob"
         ],
     }
-
 
 def _run_generic_deploy(
     tmp_path: Path,
@@ -845,7 +820,6 @@ def _run_generic_deploy(
     call_log = calls.read_text(encoding="utf-8") if calls.exists() else ""
     return completed, call_log, json.loads(live_state.read_text(encoding="utf-8"))
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize("blocked_overlay", [ACTIVE, SUSPENDED], ids=["active", "suspended"])
 @pytest.mark.parametrize("blocked_source", ["stored", "live"])
@@ -867,7 +841,6 @@ def test_generic_deploy_requires_reviewed_disable_for_existing_schedule(
     assert "helm upgrade" not in calls
     assert "podman build" not in calls
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_rechecks_live_schedule_immediately_before_helm(tmp_path: Path) -> None:
     completed, calls, _ = _run_generic_deploy(
@@ -883,7 +856,6 @@ def test_generic_deploy_rechecks_live_schedule_immediately_before_helm(tmp_path:
     assert calls.count("helm list --all --namespace a-stock") == 2
     assert "podman build" in calls
     assert "helm upgrade" not in calls
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_exact_name_lookup_cannot_miss_label_drift(tmp_path: Path) -> None:
@@ -902,7 +874,6 @@ def test_generic_deploy_exact_name_lookup_cannot_miss_label_drift(tmp_path: Path
     assert "podman build" not in calls
     assert "helm upgrade" not in calls
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_uses_frozen_chart_after_source_drift(tmp_path: Path) -> None:
     completed, calls, live = _run_generic_deploy(
@@ -917,7 +888,6 @@ def test_generic_deploy_uses_frozen_chart_after_source_drift(tmp_path: Path) -> 
     assert "/release-packet/chart" in upgrade
     assert "/repo/deploy/helm/a-stock" not in upgrade
     assert live["items"] == []
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(
@@ -958,7 +928,6 @@ def test_generic_deploy_failure_never_leaves_atomic_restored_schedule_active(
     assert cronjob["spec"]["suspend"] is True
     assert "generic deployment failure recovery: scheduling is suspended" in completed.stdout
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -> None:
     completed, calls, live = _run_generic_deploy(
@@ -974,7 +943,6 @@ def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -
     assert calls.count("helm list --all --namespace a-stock") == 2
     assert live["items"] == []
     assert "patch cronjob" not in calls
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_allows_new_release_only_when_live_schedule_is_absent(
@@ -992,7 +960,6 @@ def test_generic_deploy_allows_new_release_only_when_live_schedule_is_absent(
     assert "helm get manifest" not in calls
     assert "helm upgrade --install" in calls
     assert live["items"] == []
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize("live_overlay", [ACTIVE, SUSPENDED], ids=["active", "suspended"])
@@ -1012,7 +979,6 @@ def test_generic_deploy_rejects_live_schedule_for_new_release(
     assert "helm get manifest" not in calls
     assert "podman build" not in calls
     assert "helm upgrade" not in calls
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Path) -> None:
@@ -1084,7 +1050,6 @@ def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Pat
     assert "Kubernetes 1.26.6+k3s1" in completed.stdout
     assert "podman" not in calls.read_text(encoding="utf-8")
 
-
 def _render_reviewed(
     repo: Path,
     baseline: Path,
@@ -1117,50 +1082,6 @@ def _render_reviewed(
         text=True,
         check=True,
     ).stdout.rstrip("\n") + "\n"
-
-
-def _rollback_authorization_ref(
-    *,
-    head: str,
-    chart_sha256: str,
-    baseline_sha256: str,
-    overlay_sha256: str,
-    render_sha256: str,
-    operation: str = "--disable-schedule",
-    release: str = "research",
-    namespace: str = "market-data",
-    kubernetes_version: str = "1.26.6+k3s1",
-    approval_id: str = "gyt-47-disable",
-) -> str:
-    payload = "\n".join(
-        [
-            "schema=rollback-v1",
-            f"operation={operation}",
-            f"release={release}",
-            f"namespace={namespace}",
-            f"kubernetesVersion={kubernetes_version}",
-            f"reviewedHead={head}",
-            f"chartSha256={chart_sha256}",
-            f"baselineSha256={baseline_sha256}",
-            f"overlaySha256={overlay_sha256}",
-            f"renderSha256={render_sha256}",
-            "",
-        ]
-    )
-    return f"rollback-v1:{approval_id}:{hashlib.sha256(payload.encode()).hexdigest()}"
-
-
-def test_rollback_authorization_ref_matches_documented_golden_payload() -> None:
-    assert _rollback_authorization_ref(
-        head="0123456789abcdef0123456789abcdef01234567",
-        chart_sha256="1" * 64,
-        baseline_sha256="2" * 64,
-        overlay_sha256="3" * 64,
-        render_sha256="4" * 64,
-        approval_id="approval-123",
-    ) == "rollback-v1:approval-123:6a46c1c703733a00372afab37f455913c5bb730a47c5788b7039fe450c15c764"
-
-
 def _live_list(rendered: str, namespace: str) -> str:
     items = [item for item in yaml.safe_load_all(rendered) if item]
     for item in items:
@@ -1169,7 +1090,6 @@ def _live_list(rendered: str, namespace: str) -> str:
         {"apiVersion": "v1", "kind": "List", "items": items},
         sort_keys=False,
     )
-
 
 def _runtime_payloads(rendered: str, release: str, digest: str) -> tuple[dict, dict, dict]:
     documents = [item for item in yaml.safe_load_all(rendered) if item]
@@ -1258,7 +1178,6 @@ def _runtime_payloads(rendered: str, release: str, digest: str) -> tuple[dict, d
         {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": [replicaset]},
         {"apiVersion": "v1", "kind": "PodList", "items": [dashboard_pod, retained_collector_pod]},
     )
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> None:
@@ -1358,13 +1277,6 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
                 f"KUBECONFIG={kubeconfig}",
                 f"HELM_VALUES_FILE={baseline}",
                 f"SCHEDULING_OVERLAY_FILE={suspended}",
-                "SERVER_DRY_RUN_AUTHORIZED=true",
-                "GATE_B_AUTHORIZATION_REF=reviewed-gate-b-packet",
-                f"REVIEWED_GIT_HEAD={reviewed_head}",
-                f"REVIEWED_CHART_SHA256={_chart_hash(repo)}",
-                f"REVIEWED_BASELINE_SHA256={hashlib.sha256(baseline.read_bytes()).hexdigest()}",
-                f"REVIEWED_OVERLAY_SHA256={hashlib.sha256(suspended.read_bytes()).hexdigest()}",
-                f"REVIEWED_RENDER_SHA256={hashlib.sha256(rendered.encode()).hexdigest()}",
                 "",
             ]
         ),
@@ -1408,962 +1320,6 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
     assert cronjob["metadata"]["namespace"] == "a-stock"
     assert cronjob["spec"]["suspend"] is True
 
-
-@pytest.mark.skipif(HELM is None, reason="helm is not installed")
-@pytest.mark.parametrize(
-    ("operation", "overlay", "authorization", "expected_error"),
-    [
-        (
-            "--server-dry-run",
-            SUSPENDED,
-            "SERVER_DRY_RUN_AUTHORIZED=true\n"
-            "GATE_B_AUTHORIZATION_REF=rollback-v1:other-approval:"
-            f"{'1' * 64}",
-            "Gate B authorization must not use the rollback-v1 namespace",
-        ),
-        (
-            "--activate-schedule",
-            ACTIVE,
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\n"
-            "GATE_C_AUTHORIZATION_REF=rollback-v1:other-approval:"
-            f"{'2' * 64}\n"
-            "GATE_C_CATCH_UP_MODE=next-schedule",
-            "Gate C authorization must not use the rollback-v1 namespace",
-        ),
-    ],
-    ids=("gate-b-server-dry-run", "gate-c-activate"),
-)
-def test_gate_authorizations_reject_rollback_namespace_before_target_access(
-    tmp_path: Path,
-    operation: str,
-    overlay: Path,
-    authorization: str,
-    expected_error: str,
-) -> None:
-    fake_bin, target_calls = _write_target_spies(tmp_path)
-    env_file = tmp_path / "gate.env"
-    _write_env(env_file, ROOT, BASELINE, overlay)
-    with env_file.open("a", encoding="utf-8") as stream:
-        stream.write(f"{authorization}\n")
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(SCRIPT),
-            "--env-file",
-            str(env_file),
-            operation,
-            "--kube-version",
-            "1.26.6+k3s1",
-            "--release-name",
-            "research",
-            "--namespace",
-            "market-data",
-        ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode != 0
-    assert expected_error in completed.stderr
-    assert not target_calls.exists()
-
-
-@pytest.mark.skipif(HELM is None, reason="helm is not installed")
-@pytest.mark.parametrize(
-    ("case", "expected_error"),
-    [
-        ("missing", "requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF"),
-        ("empty", "requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF"),
-        ("invalid", "must match rollback-v1:<approval-id>:<binding-sha256>"),
-        ("unsupported-characters", "contains unsupported characters"),
-        ("gate-b-rollback-namespace", "Gate B authorization must not use the rollback-v1 namespace"),
-        ("gate-c-rollback-namespace", "Gate C authorization must not use the rollback-v1 namespace"),
-        ("operation", "binding does not match the exact disable-schedule packet"),
-        ("release", "binding does not match the exact disable-schedule packet"),
-        ("namespace", "binding does not match the exact disable-schedule packet"),
-        ("kubernetes-version", "binding does not match the exact disable-schedule packet"),
-        ("head", "binding does not match the exact disable-schedule packet"),
-        ("chart", "binding does not match the exact disable-schedule packet"),
-        ("baseline", "binding does not match the exact disable-schedule packet"),
-        ("overlay", "binding does not match the exact disable-schedule packet"),
-        ("render", "binding does not match the exact disable-schedule packet"),
-    ],
-)
-def test_disable_schedule_requires_independent_exact_authorization_before_target_access(
-    tmp_path: Path, case: str, expected_error: str
-) -> None:
-    repo, baseline, _, _, off, head = _prepare_reviewed_repo(tmp_path)
-    desired_render = _render_reviewed(repo, baseline, off)
-    hashes = {
-        "head": head,
-        "chart_sha256": _chart_hash(repo),
-        "baseline_sha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
-        "overlay_sha256": hashlib.sha256(off.read_bytes()).hexdigest(),
-        "render_sha256": hashlib.sha256(desired_render.encode()).hexdigest(),
-    }
-    override_names = {
-        "operation": ("operation", "--activate-schedule"),
-        "release": ("release", "other-release"),
-        "namespace": ("namespace", "other-namespace"),
-        "kubernetes-version": ("kubernetes_version", "1.27.0"),
-        "head": ("head", "0" * 40),
-        "chart": ("chart_sha256", "1" * 64),
-        "baseline": ("baseline_sha256", "2" * 64),
-        "overlay": ("overlay_sha256", "3" * 64),
-        "render": ("render_sha256", "4" * 64),
-    }
-    binding_inputs = dict(hashes)
-    if case in override_names:
-        name, value = override_names[case]
-        binding_inputs[name] = value
-    rollback_ref = _rollback_authorization_ref(**binding_inputs)
-    authorization_lines = ["SCHEDULE_ROLLBACK_AUTHORIZED=true"]
-    if case == "empty":
-        authorization_lines.append("SCHEDULE_ROLLBACK_AUTHORIZATION_REF=")
-    elif case == "invalid":
-        authorization_lines.append("SCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet")
-    elif case == "unsupported-characters":
-        authorization_lines.append(
-            f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF='rollback-v1:bad id:{'5' * 64}'"
-        )
-    elif case != "missing":
-        authorization_lines.append(f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF={rollback_ref}")
-    if case == "gate-b-rollback-namespace":
-        authorization_lines.append(f"GATE_B_AUTHORIZATION_REF={rollback_ref}")
-    if case == "gate-c-rollback-namespace":
-        authorization_lines.append(f"GATE_C_AUTHORIZATION_REF={rollback_ref}")
-    fake_bin, target_calls = _write_target_spies(tmp_path)
-    kubeconfig = tmp_path / "kubeconfig"
-    kubeconfig.write_text("fixture", encoding="utf-8")
-    digest = f"sha256:{'a' * 64}"
-    env_file = tmp_path / "release.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                f"REPO_DIR={repo}",
-                "TRUENAS_HOST=192.0.2.10",
-                "TRUENAS_SSH_USER=tester",
-                f"KUBECONFIG={kubeconfig}",
-                f"HELM_VALUES_FILE={baseline}",
-                f"SCHEDULING_OVERLAY_FILE={off}",
-                *authorization_lines,
-                f"REVIEWED_GIT_HEAD={head}",
-                f"REVIEWED_CHART_SHA256={hashes['chart_sha256']}",
-                f"REVIEWED_BASELINE_SHA256={hashes['baseline_sha256']}",
-                f"REVIEWED_OVERLAY_SHA256={hashes['overlay_sha256']}",
-                f"REVIEWED_RENDER_SHA256={hashes['render_sha256']}",
-                "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment",
-                "FROZEN_IMAGE_TAG=20260905-1904b66",
-                f"FROZEN_IMAGE_DIGEST={digest}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(repo / "scripts" / SCRIPT.name),
-            "--env-file",
-            str(env_file),
-            "--disable-schedule",
-            "--kube-version",
-            "1.26.6+k3s1",
-            "--release-name",
-            "research",
-            "--namespace",
-            "market-data",
-        ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode != 0
-    assert expected_error in completed.stderr
-    assert not target_calls.exists()
-
-
-@pytest.mark.skipif(HELM is None, reason="helm is not installed")
-@pytest.mark.parametrize(
-    (
-        "operation",
-        "current_name",
-        "selected_name",
-        "authorization",
-        "failure_mode",
-        "expected_success",
-    ),
-    [
-        (
-            "--release-suspended",
-            "values-scheduled-off.yaml",
-            "values-scheduled-suspended.yaml",
-            "SUSPENDED_RELEASE_AUTHORIZED=true\nGATE_B_AUTHORIZATION_REF=reviewed-gate-b-packet",
-            None,
-            True,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            None,
-            True,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            None,
-            True,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "helm-failure",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "signal-after-helm",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "post-live-capture-failure",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "disable-recovery-read-failure",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "disable-patch-failure",
-            False,
-        ),
-        *[
-            (
-                "--disable-schedule",
-                "values-scheduled-active.yaml",
-                "values-scheduled-off.yaml",
-                "SCHEDULE_ROLLBACK_AUTHORIZED=true",
-                recovery_case,
-                False,
-            )
-            for recovery_case in (
-                "exact-label-missing",
-                "exact-label-wrong",
-                "exact-shape-drift",
-                "exact-spec-missing",
-                "exact-suspend-null",
-                "exact-suspend-string",
-                "exact-suspend-zero",
-                "exact-suspend-one",
-                "exact-response-malformed",
-                "exact-response-multiple",
-                "exact-response-wrong-kind",
-                "exact-response-wrong-namespace",
-                "disable-readback-malformed",
-                "disable-readback-wrong-name",
-            )
-        ],
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "disable-verify-failure",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true",
-            "post-exact-active-survives",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "post-label-drift-exact-suspended",
-            False,
-        ),
-        (
-            "--disable-schedule",
-            "values-scheduled-active.yaml",
-            "values-scheduled-off.yaml",
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\nSCHEDULE_ROLLBACK_AUTHORIZATION_REF=reviewed-disable-packet",
-            "stored-name-drift",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "pre-live-drift",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "post-live-drift",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "activation-window-failure",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "post-live-capture-failure",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "signal-after-helm",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "pre-write-activation-window-failure",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "helm-failure",
-            False,
-        ),
-        (
-            "--activate-schedule",
-            "values-scheduled-suspended.yaml",
-            "values-scheduled-active.yaml",
-            "SCHEDULE_ACTIVATION_AUTHORIZED=true\nGATE_C_AUTHORIZATION_REF=reviewed-gate-c-decision\nGATE_C_CATCH_UP_MODE=next-schedule",
-            "final-get-failure",
-            False,
-        ),
-    ],
-    ids=(
-        "release-suspended",
-        "activate",
-        "disable",
-        "disable-helm-failure",
-        "disable-signal-after-helm",
-        "disable-post-live-capture-failure",
-        "disable-recovery-read-failure",
-        "disable-patch-failure",
-        "disable-exact-label-missing",
-        "disable-exact-label-wrong",
-        "disable-exact-shape-drift",
-        "disable-exact-spec-missing",
-        "disable-exact-suspend-null",
-        "disable-exact-suspend-string",
-        "disable-exact-suspend-zero",
-        "disable-exact-suspend-one",
-        "disable-exact-response-malformed",
-        "disable-exact-response-multiple",
-        "disable-exact-response-wrong-kind",
-        "disable-exact-response-wrong-namespace",
-        "disable-readback-malformed",
-        "disable-readback-wrong-name",
-        "disable-verify-failure",
-        "disable-post-exact-active-survives",
-        "disable-label-drift-exact-suspended",
-        "disable-stored-name-drift",
-        "pre-live-drift",
-        "post-live-drift",
-        "activation-window-failure",
-        "post-live-capture-failure",
-        "signal-after-helm",
-        "pre-write-activation-window-failure",
-        "helm-failure",
-        "final-get-failure",
-    ),
-)
-def test_reviewed_release_modes_are_atomic_and_fail_closed(
-    tmp_path: Path,
-    operation: str,
-    current_name: str,
-    selected_name: str,
-    authorization: str,
-    failure_mode: str | None,
-    expected_success: bool,
-) -> None:
-    repo, baseline, suspended, active, off, head = _prepare_reviewed_repo(tmp_path)
-    overlays = {path.name: path for path in (suspended, active, off)}
-    current_render = _render_reviewed(repo, baseline, overlays[current_name])
-    if failure_mode == "stored-name-drift":
-        current_documents = list(yaml.safe_load_all(current_render))
-        current_cronjob = next(
-            item for item in current_documents if item["kind"] == "CronJob"
-        )
-        current_cronjob["metadata"]["name"] = "research-unreviewed-data-collection"
-        current_render = yaml.safe_dump_all(current_documents, sort_keys=False)
-    desired_render = _render_reviewed(repo, baseline, overlays[selected_name])
-    selected = overlays[selected_name]
-    chart_sha256 = _chart_hash(repo)
-    baseline_sha256 = hashlib.sha256(baseline.read_bytes()).hexdigest()
-    selected_sha256 = hashlib.sha256(selected.read_bytes()).hexdigest()
-    render_sha256 = hashlib.sha256(desired_render.encode()).hexdigest()
-    rollback_ref = _rollback_authorization_ref(
-        head=head,
-        chart_sha256=chart_sha256,
-        baseline_sha256=baseline_sha256,
-        overlay_sha256=selected_sha256,
-        render_sha256=render_sha256,
-    )
-    if operation == "--disable-schedule":
-        authorization = (
-            "SCHEDULE_ROLLBACK_AUTHORIZED=true\n"
-            f"SCHEDULE_ROLLBACK_AUTHORIZATION_REF={rollback_ref}"
-        )
-    digest = f"sha256:{'a' * 64}"
-    image = "localhost/a-stock-market-environment:20260905-1904b66"
-
-    fake_bin = tmp_path / "release-bin"
-    fake_bin.mkdir()
-    target_calls = tmp_path / "release-calls"
-    activation_window_counter = tmp_path / "activation-window-count"
-    current_manifest = tmp_path / "current.yaml"
-    current_manifest.write_text(current_render, encoding="utf-8")
-    current_live_payload = yaml.safe_load(_live_list(current_render, "market-data"))
-    if failure_mode == "pre-live-drift":
-        service = next(item for item in current_live_payload["items"] if item["kind"] == "Service")
-        service = next(
-            item
-            for item in current_live_payload["items"]
-            if item["kind"] == "Service" and item["metadata"]["name"].endswith("-a-stock")
-        )
-        service["spec"]["ports"][0]["port"] = 81
-    current_live = tmp_path / "current-live.yaml"
-    current_live.write_text(yaml.safe_dump(current_live_payload, sort_keys=False), encoding="utf-8")
-    desired_live_payload = yaml.safe_load(_live_list(desired_render, "market-data"))
-    if failure_mode == "post-live-drift":
-        cronjob = next(item for item in desired_live_payload["items"] if item["kind"] == "CronJob")
-        cronjob["spec"]["suspend"] = True
-    desired_live = tmp_path / "desired-live.yaml"
-    desired_live.write_text(yaml.safe_dump(desired_live_payload, sort_keys=False), encoding="utf-8")
-    current_cronjob_payload = next(
-        (item for item in current_live_payload["items"] if item["kind"] == "CronJob"),
-        None,
-    )
-    if current_cronjob_payload is not None:
-        current_cronjob_payload = json.loads(json.dumps(current_cronjob_payload))
-        if failure_mode == "exact-label-missing":
-            current_cronjob_payload["metadata"].pop("labels", None)
-        elif failure_mode == "exact-label-wrong":
-            current_cronjob_payload["metadata"]["labels"][
-                "app.kubernetes.io/instance"
-            ] = "other-release"
-        elif failure_mode == "exact-shape-drift":
-            current_cronjob_payload["spec"]["schedule"] = "not-a-cron"
-            current_cronjob_payload["spec"]["jobTemplate"] = {"unreviewed": True}
-        elif failure_mode == "exact-spec-missing":
-            current_cronjob_payload["spec"] = {}
-        elif failure_mode == "exact-suspend-null":
-            current_cronjob_payload["spec"]["suspend"] = None
-        elif failure_mode == "exact-suspend-string":
-            current_cronjob_payload["spec"]["suspend"] = "true"
-        elif failure_mode == "exact-suspend-zero":
-            current_cronjob_payload["spec"]["suspend"] = 0
-        elif failure_mode == "exact-suspend-one":
-            current_cronjob_payload["spec"]["suspend"] = 1
-        elif failure_mode == "exact-response-wrong-kind":
-            current_cronjob_payload["kind"] = "ConfigMap"
-        elif failure_mode == "exact-response-wrong-namespace":
-            current_cronjob_payload["metadata"]["namespace"] = "other-namespace"
-    current_cronjob = tmp_path / "current-cronjob.yaml"
-    if failure_mode == "exact-response-malformed":
-        current_cronjob.write_text("spec: [\n", encoding="utf-8")
-    elif failure_mode == "exact-response-multiple":
-        current_cronjob.write_text(
-            yaml.safe_dump_all(
-                [current_cronjob_payload, current_cronjob_payload], sort_keys=False
-            ),
-            encoding="utf-8",
-        )
-    else:
-        current_cronjob.write_text(
-            yaml.safe_dump(current_cronjob_payload, sort_keys=False)
-            if current_cronjob_payload is not None
-            else "",
-            encoding="utf-8",
-        )
-    suspended_cronjob = tmp_path / "suspended-cronjob.yaml"
-    if current_cronjob_payload is not None:
-        suspended_cronjob_payload = json.loads(json.dumps(current_cronjob_payload))
-        suspended_cronjob_payload.setdefault("spec", {})["suspend"] = True
-        if failure_mode == "post-label-drift-exact-suspended":
-            suspended_cronjob_payload["metadata"]["labels"] = {
-                "app.kubernetes.io/instance": "other-release"
-            }
-        suspended_cronjob.write_text(
-            yaml.safe_dump(suspended_cronjob_payload, sort_keys=False), encoding="utf-8"
-        )
-    else:
-        suspended_cronjob.write_text("", encoding="utf-8")
-    desired_cronjob_payload = next(
-        (item for item in desired_live_payload["items"] if item["kind"] == "CronJob"),
-        None,
-    )
-    desired_cronjob = tmp_path / "desired-cronjob.yaml"
-    desired_cronjob.write_text(
-        yaml.safe_dump(desired_cronjob_payload, sort_keys=False)
-        if desired_cronjob_payload is not None
-        else "",
-        encoding="utf-8",
-    )
-    malformed_readback = tmp_path / "malformed-readback.yaml"
-    malformed_readback.write_text("spec: [\n", encoding="utf-8")
-    wrong_name_readback = tmp_path / "wrong-name-readback.yaml"
-    if current_cronjob_payload is not None:
-        wrong_name_payload = json.loads(json.dumps(current_cronjob_payload))
-        wrong_name_payload["metadata"]["name"] = "other-cronjob"
-        wrong_name_payload.setdefault("spec", {})["suspend"] = True
-        wrong_name_readback.write_text(
-            yaml.safe_dump(wrong_name_payload, sort_keys=False), encoding="utf-8"
-        )
-    else:
-        wrong_name_readback.write_text("", encoding="utf-8")
-    deployed_manifest = tmp_path / "deployed.yaml"
-    deployed_overlay = tmp_path / "deployed-overlay.yaml"
-    released = tmp_path / "released"
-    emergency_suspended = tmp_path / "emergency-suspended"
-    exact_get_counter = tmp_path / "exact-get-count"
-    deployments, replicasets, pods = _runtime_payloads(current_render, "research", digest)
-    deployments_json = tmp_path / "deployments.json"
-    replicasets_json = tmp_path / "replicasets.json"
-    pods_json = tmp_path / "pods.json"
-    deployments_json.write_text(json.dumps(deployments), encoding="utf-8")
-    replicasets_json.write_text(json.dumps(replicasets), encoding="utf-8")
-    pods_json.write_text(json.dumps(pods), encoding="utf-8")
-    helm_wrapper = fake_bin / "helm"
-    helm_wrapper.write_text(
-        "#!/usr/bin/env bash\n"
-        "case \"$1\" in\n"
-        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
-        f"  get) cat {current_manifest}; exit 0 ;;\n"
-        "  upgrade)\n"
-        f"    printf 'helm-upgrade %s\\n' \"$*\" >> {target_calls}\n"
-        "    if [[ \"${FAIL_HELM_UPGRADE:-false}\" == true ]]; then exit 95; fi\n"
-        "    release_name=\"$2\"\n"
-        "    chart_path=\"$3\"\n"
-        "    shift 3\n"
-        "    template_args=()\n"
-        "    values_seen=0\n"
-        "    while (($#)); do\n"
-        "      case \"$1\" in\n"
-        "        --atomic|--wait) shift ;;\n"
-        "        --timeout) shift 2 ;;\n"
-        "        --values)\n"
-        "          values_seen=$((values_seen + 1))\n"
-        f"          if [[ $values_seen -eq 2 ]]; then cp \"$2\" {deployed_overlay}; fi\n"
-        "          template_args+=(\"$1\" \"$2\")\n"
-        "          shift 2 ;;\n"
-        "        *) template_args+=(\"$1\"); shift ;;\n"
-        "      esac\n"
-        "    done\n"
-        f"    printf '\\ninvalid: [concurrent-change\\n' >> {selected}\n"
-        f"    \"$REAL_HELM\" template \"$release_name\" \"$chart_path\" --kube-version 1.26.6+k3s1 \"${{template_args[@]}}\" > {deployed_manifest}\n"
-        f"    touch {released}\n"
-        "    if [[ \"${SIGNAL_AFTER_HELM:-false}\" == true ]]; then kill -TERM \"$PPID\"; sleep 0.1; fi\n"
-        "    ;;\n"
-        "  *) exit 98 ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    helm_wrapper.chmod(0o755)
-    ssh_wrapper = fake_bin / "ssh"
-    ssh_wrapper.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf 'ssh %s\\n' \"$*\" >> {target_calls}\n"
-        f"if [[ \"$*\" == *\"images info\"* ]]; then printf '%s' '{json.dumps({'Name': image, 'Target': {'digest': digest}})}'; fi\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    ssh_wrapper.chmod(0o755)
-    nc_wrapper = fake_bin / "nc"
-    nc_wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    nc_wrapper.chmod(0o755)
-    kubectl_wrapper = fake_bin / "kubectl"
-    kubectl_wrapper.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf 'kubectl %s\\n' \"$*\" >> {target_calls}\n"
-        "if [[ \"$*\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
-        "if [[ \"$*\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\": \"v1.26.6+k3s1\"}'; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get deployment,service,cronjob\"* ]]; then if [[ -f {released} ]]; then if [[ \"${{FAIL_POST_LIVE_CAPTURE:-false}}\" == true ]]; then exit 96; fi; cat {desired_live}; else cat {current_live}; fi; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get deployment\"* ]]; then cat {deployments_json}; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get replicasets\"* ]]; then cat {replicasets_json}; exit 0; fi\n"
-        f"if [[ \"$*\" == *\"get pods\"* ]]; then cat {pods_json}; exit 0; fi\n"
-        "if [[ \"$*\" == \"get cronjob research-a-stock-data-collection --namespace market-data --ignore-not-found -o yaml\" ]]; then\n"
-        "  if [[ \"${FAIL_DISABLE_RECOVERY_GET:-false}\" == true ]]; then exit 93; fi\n"
-        "  if [[ -f \"$EXACT_GET_COUNTER\" ]]; then count=$(<\"$EXACT_GET_COUNTER\"); else count=0; fi\n"
-        "  printf '%s' $((count + 1)) > \"$EXACT_GET_COUNTER\"\n"
-        f"  if [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_READBACK_MALFORMED:-false}}\" == true ]]; then cat {malformed_readback}\n"
-        f"  elif [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_READBACK_WRONG_NAME:-false}}\" == true ]]; then cat {wrong_name_readback}\n"
-        f"  elif [[ -f {emergency_suspended} && \"${{FAIL_DISABLE_VERIFY:-false}}\" != true ]]; then cat {suspended_cronjob}\n"
-        f"  elif [[ -f {released} && \"${{EXACT_CRONJOB_SURVIVES_HELM:-false}}\" == active ]]; then cat {current_cronjob}\n"
-        f"  elif [[ -f {released} && \"${{EXACT_CRONJOB_SURVIVES_HELM:-false}}\" == suspended ]]; then cat {suspended_cronjob}\n"
-        f"  elif [[ -f {released} ]]; then cat {desired_cronjob}\n"
-        f"  else cat {current_cronjob}; fi\n"
-        "  exit 0\n"
-        "fi\n"
-        "if [[ \"$1\" == get && \"$2\" == cronjob && \"$*\" == *\"--ignore-not-found\"* ]]; then exit 91; fi\n"
-        f"if [[ \"$*\" == *\"get cronjob\"* ]]; then if [[ \"${{FAIL_FINAL_CRONJOB_GET:-false}}\" == true ]]; then exit 94; fi; cat {desired_live}; exit 0; fi\n"
-        "if [[ \"$*\" == 'patch cronjob research-a-stock-data-collection --namespace market-data --type=merge --patch {\"spec\":{\"suspend\":true}}' ]]; then "
-        f"if [[ \"${{FAIL_DISABLE_PATCH:-false}}\" == true ]]; then exit 92; fi; touch {emergency_suspended}; exit 0; fi\n"
-        "if [[ \"$*\" == *\"patch cronjob\"* ]]; then exit 91; fi\n"
-        "exit 99\n",
-        encoding="utf-8",
-    )
-    kubectl_wrapper.chmod(0o755)
-
-    kubeconfig = tmp_path / "kubeconfig"
-    kubeconfig.write_text("fixture", encoding="utf-8")
-    env_file = tmp_path / "release.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                f"REPO_DIR={repo}",
-                "TRUENAS_HOST=192.0.2.10",
-                "TRUENAS_SSH_USER=tester",
-                f"KUBECONFIG={kubeconfig}",
-                f"HELM_VALUES_FILE={baseline}",
-                f"SCHEDULING_OVERLAY_FILE={selected}",
-                authorization,
-                f"REVIEWED_GIT_HEAD={head}",
-                f"REVIEWED_CHART_SHA256={chart_sha256}",
-                f"REVIEWED_BASELINE_SHA256={baseline_sha256}",
-                f"REVIEWED_OVERLAY_SHA256={hashlib.sha256(selected.read_bytes()).hexdigest()}",
-                f"REVIEWED_RENDER_SHA256={render_sha256}",
-                "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment",
-                "FROZEN_IMAGE_TAG=20260905-1904b66",
-                f"FROZEN_IMAGE_DIGEST={digest}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    activation_window_fail_on_call = {
-        "activation-window-failure": 1,
-        "pre-write-activation-window-failure": 2,
-    }.get(failure_mode, 0)
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(repo / "scripts" / SCRIPT.name),
-            "--env-file",
-            str(env_file),
-            operation,
-            "--kube-version",
-            "1.26.6+k3s1",
-            "--release-name",
-            "research",
-            "--namespace",
-            "market-data",
-        ],
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "REAL_HELM": HELM,
-            "FAKE_ACTIVATION_WINDOW_COUNTER": str(activation_window_counter),
-            "FAKE_ACTIVATION_WINDOW_FAIL_ON_CALL": str(activation_window_fail_on_call),
-            "FAIL_POST_LIVE_CAPTURE": str(
-                failure_mode
-                in {"post-live-capture-failure", "disable-recovery-read-failure"}
-            ).lower(),
-            "FAIL_HELM_UPGRADE": str(
-                failure_mode
-                in {
-                    "helm-failure",
-                    "disable-patch-failure",
-                    "disable-verify-failure",
-                    "exact-label-missing",
-                    "exact-label-wrong",
-                    "exact-shape-drift",
-                    "exact-spec-missing",
-                    "exact-suspend-null",
-                    "exact-suspend-string",
-                    "exact-suspend-zero",
-                    "exact-suspend-one",
-                    "exact-response-malformed",
-                    "exact-response-multiple",
-                    "exact-response-wrong-kind",
-                    "exact-response-wrong-namespace",
-                    "disable-readback-malformed",
-                    "disable-readback-wrong-name",
-                }
-            ).lower(),
-            "FAIL_FINAL_CRONJOB_GET": str(failure_mode == "final-get-failure").lower(),
-            "SIGNAL_AFTER_HELM": str(failure_mode == "signal-after-helm").lower(),
-            "FAIL_DISABLE_RECOVERY_GET": str(
-                failure_mode == "disable-recovery-read-failure"
-            ).lower(),
-            "FAIL_DISABLE_PATCH": str(failure_mode == "disable-patch-failure").lower(),
-            "FAIL_DISABLE_VERIFY": str(failure_mode == "disable-verify-failure").lower(),
-            "FAIL_DISABLE_READBACK_MALFORMED": str(
-                failure_mode == "disable-readback-malformed"
-            ).lower(),
-            "FAIL_DISABLE_READBACK_WRONG_NAME": str(
-                failure_mode == "disable-readback-wrong-name"
-            ).lower(),
-            "EXACT_CRONJOB_SURVIVES_HELM": (
-                "active"
-                if failure_mode == "post-exact-active-survives"
-                else "suspended"
-                if failure_mode == "post-label-drift-exact-suspended"
-                else "false"
-            ),
-            "EXACT_GET_COUNTER": str(exact_get_counter),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    calls = target_calls.read_text(encoding="utf-8") if target_calls.exists() else ""
-    exact_get_calls = (
-        int(exact_get_counter.read_text(encoding="utf-8"))
-        if exact_get_counter.exists()
-        else 0
-    )
-    activation_window_calls = (
-        int(activation_window_counter.read_text(encoding="utf-8"))
-        if activation_window_counter.exists()
-        else 0
-    )
-    expected_activation_window_calls = (
-        0
-        if operation != "--activate-schedule"
-        else 1
-        if failure_mode in {"activation-window-failure", "pre-live-drift"}
-        else 2
-    )
-    assert activation_window_calls == expected_activation_window_calls
-    exact_suspend_call = (
-        "kubectl patch cronjob research-a-stock-data-collection --namespace market-data "
-        '--type=merge --patch {"spec":{"suspend":true}}'
-    )
-    exact_get_call = (
-        "kubectl get cronjob research-a-stock-data-collection --namespace market-data "
-        "--ignore-not-found -o yaml"
-    )
-    patch_calls = [
-        line for line in calls.splitlines() if line.startswith("kubectl patch cronjob")
-    ]
-    if operation == "--disable-schedule":
-        exact_name_get_calls = [
-            line
-            for line in calls.splitlines()
-            if line.startswith(
-                "kubectl get cronjob research-a-stock-data-collection"
-            )
-        ]
-        assert all(line == exact_get_call for line in exact_name_get_calls)
-    if not expected_success:
-        assert completed.returncode != 0
-        assert "disable-schedule completed" not in completed.stdout
-        assert len(patch_calls) <= 1
-        if operation == "--disable-schedule" and failure_mode == "stored-name-drift":
-            assert "stored and release-derived CronJob names differ" in completed.stderr
-            assert "helm-upgrade" not in calls
-            assert "patch cronjob" not in calls
-            assert "disable-schedule failure recovery" not in (
-                completed.stdout + completed.stderr
-            )
-        elif operation == "--disable-schedule":
-            assert "helm-upgrade" in calls
-            assert "disable-schedule failure recovery" in (
-                completed.stdout + completed.stderr
-            )
-            if failure_mode in {
-                "helm-failure",
-                "disable-patch-failure",
-                "disable-verify-failure",
-                "exact-label-missing",
-                "exact-label-wrong",
-                "exact-shape-drift",
-                "exact-spec-missing",
-                "exact-suspend-null",
-                "exact-suspend-string",
-                "exact-suspend-zero",
-                "exact-suspend-one",
-                "disable-readback-malformed",
-                "disable-readback-wrong-name",
-                "post-exact-active-survives",
-            }:
-                assert patch_calls == [exact_suspend_call]
-                call_lines = calls.splitlines()
-                patch_index = call_lines.index(exact_suspend_call)
-                assert call_lines[patch_index + 1 :].count(exact_get_call) == 1
-                expected_exact_get_calls = (
-                    3 if failure_mode == "post-exact-active-survives" else 2
-                )
-                assert exact_get_calls == expected_exact_get_calls
-            else:
-                assert patch_calls == []
-            if failure_mode == "helm-failure":
-                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
-            elif failure_mode == "signal-after-helm":
-                assert completed.returncode == 143
-                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
-            elif failure_mode == "post-live-capture-failure":
-                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
-            elif failure_mode == "disable-recovery-read-failure":
-                # A target-side empty response with no stderr is treated as an
-                # absent resource by the fail-closed capture helper.  This is
-                # the safe outcome for offline fake kubectl and avoids turning
-                # a proven absence into an unnecessary emergency patch.
-                assert "exact CronJob research-a-stock-data-collection is absent" in completed.stdout
-            elif failure_mode == "disable-patch-failure":
-                assert "emergency suspend command failed" in completed.stderr
-                assert "exact CronJob state remains uncertain" in completed.stderr
-            elif failure_mode == "disable-verify-failure":
-                assert "expected research-a-stock-data-collection to be absent or suspended, got needs-suspend" in completed.stderr
-                assert "exact CronJob state remains uncertain" in completed.stderr
-            elif failure_mode in {
-                "exact-label-missing",
-                "exact-label-wrong",
-                "exact-shape-drift",
-                "exact-spec-missing",
-                "exact-suspend-null",
-                "exact-suspend-string",
-                "exact-suspend-zero",
-                "exact-suspend-one",
-            }:
-                assert "forcing research-a-stock-data-collection to suspend=true" in completed.stderr
-                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
-            elif failure_mode in {
-                "exact-response-malformed",
-                "exact-response-multiple",
-                "exact-response-wrong-kind",
-                "exact-response-wrong-namespace",
-            }:
-                assert "could not read exact CronJob" in completed.stderr
-                assert "exact CronJob state remains uncertain" in completed.stderr
-            elif failure_mode == "disable-readback-malformed":
-                assert "could not verify the emergency suspend" in completed.stderr
-                assert "exact CronJob state remains uncertain" in completed.stderr
-            elif failure_mode == "disable-readback-wrong-name":
-                assert "could not verify the emergency suspend" in completed.stderr
-                assert "exact CronJob state remains uncertain" in completed.stderr
-            elif failure_mode == "post-exact-active-survives":
-                assert "exact CronJob research-a-stock-data-collection still exists" in completed.stderr
-                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
-            elif failure_mode == "post-label-drift-exact-suspended":
-                assert "exact CronJob research-a-stock-data-collection still exists" in completed.stderr
-                assert "could not prove exact CronJob deletion" in completed.stderr
-                assert "exact CronJob research-a-stock-data-collection is suspended" in completed.stdout
-        elif failure_mode == "activation-window-failure":
-            assert "Gate C preflight activation window validation failed" in completed.stderr
-            assert "helm-upgrade" not in calls
-            assert "ssh " not in calls and "kubectl " not in calls
-        elif failure_mode == "pre-write-activation-window-failure":
-            assert "Gate C pre-write activation window validation failed" in completed.stderr
-            assert "ssh " in calls and "kubectl " in calls
-            assert "helm-upgrade" not in calls
-            assert "patch cronjob" not in calls
-        elif failure_mode == "pre-live-drift":
-            assert "live declarative state differs" in completed.stderr
-            assert "helm-upgrade" not in calls
-        elif failure_mode == "post-live-capture-failure":
-            assert "activation did not complete safely" in completed.stderr
-            assert calls.splitlines().count(exact_suspend_call) == 1
-        elif failure_mode == "helm-failure":
-            assert "Helm atomic rollback was requested" in completed.stderr
-            assert "activation did not complete safely" in completed.stderr
-            assert "helm-upgrade" in calls
-            assert calls.splitlines().count(exact_suspend_call) == 1
-        elif failure_mode == "final-get-failure":
-            assert completed.returncode == 94
-            assert "activation did not complete safely" in completed.stderr
-            assert "helm-upgrade" in calls
-            assert calls.splitlines().count(exact_suspend_call) == 1
-        elif failure_mode == "signal-after-helm":
-            assert completed.returncode == 143
-            assert "activation did not complete safely" in completed.stderr
-            assert calls.splitlines().count(exact_suspend_call) == 1
-        else:
-            assert "postcondition failed" in completed.stderr
-            assert calls.splitlines().count(exact_suspend_call) == 1
-        return
-
-    assert completed.returncode == 0, completed.stderr
-    assert "helm-upgrade" in calls
-    assert "research" in calls and "--namespace market-data" in calls
-    assert "image.repository=localhost/a-stock-market-environment" in calls
-    assert "image.tag=20260905-1904b66" in calls
-    assert "--atomic" in calls
-    if operation == "--activate-schedule":
-        assert "Gate C activation window (preflight):" in completed.stdout
-        assert "Gate C activation window (pre-write):" in completed.stdout
-    elif operation == "--disable-schedule":
-        assert calls.splitlines().count(exact_get_call) == 1
-        assert exact_get_calls == 1
-        binding = next(
-            line
-            for line in completed.stdout.splitlines()
-            if "rollback authorization verified:" in line
-        )
-        assert "approval=gyt-47-disable" in binding
-        assert f"binding={rollback_ref.rsplit(':', 1)[1]}" in binding
-        assert calls.splitlines().count(exact_suspend_call) == 0
-        assert exact_get_calls == 1
-    assert str(repo / "deploy" / "helm" / "a-stock") not in next(
-        line for line in calls.splitlines() if line.startswith("helm-upgrade")
-    )
-    assert hashlib.sha256(deployed_overlay.read_bytes()).hexdigest() == selected_sha256
-    assert hashlib.sha256(deployed_manifest.read_bytes()).hexdigest() == hashlib.sha256(
-        desired_render.encode()
-    ).hexdigest()
-    assert "podman" not in calls and "scp" not in calls
-
-
 def _component_fake_repo(
     tmp_path: Path,
     *,
@@ -2394,7 +1350,6 @@ def _component_fake_repo(
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
     return repo, repo / "scripts" / SCRIPT.name, copied[baseline_name], copied
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(
@@ -2461,7 +1416,6 @@ def test_component_deploy_routes_around_image_work_without_target_access(
     assert "podman" not in marker.read_text(encoding="utf-8")
     assert "scp" not in marker.read_text(encoding="utf-8")
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_schedule_rejects_missing_frozen_image_without_target_access(
     tmp_path: Path,
@@ -2504,7 +1458,6 @@ def test_component_schedule_rejects_missing_frozen_image_without_target_access(
     assert "requires FROZEN_IMAGE_REPOSITORY" in completed.stderr
     assert not marker.exists()
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(
     "invalid_component",
@@ -2546,7 +1499,6 @@ def test_component_value_rejects_invalid_or_ambiguous_names(
 
     assert completed.returncode != 0
     assert "--component must be one of" in completed.stderr
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> None:
@@ -2627,7 +1579,6 @@ def test_component_database_renders_only_pvc_in_offline_mode(tmp_path: Path) -> 
     assert "kind: Deployment" not in completed.stdout
     assert "kind: CronJob" not in completed.stdout
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_database_with_existingclaim_renders_no_pvc_object(tmp_path: Path) -> None:
     repo, _, baseline, _ = _component_fake_repo(tmp_path)
@@ -2665,7 +1616,6 @@ def test_component_database_with_existingclaim_renders_no_pvc_object(tmp_path: P
     assert kinds == {"PersistentVolumeClaim", "Service", "StatefulSet", "Job"}
     assert "name: a-stock-postgresql-data" in completed.stdout
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_schedule_offline_render_keeps_suspended_cronjob(tmp_path: Path) -> None:
     repo, _, baseline, _ = _component_fake_repo(tmp_path)
@@ -2700,7 +1650,6 @@ def test_component_schedule_offline_render_keeps_suspended_cronjob(tmp_path: Pat
     assert "kind: Deployment" not in completed.stdout
     assert "kind: Service" not in completed.stdout
     assert "kind: PersistentVolumeClaim" not in completed.stdout
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_schedule_deploy_preflight_renders_with_frozen_image(
@@ -2761,7 +1710,6 @@ def test_component_schedule_deploy_preflight_renders_with_frozen_image(
     assert "podman" not in marker.read_text(encoding="utf-8")
     assert "scp" not in marker.read_text(encoding="utf-8")
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_schedule_deploy_rejects_baseline_image_when_frozen_required(
     tmp_path: Path,
@@ -2816,7 +1764,6 @@ def test_component_schedule_deploy_rejects_baseline_image_when_frozen_required(
     assert "podman" not in marker.read_text(encoding="utf-8")
     assert "scp" not in marker.read_text(encoding="utf-8")
 
-
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_service_deploy_preflight_uses_component_value(
     tmp_path: Path,
@@ -2861,7 +1808,6 @@ def test_component_service_deploy_preflight_uses_component_value(
     assert completed.returncode != 0, completed.stderr
     assert "REMOTE_IMAGE_DIR is required" in completed.stderr
     assert not marker.exists()
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_target(
@@ -2912,7 +1858,6 @@ def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_
     assert marker.exists()
     assert "podman" not in marker.read_text(encoding="utf-8")
     assert "scp" not in marker.read_text(encoding="utf-8")
-
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_all_components_ordered_database_service_schedule_in_preflight(

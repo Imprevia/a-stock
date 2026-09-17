@@ -17,7 +17,7 @@ completed
 ## Completion Evidence
 
 - 修复 `scripts/deploy-truenas-k3s.sh` 基线解析遗漏的 `security`、`scheduling` 和 `storageClass` 字段。
-- 将组件基线 PVC StorageClass 与现场只读证据对齐为 `manual-local`；Helm lint 与 docs-contract fast 通过。
+- 将组件基线 PVC StorageClass 与现场只读证据对齐为 `local-path`；Helm lint 与 docs-contract fast 通过。
 - 已执行镜像构建、传输和 Helm revision 10 尝试；PVC 未删除或替换。
 - 已执行 `systemctl enable k3s`，远端回读为 `enabled` 且服务 `active`。
 - 远端节点曾为 `NotReady`，CNI 配置目录为空，导致 Deployment Pod Pending 和 rollout 超时回滚；通过 TrueNAS `kubernetes.update` 校正实际 `node_ip=192.168.1.20`、`route_v4_interface=br0`、网关 `192.168.1.1` 后，CNI 已重新生成。

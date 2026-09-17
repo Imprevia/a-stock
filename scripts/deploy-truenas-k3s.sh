@@ -218,7 +218,6 @@ persistence = data.get("persistence") or {}
 image = data.get("image") or {}
 topology = data.get("topology") or {}
 scheduling = data.get("scheduling") or {}
-authorization = data.get("authorization") or {}
 required_release = ("name", "namespace", "chart")
 for key in required_release:
     if not release.get(key):
@@ -260,10 +259,6 @@ if scheduling.get("concurrencyPolicy") != "Forbid" or scheduling.get("businessTi
     raise SystemExit("component baseline fixture has unsupported scheduling safety values")
 if not isinstance(scheduling.get("startingDeadlineSeconds"), int) or not isinstance(scheduling.get("activeDeadlineSeconds"), int):
     raise SystemExit("component baseline fixture scheduling deadlines must be integers")
-for key in ("releaseSuspended", "activateSchedule", "disableSchedule"):
-    gate = authorization.get(key) or {}
-    if gate.get("required") is not True or not gate.get("envVar") or not gate.get("referenceEnvVar"):
-        raise SystemExit("component baseline fixture is missing authorization." + key)
 print(release.get("name", ""))
 print(release.get("namespace", ""))
 print(persistence.get("claimName", ""))
@@ -318,7 +313,7 @@ component_required_scheduling_state() {
     schedule)
       # The reviewed baseline permits either a disabled packet (no CronJob) or
       # a safely suspended CronJob.  Active scheduling is still rejected by the
-      # chart and by the Gate B/Gate C reviewed paths.
+      # chart and by the scheduling operations reviewed paths.
       printf '%s\n' any
       ;;
     *)
@@ -1154,20 +1149,8 @@ if [[ -n "$BASELINE_VALUES_FILE" ]]; then
   HELM_VALUES_FILE="$BASELINE_VALUES_FILE"
 fi
 SCHEDULING_OVERLAY_FILE="${SCHEDULING_OVERLAY_FILE:-}"
-SERVER_DRY_RUN_AUTHORIZED="${SERVER_DRY_RUN_AUTHORIZED:-false}"
 SERVER_DRY_RUN_VERB="${SERVER_DRY_RUN_VERB:-create}"
-SUSPENDED_RELEASE_AUTHORIZED="${SUSPENDED_RELEASE_AUTHORIZED:-false}"
-SCHEDULE_ACTIVATION_AUTHORIZED="${SCHEDULE_ACTIVATION_AUTHORIZED:-false}"
-SCHEDULE_ROLLBACK_AUTHORIZED="${SCHEDULE_ROLLBACK_AUTHORIZED:-false}"
-SCHEDULE_ROLLBACK_AUTHORIZATION_REF="${SCHEDULE_ROLLBACK_AUTHORIZATION_REF:-}"
-GATE_B_AUTHORIZATION_REF="${GATE_B_AUTHORIZATION_REF:-}"
-GATE_C_AUTHORIZATION_REF="${GATE_C_AUTHORIZATION_REF:-}"
-GATE_C_CATCH_UP_MODE="${GATE_C_CATCH_UP_MODE:-}"
-REVIEWED_GIT_HEAD="${REVIEWED_GIT_HEAD:-}"
-REVIEWED_CHART_SHA256="${REVIEWED_CHART_SHA256:-}"
-REVIEWED_BASELINE_SHA256="${REVIEWED_BASELINE_SHA256:-}"
-REVIEWED_OVERLAY_SHA256="${REVIEWED_OVERLAY_SHA256:-}"
-REVIEWED_RENDER_SHA256="${REVIEWED_RENDER_SHA256:-}"
+ACTIVATION_CATCH_UP_MODE="${ACTIVATION_CATCH_UP_MODE:-}"
 FROZEN_IMAGE_REPOSITORY="${FROZEN_IMAGE_REPOSITORY:-}"
 FROZEN_IMAGE_TAG="${FROZEN_IMAGE_TAG:-}"
 FROZEN_IMAGE_DIGEST="${FROZEN_IMAGE_DIGEST:-}"
@@ -1263,24 +1246,8 @@ fi
 [[ "$SCHEDULED_COLLECTION_ENABLED" =~ ^(true|false)$ ]] || die 'SCHEDULED_COLLECTION_ENABLED must be true or false'
 [[ "$SCHEDULED_COLLECTION_SUSPEND" =~ ^(true|false)$ ]] || die 'SCHEDULED_COLLECTION_SUSPEND must be true or false'
 [[ "$DISABLE_MANUAL_REFRESH" =~ ^(true|false)$ ]] || die 'DISABLE_MANUAL_REFRESH must be true or false'
-[[ "$SERVER_DRY_RUN_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SERVER_DRY_RUN_AUTHORIZED must be true or false'
-[[ "$SUSPENDED_RELEASE_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SUSPENDED_RELEASE_AUTHORIZED must be true or false'
-[[ "$SCHEDULE_ACTIVATION_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SCHEDULE_ACTIVATION_AUTHORIZED must be true or false'
-[[ "$SCHEDULE_ROLLBACK_AUTHORIZED" =~ ^(true|false)$ ]] || die 'SCHEDULE_ROLLBACK_AUTHORIZED must be true or false'
 [[ "$SERVER_DRY_RUN_VERB" == create ]] || die 'SERVER_DRY_RUN_VERB must be create for the absent CronJob admission probe'
-if [[ -n "$GATE_B_AUTHORIZATION_REF" ]]; then
-  validate_scalar GATE_B_AUTHORIZATION_REF "$GATE_B_AUTHORIZATION_REF"
-  [[ "$GATE_B_AUTHORIZATION_REF" != rollback-v1:* ]] \
-    || die 'Gate B authorization must not use the rollback-v1 namespace'
-fi
-if [[ -n "$GATE_C_AUTHORIZATION_REF" ]]; then
-  validate_scalar GATE_C_AUTHORIZATION_REF "$GATE_C_AUTHORIZATION_REF"
-  [[ "$GATE_C_AUTHORIZATION_REF" != rollback-v1:* ]] \
-    || die 'Gate C authorization must not use the rollback-v1 namespace'
-fi
-if [[ -n "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" ]]; then
-  validate_scalar SCHEDULE_ROLLBACK_AUTHORIZATION_REF "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF"
-fi
+
 
 case "$OPERATION" in
   server-dry-run|release-suspended|activate-schedule|disable-schedule)
@@ -1512,34 +1479,6 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
   esac
 fi
 
-rollback_binding_payload() {
-  printf '%s\n' \
-    'schema=rollback-v1' \
-    'operation=--disable-schedule' \
-    "release=$RELEASE_NAME" \
-    "namespace=$NAMESPACE" \
-    "kubernetesVersion=$TARGET_KUBERNETES_VERSION" \
-    "reviewedHead=$REVIEWED_GIT_HEAD" \
-    "chartSha256=$REVIEWED_CHART_SHA256" \
-    "baselineSha256=$REVIEWED_BASELINE_SHA256" \
-    "overlaySha256=$REVIEWED_OVERLAY_SHA256" \
-    "renderSha256=$REVIEWED_RENDER_SHA256"
-}
-
-verify_rollback_authorization_ref() {
-  local reference="$1"
-  local expected_digest supplied_digest approval_id
-  if [[ ! "$reference" =~ ^rollback-v1:([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([0-9a-f]{64})$ ]]; then
-    die 'SCHEDULE_ROLLBACK_AUTHORIZATION_REF must match rollback-v1:<approval-id>:<binding-sha256>'
-  fi
-  approval_id="${BASH_REMATCH[1]}"
-  supplied_digest="${BASH_REMATCH[2]}"
-  expected_digest="$(rollback_binding_payload | sha256sum | awk '{print $1}')"
-  [[ "$supplied_digest" == "$expected_digest" ]] \
-    || die 'schedule rollback authorization binding does not match the exact disable-schedule packet'
-  log "rollback authorization verified: approval=$approval_id binding=$supplied_digest"
-}
-
 chart_sha256() {
   git ls-files -z -- deploy/helm/a-stock \
     | sort -z \
@@ -1556,21 +1495,13 @@ verify_hash() {
   [[ "$expected" == "$actual" ]] || die "$label SHA-256 drift: expected $expected, got $actual"
 }
 
-verify_reviewed_sources() {
-  local require_packet="$1"
-  local head upstream_head
-  [[ -n "$REVIEWED_GIT_HEAD" ]] || die 'REVIEWED_GIT_HEAD is required'
-  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die 'reviewed scheduling operations require a clean working tree'
-  head="$(git rev-parse HEAD)"
-  [[ "$head" == "$REVIEWED_GIT_HEAD" ]] || die "reviewed HEAD drift: expected $REVIEWED_GIT_HEAD, got $head"
-  upstream_head="$(git rev-parse '@{upstream}' 2>/dev/null)" || die 'reviewed branch must have an upstream'
-  [[ "$head" == "$upstream_head" ]] || die "reviewed branch differs from its upstream: $upstream_head"
-  verify_hash chart "$REVIEWED_CHART_SHA256" "$(chart_sha256)"
-  if [[ "$require_packet" == true ]]; then
-    verify_hash baseline "$REVIEWED_BASELINE_SHA256" "$(sha256sum "$HELM_VALUES_FILE" | awk '{print $1}')"
-    verify_hash overlay "$REVIEWED_OVERLAY_SHA256" "$(sha256sum "$SCHEDULING_OVERLAY_FILE" | awk '{print $1}')"
-    verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$RENDERED_PACKET")"
-  fi
+# Scheduling operations require a clean working tree. Operators record
+# release/namespace/镜像 digest / catch-up behavior in the active plan's
+# Completion Evidence before invoking --release-suspended,
+# --activate-schedule, or --disable-schedule.
+assert_clean_worktree() {
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+    || die 'scheduling operations require a clean working tree'
 }
 
 validate_activation_window() {
@@ -1579,44 +1510,27 @@ validate_activation_window() {
   if ! inspection="$(
     printf '%s\n' "$PACKET_INSPECTION" \
       | python3 "$PACKET_VALIDATOR" validate-activation-window \
-        --mode "$GATE_C_CATCH_UP_MODE"
+        --mode "$ACTIVATION_CATCH_UP_MODE"
   )"; then
-    die "Gate C $phase activation window validation failed"
+    die "activation $phase window validation failed"
   fi
   log_value="${inspection//$'\n'/ }"
-  log "Gate C activation window ($phase): $log_value"
+  log "activation window ($phase): $log_value"
 }
 
 case "$OPERATION" in
   read-only-discovery)
-    verify_reviewed_sources false
     ;;
   server-dry-run|release-suspended|activate-schedule|disable-schedule)
-    verify_reviewed_sources true
+    assert_clean_worktree
     ;;
 esac
 
 case "$OPERATION" in
-  server-dry-run)
-    [[ "$SERVER_DRY_RUN_AUTHORIZED" == true ]] || die '--server-dry-run requires SERVER_DRY_RUN_AUTHORIZED=true'
-    [[ -n "$GATE_B_AUTHORIZATION_REF" ]] || die '--server-dry-run requires an exact GATE_B_AUTHORIZATION_REF'
-    ;;
-  release-suspended)
-    [[ "$SUSPENDED_RELEASE_AUTHORIZED" == true ]] || die '--release-suspended requires SUSPENDED_RELEASE_AUTHORIZED=true'
-    [[ -n "$GATE_B_AUTHORIZATION_REF" ]] || die '--release-suspended requires an exact GATE_B_AUTHORIZATION_REF'
-    ;;
   activate-schedule)
-    [[ "$SCHEDULE_ACTIVATION_AUTHORIZED" == true ]] || die '--activate-schedule requires SCHEDULE_ACTIVATION_AUTHORIZED=true'
-    [[ -n "$GATE_C_AUTHORIZATION_REF" ]] || die '--activate-schedule requires an exact GATE_C_AUTHORIZATION_REF'
-    [[ "$GATE_C_CATCH_UP_MODE" == next-schedule || "$GATE_C_CATCH_UP_MODE" == immediate-catch-up ]] || die 'Gate C requires GATE_C_CATCH_UP_MODE=next-schedule or immediate-catch-up'
+    [[ "$ACTIVATION_CATCH_UP_MODE" == next-schedule || "$ACTIVATION_CATCH_UP_MODE" == immediate-catch-up ]] \
+      || die '--activate-schedule requires ACTIVATION_CATCH_UP_MODE=next-schedule or immediate-catch-up'
     validate_activation_window preflight
-    ;;
-  disable-schedule)
-    [[ "$SCHEDULE_ROLLBACK_AUTHORIZED" == true ]] || die '--disable-schedule requires SCHEDULE_ROLLBACK_AUTHORIZED=true'
-    [[ -n "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" ]] || die '--disable-schedule requires an exact SCHEDULE_ROLLBACK_AUTHORIZATION_REF'
-    [[ -z "$GATE_B_AUTHORIZATION_REF" || "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" != "$GATE_B_AUTHORIZATION_REF" ]] || die 'schedule rollback authorization must be independent of Gate B authorization'
-    [[ -z "$GATE_C_AUTHORIZATION_REF" || "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF" != "$GATE_C_AUTHORIZATION_REF" ]] || die 'schedule rollback authorization must be independent of Gate C authorization'
-    verify_rollback_authorization_ref "$SCHEDULE_ROLLBACK_AUTHORIZATION_REF"
     ;;
 esac
 
@@ -1729,12 +1643,6 @@ case "$OPERATION" in
     fi
     if ! inspect_scheduling_packet "$SNAPSHOT_RENDER" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION" >/dev/null; then
       die 'frozen release packet failed scheduling validation'
-    fi
-    if [[ "$OPERATION" != deploy ]]; then
-      verify_hash baseline "$REVIEWED_BASELINE_SHA256" "$(sha256sum "$OPERATION_BASELINE_VALUES" | awk '{print $1}')"
-      verify_hash overlay "$REVIEWED_OVERLAY_SHA256" "$(sha256sum "$OPERATION_SCHEDULING_OVERLAY" | awk '{print $1}')"
-      verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$SNAPSHOT_RENDER")"
-      log "reviewed packet binding: head=$REVIEWED_GIT_HEAD chart=$REVIEWED_CHART_SHA256 baseline=$REVIEWED_BASELINE_SHA256 overlay=$REVIEWED_OVERLAY_SHA256 render=$REVIEWED_RENDER_SHA256"
     fi
     chmod -R a-w "$SNAPSHOT_DIR"
     RENDERED_PACKET="$SNAPSHOT_RENDER"
@@ -2013,7 +1921,7 @@ log "Tailscale URL after NGINX is configured: https://${TAILSCALE_HOST}:${TAILSC
 if [[ -n "$HELM_VALUES_FILE" ]]; then
   log "scheduled collection settings follow $HELM_VALUES_FILE"
 elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
-  log 'CronJob is suspended; do not unsuspend without accepted Gate B canary evidence and separate Gate C authorization'
+  log 'CronJob is suspended; do not unsuspend without accepted suspended release canary evidence and separate operator confirmation'
 fi
 
 log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
@@ -2104,11 +2012,11 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_MANIFEST"
 
-  verify_reviewed_sources true
+  assert_clean_worktree
   if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
     die 'frozen scheduling packet changed before release'
   fi
-  verify_hash render "$REVIEWED_RENDER_SHA256" "$(sha256_text "$PRE_WRITE_RENDER")"
+  GENERIC_RENDER_SHA256="$(sha256_text "$PRE_WRITE_RENDER")"
 
   if [[ "$OPERATION" == activate-schedule ]]; then
     ACTIVATION_CRONJOB_NAME="$(

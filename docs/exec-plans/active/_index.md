@@ -3,6 +3,7 @@
 ## 主计划
 
 - [`document-truenas-podman-k3s-deployment.md`](document-truenas-podman-k3s-deployment.md) — TrueNAS Podman 到 k3s 部署教程
+- [`consolidate-helm-managed-scheduling.md`](consolidate-helm-managed-scheduling.md) — 将独立 CronJob 合并到 Helm chart
 
 ## 活动计划
 
@@ -15,8 +16,7 @@
 | `index-combination-rework` | Codex | completed | 2026-09-04 |
 | `enable-manual-market-data-collection-by-default` | Codex | completed | 2026-09-03 |
 | `local-development-port-8001` | Codex | completed | 2026-09-04 |
-| `enable-truenas-scheduled-market-collection` | 资深项目经理 + 资深后端工程师 | in-progress | 2026-09-09 |
-| `enable-scheduled-collection-direct-apply` | Codex | in-progress | 2026-09-13 |
+| `consolidate-helm-managed-scheduling` | Codex | completed-without-production-write | 2026-09-17 |
 | `fix-scheduled-collection-stability-and-override` | Codex | completed-without-production-write | 2026-09-13 |
 | `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
 | `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |
@@ -28,6 +28,7 @@
 | `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |
 | `repair-and-deploy-market-services-20260915` | Codex | in-progress | 2026-09-15 |
 | `migrate-sqlite-to-postgresql` | Codex | completed-without-production-write | 2026-09-16 |
+| `remove-gate-abc-deployment-checks-20260917` | Codex | completed-without-production-write | 2026-09-17 |
 
 ## 说明
 

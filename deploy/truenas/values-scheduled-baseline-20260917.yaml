@@ -1,0 +1,55 @@
+# values-scheduled-baseline-20260917.yaml
+#
+# Consolidated TrueNAS k3s release baseline used by --component schedule in
+# --release-suspended mode. Combines the reviewed service overlay
+# (values-secure-manual-collection.yaml) with the live-suspending schedule
+# overlay (values-scheduled-suspended.yaml, refreshed 2026-09-17) so the
+# Helm-managed CronJob matches the previously independent operator override.
+#
+# Frozen image reference matches the live CronJob at 2026-09-15 (revision 14):
+#   localhost/a-stock-market-environment:20260915-230346-6f3cdb5
+#
+# Persistence / database / secret / PVC references match the live Helm release
+# a-stock (revision 14) on the TrueNAS k3s 1.26.6 cluster.
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20260915-230346-6f3cdb5
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  persistentCache: true
+  settlementTime: "15:10"
+  scheduledCollection:
+    enabled: true
+    suspend: true
+    timezoneStrategy: controller
+    timeZone: Asia/Shanghai
+    schedule: "30 16 * * 1-5"
+    controllerTimeZone: Asia/Shanghai
+    controllerTimeZoneVerified: true
+    controllerCanaryVerified: false
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"

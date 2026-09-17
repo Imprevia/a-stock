@@ -32,9 +32,6 @@ TRUENAS_DIRECT_ACCESS_VALUES = ROOT / "deploy" / "truenas" / "values-secure-manu
 TRUENAS_SCHEDULED_SUSPENDED_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
 TRUENAS_SCHEDULED_ACTIVE_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-active.yaml"
 TRUENAS_SCHEDULED_OFF_VALUES = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
-TRUENAS_CONTROLLER_SHANGHAI_CRONJOB = (
-    ROOT / "deploy" / "truenas" / "market-data-collection-cronjob-1.26-controller-shanghai.yaml"
-)
 HELM_BINARY = os.getenv("HELM_BINARY") or shutil.which("helm")
 KUBECTL_BINARY = os.getenv("KUBECTL_BINARY") or shutil.which("kubectl")
 SHELL_FENCE_LANGUAGES = ("bash", "sh", "shell")
@@ -47,8 +44,6 @@ CONTROLLED_SHELL_SCRIPTS = frozenset(
     {
         "scripts/deploy-truenas-k3s.sh",
         "./scripts/deploy-truenas-k3s.sh",
-        "scripts/apply-truenas-operator-override.sh",
-        "./scripts/apply-truenas-operator-override.sh",
     }
 )
 SHELL_STDIN_PATHS = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
@@ -862,72 +857,6 @@ def test_k3s_postgresql_statefulset_owns_database_pvc_and_schema_job_precedes_ap
         assert all("snapshots.sqlite3" not in str(volume) for volume in pod["volumes"])
 
 
-def test_truenas_126_controller_shanghai_override_is_frozen_and_isolated() -> None:
-    cronjob = _load_yaml(TRUENAS_CONTROLLER_SHANGHAI_CRONJOB)
-    cron_spec = cronjob["spec"]
-    cron_pod = cron_spec["jobTemplate"]["spec"]["template"]["spec"]
-    cron_container = cron_pod["containers"][0]
-
-    assert cronjob["apiVersion"] == "batch/v1"
-    assert cronjob["kind"] == "CronJob"
-    assert cronjob["metadata"]["name"] == "market-data-collection"
-    assert cronjob["metadata"]["namespace"] == "a-stock"
-    assert cron_spec["schedule"] == "30 16 * * 1-5"
-    assert "timeZone" not in cron_spec
-    assert cron_spec["suspend"] is False
-    assert cron_spec["concurrencyPolicy"] == "Forbid"
-    assert cron_spec["startingDeadlineSeconds"] == 1800
-    assert cron_spec["successfulJobsHistoryLimit"] == 3
-    assert cron_spec["failedJobsHistoryLimit"] == 3
-    assert cron_spec["jobTemplate"]["spec"]["backoffLimit"] == 0
-    assert cron_spec["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 3600
-    assert cron_container["image"] == "localhost/a-stock-market-environment:20260906-005226-2075b6e"
-    assert cron_container["imagePullPolicy"] == "IfNotPresent"
-    assert cron_container["command"] == [
-        "python",
-        "-m",
-        "src.market_environment.cli",
-        "snapshots",
-        "scheduled-refresh",
-    ]
-    environment = _environment(cron_container)
-    assert environment["TZ"] == "Asia/Shanghai"
-    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in environment
-    assert environment["MARKET_ENVIRONMENT_DATABASE_URL"] == {
-        "secretKeyRef": {"name": "a-stock-postgresql", "key": "DATABASE_URL"}
-    }
-    assert environment["MARKET_ENVIRONMENT_DATABASE_HOST"] == "market-environment-postgresql"
-    assert environment["MARKET_ENVIRONMENT_DATABASE_PORT"] == "5432"
-    assert environment["MARKET_ENVIRONMENT_DATABASE_NAME"] == {
-        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_DB"}
-    }
-    assert environment["MARKET_ENVIRONMENT_DATABASE_USER"] == {
-        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_USER"}
-    }
-    assert environment["MARKET_ENVIRONMENT_DATABASE_PASSWORD"] == {
-        "secretKeyRef": {"name": "a-stock-postgresql", "key": "POSTGRES_PASSWORD"}
-    }
-    assert environment["MARKET_ENVIRONMENT_DATABASE_SSLMODE"] == "prefer"
-    assert environment["MARKET_ENVIRONMENT_PERSISTENT_CACHE"] == "1"
-    assert environment["MARKET_ENVIRONMENT_SETTLEMENT_TIME"] == "15:10"
-    assert cron_pod["automountServiceAccountToken"] is False
-    assert cron_pod["restartPolicy"] == "Never"
-    assert cron_pod["securityContext"] == {
-        "runAsNonRoot": True,
-        "runAsUser": 10001,
-        "runAsGroup": 10001,
-        "fsGroup": 10001,
-        "seccompProfile": {"type": "RuntimeDefault"},
-    }
-    assert cron_container["securityContext"] == {
-        "allowPrivilegeEscalation": False,
-        "readOnlyRootFilesystem": True,
-        "capabilities": {"drop": ["ALL"]},
-    }
-    assert cron_pod["volumes"] == [{"name": "tmp", "emptyDir": {}}]
-    assert all("persistentVolumeClaim" not in volume for volume in cron_pod["volumes"])
-
-
 def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> None:
     chart = _load_yaml(CHART_DIR / "Chart.yaml")
     values = _load_yaml(CHART_DIR / "values.yaml")
@@ -1670,7 +1599,7 @@ def test_truenas_scheduling_overlays_only_change_reviewed_scheduling_fields() ->
 
     suspended_cronjob = _resource(suspended, "CronJob")
     active_cronjob = _resource(active, "CronJob")
-    assert suspended_cronjob["spec"]["schedule"] == active_cronjob["spec"]["schedule"] == "30 8 * * 1-5"
+    assert suspended_cronjob["spec"]["schedule"] == active_cronjob["spec"]["schedule"] == "30 16 * * 1-5"
     assert suspended_cronjob["spec"]["suspend"] is True
     assert active_cronjob["spec"]["suspend"] is False
     assert "timeZone" not in suspended_cronjob["spec"]

@@ -1,6 +1,6 @@
 ## Context
 
-The current TrueNAS workflow uses one Helm release for the Dashboard Deployment, Service, optional Ingress, SQLite PVC reference, and optional after-market CronJob. The release is reached through the existing SSH/kubeconfig and image-import path, and its scheduling operations already enforce typed values, immutable image checks, exact CronJob identity, and Gate B/Gate C authorization. TrueNAS may use a pre-provisioned static claim such as `a-stock-data`; in that case the chart must verify the claim rather than create or replace it.
+The current TrueNAS workflow uses one Helm release for the Dashboard Deployment, Service, optional Ingress, SQLite PVC reference, and optional after-market CronJob. The release is reached through the existing SSH/kubeconfig and image-import path, and its scheduling operations already enforce typed values, immutable image checks, exact CronJob identity, and the dedicated scheduling entry points. TrueNAS may use a pre-provisioned static claim such as `a-stock-data`; in that case the chart must verify the claim rather than create or replace it.
 
 The application has no database server abstraction: the Dashboard and collector CLI share `/data/snapshots.sqlite3` on a single-node RWO PVC. The deployment design must therefore preserve the existing release ownership and storage identity while adding component-level commands.
 
@@ -18,7 +18,7 @@ The application has no database server abstraction: the Dashboard and collector 
 
 - Adding PostgreSQL, another database container, a SQLite-to-PostgreSQL migration, or a schema change.
 - Supporting multi-replica or multi-node SQLite deployments.
-- Bypassing Gate B/Gate C or providing a raw CronJob activation/patch path.
+- Bypassing the dedicated scheduling entry points or providing a raw CronJob activation/patch path.
 - Replacing the existing Helm release with several independently owned Helm releases.
 - Changing market-environment API, provider, collection, or frontend behavior.
 
@@ -52,7 +52,7 @@ The database target ensures the configured namespace and SQLite PVC contract. Fo
 
 ### 5. Keep scheduling fail-closed
 
-The schedule target first renders or verifies the suspended/disabled state from the reviewed profile. Creating a suspended application CronJob and activating it remain distinct operations: the former uses the existing reviewed suspended-release path, and the latter uses the existing Gate C suspend-only diff and authorization. A boolean flag or `all` operation without those authorizations cannot create an active CronJob.
+The schedule target first renders or verifies the suspended/disabled state from the reviewed profile. Creating a suspended application CronJob and activating it remain distinct operations: the former uses the existing reviewed suspended-release path, and the latter uses the dedicated `--activate-schedule` entry with a suspend-only diff and explicit operator confirmation. A boolean flag or `all` operation without those authorizations cannot create an active CronJob.
 
 ### 6. Enforce dependency and postcondition checks
 
@@ -64,7 +64,7 @@ The implementation will extend deployment manifest and TrueNAS guard tests with 
 
 ### 8. Delivery sequencing and ownership
 
-The 21 tasks are delivered through four serial stages. A senior backend engineer owns tasks 1.1-3.7 and the offline evidence tasks 4.1-5.3; a senior test engineer independently owns acceptance task 6.1; a senior operations specialist owns the read-only handoff plan in task 6.2. A senior frontend engineer has no assigned work because the change does not modify dashboard UI, browser flows, or frontend API contracts. Stage 2, 3, and 4 remain parked until the preceding stage reaches a terminal accepted state. Gate A permits only repository and offline work; Gate B and Gate C remain separate unauthorized production gates.
+The 21 tasks are delivered through four serial stages. A senior backend engineer owns tasks 1.1-3.7 and the offline evidence tasks 4.1-5.3; a senior test engineer independently owns acceptance task 6.1; a senior operations specialist owns the read-only handoff plan in task 6.2. A senior frontend engineer has no assigned work because the change does not modify dashboard UI, browser flows, or frontend API contracts. Stage 2, 3, and 4 remain parked until the preceding stage reaches a terminal accepted state. The repository-level offline authorization permits only repository and offline work; production CronJob activation remains an explicit operator decision through the dedicated scheduling entry points.
 
 ## Risks / Trade-offs
 
@@ -79,5 +79,5 @@ The 21 tasks are delivered through four serial stages. A senior backend engineer
 1. Capture the current release values, exact Deployment/Service/CronJob state, PVC UID/volume, and target Kubernetes version using the existing read-only discovery path.
 2. Run the database component against the reviewed baseline; on an existing `existingClaim`, expect verification-only success and no PVC mutation.
 3. Run the service component with the immutable image packet, wait for the single Dashboard rollout, and verify `/api/health` and PVC continuity.
-4. Run the schedule component in disabled or suspended mode. If production scheduling is required, continue with the already reviewed suspended-release, evidence, and Gate C activation sequence; do not use a raw patch or direct apply.
+4. Run the schedule component in disabled or suspended mode. If production scheduling is required, continue with the already reviewed suspended-release, evidence, and `--activate-schedule` sequence; do not use a raw patch or direct apply.
 5. For rollback, disable/suspend the exact CronJob first when present, then use the existing application rollback workflow. Preserve the PVC and SQLite snapshots throughout; no uninstall or implicit storage deletion is introduced.

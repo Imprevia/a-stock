@@ -13,16 +13,16 @@
 - 在 Helm chart 增加 `component` 模板分支：`database` 仅渲染共享 PVC，`service` 渲染 Dashboard Deployment/Service/Ingress，`schedule` 渲染 CronJob；`all` 与未显式给定保持旧行为。
 - 数据库组件同时支持 chart-managed PVC 与受版本控制的 `persistence.existingClaim`；后者只读校验，不创建/删除/替换/扩容 claim。
 - 服务组件沿用既有单副本、非 root/只读根文件系统、`/data/snapshots.sqlite3` 路径与 NodePort/ClusterIP/Ingress 兼容。
-- 调度组件默认 disabled 或 suspended；任何 active 都必须沿用现有 Gate B/Gate C + suspend-only diff，禁止裸 `kubectl patch`/`kubectl apply`。
+- 调度组件默认 disabled 或 suspended；任何 active 都必须沿用现有专用调度入口（`--release-suspended` / `--activate-schedule`）+ suspend-only diff，禁止裸 `kubectl patch`/`kubectl apply`。
 - `scripts/deploy-truenas-k3s.sh` 新增 `--component {all,database,service,schedule}`；保留旧的 `--offline-render` / `--read-only-discovery` / `--server-dry-run` / `--release-suspended` / `--activate-schedule` / `--disable-schedule`，并按需分发到新组件实现。
 - 数据库/服务/调度各自增加独立的预飞/依赖/幂等/后置条件检查；`all` 必须按 `database -> service -> schedule` 顺序串行执行，并在 `service`/`schedule` 之前等待前者成功。
 - 仅 `all` 与 `service` 复用镜像构建+烟测+SCP+containerd 导入；`database` 跳过镜像；`schedule` 必须依赖已存在的 frozen image，缺则立即失败。
 - 文档与 runbook 更新组件命令、依赖图、PVC 边界、镜像流、激活授权边界；新增脱机验证命令。
 
-## Gate A 与边界
+## 离线授权与生产边界
 
-- Gate A 已批准：仅授权仓库内实现、固定 fixture/fake target 验证和文档同步；不授权访问 TrueNAS 1.20/1.21、生产 Kubernetes、真实 provider、生产 SQLite/PVC、备份、canary、Job/CronJob 创建或调度激活。
-- Gate B（真实 TrueNAS 只读预检、精确 admission/canary、备份和 suspended CronJob）与 Gate C（真实激活）在本计划期间保持未授权；任何后续上线动作必须由新的动作级授权和证据包单独开启。
+- 仓库内实现的离线授权已记录（`GYT-52`，2026-09-10）：仅授权仓库内实现、固定 fixture/fake target 验证和文档同步；不授权访问 TrueNAS 1.20/1.21、生产 Kubernetes、真实 provider、生产 SQLite/PVC、备份、canary、Job/CronJob 创建或调度激活。
+- 生产调度激活（真实 TrueNAS 只读预检、精确 admission/canary、备份和 suspended CronJob 与激活）在本次变更期间保持未授权；任何后续上线动作必须由新的动作级授权和证据包单独开启，并在 plan 的 Completion Evidence 中记录 release/namespace/镜像 digest 与 catch-up 行为。
 - 无前端范围：本 change 只改变 `scripts/deploy-truenas-k3s.sh`、Helm 资源渲染、部署测试和运维文档，不改变 Dashboard UI、浏览器流程、前端 API 契约或 `src/market_environment/` 业务行为，因此不创建前端子任务。
 
 ## 排期假设与依赖图
@@ -38,7 +38,7 @@
 | 1 | D1-D3 | 脚本参数化、Helm 组件分支、PVC 保留/校验、依赖/后置条件、image work 分流、rollback 与 baseline fixture | 资深后端工程师 | completed | `bash -n`、`--help`、组件 fake trace、render hash、pytest focused |
 | 2 | D4-D5 | 离线 all/database/service/schedule 矩阵、fake SSH/kubectl/containerd、首次安装与幂等重跑、partial all | 资深后端工程师 | completed | Helm lint/template 矩阵、docs-contract、失败无写入与 PVC 保留证据 |
 | 3 | D6 | 独立测试复核任务范围、负例、资源集合、调度授权边界和回归 | 资深测试工程师 | completed | manifest/guard 测试报告与固定命令输出 |
-| 4 | D7 | 上线前只读计划、窗口/权限/监控/回滚清单；不执行生产变更 | 资深运维专家 | completed-without-production-write | runbook 对齐；Gate B/C 未授权确认 |
+| 4 | D7 | 上线前只读计划、窗口/权限/监控/回滚清单；不执行生产变更 | 资深运维专家 | completed-without-production-write | runbook 对齐；专用调度入口未授权确认 |
 
 ## 任务分工矩阵（OpenSpec 21 子项）
 
@@ -57,10 +57,10 @@
 |------|------|----------------|--------|
 | 共享工作树已有实现/依赖改动 | 无法证明 clean baseline，误覆盖用户工作 | 只编辑计划/OpenSpec；以 `git status` 记录既有污染，测试绑定 exact diff | 资深后端工程师 |
 | existingClaim 身份漂移 | 数据丢失或错误挂载 | 只读校验 UID/PV/容量/access mode/path；不删除、替换、扩容，冲突立即 NO-GO | 资深后端工程师 |
-| component 误触发 active schedule | 未授权生产采集 | 默认 disabled/suspended；active 仅走既有 Gate B/C + suspend-only diff；任何授权缺口前置失败 | 资深后端工程师/资深运维专家 |
+| component 误触发 active schedule | 未授权生产采集 | 默认 disabled/suspended；active 仅走既有专用调度入口 + suspend-only diff；任何授权缺口前置失败 | 资深后端工程师/资深运维专家 |
 | all 部分失败 | 后续组件状态不清 | 每组件独立 completed/failed，保留已成功 PVC，打印唯一 retry target | 资深后端工程师 |
 | offline 分支 fall-through 到网络/目标 | 越界访问生产或真实 provider | fake command trace 与无网络断言；任一外部调用即停止并回流 | 资深测试工程师 |
-| 后续上线被误解为本阶段授权 | 生产状态变化 | Stage 4 仅交付计划；Gate B/C 单独动作级授权，不能由子 issue 状态推导 | 资深运维专家 |
+| 后续上线被误解为本阶段授权 | 生产状态变化 | Stage 4 仅交付计划；专用调度入口的授权单独动作级授权，不能由子 issue 状态推导 | 资深运维专家 |
 
 ## Acceptance（验收）
 
@@ -84,7 +84,7 @@
   - focused 组件 fake-target 与 manifest 测试在 `.venv` 中可复现，详见下方最终命令结果。
   - 新增 component render 矩阵测试覆盖：`database` 仅 PVC、`service` 仅 dashboard 不含 PVC/CronJob、`schedule` 仅 suspended CronJob、existingClaim 路径不渲染 PVC object、`component=invalid` 在 chart schema 阶段拒绝。
   - `helm lint --strict deploy/helm/a-stock` 通过；`bash scripts/deploy-truenas-k3s.sh --offline-render --component {all,database,service,schedule} ...` 在 fake target 下成功。
-  - 未运行真实 server-side target write、备份、provider-backed Job 或调度激活；Gate B / Gate C 仍保持未授权。
+  - 未运行真实 server-side target write、备份、provider-backed Job 或调度激活；专用调度入口仍未获得生产授权。
 - `bash -n scripts/deploy-truenas-k3s.sh` 通过。
 - `helm lint --strict deploy/helm/a-stock` 通过。
 - `python3 scripts/validate-scheduling-packet.py validate-generic-deploy-values --values deploy/helm/a-stock/values.yaml --values deploy/truenas/values-secure-manual-collection.yaml` 通过。
@@ -111,19 +111,19 @@
   - **final clean evidence**：`main` = `origin/main` = `637320097dc15770fce07d7a54cef2453d1e8281`，`git status --short --branch` 空；任务分支已删除。
   - 仍含 GYT-59 共享 worktree 的 `AGENTS.md` 改动（已被合入 `origin/main`）；本任务不覆盖。
 - 完整测试套件：baseline 50 failed / 506 passed；本轮返工后 48 failed / 525 passed。新增 19 passed（14 component + 5 chart + 2 fixed audit 阻断项 3）。
-- Stage 1 范围内未运行 server-side dry-run、未创建 CronJob/Job、未备份、未发布、未激活调度；Gate B / Gate C 仍保持未授权。
+- Stage 1 范围内未运行 server-side dry-run、未创建 CronJob/Job、未备份、未发布、未激活调度；专用调度入口仍未获得生产授权。
 
 ## Remaining Gaps（剩余缺口）
 
 - 代码与离线验收已完成；当前证据绑定本工作树的实际测试结果，不继承历史子 issue 的旧计数。
 - focused 离线测试为 manifest `178 passed`、TrueNAS guard `103 passed`；未运行真实 provider 或生产写入。
-- Stage 4 仅交付上线前只读计划和回滚边界；Gate B / Gate C 仍保持未授权。
+- Stage 4 仅交付上线前只读计划和回滚边界；专用调度入口仍未获得生产授权。
 
 ## Production Handoff Gaps（生产交接缺口）
 
 - Stage 2-4 的离线证据、独立测试和运维计划已回写；focused manifest/guard 套件均通过。
 - 未在真实 TrueNAS 1.20 上执行 `all`/`database`/`service`/`schedule`；所有验证均为脱机 fake target / fake Helm / fake SSH/kubectl/containerd。
-- 真正的 Gate C 激活必须使用既有的 `--activate-schedule` 路径并提交可审查证据；本任务不引入裸 CronJob patch 或直接 apply。
+- 真正的生产 CronJob 激活必须使用 `--activate-schedule` 路径并提交可审查证据；本任务不引入裸 CronJob patch 或直接 apply。
 - 工作树仍包含其他任务的未提交修改；交付未回退或覆盖这些修改，生产证据仍需绑定实际部署时的 exact HEAD。
 
 ## 子 issue 路由
@@ -142,4 +142,4 @@
   只有证据全部通过后才将 GYT-60 恢复为 `in_review`。
 - 仅在 GYT-60 独立审计 GO 且达到 terminal 状态后，将 GYT-61 从 `backlog` 提升为 `todo`。
 - 依次提升 GYT-62、GYT-63；任何阶段失败都回流对应实现/验证 issue，不跳过屏障。
-- 本阶段不访问 1.21 VM、不执行 read-only-discovery/server-side dry-run，不触发真实 `service`/`schedule`；Gate B/Gate C 仍保持未授权。
+- 本阶段不访问 1.21 VM、不执行 read-only-discovery/server-side dry-run，不触发真实 `service`/`schedule`；专用调度入口仍未获得生产授权。
