@@ -131,11 +131,20 @@ def main(
     if args.command == "database" and args.database_command == "migrate":
         try:
             source = Path(args.source)
-            backup = backup_sqlite(source, Path(args.backup)) if args.backup else None
+            backup = (
+                backup_sqlite(source, Path(args.backup), immutable=True)
+                if args.backup
+                else None
+            )
             url = args.database_url or os.getenv("MARKET_ENVIRONMENT_DATABASE_URL", "")
             if not url:
                 raise ValueError("--database-url or MARKET_ENVIRONMENT_DATABASE_URL is required")
-            result = import_sqlite(source, database_url=url, apply=args.apply)
+            result = import_sqlite(
+                source,
+                database_url=url,
+                apply=args.apply,
+                immutable=True,
+            )
             if backup:
                 result["backup"] = backup
         except Exception as exc:

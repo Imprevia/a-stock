@@ -383,6 +383,10 @@ bash scripts/deploy-truenas-k3s.sh --offline-render \
 `MARKET_ENVIRONMENT_DATABASE_URL`。active lease 不迁移为有效所有权，改为可重试状态；旧 SQLite PVC 和备份
 保留但脱离 Dashboard/CronJob，禁止在普通发布中删除。
 
+迁移 Job 必须继承 chart 的 Pod 级 `runAsUser/runAsGroup/fsGroup=10001`，否则 root-owned `emptyDir /tmp`
+无法写入 before-image。CLI 对该已停写、只读挂载且已固定 SHA-256 的源使用 SQLite `immutable=1`，避免 WAL
+数据库在只读卷上尝试创建锁或共享内存 sidecar；普通仍可能写入的 SQLite 读路径禁止使用该选项。
+
 PostgreSQL 首次写入前失败可恢复旧镜像和 SQLite PVC；首次写入后禁止回切过期 SQLite，必须使用 PostgreSQL
 备份/恢复或前向修复。数据库不可达时服务 fail closed，不创建本地 SQLite 回退文件。
 

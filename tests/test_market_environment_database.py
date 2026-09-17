@@ -7,6 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from src.market_environment.database import DatabaseConfigurationError, DatabaseSettings
+import src.market_environment.postgres_migration as postgres_migration
 from src.market_environment.postgres_migration import backup_sqlite, import_sqlite, sqlite_fingerprint
 from src.market_environment.postgres_compat import _translate_sql
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
@@ -61,6 +62,36 @@ def test_sqlite_backup_is_non_overwriting_and_import_dry_run_reports_lease(tmp_p
     assert report["status"] == "dry-run"
     assert report["leaseConversion"]["activeRowsSkipped"] == 1
     assert report["source"]["tables"] == first["tables"]
+
+
+def test_sqlite_migration_uses_immutable_read_only_connections(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    backup = tmp_path / "before.sqlite3"
+    SnapshotStore(source)
+    with sqlite3.connect(source) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    real_connect = sqlite3.connect
+    source_uris = []
+
+    def recording_connect(database, *args, **kwargs):
+        if isinstance(database, str) and database.startswith("file:"):
+            source_uris.append(database)
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(postgres_migration.sqlite3, "connect", recording_connect)
+
+    sqlite_fingerprint(source, immutable=True)
+    backup_sqlite(source, backup, immutable=True)
+    import_sqlite(
+        source,
+        database_url="postgresql://unused",
+        apply=False,
+        immutable=True,
+    )
+
+    assert source_uris
+    source_uri = f"file:{source}?mode=ro&immutable=1"
+    assert source_uris.count(source_uri) >= 4
 
 
 def test_sqlite_import_dry_run_rejects_missing_required_tables(tmp_path):

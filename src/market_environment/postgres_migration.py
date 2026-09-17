@@ -40,13 +40,14 @@ REQUIRED_IMPORT_TABLES = frozenset({
 })
 
 
-def sqlite_fingerprint(path: Path) -> dict[str, Any]:
+def sqlite_fingerprint(path: Path, *, immutable: bool = False) -> dict[str, Any]:
     """Validate and summarize a source SQLite file without mutating it."""
 
     if not path.is_file():
         raise FileNotFoundError(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    immutable_query = "&immutable=1" if immutable else ""
+    with sqlite3.connect(f"file:{path}?mode=ro{immutable_query}", uri=True) as connection:
         connection.row_factory = sqlite3.Row
         quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
         if quick_check != "ok":
@@ -70,7 +71,12 @@ def sqlite_fingerprint(path: Path) -> dict[str, Any]:
     return {"path": str(path), "sha256": digest, "quickCheck": quick_check, "tables": counts, "tableDetails": details}
 
 
-def backup_sqlite(source: Path, destination: Path) -> dict[str, Any]:
+def backup_sqlite(
+    source: Path,
+    destination: Path,
+    *,
+    immutable: bool = False,
+) -> dict[str, Any]:
     """Create an online-consistent SQLite backup without overwriting output."""
 
     if not source.is_file():
@@ -80,8 +86,9 @@ def backup_sqlite(source: Path, destination: Path) -> dict[str, Any]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Validate before opening the source for backup.  The read-only URI also
     # prevents SQLite from creating or mutating a missing/invalid source.
-    sqlite_fingerprint(source)
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src, sqlite3.connect(destination) as dst:
+    sqlite_fingerprint(source, immutable=immutable)
+    immutable_query = "&immutable=1" if immutable else ""
+    with sqlite3.connect(f"file:{source}?mode=ro{immutable_query}", uri=True) as src, sqlite3.connect(destination) as dst:
         src.backup(dst)
     return sqlite_fingerprint(destination)
 
@@ -91,10 +98,11 @@ def import_sqlite(
     *,
     database_url: str,
     apply: bool = False,
+    immutable: bool = False,
 ) -> dict[str, Any]:
     """Import durable SQLite history into PostgreSQL, idempotently."""
 
-    fingerprint = sqlite_fingerprint(source)
+    fingerprint = sqlite_fingerprint(source, immutable=immutable)
     missing = sorted(REQUIRED_IMPORT_TABLES - set(fingerprint["tables"]))
     if missing:
         raise ValueError(f"SQLite source is missing required tables: {', '.join(missing)}")
@@ -121,7 +129,8 @@ def import_sqlite(
         "leaseConversion": {"activeRowsSkipped": 0, "fenceRowsImported": 0},
     }
     try:
-        with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as sqlite_connection:
+        immutable_query = "&immutable=1" if immutable else ""
+        with sqlite3.connect(f"file:{source}?mode=ro{immutable_query}", uri=True) as sqlite_connection:
             sqlite_connection.row_factory = sqlite3.Row
             with engine.begin() as target:
                 # Active ownership is intentionally never imported.  Count it

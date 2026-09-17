@@ -1074,6 +1074,14 @@ def test_helm_sqlite_import_job_is_explicit_read_only_and_secret_backed() -> Non
     job = import_jobs[0]
     assert job["metadata"]["annotations"]["helm.sh/hook-weight"] == "10"
     pod = job["spec"]["template"]["spec"]
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 10001,
+        "runAsGroup": 10001,
+        "fsGroup": 10001,
+        "fsGroupChangePolicy": "OnRootMismatch",
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
     container = pod["containers"][0]
     assert container["command"] == ["python", "-m", "src.market_environment.cli", "database", "migrate"]
     assert container["args"] == [

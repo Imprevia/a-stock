@@ -23,6 +23,8 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: migration
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
