@@ -272,6 +272,15 @@ def indexed(documents: list[dict[str, Any]]) -> dict[tuple[str, str, str, str], 
     return result
 
 
+def without_helm_hooks(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        document
+        for document in documents
+        if not isinstance((document.get("metadata") or {}).get("annotations"), dict)
+        or "helm.sh/hook" not in (document.get("metadata") or {}).get("annotations", {})
+    ]
+
+
 def compare_add_suspended(
     current: list[dict[str, Any]], desired: list[dict[str, Any]], release_name: str, namespace: str
 ) -> None:
@@ -280,7 +289,9 @@ def compare_add_suspended(
     cronjob, _ = inspect(desired, release_name, namespace, "suspended")
     assert cronjob is not None
     desired_without_cronjob = [item for item in desired if item is not cronjob]
-    if indexed(current) != indexed(desired_without_cronjob):
+    if indexed(without_helm_hooks(current)) != indexed(
+        without_helm_hooks(desired_without_cronjob)
+    ):
         fail("suspended release contains drift outside the new CronJob")
 
 
@@ -290,8 +301,8 @@ def compare_suspend_only(
     current_cronjob, _ = inspect(current, release_name, namespace, "suspended")
     desired_cronjob, _ = inspect(desired, release_name, namespace, "active")
     assert current_cronjob is not None and desired_cronjob is not None
-    current_index = indexed(current)
-    desired_index = indexed(desired)
+    current_index = indexed(without_helm_hooks(current))
+    desired_index = indexed(without_helm_hooks(desired))
     if current_index.keys() != desired_index.keys():
         fail("active release contains drift outside the suspended resource set")
 
@@ -313,7 +324,9 @@ def compare_remove_cronjob(
         fail("schedule rollback requires an existing application CronJob")
     inspect(desired, release_name, namespace, "disabled")
     current_without_cronjob = [item for item in current if item is not current_cronjob]
-    if indexed(current_without_cronjob) != indexed(desired):
+    if indexed(without_helm_hooks(current_without_cronjob)) != indexed(
+        without_helm_hooks(desired)
+    ):
         fail("schedule rollback contains drift outside CronJob removal")
 
 

@@ -383,10 +383,18 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
     suspended = _render(CHART, BASELINE, SUSPENDED, "suspended")
     active = _render(CHART, BASELINE, ACTIVE, "active")
     disabled_path = tmp_path / "disabled.yaml"
+    suspended_desired_path = tmp_path / "suspended-desired.yaml"
     suspended_path = tmp_path / "suspended.yaml"
     active_path = tmp_path / "active.yaml"
-    disabled_path.write_text(disabled, encoding="utf-8")
-    suspended_path.write_text(suspended, encoding="utf-8")
+    without_hooks = lambda payload: "---\n".join(
+        yaml.safe_dump(document, sort_keys=False)
+        for document in yaml.safe_load_all(payload)
+        if document is not None
+        and "helm.sh/hook" not in ((document.get("metadata") or {}).get("annotations") or {})
+    )
+    disabled_path.write_text(without_hooks(disabled), encoding="utf-8")
+    suspended_desired_path.write_text(suspended, encoding="utf-8")
+    suspended_path.write_text(without_hooks(suspended), encoding="utf-8")
     active_path.write_text(active, encoding="utf-8")
 
     add_result = subprocess.run(
@@ -401,7 +409,7 @@ def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path:
             "--current",
             str(disabled_path),
             "--desired",
-            str(suspended_path),
+            str(suspended_desired_path),
         ],
         capture_output=True,
         text=True,
