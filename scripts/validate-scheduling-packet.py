@@ -399,7 +399,7 @@ def image_id_digest(image_id: Any) -> str:
             fail("running Dashboard imageID has an invalid scheme")
     else:
         fail("running Dashboard imageID must contain an explicit digest reference")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:[+._-][A-Za-z0-9]+)*:[A-Za-z0-9=_-]+", digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         fail("running Dashboard imageID contains an invalid digest")
     return digest
 
@@ -536,9 +536,12 @@ def verify_runtime_image(
         fail("Dashboard container must be ready")
     if dashboard_statuses[0].get("image") != image:
         fail(f"running Dashboard Pod must use frozen image {image}")
-    actual_digest = image_id_digest(dashboard_statuses[0].get("imageID"))
-    if actual_digest != digest:
-        fail(f"running Dashboard imageID digest must equal {digest}")
+    # CRI imageID is commonly the image config digest, while containerd's
+    # named image target is the manifest digest. Both are valid sha256 values
+    # but are not interchangeable. The exact tag is already bound above and
+    # verify-containerd-image separately binds that tag to the reviewed
+    # manifest digest, so only require a well-formed runtime imageID here.
+    image_id_digest(dashboard_statuses[0].get("imageID"))
 
 
 def verify_deployment_image(payload: dict[str, Any], release_name: str, image: str) -> None:
@@ -577,8 +580,7 @@ def verify_pod_image(payload: dict[str, Any], release_name: str, image: str, dig
         fail("running Dashboard container status is missing")
     if dashboards[0].get("image") != image:
         fail(f"running Dashboard Pod must use frozen image {image}")
-    if image_id_digest(dashboards[0].get("imageID")) != digest:
-        fail(f"running Dashboard imageID digest must equal {digest}")
+    image_id_digest(dashboards[0].get("imageID"))
 
 
 def kubectl_list_documents(stream: Any) -> list[dict[str, Any]]:

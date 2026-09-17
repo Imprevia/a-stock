@@ -362,7 +362,7 @@ bash scripts/deploy-truenas-k3s.sh --offline-render \
 
 部署文档安全测试把 CommonMark shell fence 与 Bash AST 作为发布门禁。brace/glob executable expansion、`eval`、stdin-fed `bash`/`sh`/`dash`/`zsh`、`source`/`.`、`alias`/`hash -p` command-resolution mutation、动态 executable/action 和未知 Helm plugin/action 都必须返回 violation；无法解析或无法证明只读时 fail closed，不能因缺少字面量 `helm` 而跳过。
 
-从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确 imageID digest 和目标 containerd tag→digest；任一 drift 都拒绝。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；激活或回退失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
+从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确镜像 tag、合法 CRI imageID，以及目标 containerd tag→reviewed manifest digest；任一 drift 都拒绝。CRI imageID 通常是 image config digest，不要求与 containerd manifest digest 相等。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；激活或回退失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
 
 调度专用入口的使用前提：所有修改必须经本次操作责任人书面确认并在 plan 的 Completion Evidence 中记录，并且：(1) `REVIEWED_GIT_HEAD`、clean 工作树与本地 upstream 一致；(2) `REVIEWED_CHART_SHA256`、`REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256`、`REVIEWED_RENDER_SHA256` 全部已计算并验证；(3) frozen image 已通过 `FROZEN_IMAGE_*` 三元组固化；(4) `--activate-schedule` 已明确选择 `next-schedule` 或 `immediate-catch-up` catch-up 行为；(5) 在 execute 前再次核对 live release 与冻结 manifest 一致、candidate diff 只包含 `/spec/suspend: true -> false` 单字段变化。任何步骤失败都保持 `suspend=true`，不进入 Helm write。
 
@@ -513,7 +513,7 @@ PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部�
 **fail-closed 默认：**
 
 - chart 默认仍为 `scheduledCollection.enabled=false / suspend=true`；普通 `all` / `database` / `service` 发布不得渲染或激活 CronJob。
-- `deploy/truenas/values-scheduled-baseline-20260917.yaml` 是 2026-09-17 合并所有权使用的受版本控制 baseline：冻结镜像 `localhost/a-stock-market-environment:20260915-230346-6f3cdb5`，引用 `a-stock-postgresql` Secret 与 `a-stock-data` existingClaim，调度为 `enabled=true / suspend=true`。
+- `deploy/truenas/values-scheduled-baseline-20260917.yaml` 是 2026-09-17 合并所有权使用的受版本控制 baseline：冻结镜像 `localhost/a-stock-market-environment:20260917-113516-b5be526`，引用 `a-stock-postgresql` Secret 与 `a-stock-data` existingClaim，调度为 `enabled=true / suspend=true`。
 - k3s 1.26.6 使用 `timezoneStrategy: controller`，省略 `spec.timeZone`。目标 controller 已验证为 `Asia/Shanghai`，因此上海 16:30 使用 `30 16 * * 1-5`。任何时区证据变化都必须停止 schedule write；不得把该值静默改成 `30 8`。
 - `controllerCanaryVerified=false` 保持 suspended release；激活 overlay 只有在 canary evidence 完整并由本次操作责任人书面确认后才允许设为 `true`。
 

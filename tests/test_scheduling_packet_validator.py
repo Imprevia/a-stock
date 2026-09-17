@@ -633,7 +633,18 @@ def test_runtime_image_rejects_pod_from_old_replicaset(tmp_path: Path) -> None:
     assert "controlled by ReplicaSet a-stock-current" in completed.stderr
 
 
-def test_runtime_image_rejects_digest_substring_in_image_id(tmp_path: Path) -> None:
+def test_runtime_image_accepts_distinct_valid_config_digest(tmp_path: Path) -> None:
+    payloads = _runtime_payloads()
+    payloads[2]["items"][0]["status"]["containerStatuses"][0]["imageID"] = (
+        "containerd://sha256:" + "b" * 64
+    )
+
+    completed = _run_runtime(tmp_path, payloads)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_runtime_image_rejects_invalid_image_id_digest(tmp_path: Path) -> None:
     payloads = _runtime_payloads()
     payloads[2]["items"][0]["status"]["containerStatuses"][0]["imageID"] = (
         f"containerd://{DIGEST}0"
@@ -642,7 +653,7 @@ def test_runtime_image_rejects_digest_substring_in_image_id(tmp_path: Path) -> N
     completed = _run_runtime(tmp_path, payloads)
 
     assert completed.returncode != 0
-    assert "digest must equal" in completed.stderr
+    assert "invalid digest" in completed.stderr
 
 
 def _desired_resources() -> list[dict[str, Any]]:

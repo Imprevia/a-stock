@@ -6,8 +6,8 @@
 # overlay (values-scheduled-suspended.yaml, refreshed 2026-09-17) so the
 # Helm-managed CronJob matches the previously independent operator override.
 #
-# Frozen image reference matches the live CronJob at 2026-09-15 (revision 14):
-#   localhost/a-stock-market-environment:20260915-230346-6f3cdb5
+# Frozen image reference matches the live Dashboard at 2026-09-17 (revision 19):
+#   localhost/a-stock-market-environment:20260917-113516-b5be526
 #
 # Persistence / database / secret / PVC references match the live Helm release
 # a-stock (revision 14) on the TrueNAS k3s 1.26.6 cluster.
@@ -15,7 +15,7 @@ replicaCount: 1
 
 image:
   repository: localhost/a-stock-market-environment
-  tag: 20260915-230346-6f3cdb5
+  tag: 20260917-113516-b5be526
   pullPolicy: IfNotPresent
 
 service:
