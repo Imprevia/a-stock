@@ -6,24 +6,27 @@
 
 ## Status（状态）
 
-`in-progress` · read-only-discovery 已跑、识别出"两步激活"要求；待计算 SHA + frozen image 证据；待本次操作责任人独立"go --release-suspended"与"go --activate-schedule"。
+`in-progress` · read-only-discovery 已跑、4 个 SHA + frozen image 证据已落、dry-run `compare-suspend-only` exit 0、`--release-suspended` 探针 fail closed（与 single-step 路径分析一致）；待本次操作责任人"go"跑 `--activate-schedule`。
 
 ## Scope（范围）
 
-激活必须分**两步**，原因：read-only-discovery 显示 live release stored values 的 `controllerCanaryVerified=false`，而 `78421e0` baseline 已把它翻为 `true`，两次变化不能在同一次 `helm upgrade` 中合并（`--activate-schedule` 入口的 `compare-suspend-only` 校验只允许 `suspend: true → false` 单字段变化）：
+激活走**单步 `--activate-schedule`**，原因：read-only-discovery + dry-run `compare-suspend-only` 显示 live release stored manifest（rev 20）与 baseline + active overlay 渲染产物的差异**仅**为 CronJob `spec.suspend: true → false`：
 
-- **Step 1 · `--release-suspended`**：把 baseline 写进 release，单字段 `controllerCanaryVerified: false → true`；仍 `suspend=true`。
-- **Step 2 · `--activate-schedule`**：把 baseline + active overlay 写进 release，单字段 `suspend: true → false`；`catch-up=next-schedule`。
+- `a-stock` Helm release 已在 rev 20（`Mon Sep 17 12:12:24 2026 deployed`，合并所有权 plan 写入）含 suspended CronJob `a-stock-data-collection`。
+- `controllerCanaryVerified` 在 chart 模板 `market-data-collection-cronjob.yaml` 中**只作 fail-gate**（行 19-20、63-64、80-81），**不渲染进 CronJob spec**。所以 live stored manifest（`controllerCanaryVerified=false`）与 desired render packet（`controllerCanaryVerified=true`，但**不在 spec 内**）的 CronJob spec 在 `compare-suspend-only` 视角下**完全相同**（除 `suspend` 字段）。
+- `compare-add-suspended`（`--release-suspended` 入口用）要求 current 列表无 CronJob——但 rev 20 已有，所以 `--release-suspended` fail closed（"suspended release requires the application CronJob to be absent"）。这条路被堵。
+- dry-run 证据：`python scripts/validate-scheduling-packet.py compare-suspend-only --release-name a-stock --namespace a-stock --current /tmp/current.yaml --desired /tmp/desired.yaml` exit 0（2026-09-17 Asia/Shanghai，由操作发起人跑）；`current.yaml` = `helm get manifest a-stock -n a-stock`（406 行，6 资源）、`desired.yaml` = `helm template a-stock deploy/helm/a-stock -f .../baseline-20260917.yaml -f .../active.yaml --kube-version 1.26.6 --namespace a-stock`（118 行，6 资源 + 1 helm hook Job）。
 
-### 准备动作（read-only-discovery 与 SHA + frozen image 计算）
+### 准备动作（已完成，证据见 §A / §B / §C）
 
-- 跑 `bash scripts/deploy-truenas-k3s.sh --read-only-discovery` 抓 live `helm history` / `helm get values` / live `deployment,service,cronjob,job,pvc,pv` 状态。✅ 已跑（2026-09-17 Asia/Shanghai），见 Completion Evidence 段。
-- 计算 4 个 SHA（`REVIEWED_CHART_SHA256` / `REVIEWED_BASELINE_SHA256` / `REVIEWED_OVERLAY_SHA256` / `REVIEWED_RENDER_SHA256`）+ frozen image 三元组（`FROZEN_IMAGE_REPOSITORY` / `FROZEN_IMAGE_TAG` / `FROZEN_IMAGE_DIGEST`）。⏳ 待算（见 Completion Evidence 占位）。
-- Step 1 由本次操作责任人书面"go"后跑 `bash scripts/deploy-truenas-k3s.sh --release-suspended --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml --scheduling-overlay deploy/truenas/values-scheduled-suspended.yaml --kube-version 1.26.6+k3s-6a894050-dirty`。
-- Step 1 写后读取 live release `helm get values` / `kubectl -n a-stock get cronjob a-stock-data-collection -o wide`，证明 `controllerCanaryVerified=true`、仍 `suspend=true`、镜像 / Database Secret / PVC claim 与原值一致。
-- Step 2 由本次操作责任人**单独**书面"go"后跑 `bash scripts/deploy-truenas-k3s.sh --activate-schedule --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml --scheduling-overlay deploy/truenas/values-scheduled-active.yaml --kube-version 1.26.6+k3s-6a894050-dirty --catch-up-mode next-schedule`。
-- Step 2 写前第二次时间窗校验（`validate_activation_window pre-helm-write`）；Step 2 写后读取 live CronJob，校验 `spec.suspend=false`、`LAST SCHEDULE` 已写入下一个交易日 16:30 Asia/Shanghai、其它字段不变。
-- 不在范围：解除 `values-secure-manual-collection.yaml` 的 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1` 绑定；改镜像；改 chart；走 schema migration；跑任何"裸 `kubectl patch`/apply/edit"绕过入口。
+- ✅ 跑 `bash scripts/deploy-truenas-k3s.sh --read-only-discovery`（2026-09-17 Asia/Shanghai）—— 见 §A。
+- ✅ 计算 4 个 SHA + frozen image 三元组 —— 见 §B。
+- ✅ 跑 dry-run `compare-suspend-only` 确认 single-step 路径合法 —— 见 §A。
+- ✅ 跑 `bash scripts/deploy-truenas-k3s.sh --release-suspended` 探针（2026-09-17 Asia/Shanghai）—— fail closed，与上面分析一致；已记入 §C。
+- ⏳ 由本次操作责任人**单次书面"go"**后跑 `bash scripts/deploy-truenas-k3s.sh --activate-schedule --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml --scheduling-overlay deploy/truenas/values-scheduled-active.yaml --kube-version 1.26.6+k3s-6a894050-dirty`（env `ACTIVATION_CATCH_UP_MODE=next-schedule`、`FROZEN_IMAGE_REPOSITORY/TAG/DIGEST` 走命令前 env 注入，不污染 `deploy/truenas/deploy.env`）。
+- 写前第二次时间窗校验（`validate_activation_window pre-helm-write`）。
+- 写后读取 live CronJob，校验 `spec.suspend=false`、`LAST SCHEDULE` 已写入下一个交易日 16:30 Asia/Shanghai、其它字段不变；写后 `helm get values a-stock -n a-stock` 中 `controllerCanaryVerified: true`（被 baseline 写进 stored values）、`suspend: false`。
+- 不在范围：解除 `values-secure-manual-collection.yaml` 的 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1` 绑定；改镜像；改 chart；走 schema migration；跑任何"裸 `kubectl patch`/apply/edit`"绕过入口。
 
 ## Acceptance（验收）
 
@@ -63,6 +66,11 @@
   - `extraEnv = [{name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED, value: "1"}]`
   - `service.type = NodePort`、`service.nodePort = 32001`、`service.port = 80`、`ingress.enabled = false`
 - live `kubectl -n a-stock get cronjob,job,pod,svc,pvc` 摘要（与 canary-1-26 plan Completion Evidence 一致）：`a-stock-data-collection` 唯一 CronJob，`SUSPEND=True / LAST SCHEDULE=<none>`，镜像 `localhost/a-stock-market-environment:20260917-113516-b5be526`；Pod 集合 `{a-stock-postgresql-0, a-stock-7df764f74-rsx6r}` 均 1/1 Running；PVC 集合 `{a-stock-data, a-stock-postgresql-data}` 均 Bound；Job 集合空。
+- **新发现（影响激活路径）**：`controllerCanaryVerified` 在 chart 模板 `market-data-collection-cronjob.yaml` 中**只作 fail-gate 使用**（行 19-20、63-64、80-81 处的 `fail` 调用），**不渲染进 CronJob spec**。所以 live stored manifest 与 desired render packet 的 CronJob spec 在 `controllerCanaryVerified` 字段上**没有差异**——`compare-suspend-only` 校验只看 `suspend` 字段变化（除该字段外 spec 完全相同），通过。
+- **新发现（影响计划步骤）**：`--release-suspended` 入口的 `compare-add-suspended` 校验 `current` 列表**不能含 CronJob**，而 `a-stock` release rev 20 已经含 suspended CronJob（合并所有权 plan 通过 `--release-suspended` 入口在 2026-09-17 12:12 创建的），所以 `suspended release requires the application CronJob to be absent` fail closed。激活路径从原计划"先 `--release-suspended` 后 `--activate-schedule`"修正为**单步 `--activate-schedule`**，因为：
+  - stored manifest 已含 suspended CronJob；
+  - `controllerCanaryVerified` 不在 CronJob spec；
+  - dry-run `python scripts/validate-scheduling-packet.py compare-suspend-only --release-name a-stock --namespace a-stock --current helm-get-manifest --desired baseline+active-overlay-render` exit 0（2026-09-17 Asia/Shanghai，由操作发起人跑）。
 - 完整 191 行日志已留存到 `/tmp/a-stock-canary/ro-disc-output.log`（留在本地，reboot 清；不提交）。
 
 ### §B · SHA + frozen image 证据（2026-09-17 Asia/Shanghai，由操作发起人算）
@@ -77,25 +85,50 @@
 - `FROZEN_IMAGE_TAG = 20260917-113516-b5be526`
 - `FROZEN_IMAGE_DIGEST = sha256:ace2e93c0075d2397845a0ad346171558c0ff1f307409d04c7fec2eb931416e2`（= live `k3s ctr -n k8s.io images ls` 第 3 列 = manifest digest，与 chart 模板 `verify-containerd-image` 期望口径一致；满足 `^sha256:[0-9a-f]{64}$`）
 
-### §C · Step 1（`--release-suspended`）写后证据（待本次操作责任人"go"后回填）
+### §C · 探针（`--release-suspended`）结果（2026-09-17 Asia/Shanghai）
 
-- 责任人书面确认（操作发起人，2026-09-17 Asia/Shanghai）：
+- 责任人书面确认（操作发起人，2026-09-17 Asia/Shanghai）：授权跑 `--release-suspended` 探针以验证"两步"假设。
 - 完整命令：
-- preflight / pre-helm-write 校验输出：
-- `helm history` 出现的 revision 21 状态：
-- `helm get values` 关键字段（特别 `controllerCanaryVerified: true`，其它字段不变）：
-- `kubectl -n a-stock get cronjob a-stock-data-collection -o wide`（`SUSPEND` 必须仍 `True`）：
-- `kubectl -n a-stock get pod`（必须仍 `{a-stock-postgresql-0, a-stock-7df764f74-rsx6r}` 1/1 Running，无新对象）：
+  ```bash
+  FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment \
+  FROZEN_IMAGE_TAG=20260917-113516-b5be526 \
+  FROZEN_IMAGE_DIGEST=sha256:ace2e93c0075d2397845a0ad346171558c0ff1f307409d04c7fec2eb931416e2 \
+  bash scripts/deploy-truenas-k3s.sh --release-suspended \
+    --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml \
+    --scheduling-overlay deploy/truenas/values-scheduled-suspended.yaml \
+    --kube-version 1.26.6+k3s-6a894050-dirty
+  ```
+- 入口退出码：`0`（脚本顶层 `exit 0`），但 fail-gate 提前 die：
+  ```
+  [a-stock-deploy] scheduling packet: state=suspended strategy=controller controllerTimeZone=Asia/Shanghai cron=30 16 * * 1-5 effectiveShanghai=16:30 weekdays
+  ...
+  [a-stock-deploy] checking target k3s capabilities
+  suspended release requires the application CronJob to be absent
+  ```
+- 原因：live release rev 20 已含 `a-stock-data-collection`（合并所有权 plan 通过 `--release-suspended` 入口写入），`compare-add-suspended` 校验 `current` 列表不能含 CronJob。脚本未写任何 live state（fail-closed 在 `compare-add-suspended` 调用前，line 875 `current_cronjobs="$(...)"`，line 878 `assert_cronjob_creation_allowed`）。
+- 完整 80 行日志已留存到 `/tmp/a-stock-canary/step1.log`（留在本地，reboot 清；不提交）。
+- 结论：激活路径修正为 single-step `--activate-schedule`（见 §A / §Scope）。
 
-### §D · Step 2（`--activate-schedule`）写后证据（待本次操作责任人"go"后回填）
+### §D · `--activate-schedule` 写后证据（待本次操作责任人"go"后回填）
 
 - 责任人书面确认（操作发起人，2026-09-17 Asia/Shanghai）：
-- 完整命令（含 `--catch-up-mode next-schedule`）：
+- 完整命令（含 env 注入）：
+  ```bash
+  FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment \
+  FROZEN_IMAGE_TAG=20260917-113516-b5be526 \
+  FROZEN_IMAGE_DIGEST=sha256:ace2e93c0075d2397845a0ad346171558c0ff1f307409d04c7fec2eb931416e2 \
+  ACTIVATION_CATCH_UP_MODE=next-schedule \
+  bash scripts/deploy-truenas-k3s.sh --activate-schedule \
+    --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml \
+    --scheduling-overlay deploy/truenas/values-scheduled-active.yaml \
+    --kube-version 1.26.6+k3s-6a894050-dirty
+  ```
 - preflight 时间窗校验输出（`validate_activation_window preflight`）：
 - 写前第二次时间窗校验输出（`validate_activation_window pre-helm-write`）：
-- `helm history` revision 22 状态：
-- `helm get values` 关键字段（`suspend: false`，其它字段不变）：
+- `helm history` revision 22 状态（应为 `deployed`）：
+- `helm get values` 关键字段（`suspend: false / controllerCanaryVerified: true`，其它字段不变）：
 - `kubectl -n a-stock get cronjob a-stock-data-collection -o wide`（`SUSPEND=False / LAST SCHEDULE=<下个交易日 16:30 Asia/Shanghai>`）：
+- 写后 `kubectl -n a-stock get pod`（必须仍 `{a-stock-postgresql-0, a-stock-7df764f74-rsx6r}` 1/1 Running，无新对象）：
 - 失败兜底：若 pre-helm-write 第二次校验或 Helm write 失败，入口应执行 `suspend_after_uncertain_activation` 把 `suspend=true` 写回，并把 abort 原因记到本段。
 - 4 个 SHA：
   - `REVIEWED_CHART_SHA256 = sha256(chart dir) = …`
