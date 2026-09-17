@@ -1976,7 +1976,9 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   python3 "$PACKET_VALIDATOR" verify-runtime-image \
     --release-name "$RELEASE_NAME" --image "$FROZEN_IMAGE" --digest "$FROZEN_IMAGE_DIGEST" \
     --deployments "$DEPLOYMENTS_JSON" --replicasets "$REPLICASETS_JSON" --pods "$PODS_JSON"
-  remote "sudo -n k3s ctr --namespace k8s.io images info '$FROZEN_IMAGE'" \
+  # TrueNAS k3s 1.26 bundles an older ctr without `images info`. Build the
+  # narrow JSON contract from the exact row in the stable `images ls` table.
+  remote "sudo -n k3s ctr --namespace k8s.io images ls | awk -v image='$FROZEN_IMAGE' '\$1 == image {printf \"{\\\"Name\\\":\\\"%s\\\",\\\"Target\\\":{\\\"digest\\\":\\\"%s\\\"}}\\n\", \$1, \$3; found=1} END {if (!found) exit 1}'" \
     | python3 "$PACKET_VALIDATOR" verify-containerd-image --image "$FROZEN_IMAGE" --digest "$FROZEN_IMAGE_DIGEST"
 
   CURRENT_MANIFEST="$TMP_DIR/current-manifest.yaml"
