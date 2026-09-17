@@ -87,15 +87,16 @@ docs-contract: 通过（代码 0 / 文档 3 / plan 2）
 
 ## Remaining Gaps（剩余缺口）
 
-- **k3s controller 版本与 baseline `--kube-version` 不严格相等**——live `v1.26.6+k3s-6a894050-dirty`（GitTreeState=dirty），baseline `--kube-version=1.26.6+k3s1`。本次 canary 不阻断，但激活走 `--activate-schedule` 时该项会 fail-closed。激活前必须二选一：(a) 重打 k3s 为非 dirty 的 `v1.26.6+k3s1`；(b) 把 baseline `--kube-version` 改成与 live `/version` 严格相等的字符串。
-- **`local main` 领先 `origin/main` 9 个 commit**（`HEAD=a1a0611...`、`@{u}=0ebf5168...`），`REVIEWED_GIT_HEAD = @{u}` 校验仍未满足。
+- **`--kube-version` 对齐方式已澄清**：live `Server Version = v1.26.6+k3s-6a894050-dirty`（GitTreeState=dirty）。`--kube-version` 是每次调入口的命令行参数，不是 baseline 字段；chart `kubeVersion: ">=1.26.0-0"` 与模板 `controller strategy` 校验只识别 1.26.x 范围，不解析 `+k3s-...` 后缀。runbook 第 135/149/251/358/546 行示例均使用 `1.26.6` / `1.26.6+k3s1` 短字串。**激活走 `--activate-schedule --kube-version v1.26.6+k3s-6a894050-dirty` 即可通过 chart 校验**，无需重打 k3s 也无需改 baseline。
+- **激活前的只读发现**（runbook 第 41 行）尚未做：写前必须跑 `bash scripts/deploy-truenas-k3s.sh --read-only-discovery` 抓 live `helm history` / `helm get values` / live `deployment,service,cronjob,job,pvc` 状态，输出贴入激活 packet 的 Completion Evidence。
+- **`local main` 领先 `origin/main` 9 个 commit 已通过 commit `78421e0` 推到 origin/main**（`HEAD=78421e0... == @{u}=78421e0...`），`REVIEWED_GIT_HEAD = @{u}` 校验已满足；worktree clean。
 - **本次不证明首个交易日 16:30 自然触发时 `scheduled-refresh` 会成功调 provider 写 PostgreSQL**；该二次验证需激活后首个交易日 16:30 自然触发后采集。
 - live 镜像仍为可变 tag `20260917-113516-b5be526`；`FROZEN_IMAGE_*` 与 `image.digest` chart 字段加固都不在本次范围。
 - chart 模板第 80-81 行硬门槛 `suspend=false && controllerCanaryVerified=false` 仅校验 `suspend=false` 那一支；本次 baseline 仍 `suspend=true`，typed 校验不会触碰该分支，但 `controllerCanaryVerified: true` 在下次任何 `suspend=false` 写入路径都会被显式要求——这是预期目标。
 
 ## Next Step（下一步）
 
-1. 解决 k3s controller 版本与 baseline `--kube-version` 不严格相等（见 Remaining Gaps）。
-2. 处理 `local main` 领先 `origin/main` 9 个 commit（push 或拣出）。
-3. 走 `--activate-schedule` 入口，`catch-up=next-schedule`（`immediate-catch-up` 已过 deadline window）。
-4. 激活后首个交易日 16:30 观察 Job/Pod、`collection_runs`、五个 dataset quality 与 `/api/market-environment?as_of=<交易日>` 响应。
+1. 跑 `bash scripts/deploy-truenas-k3s.sh --read-only-discovery` 抓 live `helm history` / `helm get values` / live `deployment,service,cronjob,job,pvc` 状态；把关键输出贴入激活 packet 的 Completion Evidence（独立 plan，建议命名 `activate-scheduled-collection-20260917.md`）。
+2. 计算 4 个 SHA（`REVIEWED_CHART_SHA256` / `REVIEWED_BASELINE_SHA256` / `REVIEWED_OVERLAY_SHA256` / `REVIEWED_RENDER_SHA256`）+ frozen image 三元组（`FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment` / `FROZEN_IMAGE_TAG=20260917-113516-b5be526` / `FROZEN_IMAGE_DIGEST=…`）填入激活 plan。
+3. 走 `--activate-schedule` 入口：`--kube-version v1.26.6+k3s-6a894050-dirty`（live `Server Version` 字串），`catch-up=next-schedule`（`immediate-catch-up` 已过 deadline window），`--baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml`、`--scheduling-overlay deploy/truenas/values-scheduled-active.yaml`。
+4. 激活后首个交易日 16:30 观察 Job/Pod、PostgreSQL `collection_runs`、五个 dataset quality 与 `/api/market-environment?as_of=<交易日>` 响应。
