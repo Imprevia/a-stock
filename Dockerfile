@@ -38,6 +38,9 @@ COPY --from=frontend-builder --chown=10001:10001 \
      /build/apps/market-environment-dashboard/dist \
      ./apps/market-environment-dashboard/dist
 
+RUN mkdir -p /app/.artifacts/market-environment \
+    && chown -R 10001:10001 /app/.artifacts
+
 USER 10001:10001
 EXPOSE 8000
 
