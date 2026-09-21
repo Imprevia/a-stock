@@ -25,6 +25,7 @@
 | `unified-local-timezone-dashboard` | 资深前端工程师 | in-progress | 2026-09-12 |
 | `copy-index-values-and-normalize-default-date` | Codex | completed | 2026-09-13 |
 | `restore-limit-ecosystem-data-availability` | Codex | completed-with-insufficient-provider-evidence | 2026-09-21 |
+| `recover-fuyao-k3s-deployment-20260921` | Codex | in-progress | 2026-09-21 |
 | `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-15 |
 | `fix-market-collection-effective-date-and-timezone` | Codex | completed-with-production-write-code-deploy-pending | 2026-09-15 |
 | `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |
