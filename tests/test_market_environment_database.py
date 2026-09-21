@@ -10,6 +10,7 @@ from src.market_environment.database import DatabaseConfigurationError, Database
 import src.market_environment.postgres_migration as postgres_migration
 from src.market_environment.postgres_migration import backup_sqlite, import_sqlite, sqlite_fingerprint
 from src.market_environment.postgres_compat import _translate_sql
+from src.market_environment.postgres_schema import SCHEMA_STATEMENTS
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
 
@@ -119,6 +120,15 @@ def test_postgres_sql_translation_handles_existing_store_dialects():
     assert "%s" in translated
     assert "ON CONFLICT (run_id, dataset)" in translated
     assert _translate_sql("PRAGMA user_version") is None
+
+
+def test_postgres_bootstrap_contains_additive_limit_membership_columns():
+    schema = "\n".join(SCHEMA_STATEMENTS)
+    assert "membership_complete INTEGER" in schema
+    assert "streak_complete INTEGER" in schema
+    assert "pool_quality_json JSONB" in schema
+    assert "row_warnings_json JSONB" in schema
+    assert "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS is_new" in schema
 
 
 @pytest.mark.integration

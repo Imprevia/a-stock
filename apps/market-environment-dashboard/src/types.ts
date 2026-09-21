@@ -176,6 +176,7 @@ export type LimitMetricField = 'todayPromoted' | 'yesterdayLimitUpEligible' | 'p
 
 export interface LimitTierRow {
   tier: string
+  label?: string | null
   count: number | null
   observations?: number | null
   quality?: MetricQuality | null
@@ -209,6 +210,46 @@ export interface LimitRuleEvidence {
   evidence?: string[]
   missingInputs?: string[]
   calibrationStatus?: string | null
+}
+
+export interface LimitSecurityDetailRow {
+  securityId: string
+  thscode: string | null
+  code: string
+  exchange: string
+  name: string | null
+  poolType: 'limit_up' | 'limit_down' | 'failed_limit_up'
+  isSt: boolean | null
+  isNew: boolean | null
+  listingDate: string | null
+  closePrice: number | null
+  changePct: number | null
+  streakDays: number | null
+  limitUpTime: string | null
+  limitUpReason: string | null
+  sealMoney: number | null
+  maxSealMoney: number | null
+  firstLimitTime: string | null
+  lastLimitTime: string | null
+  openTimes: number | null
+  turnoverRatioPct: number | null
+  turnover: number | null
+  source: string
+  rowQuality: string | null
+  warnings: string[]
+}
+
+export interface LimitSecurityDetailGroup {
+  total: number | null
+  rows: LimitSecurityDetailRow[]
+  quality: MetricQuality
+}
+
+export interface LimitSecurityDetails {
+  limitUp: LimitSecurityDetailGroup
+  limitDown: LimitSecurityDetailGroup
+  failedLimitUp: LimitSecurityDetailGroup
+  promoted: LimitSecurityDetailGroup
 }
 
 export interface ChapterDocument {
@@ -281,6 +322,9 @@ export interface LimitAnalysis {
   promotionRuleVersion?: string | null
   promotionQuality?: MetricQuality | null
   fieldQuality?: Partial<Record<LimitMetricField, MetricQuality>> | null
+  membershipQuality?: MetricQuality | null
+  streakQuality?: MetricQuality | null
+  poolQuality?: Record<string, MetricQuality> | null
   maxStreak: number | null
   ladder?: LimitTierRow[] | null
   tiers?: LimitTierRow[] | null
@@ -305,6 +349,7 @@ export interface LimitAnalysis {
   } | null
   ruleEvidence?: Array<LimitRuleEvidence & { value?: number | string | null; thresholdProvenance?: string | null; vetoes?: string[] }> | null
   riskEvidence?: Array<{ code?: string; label: string; status?: string | null; value?: string | number | null; asOf?: string | null; evidence?: string[]; quality?: MetricQuality | null }> | null
+  securityDetails?: LimitSecurityDetails | null
   confirmation?: string | null
   invalidation?: string | null
   state: string
@@ -383,14 +428,6 @@ export interface Chapter01Analysis {
   documents?: ChapterDocument[]
   breadth?: BreadthAnalysis
   limits?: LimitAnalysis
-  tierRisk?: {
-    state: string
-    high?: number | null
-    middle?: number | null
-    low?: number | null
-    repairRatio?: number | null
-    quality: DataSetQuality
-  }
   sectors?: SectorAnalysis
   activeDirection?: ActiveDirectionAnalysis
   events?: EventAnalysis

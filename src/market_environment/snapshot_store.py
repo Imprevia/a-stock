@@ -27,7 +27,7 @@ from .limit_facts import (
 
 SNAPSHOT_SCHEMA_VERSION = 1
 TRADING_SESSION_SCHEMA_VERSION = 2
-STORAGE_SCHEMA_VERSION = 4
+STORAGE_SCHEMA_VERSION = 5
 LIMIT_DETAIL_CHECKSUM_KEY = "_detailDatasetChecksum"
 MATERIALIZED_COMPONENT_REVISION_KEY = "_componentRevision"
 DEFAULT_SOFT_TTL_SECONDS = 30
@@ -478,6 +478,9 @@ class SnapshotStore:
                     rule_version TEXT,
                     schema_version INTEGER NOT NULL,
                     complete INTEGER NOT NULL,
+                    membership_complete INTEGER,
+                    streak_complete INTEGER,
+                    pool_quality_json TEXT,
                     excluded INTEGER NOT NULL DEFAULT 0,
                     warnings_json TEXT NOT NULL DEFAULT '[]',
                     dataset_checksum TEXT NOT NULL,
@@ -494,6 +497,7 @@ class SnapshotStore:
                     name TEXT,
                     board TEXT,
                     is_st INTEGER,
+                    is_new INTEGER,
                     listing_date TEXT,
                     listing_days INTEGER,
                     limit_regime TEXT,
@@ -504,6 +508,17 @@ class SnapshotStore:
                     closed_limit_up INTEGER,
                     failed_limit_up INTEGER,
                     streak_days INTEGER,
+                    limit_up_time TEXT,
+                    limit_up_reason TEXT,
+                    seal_money REAL,
+                    max_seal_money REAL,
+                    first_limit_time TEXT,
+                    last_limit_time TEXT,
+                    open_times INTEGER,
+                    turnover_ratio_pct REAL,
+                    turnover REAL,
+                    row_quality TEXT,
+                    row_warnings_json TEXT NOT NULL DEFAULT '[]',
                     eligible INTEGER NOT NULL,
                     invalid_reason TEXT,
                     source TEXT NOT NULL,
@@ -622,6 +637,41 @@ class SnapshotStore:
                 connection.execute(
                     "ALTER TABLE refresh_leases ADD COLUMN token TEXT NOT NULL DEFAULT ''"
                 )
+            dataset_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(limit_security_datasets)").fetchall()
+            }
+            for name, definition in (
+                ("membership_complete", "INTEGER"),
+                ("streak_complete", "INTEGER"),
+                ("pool_quality_json", "TEXT"),
+            ):
+                if name not in dataset_columns:
+                    connection.execute(
+                        f"ALTER TABLE limit_security_datasets ADD COLUMN {name} {definition}"
+                    )
+            fact_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(limit_security_facts)").fetchall()
+            }
+            for name, definition in (
+                ("is_new", "INTEGER"),
+                ("limit_up_time", "TEXT"),
+                ("limit_up_reason", "TEXT"),
+                ("seal_money", "REAL"),
+                ("max_seal_money", "REAL"),
+                ("first_limit_time", "TEXT"),
+                ("last_limit_time", "TEXT"),
+                ("open_times", "INTEGER"),
+                ("turnover_ratio_pct", "REAL"),
+                ("turnover", "REAL"),
+                ("row_quality", "TEXT"),
+                ("row_warnings_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if name not in fact_columns:
+                    connection.execute(
+                        f"ALTER TABLE limit_security_facts ADD COLUMN {name} {definition}"
+                    )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO refresh_lease_fences(dataset, as_of, generation, token, updated_at)
@@ -682,6 +732,17 @@ class SnapshotStore:
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at, checksum) VALUES (?, ?, ?, ?)",
                 (4, "add-materialization-component-revisions", now, materialization_checksum),
+            )
+            detail_checksum = payload_checksum(
+                {
+                    "version": 5,
+                    "tables": ["limit_security_datasets", "limit_security_facts"],
+                    "change": "add-limit-membership-and-detail-fields",
+                }
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at, checksum) VALUES (?, ?, ?, ?)",
+                (5, "add-limit-membership-and-detail-fields", now, detail_checksum),
             )
             if current_version != STORAGE_SCHEMA_VERSION:
                 connection.execute(f"PRAGMA user_version = {STORAGE_SCHEMA_VERSION}")
@@ -1145,6 +1206,9 @@ class SnapshotStore:
         source_revision: str | None = None,
         rule_version: str | None = None,
         complete: bool | None = None,
+        membership_complete: bool | None = None,
+        streak_complete: bool | None = None,
+        pool_quality: dict[str, Any] | None = None,
         warnings: tuple[str, ...] | list[str] = (),
         dataset_checksum: str | None = None,
         fetched_at: datetime | None = None,
@@ -1173,16 +1237,11 @@ class SnapshotStore:
             )
         if actual_as_of is not None and actual_as_of != as_of:
             raise ValueError("limit facts actual_as_of must match as_of")
-        sources = {fact.source for fact in values}
-        if len(sources) > 1:
-            raise ValueError("all limit facts must use one manifest source")
         for fact in values:
             if fact.as_of != as_of:
                 raise ValueError("all limit facts must use the requested as_of")
             if fact.actual_as_of != actual_as_of:
                 raise ValueError("all limit facts must use the manifest actual_as_of")
-            if source is not None and fact.source != source:
-                raise ValueError("all limit facts must use the manifest source")
             if fact.schema_version != LIMIT_FACT_SCHEMA_VERSION:
                 raise ValueError(f"unsupported limit fact schema version: {fact.schema_version}")
             if fact.eligible and (not fact.security_id or not fact.code or not fact.exchange):
@@ -1221,6 +1280,38 @@ class SnapshotStore:
             effective_warnings = (*effective_warnings, "missing actual session date")
         if duplicate_keys:
             effective_complete = False
+        inferred_membership_complete = actual_as_of == as_of and all(
+            fact.membership_valid for fact in values
+        )
+        effective_membership_complete = (
+            inferred_membership_complete
+            if membership_complete is None
+            else bool(membership_complete)
+        )
+        if effective_membership_complete and (
+            actual_as_of != as_of or duplicate_keys or any(not fact.membership_valid for fact in values)
+        ):
+            effective_membership_complete = False
+            effective_warnings = (*effective_warnings, "incomplete normalized pool membership")
+        inferred_streak_complete = effective_membership_complete and all(
+            fact.streak_days is not None and fact.streak_days >= 1
+            for fact in values
+            if fact.pool_type == "limit_up" and fact.membership_valid
+        )
+        effective_streak_complete = (
+            inferred_streak_complete if streak_complete is None else bool(streak_complete)
+        )
+        if effective_streak_complete and (
+            not effective_membership_complete
+            or any(
+                fact.streak_days is None or fact.streak_days < 1
+                for fact in values
+                if fact.pool_type == "limit_up" and fact.membership_valid
+            )
+        ):
+            effective_streak_complete = False
+            effective_warnings = (*effective_warnings, "incomplete limit-up streak evidence")
+        effective_pool_quality = dict(pool_quality) if pool_quality is not None else None
         effective_excluded = sum(not fact.eligible for fact in values)
         calculated_checksum = limit_dataset_checksum(
             values,
@@ -1232,6 +1323,9 @@ class SnapshotStore:
             source_revision=source_revision,
             rule_version=rule_version,
             excluded=effective_excluded,
+            membership_complete=effective_membership_complete,
+            streak_complete=effective_streak_complete,
+            pool_quality=effective_pool_quality,
         )
         if dataset_checksum is not None and dataset_checksum != calculated_checksum:
             raise ValueError("dataset checksum does not match normalized facts")
@@ -1250,10 +1344,29 @@ class SnapshotStore:
                     expected_as_of=as_of,
                 )
                 manifest = connection.execute(
-                    "SELECT source_revision, dataset_checksum, complete FROM limit_security_datasets WHERE as_of = ?",
+                    "SELECT source_revision, dataset_checksum, complete, membership_complete "
+                    "FROM limit_security_datasets WHERE as_of = ?",
                     (as_of.isoformat(),),
                 ).fetchone()
-                replacing_incomplete = manifest is not None and not bool(manifest["complete"])
+                existing_membership = {
+                    (row["security_id"], row["pool_type"])
+                    for row in connection.execute(
+                        "SELECT security_id, pool_type FROM limit_security_facts WHERE as_of = ?",
+                        (as_of.isoformat(),),
+                    ).fetchall()
+                }
+                incoming_membership = {(fact.security_id, fact.pool_type) for fact in values}
+                replacing_incomplete = bool(
+                    manifest is not None
+                    and not bool(manifest["complete"])
+                    and (
+                        not bool(manifest["membership_complete"])
+                        or (
+                            effective_membership_complete is True
+                            and existing_membership == incoming_membership
+                        )
+                    )
+                )
                 if (
                     manifest is not None
                     and not replacing_incomplete
@@ -1275,9 +1388,9 @@ class SnapshotStore:
                     """
                     INSERT INTO limit_security_datasets (
                         as_of, actual_as_of, source, source_revision, rule_version,
-                        schema_version, complete, excluded, warnings_json,
-                        dataset_checksum, fetched_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        schema_version, complete, membership_complete, streak_complete,
+                        pool_quality_json, excluded, warnings_json, dataset_checksum, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(as_of) DO UPDATE SET
                         actual_as_of = excluded.actual_as_of,
                         source = excluded.source,
@@ -1285,6 +1398,9 @@ class SnapshotStore:
                         rule_version = excluded.rule_version,
                         schema_version = excluded.schema_version,
                         complete = excluded.complete,
+                        membership_complete = excluded.membership_complete,
+                        streak_complete = excluded.streak_complete,
+                        pool_quality_json = excluded.pool_quality_json,
                         excluded = excluded.excluded,
                         warnings_json = excluded.warnings_json,
                         dataset_checksum = excluded.dataset_checksum,
@@ -1298,6 +1414,9 @@ class SnapshotStore:
                         rule_version,
                         LIMIT_FACT_SCHEMA_VERSION,
                         int(effective_complete),
+                        int(effective_membership_complete) if effective_membership_complete is not None else None,
+                        int(effective_streak_complete) if effective_streak_complete is not None else None,
+                        canonical_json(effective_pool_quality) if effective_pool_quality is not None else None,
                         effective_excluded,
                         canonical_json(list(effective_warnings)),
                         calculated_checksum,
@@ -1310,12 +1429,15 @@ class SnapshotStore:
                     """
                     INSERT INTO limit_security_facts (
                         as_of, actual_as_of, security_id, pool_type, code, exchange,
-                        name, board, is_st, listing_date, listing_days, limit_regime,
+                        name, board, is_st, is_new, listing_date, listing_days, limit_regime,
                         close_price, previous_close, change_pct, touched_limit_up,
-                        closed_limit_up, failed_limit_up, streak_days, eligible,
+                        closed_limit_up, failed_limit_up, streak_days, limit_up_time,
+                        limit_up_reason, seal_money, max_seal_money, first_limit_time,
+                        last_limit_time, open_times, turnover_ratio_pct, turnover,
+                        row_quality, row_warnings_json, eligible,
                         invalid_reason, source, fetched_at, schema_version,
                         row_checksum, dataset_checksum
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(as_of, security_id, pool_type) DO UPDATE SET
                         actual_as_of = excluded.actual_as_of,
                         code = excluded.code,
@@ -1323,6 +1445,7 @@ class SnapshotStore:
                         name = excluded.name,
                         board = excluded.board,
                         is_st = excluded.is_st,
+                        is_new = excluded.is_new,
                         listing_date = excluded.listing_date,
                         listing_days = excluded.listing_days,
                         limit_regime = excluded.limit_regime,
@@ -1333,6 +1456,17 @@ class SnapshotStore:
                         closed_limit_up = excluded.closed_limit_up,
                         failed_limit_up = excluded.failed_limit_up,
                         streak_days = excluded.streak_days,
+                        limit_up_time = excluded.limit_up_time,
+                        limit_up_reason = excluded.limit_up_reason,
+                        seal_money = excluded.seal_money,
+                        max_seal_money = excluded.max_seal_money,
+                        first_limit_time = excluded.first_limit_time,
+                        last_limit_time = excluded.last_limit_time,
+                        open_times = excluded.open_times,
+                        turnover_ratio_pct = excluded.turnover_ratio_pct,
+                        turnover = excluded.turnover,
+                        row_quality = excluded.row_quality,
+                        row_warnings_json = excluded.row_warnings_json,
                         eligible = excluded.eligible,
                         invalid_reason = excluded.invalid_reason,
                         source = excluded.source,
@@ -1351,6 +1485,7 @@ class SnapshotStore:
                         value.name,
                         value.board,
                         int(value.is_st) if value.is_st is not None else None,
+                        int(value.is_new) if value.is_new is not None else None,
                         value.listing_date.isoformat() if value.listing_date else None,
                         value.listing_days,
                         value.limit_regime,
@@ -1361,6 +1496,17 @@ class SnapshotStore:
                         int(value.closed_limit_up) if value.closed_limit_up is not None else None,
                         int(value.failed_limit_up) if value.failed_limit_up is not None else None,
                         value.streak_days,
+                        value.limit_up_time,
+                        value.limit_up_reason,
+                        value.seal_money,
+                        value.max_seal_money,
+                        value.first_limit_time,
+                        value.last_limit_time,
+                        value.open_times,
+                        value.turnover_ratio_pct,
+                        value.turnover,
+                        value.row_quality,
+                        canonical_json(list(value.row_warnings)),
                         int(value.eligible),
                         value.invalid_reason,
                         value.source,
@@ -1396,6 +1542,17 @@ class SnapshotStore:
             raise ValueError("all atomic limit facts must use the snapshot date")
         if any(fact.row_checksum != fact_row_checksum(fact) for fact in facts):
             raise ValueError("atomic limit collection contains an invalid row checksum")
+        membership_complete = getattr(normalization, "membership_complete", None)
+        streak_complete = getattr(normalization, "streak_complete", None)
+        pool_quality = getattr(normalization, "pool_quality", None)
+        if membership_complete and any(not fact.membership_valid for fact in facts):
+            raise ValueError("membership-complete collection contains an invalid pool member")
+        if streak_complete and any(
+            fact.streak_days is None or fact.streak_days < 1
+            for fact in facts
+            if fact.pool_type == "limit_up" and fact.membership_valid
+        ):
+            raise ValueError("streak-complete collection contains a missing streak value")
         checksum = limit_dataset_checksum(
             facts,
             as_of=value.as_of,
@@ -1406,6 +1563,9 @@ class SnapshotStore:
             source_revision=normalization.source_revision,
             rule_version=normalization.rule_version,
             excluded=normalization.excluded,
+            membership_complete=membership_complete,
+            streak_complete=streak_complete,
+            pool_quality=pool_quality,
         )
         if normalization.dataset_checksum and normalization.dataset_checksum != checksum:
             raise ValueError("atomic limit collection checksum does not match normalized facts")
@@ -1434,10 +1594,29 @@ class SnapshotStore:
                     expected_as_of=value.as_of,
                 )
                 manifest = connection.execute(
-                    "SELECT source_revision, dataset_checksum, complete FROM limit_security_datasets WHERE as_of = ?",
+                    "SELECT source_revision, dataset_checksum, complete, membership_complete "
+                    "FROM limit_security_datasets WHERE as_of = ?",
                     (value.as_of.isoformat(),),
                 ).fetchone()
-                replacing_incomplete = manifest is not None and not bool(manifest["complete"])
+                existing_membership = {
+                    (row["security_id"], row["pool_type"])
+                    for row in connection.execute(
+                        "SELECT security_id, pool_type FROM limit_security_facts WHERE as_of = ?",
+                        (value.as_of.isoformat(),),
+                    ).fetchall()
+                }
+                incoming_membership = {(fact.security_id, fact.pool_type) for fact in facts}
+                replacing_incomplete = bool(
+                    manifest is not None
+                    and not bool(manifest["complete"])
+                    and (
+                        not bool(manifest["membership_complete"])
+                        or (
+                            membership_complete is True
+                            and existing_membership == incoming_membership
+                        )
+                    )
+                )
                 if (
                     manifest is not None
                     and not replacing_incomplete
@@ -1460,9 +1639,9 @@ class SnapshotStore:
                     """
                     INSERT INTO limit_security_datasets (
                         as_of, actual_as_of, source, source_revision, rule_version,
-                        schema_version, complete, excluded, warnings_json,
-                        dataset_checksum, fetched_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        schema_version, complete, membership_complete, streak_complete,
+                        pool_quality_json, excluded, warnings_json, dataset_checksum, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(as_of) DO UPDATE SET
                         actual_as_of = excluded.actual_as_of,
                         source = excluded.source,
@@ -1470,6 +1649,9 @@ class SnapshotStore:
                         rule_version = excluded.rule_version,
                         schema_version = excluded.schema_version,
                         complete = excluded.complete,
+                        membership_complete = excluded.membership_complete,
+                        streak_complete = excluded.streak_complete,
+                        pool_quality_json = excluded.pool_quality_json,
                         excluded = excluded.excluded,
                         warnings_json = excluded.warnings_json,
                         dataset_checksum = excluded.dataset_checksum,
@@ -1483,6 +1665,9 @@ class SnapshotStore:
                         normalization.rule_version,
                         LIMIT_FACT_SCHEMA_VERSION,
                         int(normalization.complete),
+                        int(membership_complete) if membership_complete is not None else None,
+                        int(streak_complete) if streak_complete is not None else None,
+                        canonical_json(dict(pool_quality)) if pool_quality is not None else None,
                         normalization.excluded,
                         canonical_json(list(normalization.warnings)),
                         checksum,
@@ -1495,12 +1680,15 @@ class SnapshotStore:
                     """
                     INSERT INTO limit_security_facts (
                         as_of, actual_as_of, security_id, pool_type, code, exchange,
-                        name, board, is_st, listing_date, listing_days, limit_regime,
+                        name, board, is_st, is_new, listing_date, listing_days, limit_regime,
                         close_price, previous_close, change_pct, touched_limit_up,
-                        closed_limit_up, failed_limit_up, streak_days, eligible,
+                        closed_limit_up, failed_limit_up, streak_days, limit_up_time,
+                        limit_up_reason, seal_money, max_seal_money, first_limit_time,
+                        last_limit_time, open_times, turnover_ratio_pct, turnover,
+                        row_quality, row_warnings_json, eligible,
                         invalid_reason, source, fetched_at, schema_version,
                         row_checksum, dataset_checksum
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(as_of, security_id, pool_type) DO UPDATE SET
                         actual_as_of = excluded.actual_as_of,
                         code = excluded.code,
@@ -1508,6 +1696,7 @@ class SnapshotStore:
                         name = excluded.name,
                         board = excluded.board,
                         is_st = excluded.is_st,
+                        is_new = excluded.is_new,
                         listing_date = excluded.listing_date,
                         listing_days = excluded.listing_days,
                         limit_regime = excluded.limit_regime,
@@ -1518,6 +1707,17 @@ class SnapshotStore:
                         closed_limit_up = excluded.closed_limit_up,
                         failed_limit_up = excluded.failed_limit_up,
                         streak_days = excluded.streak_days,
+                        limit_up_time = excluded.limit_up_time,
+                        limit_up_reason = excluded.limit_up_reason,
+                        seal_money = excluded.seal_money,
+                        max_seal_money = excluded.max_seal_money,
+                        first_limit_time = excluded.first_limit_time,
+                        last_limit_time = excluded.last_limit_time,
+                        open_times = excluded.open_times,
+                        turnover_ratio_pct = excluded.turnover_ratio_pct,
+                        turnover = excluded.turnover,
+                        row_quality = excluded.row_quality,
+                        row_warnings_json = excluded.row_warnings_json,
                         eligible = excluded.eligible,
                         invalid_reason = excluded.invalid_reason,
                         source = excluded.source,
@@ -1536,6 +1736,7 @@ class SnapshotStore:
                         item.name,
                         item.board,
                         int(item.is_st) if item.is_st is not None else None,
+                        int(item.is_new) if item.is_new is not None else None,
                         item.listing_date.isoformat() if item.listing_date else None,
                         item.listing_days,
                         item.limit_regime,
@@ -1546,6 +1747,17 @@ class SnapshotStore:
                         int(item.closed_limit_up) if item.closed_limit_up is not None else None,
                         int(item.failed_limit_up) if item.failed_limit_up is not None else None,
                         item.streak_days,
+                        item.limit_up_time,
+                        item.limit_up_reason,
+                        item.seal_money,
+                        item.max_seal_money,
+                        item.first_limit_time,
+                        item.last_limit_time,
+                        item.open_times,
+                        item.turnover_ratio_pct,
+                        item.turnover,
+                        item.row_quality,
+                        canonical_json(list(item.row_warnings)),
                         int(item.eligible),
                         item.invalid_reason,
                         item.source,
@@ -1582,6 +1794,17 @@ class SnapshotStore:
             "rule_version": row["rule_version"],
             "schema_version": int(row["schema_version"]),
             "complete": bool(row["complete"]),
+            "membership_complete": (
+                bool(row["membership_complete"])
+                if row["membership_complete"] is not None
+                else None
+            ),
+            "streak_complete": (
+                bool(row["streak_complete"])
+                if row["streak_complete"] is not None
+                else None
+            ),
+            "pool_quality": _json_value(row["pool_quality_json"], None),
             "excluded": int(row["excluded"]),
             "warnings": tuple(_json_value(row["warnings_json"], [])),
             "dataset_checksum": row["dataset_checksum"],
@@ -1613,6 +1836,7 @@ class SnapshotStore:
                 name=row["name"],
                 board=row["board"],
                 is_st=bool(row["is_st"]) if row["is_st"] is not None else None,
+                is_new=bool(row["is_new"]) if row["is_new"] is not None else None,
                 listing_date=_as_date(row["listing_date"]),
                 listing_days=int(row["listing_days"]) if row["listing_days"] is not None else None,
                 limit_regime=row["limit_regime"],
@@ -1623,6 +1847,23 @@ class SnapshotStore:
                 closed_limit_up=bool(row["closed_limit_up"]) if row["closed_limit_up"] is not None else None,
                 failed_limit_up=bool(row["failed_limit_up"]) if row["failed_limit_up"] is not None else None,
                 streak_days=int(row["streak_days"]) if row["streak_days"] is not None else None,
+                limit_up_time=row["limit_up_time"],
+                limit_up_reason=row["limit_up_reason"],
+                seal_money=float(row["seal_money"]) if row["seal_money"] is not None else None,
+                max_seal_money=(
+                    float(row["max_seal_money"]) if row["max_seal_money"] is not None else None
+                ),
+                first_limit_time=row["first_limit_time"],
+                last_limit_time=row["last_limit_time"],
+                open_times=int(row["open_times"]) if row["open_times"] is not None else None,
+                turnover_ratio_pct=(
+                    float(row["turnover_ratio_pct"])
+                    if row["turnover_ratio_pct"] is not None
+                    else None
+                ),
+                turnover=float(row["turnover"]) if row["turnover"] is not None else None,
+                row_quality=row["row_quality"],
+                row_warnings=tuple(_json_value(row["row_warnings_json"], [])),
                 eligible=bool(row["eligible"]),
                 invalid_reason=row["invalid_reason"],
                 source=row["source"],
@@ -1665,6 +1906,9 @@ class SnapshotStore:
             source_revision=manifest["source_revision"],
             rule_version=manifest["rule_version"],
             excluded=manifest["excluded"],
+            membership_complete=manifest["membership_complete"],
+            streak_complete=manifest["streak_complete"],
+            pool_quality=manifest["pool_quality"],
         )
         if expected != manifest["dataset_checksum"]:
             raise SnapshotIntegrityError(f"limit dataset checksum mismatch: {as_of.isoformat()}")

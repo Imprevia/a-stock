@@ -7,6 +7,9 @@
 {{- if or (not .Values.database.enabled) (not .Values.database.existingSecret) }}
 {{- fail "database.existingSecret is required and database.enabled=true for the scheduled collector" }}
 {{- end }}
+{{- if and .Values.marketEnvironment.limits.fuyao.existingSecret (eq .Values.marketEnvironment.limits.fuyao.existingSecret .Values.database.existingSecret) }}
+{{- fail "marketEnvironment.limits.fuyao.existingSecret must be independent from database.existingSecret" }}
+{{- end }}
 {{- if not (kindIs "bool" $scheduled.enabled) }}
 {{- fail "marketEnvironment.scheduledCollection.enabled must be a boolean" }}
 {{- end }}
@@ -172,6 +175,16 @@ spec:
                   value: {{ ternary "1" "0" .Values.marketEnvironment.persistentCache | quote }}
                 - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
                   value: {{ .Values.marketEnvironment.settlementTime | quote }}
+                - name: MARKET_ENVIRONMENT_LIMITS_V1_ENABLED
+                  value: {{ ternary "1" "0" .Values.marketEnvironment.limits.v1Enabled | quote }}
+                {{- with .Values.marketEnvironment.limits.fuyao.existingSecret }}
+                - name: MARKET_ENVIRONMENT_FUYAO_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ . | quote }}
+                      key: {{ $.Values.marketEnvironment.limits.fuyao.secretKey | quote }}
+                      optional: true
+                {{- end }}
                 {{- with .Values.extraEnv }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}

@@ -47,6 +47,10 @@ _EXCHANGE_ALIASES = {
     "SZSE": "SZSE",
     "深交所": "SZSE",
     "深圳": "SZSE",
+    "BJ": "BSE",
+    "BSE": "BSE",
+    "北交所": "BSE",
+    "北京": "BSE",
 }
 _BOARD_ALIASES = {
     "主板": "main",
@@ -65,6 +69,9 @@ _BOARD_ALIASES = {
     "science": "star",
 }
 _SECURITY_ID_RE = re.compile(r"^(?P<exchange>[A-Za-z0-9一-鿿]+)[.:/_-]?(?P<code>\d{6})$")
+_SECURITY_ID_SUFFIX_RE = re.compile(
+    r"^(?P<code>\d{6})[.:/_-](?P<exchange>[A-Za-z]{1,8})$"
+)
 
 
 def canonical_json(value: Any) -> str:
@@ -90,6 +97,7 @@ class LimitSecurityFactRecord:
     name: str | None = None
     board: str | None = None
     is_st: bool | None = None
+    is_new: bool | None = None
     listing_date: date | None = None
     listing_days: int | None = None
     limit_regime: str | None = None
@@ -100,6 +108,17 @@ class LimitSecurityFactRecord:
     closed_limit_up: bool | None = None
     failed_limit_up: bool | None = None
     streak_days: int | None = None
+    limit_up_time: str | None = None
+    limit_up_reason: str | None = None
+    seal_money: float | None = None
+    max_seal_money: float | None = None
+    first_limit_time: str | None = None
+    last_limit_time: str | None = None
+    open_times: int | None = None
+    turnover_ratio_pct: float | None = None
+    turnover: float | None = None
+    row_quality: str | None = None
+    row_warnings: tuple[str, ...] = ()
     eligible: bool = False
     invalid_reason: str | None = None
     source: str = "unknown"
@@ -109,8 +128,33 @@ class LimitSecurityFactRecord:
     dataset_checksum: str | None = None
     actual_as_of: date | None = None
 
+    @property
+    def membership_valid(self) -> bool:
+        """Whether the row can participate in a dated pool membership set."""
+
+        invalid_membership_reasons = {
+            "malformed-row",
+            "malformed-identity",
+            "ambiguous-identity",
+            "identity-code-mismatch",
+            "identity-exchange-mismatch",
+            "invalid-provider-row-date",
+            "provider-row-date-mismatch",
+            "missing-actual-session-date",
+            "provider-date-mismatch",
+            "duplicate-security",
+            "conflicting-pool-membership",
+        }
+        return bool(
+            self.security_id
+            and self.code
+            and self.exchange
+            and self.actual_as_of == self.as_of
+            and self.invalid_reason not in invalid_membership_reasons
+        )
+
     def logical_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "as_of": self.as_of.isoformat(),
             "actual_as_of": self.actual_as_of.isoformat() if self.actual_as_of else None,
             "security_id": self.security_id,
@@ -136,6 +180,25 @@ class LimitSecurityFactRecord:
             "fetched_at": _utc(self.fetched_at).isoformat(),
             "schema_version": self.schema_version,
         }
+        optional_evidence = {
+            "is_new": self.is_new,
+            "limit_up_time": self.limit_up_time,
+            "limit_up_reason": self.limit_up_reason,
+            "seal_money": self.seal_money,
+            "max_seal_money": self.max_seal_money,
+            "first_limit_time": self.first_limit_time,
+            "last_limit_time": self.last_limit_time,
+            "open_times": self.open_times,
+            "turnover_ratio_pct": self.turnover_ratio_pct,
+            "turnover": self.turnover,
+            "row_quality": self.row_quality,
+            "row_warnings": list(self.row_warnings),
+        }
+        # Keep checksums of pre-0002 rows stable while binding every newly
+        # supplied detail field into new row checksums.
+        if any(value not in (None, [], ()) for value in optional_evidence.values()):
+            result.update(optional_evidence)
+        return result
 
     def normalized(self) -> "LimitSecurityFactRecord":
         normalized = replace(
@@ -146,6 +209,15 @@ class LimitSecurityFactRecord:
             change_pct=float(self.change_pct) if self.change_pct is not None else None,
             listing_days=int(self.listing_days) if self.listing_days is not None else None,
             streak_days=int(self.streak_days) if self.streak_days is not None else None,
+            is_new=bool(self.is_new) if self.is_new is not None else None,
+            seal_money=float(self.seal_money) if self.seal_money is not None else None,
+            max_seal_money=float(self.max_seal_money) if self.max_seal_money is not None else None,
+            open_times=int(self.open_times) if self.open_times is not None else None,
+            turnover_ratio_pct=(
+                float(self.turnover_ratio_pct) if self.turnover_ratio_pct is not None else None
+            ),
+            turnover=float(self.turnover) if self.turnover is not None else None,
+            row_warnings=tuple(str(item) for item in self.row_warnings),
             is_st=bool(self.is_st) if self.is_st is not None else None,
             touched_limit_up=bool(self.touched_limit_up) if self.touched_limit_up is not None else None,
             closed_limit_up=bool(self.closed_limit_up) if self.closed_limit_up is not None else None,
@@ -182,6 +254,9 @@ class LimitNormalizationResult:
     dataset_checksum: str = ""
     source_revision: str | None = None
     rule_version: str | None = None
+    membership_complete: bool | None = None
+    streak_complete: bool | None = None
+    pool_quality: Mapping[str, Any] | None = None
 
     @property
     def eligible_rows(self) -> tuple[LimitSecurityFactRecord, ...]:
@@ -189,7 +264,7 @@ class LimitNormalizationResult:
 
     def normalized(self) -> "LimitNormalizationResult":
         rows = tuple(row.normalized() for row in self.rows)
-        checksum = self.dataset_checksum or limit_dataset_checksum(
+        checksum = limit_dataset_checksum(
             rows,
             as_of=self.as_of,
             actual_as_of=self.actual_as_of,
@@ -199,6 +274,9 @@ class LimitNormalizationResult:
             source_revision=self.source_revision,
             rule_version=self.rule_version,
             excluded=self.excluded,
+            membership_complete=self.membership_complete,
+            streak_complete=self.streak_complete,
+            pool_quality=self.pool_quality,
         )
         rows = tuple(replace(row, dataset_checksum=checksum) for row in rows)
         return replace(self, rows=rows, dataset_checksum=checksum)
@@ -232,6 +310,9 @@ def limit_dataset_checksum(
     rule_version: str | None = None,
     schema_version: int = LIMIT_FACT_SCHEMA_VERSION,
     excluded: int = 0,
+    membership_complete: bool | None = None,
+    streak_complete: bool | None = None,
+    pool_quality: Mapping[str, Any] | None = None,
 ) -> str:
     canonical_rows = []
     for row in rows:
@@ -253,6 +334,14 @@ def limit_dataset_checksum(
         "warnings": list(warnings),
         "rows": canonical_rows,
     }
+    if membership_complete is not None or streak_complete is not None or pool_quality is not None:
+        envelope.update(
+            {
+                "membership_complete": membership_complete,
+                "streak_complete": streak_complete,
+                "pool_quality": dict(pool_quality or {}),
+            }
+        )
     return hashlib.sha256(canonical_json(envelope).encode("utf-8")).hexdigest()
 
 
@@ -326,12 +415,20 @@ def _session_date(value: Any) -> date | None:
 
 def _identity(row: Mapping[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
     raw_identity = _text(
-        _first(row, "security_id", "securityId", "secid", "exchange_qualified_code", "qualified_code")
+        _first(
+            row,
+            "security_id",
+            "securityId",
+            "thscode",
+            "secid",
+            "exchange_qualified_code",
+            "qualified_code",
+        )
     )
     code = _text(_first(row, "code", "symbol", "c", "f12"))
     exchange = _text(_first(row, "exchange", "market", "exchange_code", "market_id", "mkt", "f13", "m"))
     if raw_identity:
-        match = _SECURITY_ID_RE.match(raw_identity)
+        match = _SECURITY_ID_RE.match(raw_identity) or _SECURITY_ID_SUFFIX_RE.match(raw_identity)
         if match:
             embedded_exchange = match.group("exchange")
             embedded_code = match.group("code")
@@ -456,6 +553,7 @@ def _normalize_row(
     source: str,
     fetched_at: datetime | None,
 ) -> LimitSecurityFactRecord:
+    row_source = _text(_first(raw, "source", "provider_source", "providerSource")) or source
     identity, code, exchange, identity_error = _identity(raw)
     row_date_value = _first(
         raw,
@@ -471,6 +569,7 @@ def _normalize_row(
     row_date_error = row_date_value is not None and row_actual_as_of is None
     board = _board(_first(raw, "board", "board_name", "security_board", "market_board"))
     is_st = _bool(_first(raw, "is_st", "isST", "st", "st_flag"))
+    is_new = _bool(_first(raw, "is_new", "isNew", "new_stock", "newStock"))
     listing_date_value = _first(raw, "listing_date", "listingDate", "ipo_date")
     listing_date = _date(listing_date_value)
     listing_date_error = listing_date_value is not None and listing_date is None
@@ -511,6 +610,23 @@ def _normalize_row(
                 )
     failed = _bool(_first(raw, "failed_limit_up", "failedLimitUp", "is_failed_limit_up"))
     streak = _int(_first(raw, "streak_days", "streakDays", "lbc"))
+    # A dated post-close provider pool is itself event evidence. This records
+    # membership semantics without inferring a price-limit regime.
+    if pool_type == "limit_up":
+        touched = True if touched is None else touched
+        closed = True if closed is None else closed
+    elif pool_type == "failed_limit_up":
+        touched = True if touched is None else touched
+        closed = False if closed is None else closed
+        failed = True if failed is None else failed
+
+    raw_warnings = _first(raw, "row_warnings", "rowWarnings", "warnings")
+    if isinstance(raw_warnings, str):
+        row_warnings = (raw_warnings,)
+    elif isinstance(raw_warnings, Iterable) and not isinstance(raw_warnings, Mapping):
+        row_warnings = tuple(str(item) for item in raw_warnings)
+    else:
+        row_warnings = ()
 
     reason: str | None = identity_error
     if reason is None and row_date_error:
@@ -560,6 +676,7 @@ def _normalize_row(
         name=_text(_first(raw, "name", "security_name", "f14", "n")),
         board=board,
         is_st=is_st,
+        is_new=is_new,
         listing_date=listing_date,
         listing_days=listing_days,
         limit_regime=regime,
@@ -570,9 +687,22 @@ def _normalize_row(
         closed_limit_up=closed,
         failed_limit_up=failed if failed is not None else pool_type == "failed_limit_up",
         streak_days=streak,
+        limit_up_time=_text(_first(raw, "limit_up_time", "limitUpTime", "limit_time")),
+        limit_up_reason=_text(_first(raw, "limit_up_reason", "limitUpReason", "reason")),
+        seal_money=_float(_first(raw, "seal_money", "sealMoney", "order_amount")),
+        max_seal_money=_float(_first(raw, "max_seal_money", "maxSealMoney", "max_order_amount")),
+        first_limit_time=_text(_first(raw, "first_limit_time", "firstLimitTime")),
+        last_limit_time=_text(_first(raw, "last_limit_time", "lastLimitTime")),
+        open_times=_int(_first(raw, "open_times", "openTimes", "break_times")),
+        turnover_ratio_pct=_float(
+            _first(raw, "turnover_ratio_pct", "turnoverRatioPct", "turnover_rate")
+        ),
+        turnover=_float(_first(raw, "turnover", "amount", "turnover_amount")),
+        row_quality=_text(_first(raw, "row_quality", "rowQuality")),
+        row_warnings=row_warnings,
         eligible=reason is None,
         invalid_reason=reason,
-        source=source,
+        source=row_source,
         fetched_at=_utc(fetched_at),
     ).normalized()
 
@@ -587,6 +717,9 @@ def normalize_limit_rows(
     fetched_at: datetime | None = None,
     source_revision: str | None = None,
     rule_version: str | None = None,
+    membership_complete: bool | None = None,
+    streak_complete: bool | None = None,
+    pool_quality: Mapping[str, Any] | None = None,
 ) -> LimitNormalizationResult:
     """Normalize one dated pool and reject ambiguous/duplicate evidence."""
 
@@ -648,7 +781,7 @@ def normalize_limit_rows(
     if not normalized:
         warnings.append("empty limit pool")
     if excluded:
-        warnings.append(f"excluded {excluded} invalid limit rows")
+        warnings.append(f"excluded {excluded} row(s) from strict enrichment")
     malformed_rows = sum(row.invalid_reason == "malformed-row" for row in normalized)
     if malformed_rows:
         warnings.append(f"malformed-row excluded: {malformed_rows} row(s)")
@@ -662,6 +795,23 @@ def normalize_limit_rows(
     complete = (actual_as_of is not None and actual_as_of == as_of) and all(
         row.invalid_reason in {None, *non_v1_reasons} for row in normalized
     )
+    inferred_membership_complete = (
+        actual_as_of == as_of and all(row.membership_valid for row in normalized)
+    )
+    effective_membership_complete = (
+        inferred_membership_complete
+        if membership_complete is None
+        else bool(membership_complete) and inferred_membership_complete
+    )
+    limit_up_members = [row for row in normalized if row.pool_type == "limit_up" and row.membership_valid]
+    inferred_streak_complete = effective_membership_complete and all(
+        row.streak_days is not None and row.streak_days >= 1 for row in limit_up_members
+    )
+    effective_streak_complete = (
+        inferred_streak_complete
+        if streak_complete is None
+        else bool(streak_complete) and inferred_streak_complete
+    )
     result = LimitNormalizationResult(
         rows=tuple(normalized),
         as_of=as_of,
@@ -673,6 +823,9 @@ def normalize_limit_rows(
         duplicate_count=duplicate_count,
         source_revision=source_revision,
         rule_version=rule_version,
+        membership_complete=effective_membership_complete,
+        streak_complete=effective_streak_complete,
+        pool_quality=dict(pool_quality) if pool_quality is not None else None,
     )
     return result.normalized()
 
@@ -686,6 +839,9 @@ def normalize_limit_pools(
     fetched_at: datetime | None = None,
     source_revision: str | None = None,
     rule_version: str | None = None,
+    membership_complete: bool | None = None,
+    streak_complete: bool | None = None,
+    pool_quality: Mapping[str, Any] | None = None,
 ) -> LimitNormalizationResult:
     """Normalize all pools as one dataset while keeping pool membership distinct."""
 
@@ -694,10 +850,12 @@ def normalize_limit_pools(
     warnings: list[str] = []
     complete = True
     duplicate_count = 0
+    inferred_membership_complete = actual_as_of == as_of
     for pool_type in ("limit_up", "failed_limit_up", "limit_down"):
         pool = pools.get(pool_type)
         if pool is None:
             complete = False
+            inferred_membership_complete = False
             warnings.append(f"missing {pool_type} pool")
             continue
         result = normalize_limit_rows(
@@ -713,6 +871,9 @@ def normalize_limit_pools(
         rows.extend(result.rows)
         warnings.extend(result.warnings)
         complete = complete and result.complete
+        inferred_membership_complete = inferred_membership_complete and bool(
+            result.membership_complete
+        )
         duplicate_count += result.duplicate_count
     by_identity: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
@@ -739,7 +900,24 @@ def normalize_limit_pools(
                 rewritten.append(row)
         rows = rewritten
         complete = False
+        inferred_membership_complete = False
         warnings.append(f"conflicting pool memberships excluded: {len(conflicting_ids)}")
+    effective_membership_complete = (
+        inferred_membership_complete
+        if membership_complete is None
+        else bool(membership_complete) and inferred_membership_complete
+    )
+    limit_up_members = [
+        row for row in rows if row.pool_type == "limit_up" and row.membership_valid
+    ]
+    inferred_streak_complete = effective_membership_complete and all(
+        row.streak_days is not None and row.streak_days >= 1 for row in limit_up_members
+    )
+    effective_streak_complete = (
+        inferred_streak_complete
+        if streak_complete is None
+        else bool(streak_complete) and inferred_streak_complete
+    )
     result = LimitNormalizationResult(
         rows=tuple(rows),
         as_of=as_of,
@@ -751,6 +929,9 @@ def normalize_limit_pools(
         duplicate_count=duplicate_count,
         source_revision=source_revision,
         rule_version=rule_version,
+        membership_complete=effective_membership_complete,
+        streak_complete=effective_streak_complete,
+        pool_quality=dict(pool_quality) if pool_quality is not None else None,
     )
     return result.normalized()
 

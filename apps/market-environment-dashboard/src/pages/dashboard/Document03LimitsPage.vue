@@ -10,6 +10,7 @@
 import { AlertTriangle, CircleAlert, Database as DatabaseIcon, LineChart as LineChartIcon, RefreshCw, Rows3, Scale, ShieldAlert } from 'lucide-vue-next'
 import { computed } from 'vue'
 
+import LimitSecurityDetailsPanel from '../../components/limits/LimitSecurityDetailsPanel.vue'
 import { formatDateTime as fmtDateTime } from '../../composables/useFormatDateTime'
 import { usePreferencesStore } from '../../stores/preferences'
 import { useDocumentContext } from '../../composables/useDocumentContext'
@@ -104,6 +105,8 @@ const metricNullList = computed(() => [
     <CircleAlert :size="17" />
     <span>“--”表示数据不可用或分母不可计算，不代表 0。</span>
   </div>
+
+  <LimitSecurityDetailsPanel :details="limits?.securityDetails" />
 
   <section class="limits-promotion-grid">
     <article class="panel limit-promotion-panel">

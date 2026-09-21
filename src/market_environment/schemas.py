@@ -26,10 +26,15 @@ EvidenceQualityStatus = Literal[
 CacheState = Literal["fresh", "stale", "missing"]
 MetricQualityStatus = Literal["ok", "insufficient", "degraded", "failed"]
 LimitMetricField = Literal["todayPromoted", "yesterdayLimitUpEligible", "promotionRatio"]
-PromotionSampleRule = Literal["previous eligible close-limit-up -> current close-limit-up"]
-PromotionRuleVersion = Literal["limits-promotion-v1"]
-PROMOTION_SAMPLE_RULE = "previous eligible close-limit-up -> current close-limit-up"
-PROMOTION_RULE_VERSION = "limits-promotion-v1"
+PromotionSampleRule = Literal[
+    "previous eligible close-limit-up -> current close-limit-up",
+    "previous complete limit-up membership -> current complete limit-up membership",
+]
+PromotionRuleVersion = Literal["limits-promotion-v1", "limits-promotion-v2"]
+PROMOTION_SAMPLE_RULE = (
+    "previous complete limit-up membership -> current complete limit-up membership"
+)
+PROMOTION_RULE_VERSION = "limits-promotion-v2"
 SynchronizationAssessmentStatus = Literal["confirmed", "unconfirmed", "contradicted", "insufficient"]
 SynchronizationDimensionStatus = Literal["confirming", "neutral", "contradicting", "insufficient"]
 SynchronizationConclusionCode = Literal[
@@ -234,6 +239,51 @@ class MetricQuality(BaseModel):
         return _validate_iso_date(value)
 
 
+class LimitSecurityDetailRow(BaseModel):
+    securityId: str
+    thscode: str | None = None
+    code: str
+    exchange: str
+    name: str | None = None
+    poolType: Literal["limit_up", "failed_limit_up", "limit_down"]
+    isSt: bool | None = None
+    isNew: bool | None = None
+    listingDate: str | None = None
+    closePrice: float | None = None
+    changePct: float | None = None
+    streakDays: int | None = Field(default=None, ge=0)
+    limitUpTime: str | None = None
+    limitUpReason: str | None = None
+    sealMoney: float | None = None
+    maxSealMoney: float | None = None
+    firstLimitTime: str | None = None
+    lastLimitTime: str | None = None
+    openTimes: int | None = Field(default=None, ge=0)
+    turnoverRatioPct: float | None = None
+    turnover: float | None = None
+    source: str
+    rowQuality: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("listingDate")
+    @classmethod
+    def validate_listing_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+
+class LimitSecurityDetailGroup(BaseModel):
+    total: int | None = Field(default=None, ge=0)
+    rows: list[LimitSecurityDetailRow] = Field(default_factory=list)
+    quality: MetricQuality
+
+
+class LimitSecurityDetails(BaseModel):
+    limitUp: LimitSecurityDetailGroup
+    limitDown: LimitSecurityDetailGroup
+    failedLimitUp: LimitSecurityDetailGroup
+    promoted: LimitSecurityDetailGroup
+
+
 class LimitTierEvidence(BaseModel):
     tier: Literal["first", "second", "third", "four_plus"]
     label: str
@@ -387,6 +437,10 @@ class LimitEvidence(BaseModel):
     promotionRuleVersion: PromotionRuleVersion | None = None
     promotionQuality: MetricQuality | None = None
     fieldQuality: dict[LimitMetricField, MetricQuality] | None = None
+    membershipQuality: MetricQuality | None = None
+    streakQuality: MetricQuality | None = None
+    poolQuality: dict[str, MetricQuality] | None = None
+    securityDetails: LimitSecurityDetails | None = None
     ladder: list[LimitTierEvidence] = Field(default_factory=list)
     stratifications: list[LimitStratificationEvidence] = Field(default_factory=list)
     history: LimitHistoryEvidence | None = None
@@ -460,7 +514,7 @@ class LimitEvidence(BaseModel):
         if self.promotionQuality.status == "degraded":
             if not statuses <= {"ok", "degraded"} or "degraded" not in statuses:
                 raise ValueError("degraded promotion quality requires at least one degraded field")
-            if not (self.quality.status in {"fallback", "degraded"}
+            if not (self.quality.status in {"partial", "fallback", "degraded"}
                     or self.quality.cacheState == "stale"
                     or self.quality.refreshWarning is not None):
                 raise ValueError("degraded promotion quality requires fallback or retained evidence")

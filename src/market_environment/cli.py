@@ -27,6 +27,13 @@ def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.market_environment.cli")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -36,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--as-of", required=True, type=date.fromisoformat)
     _add_dataset_arguments(refresh)
     refresh.add_argument("--force", action="store_true", help="allow explicit local diagnostic refresh")
+    refresh.add_argument(
+        "--history-sessions",
+        type=_positive_int,
+        default=1,
+        help="collect the latest N confirmed sessions; values above 1 require --dataset limits",
+    )
     scheduled_refresh = snapshot_commands.add_parser(
         "scheduled-refresh",
         help="refresh the current Shanghai market date after settlement",
@@ -153,8 +166,73 @@ def main(
         _print_payload(result)
         return 0
     if args.command == "snapshots" and args.snapshot_command == "refresh":
+        active_coordinator = coordinator or CollectionCoordinator()
+        if args.history_sessions > 1:
+            selected = tuple(dict.fromkeys(args.datasets or ()))
+            if selected != ("limits",):
+                _print_payload(
+                    {
+                        "status": "rejected",
+                        "error": "--history-sessions above 1 requires exactly --dataset limits",
+                    }
+                )
+                return 2
+            try:
+                sessions = active_coordinator.prepare_limit_history_sessions(
+                    args.as_of,
+                    args.history_sessions,
+                )
+            except Exception as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
+            results = []
+            for session in sessions:
+                try:
+                    results.append(
+                        active_coordinator.collect(
+                            session,
+                            ("limits",),
+                            fetch_previous_limit_details=False,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(exc)
+            run_statuses = [
+                result.run.status for result in results if not isinstance(result, Exception)
+            ]
+            failures = [
+                result
+                for result in results
+                if isinstance(result, Exception) or result.run.status == "failed"
+            ]
+            if len(failures) == len(results):
+                status = "failed"
+            elif failures or any(value != "success" for value in run_statuses):
+                status = "partial"
+            else:
+                status = "success"
+            _print_payload(
+                {
+                    "asOf": args.as_of.isoformat(),
+                    "status": status,
+                    "forced": args.force,
+                    "historySessions": args.history_sessions,
+                    "sessions": [
+                        {
+                            "asOf": session.isoformat(),
+                            "status": "failed" if isinstance(result, Exception) else result.run.status,
+                            "error": str(result) if isinstance(result, Exception) else None,
+                            "datasets": []
+                            if isinstance(result, Exception)
+                            else _collection_payload(result)["datasets"],
+                        }
+                        for session, result in zip(sessions, results)
+                    ],
+                }
+            )
+            return 2 if failures else 0
         try:
-            result = (coordinator or CollectionCoordinator()).collect(args.as_of, args.datasets)
+            result = active_coordinator.collect(args.as_of, args.datasets)
         except ValueError as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
             return 2

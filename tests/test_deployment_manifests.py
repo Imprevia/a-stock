@@ -785,8 +785,17 @@ def test_native_kustomize_cronjob_uses_postgresql_and_security_boundary() -> Non
     assert cron_container["securityContext"]["readOnlyRootFilesystem"] is True
     assert cron_container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert _environment(cron_container) == _environment(deployment_container)
-    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in _environment(cron_container)
-    assert _environment(cron_container)["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
+    environment = _environment(cron_container)
+    assert "MARKET_ENVIRONMENT_SNAPSHOT_PATH" not in environment
+    assert environment["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
+    assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"] == {
+        "secretKeyRef": {
+            "name": "a-stock-market-provider",
+            "key": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
+            "optional": True,
+        }
+    }
     assert any(
         cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"].get(key) != value
         for key, value in service["spec"]["selector"].items()
@@ -861,6 +870,7 @@ def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> N
     chart = _load_yaml(CHART_DIR / "Chart.yaml")
     values = _load_yaml(CHART_DIR / "values.yaml")
     scheduled = values["marketEnvironment"]["scheduledCollection"]
+    limits = values["marketEnvironment"]["limits"]
 
     assert chart["kubeVersion"] == ">=1.26.0-0"
     assert values["marketEnvironment"]["timezone"] == "Asia/Shanghai"
@@ -874,15 +884,92 @@ def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> N
     assert scheduled["controllerCanaryVerified"] is False
     assert scheduled["startingDeadlineSeconds"] == 1800
     assert scheduled["activeDeadlineSeconds"] == 3600
+    assert limits == {
+        "v1Enabled": False,
+        "fuyao": {
+            "existingSecret": "",
+            "secretKey": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
+        },
+    }
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     documents = _render_helm()
 
-    assert _resource(documents, "Deployment")
+    deployment = _resource(documents, "Deployment")
+    environment = _environment(deployment["spec"]["template"]["spec"]["containers"][0])
+
     assert _resource(documents, "Service")
     assert all(document.get("kind") != "CronJob" for document in documents)
+    assert all(document.get("kind") != "Secret" for document in documents)
+    assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "0"
+    assert "MARKET_ENVIRONMENT_FUYAO_API_KEY" not in environment
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_limits_v1_without_provider_secret_keeps_workload_runnable() -> None:
+    documents = _render_helm(
+        "--set",
+        "marketEnvironment.limits.v1Enabled=true",
+    )
+
+    deployment = _resource(documents, "Deployment")
+    environment = _environment(deployment["spec"]["template"]["spec"]["containers"][0])
+
+    assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "1"
+    assert "MARKET_ENVIRONMENT_FUYAO_API_KEY" not in environment
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_injects_independent_optional_fuyao_secret_into_both_workloads() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.27.0",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=true",
+        "--set",
+        "marketEnvironment.scheduledCollection.suspend=true",
+        "--set",
+        "marketEnvironment.limits.v1Enabled=true",
+        "--set",
+        "marketEnvironment.limits.fuyao.existingSecret=a-stock-market-provider",
+    )
+
+    deployment = _resource(documents, "Deployment")
+    cronjob = _resource(documents, "CronJob")
+    dashboard = deployment["spec"]["template"]["spec"]["containers"][0]
+    collector = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    expected_secret = {
+        "secretKeyRef": {
+            "name": "a-stock-market-provider",
+            "key": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
+            "optional": True,
+        }
+    }
+
+    assert all(document.get("kind") != "Secret" for document in documents)
+    for container in (dashboard, collector):
+        environment = _environment(container)
+        assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "1"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"] == expected_secret
+        assert environment["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_rejects_string_limits_v1_flag() -> None:
+    assert _render_helm_schema_failures(
+        "--set-string",
+        "marketEnvironment.limits.v1Enabled=false",
+    ) == ["- at '/marketEnvironment/limits/v1Enabled': got string, want boolean"]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_rejects_reusing_database_secret_for_fuyao() -> None:
+    assert _render_helm_failure_message(
+        "--set",
+        "marketEnvironment.limits.fuyao.existingSecret=a-stock-postgresql",
+    ) == "marketEnvironment.limits.fuyao.existingSecret must be independent from database.existingSecret"
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")

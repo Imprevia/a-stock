@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 from src.market_environment import api
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.limit_facts import normalize_limit_pools
-from src.market_environment.limit_promotion import limit_v1_enabled
+from src.market_environment.limit_promotion import build_limit_promotion, limit_v1_enabled
 from src.market_environment.providers import LimitProviderDatasetResult, MarketDataProvider
-from src.market_environment.schemas import MarketEnvironmentResponse
+from src.market_environment.schemas import MarketEnvironmentResponse, PROMOTION_RULE_VERSION
 from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore, TradingSessionRecord
 from tests.test_market_environment_service import SectionProvider, make_bars
@@ -54,7 +54,7 @@ def limit_result(as_of: date, codes: list[str], *, extra_rows: list[dict] | None
         actual_as_of=as_of,
         source="fixture-adjacent-sessions",
         source_revision="fixture-limits-v1",
-        rule_version="limits-promotion-v1",
+        rule_version=PROMOTION_RULE_VERSION,
         fetched_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
     )
     failed_ratio = round(1 / (len(up_rows) + 1), 4)
@@ -87,7 +87,7 @@ def malformed_limit_result(case_name: str, as_of: date = CURRENT) -> LimitProvid
         "getTopicZBPool": "failed_limit_up",
         "getTopicDTPool": "limit_down",
     }
-    provider = MarketDataProvider()
+    provider = MarketDataProvider(require_fuyao_for_limits=False)
 
     def fake_get_json(url, _params):
         endpoint = url.rsplit("/", 1)[-1]
@@ -154,6 +154,103 @@ def test_default_flag_is_off(monkeypatch) -> None:
     assert limit_v1_enabled() is False
 
 
+def test_basic_promotion_uses_membership_when_enrichment_is_missing(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "membership-promotion.sqlite3")
+    store.put_trading_session(
+        TradingSessionRecord(PREVIOUS, None, True, "fixture", actual_as_of=PREVIOUS, fetched_at=MARKET_NOW)
+    )
+    store.put_trading_session(
+        TradingSessionRecord(CURRENT, PREVIOUS, True, "fixture", actual_as_of=CURRENT, fetched_at=MARKET_NOW)
+    )
+
+    def persist(as_of: date, codes: list[str], *, degraded: bool = False) -> None:
+        pools = {
+            "limit_up": [
+                {
+                    "m": "1",
+                    "c": code,
+                    "n": code,
+                    "streak_days": 1,
+                    "source": "fuyao" if not degraded else "eastmoney-push2ex",
+                    "row_quality": "ok" if not degraded else "degraded",
+                }
+                for code in codes
+            ],
+            "failed_limit_up": [],
+            "limit_down": [],
+        }
+        pool_quality = {
+            key: {
+                "status": "degraded" if degraded else "ok",
+                "source": "fuyao+eastmoney" if degraded else "fuyao",
+                "total": len(rows),
+                "membershipComplete": True,
+                "warnings": ["source difference"] if degraded else [],
+            }
+            for key, rows in pools.items()
+        }
+        normalization = normalize_limit_pools(
+            pools,
+            as_of=as_of,
+            actual_as_of=as_of,
+            source="fuyao+eastmoney" if degraded else "fuyao",
+            source_revision="fixture-membership-v2",
+            rule_version=PROMOTION_RULE_VERSION,
+            membership_complete=True,
+            streak_complete=True,
+            pool_quality=pool_quality,
+            fetched_at=MARKET_NOW,
+        )
+        assert normalization.complete is False
+        assert normalization.membership_complete is True
+        quality_status = "degraded" if degraded else "ok"
+        store.put_limit_collection(
+            SnapshotRecord(
+                "limits",
+                as_of,
+                {
+                    "limitUpCount": len(codes),
+                    "limitDownCount": 0,
+                    "failedLimitUpCount": 0,
+                    "failedLimitUpRatio": 0.0 if codes else None,
+                    "maxStreak": 1 if codes else None,
+                    "state": "observed",
+                    "quality": {
+                        "dataset": "limit-pools",
+                        "source": normalization.source,
+                        "provider": normalization.source,
+                        "status": quality_status,
+                        "observations": len(codes),
+                        "asOf": as_of.isoformat(),
+                        "warning": None,
+                        "warnings": ["source difference"] if degraded else [],
+                    },
+                },
+                normalization.source,
+                quality_status,
+                len(codes),
+                (),
+                MARKET_NOW,
+                True,
+            ),
+            normalization,
+        )
+
+    persist(PREVIOUS, ["600000", "600001"])
+    persist(CURRENT, ["600000", "600002"], degraded=True)
+    result = build_limit_promotion(
+        store,
+        CURRENT,
+        dataset_quality={"status": "degraded", "warnings": ["source difference"]},
+    )
+
+    assert result["yesterdayLimitUpEligible"] == 2
+    assert result["todayPromoted"] == 1
+    assert result["promotionRatio"] == 0.5
+    assert result["promotionQuality"]["status"] == "degraded"
+    assert result["promotionRuleVersion"] == PROMOTION_RULE_VERSION
+
+
 def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destructively(
     tmp_path, monkeypatch
 ) -> None:
@@ -204,6 +301,13 @@ def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destru
     }
     assert "ladder" in limits
     assert limits["ladder"]
+    assert limits["membershipQuality"]["status"] == "ok"
+    assert limits["streakQuality"]["status"] == "ok"
+    assert limits["securityDetails"]["limitUp"]["total"] == len(current_codes)
+    assert limits["securityDetails"]["limitDown"]["total"] == 1
+    assert limits["securityDetails"]["failedLimitUp"]["total"] == 1
+    assert limits["securityDetails"]["promoted"]["total"] == 8
+    assert len(limits["securityDetails"]["promoted"]["rows"]) == 8
     assert "continuousStrength" not in limits
     assert {fact.streak_days for fact in store.get_limit_security_facts(CURRENT) if fact.pool_type == "limit_up"} >= {
         1,
@@ -216,10 +320,10 @@ def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destru
     first_checksum = store.get_limit_security_dataset(CURRENT)["dataset_checksum"]
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute(
-            "SELECT count(*) FROM schema_migrations WHERE version IN (1, 2)"
-        ).fetchone()[0] == 2
+            "SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3, 4, 5)"
+        ).fetchone()[0] == 5
     repeated = coordinator.collect(CURRENT, ["limits"])
     assert repeated.run.status == "success"
     assert provider.calls == [PREVIOUS, CURRENT, CURRENT]
@@ -241,6 +345,8 @@ def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destru
     monkeypatch.setenv("MARKET_ENVIRONMENT_LIMITS_V1_ENABLED", "0")
     rolled_back = service.get(CURRENT)["chapter01"]["limits"]
     assert "promotionRatio" not in rolled_back
+    assert "securityDetails" not in rolled_back
+    assert "membershipQuality" not in rolled_back
     assert rolled_back["limitUpCount"] == len(current_codes)
     assert rolled_back["limitDownCount"] == 1
     assert rolled_back["failedLimitUpCount"] == 1
@@ -443,7 +549,7 @@ def test_malformed_refresh_retains_same_date_complete_bundle_and_degrades_api(tm
     assert malformed_provider.calls == [CURRENT]
 
 
-def test_st_regime_identity_conflict_invalidates_v1_without_changing_legacy_fields(
+def test_st_regime_identity_conflict_does_not_invalidate_membership_promotion(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_LIMITS_V1_ENABLED", "1")
@@ -480,14 +586,14 @@ def test_st_regime_identity_conflict_invalidates_v1_without_changing_legacy_fiel
     assert facts["600003"].eligible is False
     assert facts["600003"].invalid_reason == "st-regime-identity-mismatch"
     assert (limits["todayPromoted"], limits["yesterdayLimitUpEligible"], limits["promotionRatio"]) == (
-        None,
-        None,
-        None,
+        2,
+        2,
+        1.0,
     )
     assert limits["quality"]["status"] == "ok"
-    assert limits["promotionQuality"]["status"] == "insufficient"
-    assert limits["promotionQuality"]["reason"] == "incomplete-adjacent-session-sample"
-    assert {quality["status"] for quality in limits["fieldQuality"].values()} == {"insufficient"}
+    assert limits["promotionQuality"]["status"] in {"ok", "degraded"}
+    assert limits["membershipQuality"]["status"] == "ok"
+    assert limits["securityDetails"]["promoted"]["total"] == 2
     assert previous_snapshot is not None
     assert previous_snapshot.payload["limitUpCount"] == 2
     assert previous_snapshot.payload["limitDownCount"] == 1
@@ -510,8 +616,9 @@ def test_st_regime_identity_conflict_invalidates_v1_without_changing_legacy_fiel
     recovered_limits = service.get(CURRENT)["chapter01"]["limits"]
 
     assert recovered.run.status == "success"
-    assert recovered_manifest is not None and recovered_manifest["complete"] is True
-    assert recovered_manifest["dataset_checksum"] != manifest["dataset_checksum"]
+    assert recovered_manifest is not None and recovered_manifest["complete"] is False
+    assert recovered_manifest["membership_complete"] is True
+    assert recovered_manifest["dataset_checksum"] == manifest["dataset_checksum"]
     assert (
         recovered_limits["todayPromoted"],
         recovered_limits["yesterdayLimitUpEligible"],

@@ -66,6 +66,33 @@ function completedChapterSections(chapter: Chapter01Analysis, requested: Chapter
   return completed
 }
 
+function retainLoadedChapterEvidence(
+  previous: MarketEnvironmentResponse | null,
+  incoming: MarketEnvironmentResponse,
+  loaded: Chapter01Section[],
+): MarketEnvironmentResponse {
+  if (!previous?.chapter01 || previous.asOf !== incoming.asOf || loaded.length === 0) return incoming
+  if (!incoming.chapter01) return { ...incoming, chapter01: { ...previous.chapter01 } }
+
+  const retained = { ...incoming.chapter01 }
+  if (loaded.includes('summary')) {
+    retained.status = previous.chapter01.status
+    retained.coverage = previous.chapter01.coverage
+    retained.documents = previous.chapter01.documents
+    retained.combinationOverview = previous.chapter01.combinationOverview
+    retained.marketEvidence = previous.chapter01.marketEvidence
+    retained.reviewSentence = previous.chapter01.reviewSentence
+    retained.summarySentence = previous.chapter01.summarySentence
+    retained.dataGaps = previous.chapter01.dataGaps
+    retained.assessment = previous.chapter01.assessment
+  }
+  if (loaded.includes('breadth')) retained.breadth = previous.chapter01.breadth
+  if (loaded.includes('limits')) retained.limits = previous.chapter01.limits
+  if (loaded.includes('sectors')) retained.sectors = previous.chapter01.sectors
+  if (loaded.includes('activeDirection')) retained.activeDirection = previous.chapter01.activeDirection
+  return { ...incoming, chapter01: retained }
+}
+
 export const useMarketStore = defineStore('market', () => {
   // ── inputs ────────────────────────────────────────────────────────
   const selectedDate = ref(getDefaultMarketDate(new Date()))
@@ -98,10 +125,22 @@ export const useMarketStore = defineStore('market', () => {
   async function loadCore(): Promise<void> {
     const requestId = ++coreSequence
     const requestedDate = selectedDate.value
+    const previousData = data.value
+    const previousLoadedSections = [...loadedSections.value]
+    const sameDateRefresh = previousData?.asOf === requestedDate
     ++sectionEpoch
-    loadedSections.value = []
-    sectionStates.value = createSectionStates()
-    coreRequestedDate = ''
+    if (!sameDateRefresh) {
+      data.value = null
+      loadedSections.value = []
+      sectionStates.value = createSectionStates()
+      nextSessionComparison.value = null
+      nextSessionSequence += 1
+      coreRequestedDate = ''
+    } else {
+      const retainedStates = createSectionStates()
+      for (const section of previousLoadedSections) retainedStates[section] = { phase: 'ready', error: '' }
+      sectionStates.value = retainedStates
+    }
     loading.value = true
     error.value = ''
     try {
@@ -112,7 +151,7 @@ export const useMarketStore = defineStore('market', () => {
       }
       const nextData = await response.json() as MarketEnvironmentResponse
       if (requestId !== coreSequence) return
-      data.value = nextData
+      data.value = retainLoadedChapterEvidence(previousData, nextData, previousLoadedSections)
       void loadNextSession(nextData.asOf)
       const normalizeInitialDate = initialDatePending && nextData.asOf !== requestedDate
       if (normalizeInitialDate) selectedDate.value = nextData.asOf

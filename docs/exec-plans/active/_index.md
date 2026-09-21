@@ -21,11 +21,10 @@
 | `canary-verified-20260917` | 操作发起人 | completed (controllerCanaryVerified 翻转为 true) | 2026-09-17 |
 | `activate-scheduled-collection-20260917` | 操作发起人 | completed (--activate-schedule 成功, rev 21) | 2026-09-17 |
 | `fix-scheduled-collection-stability-and-override` | Codex | completed-without-production-write | 2026-09-13 |
-| `complete-limit-ecosystem-dashboard-parity` | Codex | completed-with-insufficient-provider-evidence | 2026-09-11 |
 | `componentized-truenas-k3s-deployment` | Mika | completed | 2026-09-12 |
 | `unified-local-timezone-dashboard` | 资深前端工程师 | in-progress | 2026-09-12 |
 | `copy-index-values-and-normalize-default-date` | Codex | completed | 2026-09-13 |
-| `market-environment-multipage-rework` | Codex | in-progress | 2026-09-14 |
+| `restore-limit-ecosystem-data-availability` | Codex | completed-with-insufficient-provider-evidence | 2026-09-21 |
 | `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-15 |
 | `fix-market-collection-effective-date-and-timezone` | Codex | completed-with-production-write-code-deploy-pending | 2026-09-15 |
 | `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |

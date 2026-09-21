@@ -59,6 +59,26 @@ function sectionResponse(asOf = '2026-09-03') {
   }
 }
 
+function limitsEvidence(limitUpCount = 10) {
+  return {
+    limitUpCount,
+    limitDownCount: 2,
+    failedLimitUpCount: 3,
+    failedLimitUpRatio: 0.2,
+    maxStreak: 4,
+    state: 'fixture',
+    quality: { dataset: 'limits', source: 'fixture', status: 'ok', observations: limitUpCount },
+  }
+}
+
+function limitsSectionResponse(asOf = '2026-09-03', limitUpCount = 10) {
+  const response = sectionResponse(asOf)
+  return {
+    ...response,
+    chapter01: { ...response.chapter01, limits: limitsEvidence(limitUpCount) },
+  }
+}
+
 describe('market store — loadCore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -168,6 +188,115 @@ describe('market store — loadSection', () => {
     expect(store.loadedSections).toContain('breadth')
     expect(store.sectionStates.breadth.phase).toBe('ready')
     expect(store.data?.chapter01?.coverage).toBe(0.8)
+  })
+
+  it('uses refreshing for forced reloads and retains evidence when they fail', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => limitsSectionResponse() })) as unknown as typeof fetch)
+    await store.loadSection('limits')
+
+    let resolveRefresh!: (value: unknown) => void
+    const refreshResponse = new Promise((resolve) => { resolveRefresh = resolve })
+    vi.stubGlobal('fetch', vi.fn(async () => refreshResponse) as unknown as typeof fetch)
+    const refresh = store.loadSection('limits', true)
+
+    expect(store.sectionStates.limits.phase).toBe('refreshing')
+    resolveRefresh({ ok: false, status: 502, json: async () => ({ detail: 'fixture refresh failed' }) })
+    await refresh
+    expect(store.sectionStates.limits.phase).toBe('error')
+    expect(store.limits?.limitUpCount).toBe(10)
+    expect(store.loadedSections).toContain('limits')
+  })
+
+  it('rejects a section response whose date differs from core data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => limitsSectionResponse('2026-09-02') })) as unknown as typeof fetch)
+
+    await store.loadSection('limits')
+
+    expect(store.sectionStates.limits.phase).toBe('error')
+    expect(store.sectionStates.limits.error).toContain('日期与核心数据不一致')
+    expect(store.loadedSections).not.toContain('limits')
+  })
+
+  it('drops an old-date section response after a new core request starts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+
+    let resolveSection!: (value: unknown) => void
+    const delayedSection = new Promise((resolve) => { resolveSection = resolve })
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => delayedSection })) as unknown as typeof fetch)
+    const staleRequest = store.loadSection('limits')
+
+    store.selectedDate = '2026-09-04'
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse('2026-09-04') })) as unknown as typeof fetch)
+    await store.loadCore()
+    resolveSection(limitsSectionResponse('2026-09-03', 99))
+    await staleRequest
+
+    expect(store.data?.asOf).toBe('2026-09-04')
+    expect(store.limits).toBeUndefined()
+    expect(store.loadedSections).not.toContain('limits')
+  })
+})
+
+describe('market store — refresh retention', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  async function loadLimitsFixture() {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => limitsSectionResponse() })) as unknown as typeof fetch)
+    await store.loadSection('limits')
+    return store
+  }
+
+  it('retains loaded same-date evidence when core refresh succeeds without section fields', async () => {
+    const store = await loadLimitsFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+
+    await store.loadCore()
+
+    expect(store.limits?.limitUpCount).toBe(10)
+    expect(store.loadedSections).toContain('limits')
+  })
+
+  it('retains loaded same-date evidence when core refresh fails', async () => {
+    const store = await loadLimitsFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ detail: 'same-date core failed' }),
+    })) as unknown as typeof fetch)
+
+    await store.loadCore()
+
+    expect(store.data?.asOf).toBe('2026-09-03')
+    expect(store.limits?.limitUpCount).toBe(10)
+    expect(store.loadedSections).toContain('limits')
+    expect(store.error).toBe('same-date core failed')
+  })
+
+  it('never retains old-date evidence across a failed date change', async () => {
+    const store = await loadLimitsFixture()
+    store.selectedDate = '2026-09-04'
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ detail: 'new-date core failed' }),
+    })) as unknown as typeof fetch)
+
+    await store.loadCore()
+
+    expect(store.data).toBeNull()
+    expect(store.loadedSections).toEqual([])
+    expect(store.error).toBe('new-date core failed')
   })
 })
 

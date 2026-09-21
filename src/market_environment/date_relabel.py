@@ -311,6 +311,7 @@ def _fact_from_row(row: Any) -> LimitSecurityFactRecord:
         name=row["name"],
         board=row["board"],
         is_st=bool(row["is_st"]) if row["is_st"] is not None else None,
+        is_new=bool(row["is_new"]) if row["is_new"] is not None else None,
         listing_date=_as_date(row["listing_date"]),
         listing_days=int(row["listing_days"]) if row["listing_days"] is not None else None,
         limit_regime=row["limit_regime"],
@@ -321,6 +322,23 @@ def _fact_from_row(row: Any) -> LimitSecurityFactRecord:
         closed_limit_up=bool(row["closed_limit_up"]) if row["closed_limit_up"] is not None else None,
         failed_limit_up=bool(row["failed_limit_up"]) if row["failed_limit_up"] is not None else None,
         streak_days=int(row["streak_days"]) if row["streak_days"] is not None else None,
+        limit_up_time=row["limit_up_time"],
+        limit_up_reason=row["limit_up_reason"],
+        seal_money=float(row["seal_money"]) if row["seal_money"] is not None else None,
+        max_seal_money=(
+            float(row["max_seal_money"]) if row["max_seal_money"] is not None else None
+        ),
+        first_limit_time=row["first_limit_time"],
+        last_limit_time=row["last_limit_time"],
+        open_times=int(row["open_times"]) if row["open_times"] is not None else None,
+        turnover_ratio_pct=(
+            float(row["turnover_ratio_pct"])
+            if row["turnover_ratio_pct"] is not None
+            else None
+        ),
+        turnover=float(row["turnover"]) if row["turnover"] is not None else None,
+        row_quality=row["row_quality"],
+        row_warnings=tuple(_decode_json(row["row_warnings_json"], [])),
         eligible=bool(row["eligible"]),
         invalid_reason=row["invalid_reason"],
         source=row["source"],
@@ -507,9 +525,13 @@ def _build_plan(store: SnapshotStore, source: date, target: date, policy: Confli
             actual = _as_date(manifest["actual_as_of"])
             if actual not in {None, source, target}:
                 raise DateRelabelError(f"limit dataset actual_as_of mismatch: {actual}")
-            if bool(manifest["complete"]) and actual != source:
+            if (
+                bool(manifest["complete"])
+                or bool(manifest["membership_complete"])
+            ) and actual != source:
                 raise DateRelabelError("complete limit dataset is missing source actual_as_of evidence")
             warnings_json = _decode_json(manifest["warnings_json"], [])
+            pool_quality = _decode_json(manifest["pool_quality_json"], None)
             expected_source_checksum = limit_dataset_checksum(
                 facts,
                 as_of=source,
@@ -520,6 +542,17 @@ def _build_plan(store: SnapshotStore, source: date, target: date, policy: Confli
                 source_revision=manifest["source_revision"],
                 rule_version=manifest["rule_version"],
                 excluded=int(manifest["excluded"]),
+                membership_complete=(
+                    bool(manifest["membership_complete"])
+                    if manifest["membership_complete"] is not None
+                    else None
+                ),
+                streak_complete=(
+                    bool(manifest["streak_complete"])
+                    if manifest["streak_complete"] is not None
+                    else None
+                ),
+                pool_quality=pool_quality,
             )
             if expected_source_checksum != manifest["dataset_checksum"]:
                 raise SnapshotIntegrityError(f"limit dataset checksum mismatch: {source}")
@@ -549,6 +582,17 @@ def _build_plan(store: SnapshotStore, source: date, target: date, policy: Confli
                 source_revision=manifest["source_revision"],
                 rule_version=manifest["rule_version"],
                 excluded=int(manifest["excluded"]),
+                membership_complete=(
+                    bool(manifest["membership_complete"])
+                    if manifest["membership_complete"] is not None
+                    else None
+                ),
+                streak_complete=(
+                    bool(manifest["streak_complete"])
+                    if manifest["streak_complete"] is not None
+                    else None
+                ),
+                pool_quality=pool_quality,
             )
             for row, fact in zip(fact_rows, rewritten_facts):
                 item = _row_dict(row)

@@ -109,22 +109,42 @@ SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS limit_security_datasets (
         as_of DATE PRIMARY KEY, actual_as_of DATE, source TEXT NOT NULL, source_revision TEXT,
         rule_version TEXT, schema_version INTEGER NOT NULL, complete INTEGER NOT NULL,
+        membership_complete INTEGER, streak_complete INTEGER, pool_quality_json JSONB,
         excluded INTEGER NOT NULL DEFAULT 0, warnings_json JSONB NOT NULL DEFAULT '[]'::jsonb,
         dataset_checksum TEXT NOT NULL, fetched_at TIMESTAMPTZ NOT NULL
     )
     """,
+    "ALTER TABLE limit_security_datasets ADD COLUMN IF NOT EXISTS membership_complete INTEGER",
+    "ALTER TABLE limit_security_datasets ADD COLUMN IF NOT EXISTS streak_complete INTEGER",
+    "ALTER TABLE limit_security_datasets ADD COLUMN IF NOT EXISTS pool_quality_json JSONB",
     """
     CREATE TABLE IF NOT EXISTS limit_security_facts (
         as_of DATE NOT NULL, actual_as_of DATE, security_id TEXT NOT NULL, pool_type TEXT NOT NULL,
-        code TEXT NOT NULL, exchange TEXT NOT NULL, name TEXT, board TEXT, is_st INTEGER,
+        code TEXT NOT NULL, exchange TEXT NOT NULL, name TEXT, board TEXT, is_st INTEGER, is_new INTEGER,
         listing_date DATE, listing_days INTEGER, limit_regime TEXT, close_price DOUBLE PRECISION,
         previous_close DOUBLE PRECISION, change_pct DOUBLE PRECISION, touched_limit_up INTEGER,
         closed_limit_up INTEGER, failed_limit_up INTEGER, streak_days INTEGER,
+        limit_up_time TEXT, limit_up_reason TEXT, seal_money DOUBLE PRECISION,
+        max_seal_money DOUBLE PRECISION, first_limit_time TEXT, last_limit_time TEXT,
+        open_times INTEGER, turnover_ratio_pct DOUBLE PRECISION, turnover DOUBLE PRECISION,
+        row_quality TEXT, row_warnings_json JSONB NOT NULL DEFAULT '[]'::jsonb,
         eligible INTEGER NOT NULL, invalid_reason TEXT, source TEXT NOT NULL, fetched_at TIMESTAMPTZ NOT NULL,
         schema_version INTEGER NOT NULL, row_checksum TEXT NOT NULL, dataset_checksum TEXT,
         PRIMARY KEY(as_of, security_id, pool_type)
     )
     """,
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS is_new INTEGER",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS limit_up_time TEXT",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS limit_up_reason TEXT",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS seal_money DOUBLE PRECISION",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS max_seal_money DOUBLE PRECISION",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS first_limit_time TEXT",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS last_limit_time TEXT",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS open_times INTEGER",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS turnover_ratio_pct DOUBLE PRECISION",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS turnover DOUBLE PRECISION",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS row_quality TEXT",
+    "ALTER TABLE limit_security_facts ADD COLUMN IF NOT EXISTS row_warnings_json JSONB NOT NULL DEFAULT '[]'::jsonb",
     "CREATE INDEX IF NOT EXISTS limit_security_facts_date_security_idx ON limit_security_facts(as_of, security_id)",
     "CREATE INDEX IF NOT EXISTS limit_security_facts_eligible_idx ON limit_security_facts(as_of, eligible, closed_limit_up)",
     "CREATE INDEX IF NOT EXISTS limit_security_facts_pool_idx ON limit_security_facts(as_of, pool_type)",
@@ -238,6 +258,14 @@ def create_schema(engine: Engine) -> None:
             text(
                 """INSERT INTO schema_migrations(version, name, applied_at, checksum)
                    VALUES (4, 'postgresql-initial-schema', CURRENT_TIMESTAMP, 'postgresql-initial-schema')
+                   ON CONFLICT(version) DO NOTHING"""
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO schema_migrations(version, name, applied_at, checksum)
+                   VALUES (5, 'add-limit-membership-and-detail-fields', CURRENT_TIMESTAMP,
+                           'add-limit-membership-and-detail-fields')
                    ON CONFLICT(version) DO NOTHING"""
             )
         )

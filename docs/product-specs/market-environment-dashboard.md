@@ -2,7 +2,7 @@
 
 ## Status
 
-`active` · 版本 `0.11`
+`active` · 版本 `0.12`
 
 ## 目标
 
@@ -39,10 +39,11 @@
 - 数据质量允许附加缓存状态、快照抓取时间、后台刷新状态和刷新 warning；陈旧快照必须显式标记，不能伪装为刚获取的数据。
 - 数据采集页覆盖核心指数、市场广度、涨跌停生态、行业板块和容量方向，并分别展示当前可用状态与最近采集结果；核心指数可展开查看五个指数子项。
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
-- 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 SQLite 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
+- 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 PostgreSQL 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
-- 盘后定时采集使用与 Dashboard 相同镜像和 SQLite PVC，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
+- 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
+- 盘后定时采集使用与 Dashboard 相同镜像并通过同一 PostgreSQL Service/Secret 访问运行时状态，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
 - 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，并通过 no-provider canary 实际观察预测触发（配置断言不能替代 canary 证据）。canary 通过后，允许继续非覆盖备份、suspended release 和一次命名 provider-backed Job；本次操作责任人书面确认 release/namespace/镜像 digest 与明确 catch-up 行为、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
 - 通用部署必须在首个 render、build、image、环境或目标访问前校验最终合并值是 typed `enabled=false,suspend=true`。`--disable-schedule` 必须使用 rollback-only canonical-digest authorization ref，且 active-to-off 的失败补偿按 release-derived exact API name 工作：label/shape drift 不能阻止紧急暂停，读回无法证明 absent/typed suspended 时保持 uncertain/NO-GO。
 - 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
@@ -55,22 +56,22 @@
 |---|---|---|
 | 证据条 | `asOf`、实际/样本日期、来源、抓取时间、observations、cache state、quality、warning | 只接受精确交易日；缺失显示 `missing` / `insufficient`，不得用其他日期或零值回填 |
 | 当日事实 | 涨停家数、跌停家数、炸板数、炸板率、最高连板 | 继续兼容旧五字段 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak`；只有 provider 明确返回空池时计数才可为 0 |
-| 晋级证据 | 今日晋级数、昨日合资格样本数、晋级率、当前/前一相邻交易日、样本规则与固定版本 | 分母仅为前一真实交易日有效且收盘涨停集合；20/8 返回 `0.4`，分母为 0 时比例必须为 `null` 且质量为 `insufficient` |
-| 证券事实与梯队 | 首板、二板、三板、四板以上；交易所/主板/创业板/科创板、ST、新股窗口、板块分层；排除数和排除原因 | 使用规范 `security_id`、实际制度和收盘状态；身份、制度、上市窗口或收盘状态无法证明的行不进入晋级分子/分母或分层分母 |
-| 历史与风险 | 至少近 5 个精确交易日的涨停、跌停、炸板率、晋级率、最高板；连续跌停、断板/修复、板块集中、昨日强势股次日反馈 | 少于 60 个有效观测或日期不连续时，250 日分位及其周期结论为 `insufficient`，展示有效数/缺口，不向更早日期搜索 |
+| 晋级证据 | 今日晋级数、昨日涨停样本数、晋级率、当前/前一相邻交易日、样本规则与固定版本 | 分母为前一真实交易日完整涨停成员集合，分子为与当日完整涨停集合的规范身份交集；ST、上市窗口、制度和板块不从基础分母删除；20/8 返回 `0.4`，分母为 0 时比例必须为 `null` 且质量为 `insufficient` |
+| 证券事实、梯队与明细 | 首板、二板、三板、四板以上；涨停/跌停/炸板/晋级四组明细；交易所、ST、新股窗口、制度和板块分层 | 集合、连板字段和高级属性分别表达完整度；高级属性缺失只降低对应分层，不能阻断已证明的基础集合、晋级、梯队和明细 |
+| 历史与风险 | 最近 6 个真实交易日形成最近 5 个带晋级率的历史点；连续跌停、断板/修复、板块集中、昨日强势股次日反馈 | 缺失交易日不替代；少于 60 个有效观测时 250 日分位及其周期结论为 `insufficient`，展示有效数和缺口 |
 | 规则证据 | `QTS-01-03-01` 至 `QTS-01-03-05` 的输入、经验分位、分项/总状态、置信度、风险否决、触发/缺失/确认/失效条件 | 规则 ID、权重和 `needs-backtest` 不变；即使输入完整也只能标注“经验阈值 · 待回测”，不输出 `validated` 或自动交易建议 |
 
 本页必须覆盖 `ready`、`partial`、`refreshing`、`missing`、`failed-retained`、`failed-missing`、`degraded` 和 `insufficient` 状态。刷新失败时保留同日期最后一次成功证据并标记刷新 warning；没有保留值才显示 `failed-missing`。普通 GET 只读取本地快照/materialized aggregate，provider 调用数必须为 0。
 
 ### 第 03 页数据与发布边界
 
-- limits detail/V1 写入开关 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 默认关闭；关闭时旧五字段路径和本地快照继续可读，开启前须通过迁移、幂等、lease/CAS、`PRAGMA quick_check`、provider-free GET、失败保留和前端状态验证。
-- 严格 provider 必须证明响应/查询绑定的实际日期以及所有可见逐行日期不冲突，并尽可能证明规范证券身份、交易所/板块、ST/上市窗口、适用涨跌幅制度及收盘涨停状态；仅由请求日期绑定而缺少证券事实字段时，可以恢复旧五字段和审计快照，但不能生成晋级、梯队、分层或 250 日结论。日期冲突、无效日期或池无法解析时仍拒绝 V1 完整事实。
-- 当前日与前一日由精确相邻交易日解析器确定，不使用自然日减一、跨日期回填或浏览器端重新抓取。失败采集只记录审计 warning，不覆盖成功快照。
-- 真实 provider smoke 仅在显式授权的隔离 SQLite 和盘后命令执行，记录来源、两日实际日期、覆盖率、排除数、checksum 和质量；证明不足时保持 `failed` / `degraded` / `insufficient`，不改变规则校准状态。
+- limits detail/V1 写入开关 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 默认关闭；关闭时旧五字段路径和本地快照继续可读，开启前须通过 Alembic 迁移、幂等、lease/CAS、provider-free GET、失败保留和前端状态验证。
+- 基础集合必须证明交易日、完整分页和规范证券身份；高级 ST、上市窗口、制度与板块字段按分层独立校验。日期冲突、非交易日、无效身份或池无法完整解析时拒绝 membership 完整事实，但高级字段缺失不得阻断基础晋级。
+- 当前日与前一日由精确交易日历确定，不使用自然日减一、跨日期回填或浏览器端重新抓取。显式 `--history-sessions 6` 按升序采集六个真实交易日并生成五个晋级点；失败采集只记录审计 warning，不覆盖成功快照。
+- 真实 provider smoke 仅在显式授权的隔离 PostgreSQL 和盘后命令执行，密钥通过 Secret/环境注入，记录来源、六日日期、集合差异、checksum 和质量；证明不足时保持 `failed` / `degraded` / `insufficient`，不改变规则校准状态。
 - 回滚顺序为先关闭 limits detail/V1 写入，再恢复应用版本；保留 PVC、旧聚合、`trading_sessions`、`limit_security_facts` 和校验和，不删除数据库或用其他日期替代。
 
-不包含自动下单、主体意图推断、未经来源核实的事件评分，也不宣称经验阈值已经通过 500 至 750 个交易日回测。高/中/低位亏钱效应在形成独立可追溯样本前保持数据不足。
+不包含自动下单、主体意图推断、未经来源核实的事件评分，也不宣称经验阈值已经通过 500 至 750 个交易日回测。第 04 页可以展示 limits 中可追溯的高/中/低位样本数量和炸板修复率；未形成独立亏钱收益样本的规则仍保持 `unverified` / `insufficient`。
 
 ## 验收
 
@@ -89,7 +90,7 @@
 - 市场广度刷新直接使用精确统计路径，不先请求已知不完整的名义全 A 主快照；容量方向只请求并校验成交额 Top-N 样本。
 - 成功盘后快照可按交易日复用；fresh 命中不访问 provider，stale 命中返回旧值并合并刷新，失败不覆盖上次成功结果。
 - 同一 dataset/date 的并发冷请求最多产生一次 provider 采集，过期 refresh lease 可以恢复。
-- `/data-collection` 状态查询只读 SQLite，不调用外部 provider；所有行情 provider 失败时页面仍可打开并提供可用的重试状态。
+- `/data-collection` 状态查询只读 PostgreSQL，不调用外部 provider；所有行情 provider 失败时页面仍可打开并提供可用的重试状态。
 - 单项重新采集只运行目标数据集；一键重新采集创建五个独立任务，一个失败时父批次返回 `partial`，其他成功结果立即可用。
 - 核心指数单个子项失败时其他指数继续保存；存在同日期旧值时显示 `failed-retained`，不存在时显示缺失。
 - 普通市场环境 GET 只读取本地聚合快照或数据集快照，不因缺失、陈旧或活动采集自动调用 provider。

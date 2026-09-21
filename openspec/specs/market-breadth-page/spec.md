@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Market Breadth Page Specification
+
+## Purpose
+
+为市场环境看板第 02 页提供可审计的全 A 市场宽度、历史趋势、指数一致性和次日验证证据，并在历史或样本不足时保持明确的数据质量边界。
+
+## Requirements
 
 ### Requirement: 复盘卡展示当日六项结果与宽度标签
 系统 MUST 在第 02 页最上方渲染"复盘卡"section，包含六张结果卡（上涨家数、上涨占比、下跌家数、下跌占比、平盘家数、涨跌家数差）+ 一张全 A 涨跌幅中位数卡 + 一个六选一的宽度标签（同向增强 / 同向走弱 / 指数强个股弱 / 指数弱个股修复 / 混合 / 数据不足）+ 一段自然语言依据。涨跌家数差 MUST 等于 `advanceCount - declineCount`。上涨占比与下跌占比 MUST 来自后端预计算字段 `advanceRatio` / `declineRatio`，前端不重新计算。

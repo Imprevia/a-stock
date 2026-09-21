@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
+import os
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -17,6 +19,7 @@ import requests
 from src.trading_system.data.providers import EastmoneyClient
 
 from .calculations import Bar
+from .fuyao import FuyaoClient, FuyaoLimitDataset, FuyaoNonTradingDayError
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +93,24 @@ class MarketDataProvider:
     _LIMIT_POOL_PRIMARY_HOST = "https://push2ex.eastmoney.com"
     _LIMIT_POOL_FALLBACK_HOST = "https://push2delay.eastmoney.com"
 
-    def __init__(self, timeout: float = 8.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 8.0,
+        *,
+        fuyao: FuyaoClient | None = None,
+        require_fuyao_for_limits: bool | None = None,
+    ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
         self.eastmoney = EastmoneyClient(timeout=timeout, session=self.session)
+        self.fuyao = fuyao or FuyaoClient(timeout=timeout)
+        self.require_fuyao_for_limits = (
+            os.getenv("MARKET_ENVIRONMENT_LIMITS_V1_ENABLED", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            if require_fuyao_for_limits is None
+            else bool(require_fuyao_for_limits)
+        )
 
     def fetch(
         self,
@@ -196,6 +212,11 @@ class MarketDataProvider:
             }
         return result
 
+    def fetch_trading_days(self) -> tuple[date, ...]:
+        """Return the evidence-backed Fuyao trading calendar for explicit jobs."""
+
+        return self.fuyao.fetch_trading_days()
+
     def fetch_chapter01(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
         """Fetch additive Chapter 01 evidence without time-shifting snapshots.
 
@@ -276,6 +297,20 @@ class MarketDataProvider:
         return self._fetch_chapter01_limit_dataset(as_of, strict=True, on_pool=on_pool)
 
     def _fetch_chapter01_limit_dataset(
+        self,
+        as_of: date,
+        *,
+        strict: bool,
+        on_pool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> LimitProviderDatasetResult:
+
+        if self.fuyao.configured:
+            return self._fetch_merged_limit_dataset(as_of, on_pool=on_pool)
+        if self.require_fuyao_for_limits:
+            self.fuyao.require_configured()
+        return self._fetch_eastmoney_limit_dataset(as_of, strict=strict, on_pool=on_pool)
+
+    def _fetch_eastmoney_limit_dataset(
         self,
         as_of: date,
         *,
@@ -364,13 +399,15 @@ class MarketDataProvider:
             actual_as_of=actual_as_of,
             source=source,
             source_revision="eastmoney-limit-pools-v1",
-            rule_version="limits-promotion-v1",
+            rule_version="limits-promotion-v2",
         )
         if date_validation_warnings:
             normalization = replace(
                 normalization,
                 warnings=tuple(dict.fromkeys((*normalization.warnings, *date_validation_warnings))),
+                dataset_checksum="",
             ).normalized()
+        membership_complete_by_pool: dict[str, bool] = {}
         for pool_name, evidence in pool_evidence.items():
             raw_count = evidence.get("rawCount")
             facts = [row for row in normalization.rows if row.pool_type == pool_name]
@@ -385,6 +422,14 @@ class MarketDataProvider:
                 validation_reasons["duplicate-security-removed"] += collapsed
                 v1_reasons["duplicate-security-removed"] += collapsed
             excluded_count = sum(validation_reasons.values())
+            membership_excluded_count = sum(not row.membership_valid for row in facts)
+            membership_complete_by_pool[pool_name] = bool(
+                evidence.get("status") == "ok"
+                and evidence.get("actualAsOf") == as_of.isoformat()
+                and raw_count is not None
+                and len(facts) == int(raw_count)
+                and membership_excluded_count == 0
+            )
             evidence.update(
                 {
                     "normalizedCount": len(facts),
@@ -393,13 +438,494 @@ class MarketDataProvider:
                     "eligibleCount": sum(row.eligible for row in facts),
                     "excludedByReason": dict(sorted(validation_reasons.items())),
                     "v1ExcludedByReason": dict(sorted(v1_reasons.items())),
+                    "membershipComplete": membership_complete_by_pool[pool_name],
                 }
             )
+        eastmoney_pool_quality = {
+            pool_name: {
+                "source": evidence.get("source"),
+                "status": evidence.get("status"),
+                "total": evidence.get("normalizedCount"),
+                "membershipComplete": membership_complete_by_pool.get(pool_name, False),
+                "warnings": list(evidence.get("warnings") or []),
+            }
+            for pool_name, evidence in pool_evidence.items()
+        }
+        normalization = replace(
+            normalization,
+            membership_complete=all(membership_complete_by_pool.values()),
+            pool_quality=eastmoney_pool_quality,
+            dataset_checksum="",
+        ).normalized()
         return LimitProviderDatasetResult(
             payload=payload,
             normalization=normalization,
             pool_evidence=pool_evidence,
         )
+
+    def _fetch_merged_limit_dataset(
+        self,
+        as_of: date,
+        *,
+        on_pool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> LimitProviderDatasetResult:
+        calendar_confirmed = False
+        try:
+            trading_days = self.fuyao.fetch_trading_days()
+            if as_of not in trading_days:
+                raise FuyaoNonTradingDayError(
+                    f"{as_of.isoformat()} is not present in the Fuyao trading calendar"
+                )
+            calendar_confirmed = True
+            fuyao = self.fuyao.fetch_limit_dataset(as_of, trading_days=trading_days)
+            fuyao_pools = self._map_fuyao_limit_dataset(fuyao)
+            fuyao_normalization = self.normalize_limit_pools(
+                fuyao_pools,
+                as_of,
+                actual_as_of=as_of,
+                source="fuyao",
+                source_revision="fuyao-limit-pools-v1",
+                rule_version="limits-promotion-v2",
+                membership_complete=True,
+                streak_complete=all(
+                    row.get("streak_days") is not None for row in fuyao_pools["limit_up"]
+                ),
+            )
+        except FuyaoNonTradingDayError:
+            # An explicit non-session must never be converted into a real zero
+            # or replaced with another provider's undated current snapshot.
+            raise
+        except Exception as exc:
+            fallback = self._fetch_eastmoney_limit_dataset(as_of, strict=True, on_pool=on_pool)
+            fallback_counts = (
+                fallback.payload.get("limitUpCount"),
+                fallback.payload.get("failedLimitUpCount"),
+                fallback.payload.get("limitDownCount"),
+            )
+            warning = f"Fuyao primary source unavailable; using Eastmoney fallback: {exc}"
+            unconfirmed_empty_pools = {
+                pool_name
+                for pool_name, count in zip(
+                    ("limit_up", "failed_limit_up", "limit_down"),
+                    fallback_counts,
+                )
+                if not calendar_confirmed and count == 0
+            }
+            calendar_warning = (
+                "Fuyao trading calendar was unavailable; Eastmoney empty pools remain unconfirmed"
+                if unconfirmed_empty_pools
+                else None
+            )
+            payload = copy.deepcopy(fallback.payload)
+            count_fields = {
+                "limit_up": "limitUpCount",
+                "failed_limit_up": "failedLimitUpCount",
+                "limit_down": "limitDownCount",
+            }
+            for pool_name in unconfirmed_empty_pools:
+                payload[count_fields[pool_name]] = None
+            if {"limit_up", "failed_limit_up"} & unconfirmed_empty_pools:
+                payload["failedLimitUpRatio"] = None
+            if unconfirmed_empty_pools:
+                payload["state"] = "insufficient"
+            fallback_status = "partial" if unconfirmed_empty_pools else "fallback"
+            payload = self._append_limit_warning(payload, warning, status=fallback_status)
+            if calendar_warning:
+                payload = self._append_limit_warning(payload, calendar_warning)
+            fallback_pool_quality = {
+                pool_name: {
+                    **dict(pool_quality),
+                    "status": "insufficient" if pool_name in unconfirmed_empty_pools else "fallback",
+                    "membershipComplete": (
+                        False
+                        if pool_name in unconfirmed_empty_pools
+                        else pool_quality.get("membershipComplete")
+                    ),
+                    "warnings": list(
+                        dict.fromkeys(
+                            [
+                                *(pool_quality.get("warnings") or []),
+                                warning,
+                                *([calendar_warning] if calendar_warning else []),
+                            ]
+                        )
+                    ),
+                }
+                for pool_name, pool_quality in dict(
+                    fallback.normalization.pool_quality or {}
+                ).items()
+            }
+            normalization = replace(
+                fallback.normalization,
+                warnings=tuple(
+                    dict.fromkeys(
+                        (
+                            *fallback.normalization.warnings,
+                            warning,
+                            *([calendar_warning] if calendar_warning else []),
+                        )
+                    )
+                ),
+                membership_complete=all(
+                    item.get("membershipComplete") is True
+                    for item in fallback_pool_quality.values()
+                ),
+                pool_quality=fallback_pool_quality,
+                dataset_checksum="",
+            ).normalized()
+            evidence = {
+                key: {
+                    **value,
+                    "status": (
+                        "insufficient"
+                        if key in unconfirmed_empty_pools
+                        else fallback_status
+                        if value.get("status") == "ok"
+                        else value.get("status")
+                    ),
+                    "membershipComplete": (
+                        False
+                        if key in unconfirmed_empty_pools
+                        else value.get("membershipComplete")
+                    ),
+                    "warnings": list(
+                        dict.fromkeys(
+                            [
+                                *(value.get("warnings") or []),
+                                warning,
+                                *([calendar_warning] if calendar_warning else []),
+                            ]
+                        )
+                    ),
+                }
+                for key, value in (fallback.pool_evidence or {}).items()
+            }
+            return LimitProviderDatasetResult(payload, normalization, evidence)
+
+        audit_warnings = [
+            "Fuyao pool response omits the session date; the calendar-confirmed request date is used as evidence"
+        ]
+        audit_warnings.extend(fuyao.warnings)
+        quality_warnings: list[str] = []
+        try:
+            eastmoney = self._fetch_eastmoney_limit_dataset(as_of, strict=False)
+        except Exception as exc:
+            eastmoney = None
+            quality_warnings.append(f"Eastmoney cross-check unavailable: {exc}")
+
+        merged_pools, pool_quality, merge_warnings = self._merge_limit_sources(
+            fuyao_normalization,
+            eastmoney.normalization if eastmoney is not None else None,
+        )
+        quality_warnings.extend(merge_warnings)
+        all_warnings = [*audit_warnings, *quality_warnings]
+        source = (
+            "fuyao+eastmoney"
+            if any(item.get("source") == "fuyao+eastmoney" for item in pool_quality.values())
+            else "fuyao"
+        )
+        wrapped_pools = {
+            pool_name: LimitPoolRows(
+                rows,
+                actual_as_of=as_of,
+                date_evidence="request-parameter",
+                source=source,
+            )
+            for pool_name, rows in merged_pools.items()
+        }
+        membership_complete = all(
+            quality.get("membershipComplete") is True for quality in pool_quality.values()
+        )
+        streak_complete = membership_complete and all(
+            row.get("streak_days") is not None for row in merged_pools["limit_up"]
+        )
+        normalization = self.normalize_limit_pools(
+            wrapped_pools,
+            as_of,
+            actual_as_of=as_of,
+            source=source,
+            source_revision="fuyao-eastmoney-union-v1",
+            rule_version="limits-promotion-v2",
+            membership_complete=membership_complete,
+            streak_complete=streak_complete,
+            pool_quality=pool_quality,
+        )
+        normalization = replace(
+            normalization,
+            warnings=tuple(dict.fromkeys((*normalization.warnings, *all_warnings))),
+            dataset_checksum="",
+        ).normalized()
+        payload = self._limit_payload(
+            as_of,
+            wrapped_pools,
+            list(quality_warnings),
+            source=source,
+            provider_status="partial" if quality_warnings else "ok",
+        )
+        for warning in audit_warnings:
+            payload = self._append_limit_warning(payload, warning)
+        pool_evidence: dict[str, dict[str, Any]] = {}
+        for pool_name, quality in pool_quality.items():
+            facts = [row for row in normalization.rows if row.pool_type == pool_name]
+            evidence = {
+                "source": quality["source"],
+                "status": quality["status"],
+                "actualAsOf": as_of.isoformat(),
+                "dateEvidence": "request-parameter",
+                "rawCount": quality["total"],
+                "normalizedCount": len(facts),
+                "validCount": sum(row.membership_valid for row in facts),
+                "excludedCount": sum(not row.membership_valid for row in facts),
+                "eligibleCount": sum(row.eligible for row in facts),
+                "excludedByReason": dict(
+                    Counter(
+                        row.invalid_reason or "invalid-membership"
+                        for row in facts
+                        if not row.membership_valid
+                    )
+                ),
+                "v1ExcludedByReason": dict(
+                    Counter(row.invalid_reason for row in facts if row.invalid_reason is not None)
+                ),
+                "warnings": list(quality.get("warnings") or []),
+            }
+            pool_evidence[pool_name] = evidence
+            if on_pool is not None:
+                on_pool(pool_name, dict(evidence))
+        return LimitProviderDatasetResult(payload, normalization, pool_evidence)
+
+    def _map_fuyao_limit_dataset(
+        self,
+        dataset: FuyaoLimitDataset,
+    ) -> dict[str, list[dict[str, Any]]]:
+        mapped: dict[str, list[dict[str, Any]]] = {
+            "limit_up": [],
+            "failed_limit_up": [],
+            "limit_down": [],
+        }
+        date_warning = (
+            "Fuyao response omits the session date; request-parameter evidence was validated "
+            "against the trading calendar"
+        )
+        for pool_name, pool in dataset.pools.items():
+            if pool_name not in mapped:
+                raise RuntimeError(f"unsupported Fuyao pool: {pool_name}")
+            for raw in pool.rows:
+                identity = str(raw.get("thscode") or "").strip().upper()
+                ticker = str(raw.get("ticker") or "").strip()
+                metadata = dataset.tickers.get(identity) or {}
+                listing_date = self._parse_limit_date(metadata.get("list_date"))
+                identity_exchange = identity.rsplit(".", 1)[-1]
+                metadata_exchange = str(metadata.get("exchange") or "").strip().upper()
+                exchange = identity_exchange
+                row_warnings = [date_warning]
+                if not metadata:
+                    row_warnings.append("Fuyao code-table enrichment is missing for this security")
+                elif metadata_exchange and metadata_exchange != identity_exchange:
+                    row_warnings.append(
+                        "Fuyao code-table exchange conflicts with the pool identity and was ignored"
+                    )
+                row: dict[str, Any] = {
+                    "code": ticker,
+                    "exchange": exchange,
+                    "name": raw.get("name") or metadata.get("name"),
+                    "is_st": raw.get("is_st"),
+                    "is_new": raw.get("is_new"),
+                    "listing_date": listing_date.isoformat() if listing_date else None,
+                    "listing_days": (dataset.as_of - listing_date).days if listing_date else None,
+                    "close_price": raw.get("last_price"),
+                    "change_pct": raw.get("price_change_ratio_pct"),
+                    "source": "fuyao",
+                    "row_quality": (
+                        "ok"
+                        if metadata and (not metadata_exchange or metadata_exchange == identity_exchange)
+                        else "degraded"
+                    ),
+                    "row_warnings": row_warnings,
+                }
+                if pool_name == "limit_up":
+                    row.update(
+                        {
+                            "touched_limit_up": True,
+                            "closed_limit_up": True,
+                            "streak_days": raw.get("continue_day_cnt"),
+                            "limit_up_time": raw.get("limit_up_time"),
+                            "limit_up_reason": raw.get("limit_up_reason"),
+                            "seal_money": raw.get("seal_money"),
+                            "max_seal_money": raw.get("max_seal_money"),
+                        }
+                    )
+                elif pool_name == "limit_down":
+                    row.update(
+                        {
+                            "first_limit_time": raw.get("first_limit_time"),
+                            "last_limit_time": raw.get("last_limit_time"),
+                            "turnover_ratio_pct": raw.get("turnover_ratio_pct"),
+                        }
+                    )
+                else:
+                    row.update(
+                        {
+                            "touched_limit_up": True,
+                            "closed_limit_up": False,
+                            "failed_limit_up": True,
+                            "open_times": raw.get("open_times"),
+                            "turnover_ratio_pct": raw.get("turnover_ratio_pct"),
+                            "turnover": raw.get("turnover"),
+                        }
+                    )
+                mapped[pool_name].append(row)
+        return mapped
+
+    @staticmethod
+    def _fact_for_renormalization(fact: Any) -> dict[str, Any]:
+        row = fact.as_dict()
+        for key in ("row_checksum", "dataset_checksum", "eligible", "invalid_reason"):
+            row.pop(key, None)
+        return row
+
+    def _merge_limit_sources(
+        self,
+        fuyao: Any,
+        eastmoney: Any | None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]], list[str]]:
+        pools = {"limit_up": [], "failed_limit_up": [], "limit_down": []}
+        quality: dict[str, dict[str, Any]] = {}
+        warnings: list[str] = []
+        fuyao_by_pool = {
+            pool_name: {
+                row.security_id: row
+                for row in fuyao.rows
+                if row.pool_type == pool_name and row.membership_valid
+            }
+            for pool_name in pools
+        }
+        if any(
+            len(fuyao_by_pool[pool_name])
+            != sum(row.pool_type == pool_name for row in fuyao.rows)
+            for pool_name in pools
+        ):
+            raise RuntimeError("Fuyao rows failed standard identity normalization")
+
+        eastmoney_pool_quality = eastmoney.pool_quality if eastmoney is not None else None
+        eastmoney_complete_by_pool = {
+            pool_name: bool(
+                eastmoney is not None
+                and (
+                    (
+                        isinstance(eastmoney_pool_quality, Mapping)
+                        and isinstance(eastmoney_pool_quality.get(pool_name), Mapping)
+                        and eastmoney_pool_quality[pool_name].get("membershipComplete") is True
+                    )
+                    or (
+                        not isinstance(eastmoney_pool_quality, Mapping)
+                        and eastmoney.membership_complete is True
+                    )
+                )
+            )
+            for pool_name in pools
+        }
+        eastmoney_by_pool = {
+            pool_name: {
+                row.security_id: row
+                for row in (
+                    eastmoney.rows
+                    if eastmoney is not None and eastmoney_complete_by_pool[pool_name]
+                    else ()
+                )
+                if row.pool_type == pool_name and row.membership_valid
+            }
+            for pool_name in pools
+        }
+
+        for pool_name in pools:
+            primary = fuyao_by_pool[pool_name]
+            secondary = eastmoney_by_pool[pool_name]
+            use_eastmoney = eastmoney_complete_by_pool[pool_name]
+            pool_warnings: list[str] = []
+            if eastmoney is not None and not use_eastmoney:
+                warning = f"{pool_name} Eastmoney cross-check lacks complete dated membership and was not merged"
+                warnings.append(warning)
+                pool_warnings.append(warning)
+            primary_only = sorted(set(primary) - set(secondary)) if use_eastmoney else []
+            secondary_only = sorted(set(secondary) - set(primary)) if use_eastmoney else []
+            if primary_only or secondary_only:
+                detail = (
+                    f"{pool_name} source membership differs: "
+                    f"Fuyao-only={len(primary_only)}, Eastmoney-only={len(secondary_only)}"
+                )
+                warnings.append(detail)
+                pool_warnings.append(detail)
+
+            for security_id in sorted(set(primary) | set(secondary)):
+                primary_fact = primary.get(security_id)
+                secondary_fact = secondary.get(security_id)
+                if primary_fact is not None:
+                    row = (
+                        self._fact_for_renormalization(secondary_fact)
+                        if secondary_fact is not None
+                        else {}
+                    )
+                    primary_row = self._fact_for_renormalization(primary_fact)
+                    row.update(
+                        {
+                            key: value
+                            for key, value in primary_row.items()
+                            if value is not None and value not in ([], ())
+                        }
+                    )
+                    row["source"] = "fuyao"
+                    if security_id in primary_only:
+                        row["row_quality"] = "degraded"
+                        row["row_warnings"] = list(
+                            dict.fromkeys(
+                                [
+                                    *(row.get("row_warnings") or []),
+                                    "Security is present only in the Fuyao pool",
+                                ]
+                            )
+                        )
+                else:
+                    row = self._fact_for_renormalization(secondary_fact)
+                    row["row_quality"] = "degraded"
+                    row["row_warnings"] = list(
+                        dict.fromkeys(
+                            [
+                                *(row.get("row_warnings") or []),
+                                "Security is present only in the Eastmoney pool",
+                            ]
+                        )
+                    )
+                pools[pool_name].append(row)
+
+            differs = bool(primary_only or secondary_only)
+            source = "fuyao+eastmoney" if use_eastmoney else "fuyao"
+            quality[pool_name] = {
+                "source": source,
+                "status": "degraded" if differs else "ok",
+                "total": len(pools[pool_name]),
+                "membershipComplete": True,
+                "fuyaoTotal": len(primary),
+                "eastmoneyTotal": len(secondary) if use_eastmoney else None,
+                "warnings": pool_warnings,
+            }
+        return pools, quality, warnings
+
+    @staticmethod
+    def _append_limit_warning(
+        payload: dict[str, Any],
+        warning: str,
+        *,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        result = copy.deepcopy(payload)
+        quality = result.setdefault("quality", {})
+        warnings = list(dict.fromkeys([*(quality.get("warnings") or []), warning]))
+        quality["warnings"] = warnings
+        quality["warning"] = "; ".join(warnings)
+        if status is not None:
+            quality["status"] = status
+        return result
 
     @staticmethod
     def normalize_limit_rows(
@@ -435,6 +961,9 @@ class MarketDataProvider:
         source: str = "eastmoney-push2ex",
         source_revision: str | None = None,
         rule_version: str | None = None,
+        membership_complete: bool | None = None,
+        streak_complete: bool | None = None,
+        pool_quality: Mapping[str, Any] | None = None,
     ):
         from .limit_facts import normalize_limit_pools
 
@@ -445,6 +974,9 @@ class MarketDataProvider:
             source=source,
             source_revision=source_revision,
             rule_version=rule_version,
+            membership_complete=membership_complete,
+            streak_complete=streak_complete,
+            pool_quality=pool_quality,
         )
 
     def fetch_chapter01_sectors(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
@@ -841,7 +1373,13 @@ class MarketDataProvider:
             [
                 value
                 for item in pools["limit_up"] or []
-                if isinstance(item, Mapping) and (value := self._optional_int(item.get("lbc"))) is not None
+                if isinstance(item, Mapping)
+                and (
+                    value := self._optional_int(
+                        item.get("streak_days", item.get("continue_day_cnt", item.get("lbc")))
+                    )
+                )
+                is not None
             ]
             if limit_up_count is not None
             else []

@@ -1,0 +1,70 @@
+{
+  "calendar": {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "timestamp": 1789660800000,
+      "item": [
+        {"date_ms": 1789574400000, "date": "20260917"},
+        {"date_ms": 1789660800000, "date": "20260918"}
+      ]
+    }
+  },
+  "tickers": {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "timestamp": 1789660800000,
+      "item": [
+        {"thscode": "600001.SH", "ticker": "600001", "name": "沪市样本", "exchange": "SH", "asset_type": "a-share", "currency": "CNY", "list_date": "2020-01-02"},
+        {"thscode": "000001.SZ", "ticker": "000001", "name": "深市样本", "exchange": "SZ", "asset_type": "a-share", "currency": "CNY", "list_date": "1991-04-03"},
+        {"thscode": "430001.BJ", "ticker": "430001", "name": "北交样本", "exchange": "BJ", "asset_type": "a-share", "currency": "CNY", "list_date": "2023-03-01"}
+      ]
+    }
+  },
+  "limit_up_pages": [
+    {
+      "code": 0,
+      "message": "success",
+      "data": {
+        "timestamp": 1789693200000,
+        "pagination": {"total": 3, "pages": 2, "size": 2, "page": 1},
+        "item": [
+          {"thscode": "600001.SH", "ticker": "600001", "name": "沪市样本", "is_st": false, "is_new": false, "last_price": 11.0, "price_change_ratio_pct": 10.0, "limit_up_time": "09:35", "limit_up_reason": "测试", "continue_day_text": "2连板", "continue_day_cnt": 2, "seal_money": 1000000, "max_seal_money": 2000000},
+          {"thscode": "000001.SZ", "ticker": "000001", "name": "深市样本", "is_st": false, "is_new": false, "last_price": 12.0, "price_change_ratio_pct": 9.99, "limit_up_time": "10:05", "limit_up_reason": null, "continue_day_text": "首板", "continue_day_cnt": 1, "seal_money": 800000, "max_seal_money": 1500000}
+        ]
+      }
+    },
+    {
+      "code": 0,
+      "message": "success",
+      "data": {
+        "timestamp": 1789693200000,
+        "pagination": {"total": 3, "pages": 2, "size": 2, "page": 2},
+        "item": [
+          {"thscode": "430001.BJ", "ticker": "430001", "name": "北交样本", "is_st": false, "is_new": true, "last_price": 15.0, "price_change_ratio_pct": 29.98, "limit_up_time": "14:20", "limit_up_reason": "测试", "continue_day_text": "首板", "continue_day_cnt": 1, "seal_money": 500000, "max_seal_money": 900000}
+        ]
+      }
+    }
+  ],
+  "limit_down": {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "timestamp": 1789693200000,
+      "pagination": {"total": 0, "pages": 0, "size": 2, "page": 1},
+      "item": []
+    }
+  },
+  "limit_break": {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "timestamp": 1789693200000,
+      "pagination": {"total": 1, "pages": 1, "size": 2, "page": 1},
+      "item": [
+        {"thscode": "000001.SZ", "ticker": "000001", "name": "深市样本", "last_price": 11.2, "price_change_ratio_pct": 3.2, "open_times": 2, "turnover_ratio_pct": 8.1, "turnover": 1250000000}
+      ]
+    }
+  }
+}

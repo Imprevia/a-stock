@@ -1,4 +1,4 @@
-"""Strict, provider-free V1 promotion aggregation."""
+"""Provider-free promotion aggregation over complete dated memberships."""
 
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ PROMOTION_FIELDS = (
     "promotionRuleVersion",
     "promotionQuality",
     "fieldQuality",
+    "membershipQuality",
+    "streakQuality",
+    "poolQuality",
+    "securityDetails",
 )
 
 
@@ -101,7 +105,7 @@ def build_limit_promotion(
     dataset_quality: dict[str, Any] | None = None,
     emit_log: bool = True,
 ) -> dict[str, Any]:
-    """Build V1 solely from two complete, checksummed local datasets."""
+    """Build V2 solely from two membership-complete, checksummed local datasets."""
 
     started = perf_counter()
     resolution = TradingDayResolver(store).resolve(as_of)
@@ -131,7 +135,7 @@ def build_limit_promotion(
             return result
         manifests = (previous_manifest, current_manifest)
         if any(
-            not manifest["complete"]
+            manifest.get("membership_complete") is not True
             or manifest["actual_as_of"] != expected_date
             or manifest["rule_version"] != PROMOTION_RULE_VERSION
             for manifest, expected_date in zip(manifests, (previous_as_of, as_of), strict=True)
@@ -173,23 +177,27 @@ def build_limit_promotion(
 
         previous_facts = store.get_limit_security_facts(previous_as_of)
         current_facts = store.get_limit_security_facts(as_of)
-        previous_eligible = {
+        previous_members = {
             fact.security_id
             for fact in previous_facts
-            if fact.pool_type == "limit_up" and fact.eligible and fact.closed_limit_up is True
+            if fact.pool_type == "limit_up"
+            and fact.membership_valid
+            and fact.closed_limit_up is True
         }
-        current_closed = {
+        current_members = {
             fact.security_id
             for fact in current_facts
-            if fact.pool_type == "limit_up" and fact.eligible and fact.closed_limit_up is True
+            if fact.pool_type == "limit_up"
+            and fact.membership_valid
+            and fact.closed_limit_up is True
         }
-        denominator = len(previous_eligible)
-        numerator = len(previous_eligible & current_closed)
+        denominator = len(previous_members)
+        numerator = len(previous_members & current_members)
         source = ",".join(
             dict.fromkeys((str(previous_manifest["source"]), str(current_manifest["source"])))
         )
         if denominator == 0:
-            warning = "promotion ratio requires a non-zero eligible previous-session sample"
+            warning = "promotion ratio requires a non-zero previous-session membership"
             result = _insufficient(
                 as_of,
                 reason="zero-denominator",
@@ -200,16 +208,21 @@ def build_limit_promotion(
                 warnings=[warning],
             )
             result["fieldQuality"]["todayPromoted"] = _metric_quality(
-                "ok", "complete-empty-eligible-set", 0, as_of, source
+                "ok", "complete-empty-membership-set", 0, as_of, source
             )
             result["fieldQuality"]["yesterdayLimitUpEligible"] = _metric_quality(
-                "ok", "complete-empty-eligible-set", 0, previous_as_of, source
+                "ok", "complete-empty-membership-set", 0, previous_as_of, source
             )
             if emit_log:
                 _log_promotion(as_of, previous_as_of, result, started, current_manifest, previous_manifest)
             return result
 
         degraded_warnings = list((dataset_quality or {}).get("warnings") or [])
+        for manifest in manifests:
+            degraded_warnings.extend(str(item) for item in manifest.get("warnings", ()))
+            for quality in (manifest.get("pool_quality") or {}).values():
+                if isinstance(quality, dict):
+                    degraded_warnings.extend(str(item) for item in quality.get("warnings", ()))
         for snapshot_date, snapshot in zip((previous_as_of, as_of), snapshots, strict=True):
             if snapshot is None:
                 continue
@@ -233,9 +246,18 @@ def build_limit_promotion(
             snapshot.status in {"fallback", "degraded"} or snapshot.refresh_warning
             for snapshot in snapshots
             if snapshot is not None
+        ) or any(
+            isinstance(quality, dict)
+            and quality.get("status") in {"fallback", "degraded", "partial"}
+            for manifest in manifests
+            for quality in (manifest.get("pool_quality") or {}).values()
         )
         status = "degraded" if degraded else "ok"
-        reason = "retained-or-fallback-adjacent-session-sample" if degraded else "complete-adjacent-session-sample"
+        reason = (
+            "degraded-adjacent-membership-sample"
+            if degraded
+            else "complete-adjacent-membership-sample"
+        )
         values = {
             "todayPromoted": numerator,
             "yesterdayLimitUpEligible": denominator,
@@ -250,7 +272,7 @@ def build_limit_promotion(
             "fieldQuality": {
                 "todayPromoted": _metric_quality(
                     status,
-                    "matched-close-limit-up-members",
+                    "matched-limit-up-members",
                     denominator,
                     as_of,
                     source,
@@ -258,7 +280,7 @@ def build_limit_promotion(
                 ),
                 "yesterdayLimitUpEligible": _metric_quality(
                     status,
-                    "complete-eligible-previous-session-set",
+                    "complete-previous-session-membership",
                     denominator,
                     previous_as_of,
                     source,

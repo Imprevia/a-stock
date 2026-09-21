@@ -79,6 +79,14 @@ spec:
                   value: "1"
                 - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
                   value: "15:10"
+                - name: MARKET_ENVIRONMENT_LIMITS_V1_ENABLED
+                  value: "0"
+                - name: MARKET_ENVIRONMENT_FUYAO_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: a-stock-market-provider
+                      key: MARKET_ENVIRONMENT_FUYAO_API_KEY
+                      optional: true
               resources:
                 requests:
                   cpu: 100m

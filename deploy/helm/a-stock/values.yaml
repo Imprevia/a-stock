@@ -110,6 +110,13 @@ persistence:
 marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
+  limits:
+    v1Enabled: false
+    fuyao:
+      # The provider credential lives in a Secret independent from the
+      # PostgreSQL Secret. Leave empty to omit the optional API-key reference.
+      existingSecret: ""
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
   database:
     sslMode: prefer
     poolSize: 5

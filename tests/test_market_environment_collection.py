@@ -596,3 +596,131 @@ def test_snapshot_refresh_output_remains_backward_compatible(tmp_path, capsys) -
     assert payload["status"] == "success"
     assert "trigger" not in payload
     assert [item["dataset"] for item in payload["datasets"]] == ["breadth"]
+
+
+def test_limit_history_refresh_collects_six_calendar_sessions_in_ascending_order(
+    tmp_path,
+    capsys,
+) -> None:
+    sessions = (
+        date(2026, 8, 27),
+        date(2026, 8, 28),
+        date(2026, 8, 31),
+        date(2026, 9, 1),
+        date(2026, 9, 2),
+        AS_OF,
+    )
+    provider = CollectionProvider()
+    provider.fetch_trading_days = lambda: sessions
+    store = SnapshotStore(tmp_path / "history.sqlite3")
+    coordinator = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: AFTER_MARKET,
+        rebuild_aggregate=lambda _as_of: None,
+        limits_v1_enabled=False,
+    )
+
+    exit_code = cli_main(
+        [
+            "snapshots",
+            "refresh",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--dataset",
+            "limits",
+            "--history-sessions",
+            "6",
+        ],
+        coordinator=coordinator,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["historySessions"] == 6
+    assert [item["asOf"] for item in payload["sessions"]] == [
+        item.isoformat() for item in sessions
+    ]
+    assert provider.calls == ["limits"] * 6
+    assert all(store.get("limits", item) is not None for item in sessions)
+    assert store.get_trading_session(AS_OF).previous_as_of == date(2026, 9, 2)
+
+
+def test_limit_history_refresh_continues_after_one_session_failure(tmp_path, capsys) -> None:
+    sessions = (
+        date(2026, 8, 28),
+        date(2026, 8, 31),
+        date(2026, 9, 1),
+        date(2026, 9, 2),
+        AS_OF,
+    )
+
+    class DatedFailureProvider(CollectionProvider):
+        def fetch_trading_days(self):
+            return sessions
+
+        def fetch_chapter01_limits(self, as_of):
+            self.calls.append(as_of.isoformat())
+            if as_of == date(2026, 9, 1):
+                raise RuntimeError("fixture dated failure")
+            return chapter_payload("limits", as_of)
+
+    provider = DatedFailureProvider()
+    store = SnapshotStore(tmp_path / "partial-history.sqlite3")
+    coordinator = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: AFTER_MARKET,
+        rebuild_aggregate=lambda _as_of: None,
+        limits_v1_enabled=False,
+    )
+
+    exit_code = cli_main(
+        [
+            "snapshots",
+            "refresh",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--dataset",
+            "limits",
+            "--history-sessions",
+            "5",
+        ],
+        coordinator=coordinator,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["status"] == "partial"
+    assert [item["status"] for item in payload["sessions"]].count("failed") == 1
+    assert provider.calls == [item.isoformat() for item in sessions]
+    assert store.get("limits", date(2026, 9, 1)) is None
+    assert store.get("limits", AS_OF) is not None
+
+
+@pytest.mark.parametrize(
+    "datasets",
+    [[], ["--dataset", "breadth"], ["--dataset", "limits", "--dataset", "breadth"]],
+)
+def test_limit_history_refresh_requires_explicit_limits_only(tmp_path, capsys, datasets) -> None:
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(
+        provider,
+        SnapshotStore(tmp_path / "invalid-history.sqlite3"),
+        now=lambda: AFTER_MARKET,
+    )
+    argv = [
+        "snapshots",
+        "refresh",
+        "--as-of",
+        AS_OF.isoformat(),
+        *datasets,
+        "--history-sessions",
+        "6",
+    ]
+
+    assert cli_main(argv, coordinator=coordinator) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert "exactly --dataset limits" in payload["error"]
+    assert provider.calls == []

@@ -4,3 +4,5 @@
 - `define-scope.md` — a-stock 产品角色、范围和首期交付定义
 - `build-market-environment-chapter-01.md` — 第 01 章 01 至 09 导航、真实 provider 证据与响应式网页
 - `precompute-market-data-snapshots.md` — 市场广度/容量方向 SQLite 快照、盘后预计算、SWR 和刷新 CLI
+- `complete-limit-ecosystem-dashboard-parity.md` — 涨跌停生态严格事实、晋级、分层、历史和第 03 页基线
+- `market-environment-multipage-rework.md` — 01–09 多页路由、市场级句式和下一交易日只读对照

@@ -119,6 +119,63 @@ def test_legacy_omission_and_explicit_null_remain_distinct() -> None:
     assert all(normal_response_dump[field] is None for field in NEW_FIELDS)
 
 
+def test_membership_quality_and_security_details_are_additive() -> None:
+    quality = {
+        "status": "degraded",
+        "reason": "complete-degraded-pool-membership",
+        "observations": 1,
+        "asOf": "2026-09-04",
+        "source": "fuyao+eastmoney",
+        "warnings": ["source difference"],
+    }
+    row = {
+        "securityId": "SSE:600000",
+        "thscode": "600000.SH",
+        "code": "600000",
+        "exchange": "SSE",
+        "name": "样本",
+        "poolType": "limit_up",
+        "isSt": None,
+        "isNew": False,
+        "listingDate": None,
+        "closePrice": 10.0,
+        "changePct": 10.0,
+        "streakDays": 2,
+        "limitUpTime": "09:31:00",
+        "limitUpReason": None,
+        "sealMoney": None,
+        "maxSealMoney": None,
+        "firstLimitTime": None,
+        "lastLimitTime": None,
+        "openTimes": None,
+        "turnoverRatioPct": None,
+        "turnover": None,
+        "source": "fuyao",
+        "rowQuality": "degraded",
+        "warnings": ["source difference"],
+    }
+    empty_group = {"total": 0, "rows": [], "quality": {**quality, "observations": 0}}
+    payload = {
+        **CASES["legacyOmitted"],
+        "membershipQuality": quality,
+        "streakQuality": quality,
+        "poolQuality": {"limitUp": quality},
+        "securityDetails": {
+            "limitUp": {"total": 1, "rows": [row], "quality": quality},
+            "limitDown": empty_group,
+            "failedLimitUp": empty_group,
+            "promoted": empty_group,
+        },
+    }
+
+    model = LimitEvidence.model_validate(payload)
+    assert model.securityDetails is not None
+    assert model.securityDetails.limitUp.total == 1
+    assert model.securityDetails.limitUp.rows[0].thscode == "600000.SH"
+    assert model.membershipQuality is not None
+    assert model.membershipQuality.status == "degraded"
+
+
 def test_valid_and_zero_denominator_promotion_semantics() -> None:
     valid = LimitEvidence.model_validate(CASES["promotion20Of8"])
     zero = LimitEvidence.model_validate(CASES["zeroDenominator"])
@@ -188,7 +245,7 @@ def test_old_client_ignores_additive_fields_and_preserves_legacy_facts() -> None
         (("promotionQuality", "asOf"), "not-a-date"),
         (("promotionQuality", "source"), None),
         (("promotionSampleAsOf",), "2099-99-99"),
-        (("promotionRuleVersion",), "limits-promotion-v2"),
+        (("promotionRuleVersion",), "limits-promotion-v3"),
         (("fieldQuality", "ladder"), CASES["promotion20Of8"]["promotionQuality"]),
         (("fieldQuality", "promotionRatio", "observations"), 19),
         (("fieldQuality", "promotionRatio", "source"), None),

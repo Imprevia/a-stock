@@ -27,6 +27,12 @@ marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
   settlementTime: "15:10"
+  limits:
+    v1Enabled: true
+    fuyao:
+      # The credential is injected from the independent Kubernetes Secret.
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
   scheduledCollection:
     enabled: false
     suspend: true

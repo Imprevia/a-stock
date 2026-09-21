@@ -310,11 +310,11 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时只提供既有 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak` 和 PostgreSQL 快照读取；开启前必须在固定 fixture 上通过契约、Alembic schema、幂等、lease/CAS、失败保留、SQLite 导入源 `PRAGMA quick_check` 和 provider-free GET 验证。
 
-严格 provider 必须验证响应/查询绑定的实际日期及逐行日期冲突、规范证券身份（交易所限定的 `security_id`）、板块、ST/上市窗口、适用涨跌幅制度、盘中触板与收盘涨停状态。`push2ex` 缺少顶层日期时，若请求 `date` 明确则记录 `dateEvidence=request-parameter`；缺少证券事实字段的行保留 `invalid_reason` 与排除计数，但不得进入晋级分子/分母、梯队、制度/板块分层或 250 日结论；不得使用证券名称匹配或固定 10% 推断。采集应先解析请求日对应的真实交易日和精确 `previous_as_of`，在两个日期分别保存 `trading_sessions`、`limit_security_datasets`、`limit_security_facts` 与 checksum；不使用自然日减一或其他日期回填。
+扶摇作为三类池 membership 主源，必须校验交易日历、响应信封、逐页 `total/pages`、去重规范身份和日期冲突；池不回显日期时记录 `dateEvidence=request-parameter` warning。东方财富用于降级和交叉核对，两源集合差异按规范身份取并集并标记 degraded。基础晋级只要求精确相邻交易日、两日完整涨停集合和规范身份；ST、上市窗口、制度和板块缺失只降低对应分层，不得阻断基础晋级。不得使用证券名称匹配、自然日减一或固定涨跌幅制度推断。
 
 状态排查应同时查看 `/api/market-environment/data-collection?as_of=<date>` 和 limits snapshot：状态 GET 只读 PostgreSQL、provider 调用数为 0；每个 limits task 显示当前/前一样本日期、实际日期、observations、排除数、checksum、晋级依赖和 warning。单项重试只启动 limits task，不重跑 `core`、`breadth`、`sectors` 或 `activeDirection`。刷新失败只记录 attempt，并保留同日期最后成功值为 `failed-retained` / `degraded`；没有旧值才为 `failed-missing`。
 
-晋级验证必须能审计昨日合资格收盘涨停集合与今日同 `security_id` 的交集。分母为 0 时晋级率为 `null`、质量为 `insufficient`，不得显示 `0%`。近 5 日趋势只读取连续精确快照；有效观测不足 60 或历史不连续时，250 日分位、连续风险、断板/修复和规则周期结论保持 `insufficient` 并显示缺口。`QTS-01-03-01` 至 `QTS-01-03-05` 继续为 `needs-backtest`，页面可展示经验阈值和置信度但不能输出 `validated`。
+晋级验证必须能审计昨日完整涨停 membership 集合与今日同 `security_id` 集合的交集。分母为 0 时晋级率为 `null`、质量为 `insufficient`，不得显示 `0%`。`--history-sessions 6` 按交易日历升序采集六日并生成最近五个晋级点；有效观测不足 60 时 250 日分位和规则周期结论保持 `insufficient`。`QTS-01-03-01` 至 `QTS-01-03-05` 继续为 `needs-backtest`。
 
 真实 provider smoke 不属于普通测试，只能在获得明确授权的盘后窗口、隔离 PostgreSQL 数据库和本地命令中执行。SQLite fixture（例如 `.artifacts/market-environment/limits-smoke.sqlite3`）仅用于导入回归，不承载 smoke 运行时状态。示例命令必须替换为获批的两日参数，并记录 provider 请求预算、每池主/延迟来源、`dateEvidence`、实际/前一交易日、来源、字段覆盖、排除数、warning、dataset/row checksum、耗时和最终 `ok`/`fallback`/`degraded`/`insufficient`/`failed` 质量；缺少日期绑定或存在日期冲突时只保留失败审计，不写生产数据库；禁止复用生产数据库或将失败转成成功。
 
@@ -322,8 +322,9 @@ limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_
 # 仅限已授权的盘后隔离 smoke；普通离线/PR 验证不得执行真实 provider
 MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=1 \
 MARKET_ENVIRONMENT_DATABASE_URL=postgresql+psycopg://<user>:<password>@127.0.0.1:5432/<isolated_db> \
+MARKET_ENVIRONMENT_FUYAO_API_KEY=<secret> \
 .venv/bin/python -m src.market_environment.cli snapshots refresh \
-  --as-of <获批当前交易日> --dataset limits --force
+  --as-of <获批当前交易日> --dataset limits --history-sessions 6 --force
 ```
 
 回滚时先将 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0` 并重启 API/采集进程，再恢复应用版本。保留 PVC、旧五字段快照、`trading_sessions`、`limit_security_datasets`、`limit_security_facts` 和 checksum；不删除数据库、不回填其他日期，也不因回滚修改规则 ID、权重或校准状态。
@@ -450,6 +451,7 @@ pg_restore --clean --if-exists --no-owner \
 - `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0`：关闭持久缓存并回退到直接 provider 路径，用于紧急回滚。
 - `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再按现场捕获的回退基线决定网络入口。
 - `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0`：关闭 limits detail/V1 事实写入和晋级扩展，继续服务旧五字段与 PostgreSQL 快照；开启前须完成离线门禁，真实 smoke 只能写隔离 PostgreSQL 数据库。
+- `MARKET_ENVIRONMENT_FUYAO_API_KEY`：扶摇 provider 密钥，只能通过独立 Secret/进程环境注入；不得写入 values、日志、API 响应或仓库文件。V1 开启但变量缺失时采集失败并保留旧快照，普通 GET 仍可用。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard/CronJob 作为共享协调边界。
 
@@ -765,11 +767,9 @@ composables/useDocumentContext.ts 是 9 章节组件的公共派生与 label 字
 - 测试在 mount 时通过 onRefreshSection prop 接线回 market.loadSection('limits', true)，验证 emit 边界的完整性。
 - 刷新失败场景（fixture 第二次 chapter-01 返回 502）：store 的 sectionStates.limits 落入 error phase，组件的 limits-refresh-error 块显示 detail 并保留旧证据，与原 App.vue 行为一致。
 
-## Document04 fixture 约定（2026-09-16 frontend-component-split Phase B-04）
+## Document04 fixture 约定
 
-第 04 章 tierRisk 的质量警告读取 quality.warning（单数），不是 quality.warnings（复数）。fixture 只写 warnings 数组时页面不显示警告文本，测试会失败。两个都写最安全。
-
-第 04 章数据来自 core 直出（chapter01.tierRisk），独立挂载时直接 market.data = fixture 即可，无需 loadSection。
+第 04 章与第 03 章共享 `chapter-01?section=limits`：高/中/低位 fixture 写入 `limits.stratifications` 的 `risk_tier` 行，修复率写入 `limits.riskEvidence` 的 `failure-repair` 行。独立挂载时先 `market.loadCore()` 再 `market.loadSection('limits')`；每项缺失独立显示 `--`。
 
 ## Document05-09 章节组件约定（2026-09-16 frontend-component-split Phase B-05..B-09）
 

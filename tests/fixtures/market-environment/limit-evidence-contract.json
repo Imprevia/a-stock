@@ -1,6 +1,6 @@
 {
-  "contractVersion": "limits-promotion-v1",
-  "sampleRule": "previous eligible close-limit-up -> current close-limit-up",
+  "contractVersion": "limits-promotion-v2",
+  "sampleRule": "previous complete limit-up membership -> current complete limit-up membership",
   "newFields": [
     "todayPromoted",
     "yesterdayLimitUpEligible",
@@ -106,8 +106,8 @@
       "promotionRatio": 0.4,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": "2026-09-03",
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "ok",
         "reason": "complete-adjacent-session-sample",
@@ -169,8 +169,8 @@
       "promotionRatio": null,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": "2026-09-03",
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "insufficient",
         "reason": "zero-denominator",
@@ -232,8 +232,8 @@
       "promotionRatio": null,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": null,
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "insufficient",
         "reason": "missing-limits-dataset",
@@ -295,8 +295,8 @@
       "promotionRatio": null,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": null,
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "insufficient",
         "reason": "incomplete-pool-input",
@@ -358,8 +358,8 @@
       "promotionRatio": null,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": "2026-09-03",
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "failed",
         "reason": "promotion-calculation-failed",
@@ -421,8 +421,8 @@
       "promotionRatio": 0.4,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": "2026-09-03",
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "degraded",
         "reason": "declared-provider-fallback",
@@ -484,8 +484,8 @@
       "promotionRatio": 0.4,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": "2026-09-03",
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "degraded",
         "reason": "same-date-retained-snapshot",
@@ -547,8 +547,8 @@
       "promotionRatio": null,
       "promotionSampleAsOf": "2026-09-04",
       "promotionPreviousAsOf": null,
-      "promotionSampleRule": "previous eligible close-limit-up -> current close-limit-up",
-      "promotionRuleVersion": "limits-promotion-v1",
+      "promotionSampleRule": "previous complete limit-up membership -> current complete limit-up membership",
+      "promotionRuleVersion": "limits-promotion-v2",
       "promotionQuality": {
         "status": "insufficient",
         "reason": "missing-previous-session",

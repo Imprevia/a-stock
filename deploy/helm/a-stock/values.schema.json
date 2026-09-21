@@ -78,6 +78,21 @@
             "Asia/Shanghai"
           ]
         },
+        "limits": {
+          "type": "object",
+          "required": ["v1Enabled", "fuyao"],
+          "properties": {
+            "v1Enabled": {"type": "boolean"},
+            "fuyao": {
+              "type": "object",
+              "required": ["existingSecret", "secretKey"],
+              "properties": {
+                "existingSecret": {"type": "string"},
+                "secretKey": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
         "database": {
           "type": "object",
           "properties": {

@@ -2,7 +2,7 @@
 
 ## 已实现
 
-- 2026-09-14 启动 `market-environment-multipage-rework`：目标是保持 01–09 独立页面，补齐第 01 页市场级句式和第 01/09 页精确下一交易日只读对照；实现进行中，尚未宣称完成。
+- 2026-09-14 启动的 `market-environment-multipage-rework` 已完成：01–09 独立页面、第 01 页市场级句式和第 01/09 页精确下一交易日只读对照均已落地。
 
 - harness 骨架：`docs/` 事实源体系、exec-plans 落地位、本地门禁（`.githooks/` + `scripts/check-docs-contract.py` + `scripts/install-hooks.py`）。
   - 事实源：`docs/repository-guide.md`、`docs/architecture.md`、`docs/runbooks.md`
@@ -44,6 +44,7 @@
 
 ## 进行中
 
+- `restore-limit-ecosystem-data-availability` 正在接入扶摇三类池和交易日历，拆分 membership 与高级分层质量，补齐六日回填、证券明细以及第 03/04 页真实 limits 数据消费；生产部署和生产写入不在范围内。
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
 
 ## 最近完成
@@ -53,14 +54,13 @@
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
 - Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
 - 市场环境看板 live server 已确认是 k3s `v1.26.6+k3s-6a894050-dirty`，主机时区 `Asia/Shanghai` 且 NTP 已同步；冻结镜像为 `localhost/a-stock-market-environment:20260906-005226-2075b6e` / `sha256:8fc74dcf37f5e6303e42f78811ef9de16759cb6e045aa57648e027cd1449754b`。Helm revision、Dashboard imageID 与网络边界不在本次 schedule-only override 范围，仍按后续受控 preflight 复核。
-- `complete-limit-ecosystem-dashboard-parity` 的第 03 页完整涨跌停生态看板实现与受控验证已完成：契约、事实表迁移、严格 provider、相邻交易日晋级、梯队/制度/交易所分层、近 5 日与 60/250 日覆盖、前端状态和离线门禁均已落地；隔离 smoke 因 provider 缺少顶层交易日字段而 `failed-missing`，`promotionQuality=insufficient`，未写生产 PostgreSQL。limits detail/V1 开关默认关闭，旧五字段仍是兼容基线。
-- `complete-limit-ecosystem-dashboard-parity` 的第 03 页完整涨跌停生态看板实现与受控验证已完成：契约、事实表迁移、严格 provider、相邻交易日晋级、梯队/制度/交易所分层、近 5 日与 60/250 日覆盖、前端状态和离线门禁均已落地；隔离 smoke 因 provider 缺少顶层日期字段而 `failed-missing`，`promotionQuality=insufficient`，未写生产 PostgreSQL。limits detail/V1 开关默认关闭，旧五字段仍是兼容基线；已验证 `push2ex` 缺顶层日期时的查询绑定路径和逐池延迟降级。
+- `complete-limit-ecosystem-dashboard-parity` 已完成并归档：契约、事实表、严格 provider、相邻交易日晋级、梯队/分层、历史覆盖和前端状态均已落地；旧 smoke 因东方财富字段不足保持 `promotionQuality=insufficient`，成为本次扶摇接入的基线。
 - `fix-limit-and-active-direction-collection`（2026-09-15）已完成 provider 响应兼容和离线修复：涨跌停池支持 `push2ex` 到 `push2delay` 逐池降级、键值对象池、查询日期绑定证据和显式日期冲突拒绝；容量方向支持统一字段别名/响应容器解析并继续执行 30 行与成交额排序校验。provider/采集回归和 docs-contract 已通过；真实 provider smoke、生产镜像部署和 PVC 写入仍未执行。
 
 ## 未实现
 
 - 高位股、中位股和低位股的分层亏钱效应尚未形成独立可追溯数据集。
-- 第 03 页 limits detail 的真实 provider 证券制度、ST/上市窗口、板块和收盘状态覆盖仍未完成证明；本次修复允许对明确 `date` 查询记录 `request-parameter` 日期绑定，但在真实 smoke 重新证明字段覆盖前，晋级率、梯队/分层和 250 日分位必须保持 `insufficient` / `degraded`，不视为 `validated`。
+- 第 03 页高级制度、板块和独立亏钱收益字段仍可能不足；基础 membership 晋级可在交易日、完整分页和规范身份已证明时使用，但高级分层和 250 日分位仍不得冒充 `validated`。
 - 公告、政策、外围和突发事件仍需结构化来源、发布时间、有效期与失效条件；当前保持 `unverified`。
 - 第 02 至 11 章 281 条规则仍为 `documented-only`。
 - 尚未积累 500–750 日历史快照，没有规则可晋级为 `validated`。
@@ -90,4 +90,4 @@
 
 ## 最后更新
 
-2026-09-17
+2026-09-20

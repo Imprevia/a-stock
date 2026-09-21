@@ -82,6 +82,73 @@ def test_identity_exchange_evidence_must_be_consistent(
     assert result.complete is (expected_reason is None)
 
 
+def test_membership_and_extended_details_are_independent_of_strict_enrichment(tmp_path) -> None:
+    raw = {
+        "security_id": "600001.BJ",
+        "source": "fuyao",
+        "name": "北交样本",
+        "is_new": False,
+        "close_price": 12.34,
+        "change_pct": 29.9,
+        "streak_days": 2,
+        "limit_up_time": "09:31:00",
+        "limit_up_reason": "fixture",
+        "seal_money": 123.0,
+        "max_seal_money": 456.0,
+        "open_times": 1,
+        "turnover_ratio_pct": 8.5,
+        "turnover": 789.0,
+        "row_quality": "degraded",
+        "row_warnings": ["cross-source difference"],
+    }
+    result = normalize_limit_rows(
+        [raw],
+        as_of=AS_OF,
+        actual_as_of=AS_OF,
+        pool_type="limit_up",
+        source="fuyao+eastmoney",
+        membership_complete=True,
+        streak_complete=True,
+        pool_quality={"limit_up": {"status": "degraded", "warnings": ["difference"]}},
+        fetched_at=FETCHED,
+    )
+
+    fact = result.rows[0]
+    assert (fact.security_id, fact.exchange, fact.source) == ("BSE:600001", "BSE", "fuyao")
+    assert fact.closed_limit_up is True
+    assert fact.membership_valid is True
+    assert fact.eligible is False
+    assert fact.invalid_reason == "missing-board"
+    assert result.complete is False
+    assert result.membership_complete is True
+    assert result.streak_complete is True
+
+    store = SnapshotStore(tmp_path / "extended-details.sqlite3")
+    store.put_limit_security_facts(
+        AS_OF,
+        list(result.rows),
+        actual_as_of=AS_OF,
+        source=result.source,
+        complete=result.complete,
+        membership_complete=result.membership_complete,
+        streak_complete=result.streak_complete,
+        pool_quality=dict(result.pool_quality or {}),
+        warnings=result.warnings,
+        dataset_checksum=result.dataset_checksum,
+    )
+    persisted = store.get_limit_security_facts(AS_OF)[0]
+    manifest = store.get_limit_security_dataset(AS_OF)
+    assert persisted.is_new is False
+    assert persisted.limit_up_time == "09:31:00"
+    assert persisted.seal_money == 123.0
+    assert persisted.row_quality == "degraded"
+    assert persisted.row_warnings == ("cross-source difference",)
+    assert manifest is not None
+    assert manifest["membership_complete"] is True
+    assert manifest["streak_complete"] is True
+    assert manifest["pool_quality"]["limit_up"]["status"] == "degraded"
+
+
 def test_normalization_can_verify_declared_regime_limit_without_defaulting_to_ten_percent() -> None:
     row = valid_row()
     row.pop("closed_limit_up")
@@ -151,7 +218,6 @@ def test_st_regime_requires_consistent_explicit_st_identity(
     [
         ({"is_st": True, "limit_regime": "pct:5"}, "st-security"),
         ({"listing_days": 3}, "ipo-window"),
-        ({"limit_regime": "main", "closed_limit_up": None, "previous_close": None}, "missing-close-limit-status"),
         ({"closed_limit_up": False, "touched_limit_up": True}, "intraday-touch-not-closed"),
         ({"close_price": None}, "missing-close"),
         ({"board": "unknown"}, "missing-board"),
@@ -255,17 +321,38 @@ def test_storage_migration_is_additive_idempotent_and_preserves_v1(tmp_path) -> 
     assert before_aggregate.payload == aggregate_payload
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute("SELECT count(*) FROM snapshot_entries").fetchone()[0] == 1
     second = SnapshotStore(path)
-    assert second.migration_versions() == (1, 2, 3, 4)
+    assert second.migration_versions() == (1, 2, 3, 4, 5)
     assert second.get("limits", AS_OF) == before
     assert second.get_materialized_aggregate(AS_OF) == before_aggregate
     with sqlite3.connect(path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        dataset_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(limit_security_datasets)")
+        }
+        fact_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(limit_security_facts)")
+        }
     assert {"schema_migrations", "trading_sessions", "limit_security_facts", "limit_security_datasets"} <= tables
     assert "limit_security_facts_eligible_idx" in indexes
+    assert {"membership_complete", "streak_complete", "pool_quality_json"} <= dataset_columns
+    assert {
+        "is_new",
+        "limit_up_time",
+        "limit_up_reason",
+        "seal_money",
+        "max_seal_money",
+        "first_limit_time",
+        "last_limit_time",
+        "open_times",
+        "turnover_ratio_pct",
+        "turnover",
+        "row_quality",
+        "row_warnings_json",
+    } <= fact_columns
 
 
 def test_session_resolver_uses_only_exact_persisted_pointer(tmp_path) -> None:

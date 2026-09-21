@@ -160,13 +160,21 @@ class CollectionCoordinator:
         run = self.store.update_collection_run(run_id, "collecting", started_at=current)
         return CollectionStartResult(run=run, tasks=tuple(tasks))
 
-    def execute_run(self, run_id: str) -> CollectionRunRecord:
+    def execute_run(
+        self,
+        run_id: str,
+        *,
+        fetch_previous_limit_details: bool = True,
+    ) -> CollectionRunRecord:
         run = self.store.get_collection_run(run_id)
         if run is None:
             raise KeyError(f"unknown collection run: {run_id}")
         for task in self.store.list_collection_tasks(run_id):
             if task.status == "queued":
-                self._execute_task(task)
+                self._execute_task(
+                    task,
+                    fetch_previous_limit_details=fetch_previous_limit_details,
+                )
         tasks = self.store.list_collection_tasks(run_id)
         completed = self._market_now()
         status = self._derive_run_status(tasks)
@@ -176,10 +184,48 @@ class CollectionCoordinator:
         self,
         as_of: date,
         datasets: Iterable[str] | None = None,
+        *,
+        fetch_previous_limit_details: bool = True,
     ) -> CollectionStartResult:
         started = self.start_run(as_of, datasets)
-        run = self.execute_run(started.run.run_id)
+        run = self.execute_run(
+            started.run.run_id,
+            fetch_previous_limit_details=fetch_previous_limit_details,
+        )
         return CollectionStartResult(run=run, tasks=self.store.list_collection_tasks(run.run_id))
+
+    def prepare_limit_history_sessions(self, as_of: date, count: int) -> tuple[date, ...]:
+        """Persist exact calendar links and return the requested ascending window."""
+
+        if count < 1:
+            raise ValueError("history session count must be at least 1")
+        fetch_calendar = getattr(self.provider, "fetch_trading_days", None)
+        if not callable(fetch_calendar):
+            raise ValueError("limits provider does not expose a trading calendar")
+        calendar = tuple(fetch_calendar())
+        if as_of not in calendar:
+            raise ValueError(f"{as_of.isoformat()} is not a confirmed trading session")
+        target_index = calendar.index(as_of)
+        if target_index + 1 < count:
+            raise ValueError(
+                f"trading calendar has only {target_index + 1} sessions through {as_of.isoformat()}"
+            )
+        selected = calendar[target_index - count + 1 : target_index + 1]
+        fetched_at = self._market_now()
+        for session in selected:
+            calendar_index = calendar.index(session)
+            previous = calendar[calendar_index - 1] if calendar_index else None
+            self.store.put_trading_session(
+                TradingSessionRecord(
+                    as_of=session,
+                    previous_as_of=previous,
+                    is_session=True,
+                    source="fuyao-calendar",
+                    actual_as_of=session,
+                    fetched_at=fetched_at,
+                )
+            )
+        return selected
 
     def get_run(self, run_id: str) -> CollectionStartResult | None:
         current = self._market_now()
@@ -307,7 +353,12 @@ class CollectionCoordinator:
                 + ", ".join(restricted)
             )
 
-    def _execute_task(self, task: CollectionTaskRecord) -> CollectionTaskRecord:
+    def _execute_task(
+        self,
+        task: CollectionTaskRecord,
+        *,
+        fetch_previous_limit_details: bool = True,
+    ) -> CollectionTaskRecord:
         started_at = self._market_now()
         started = time.perf_counter()
         task = self.store.transition_collection_task(
@@ -330,7 +381,12 @@ class CollectionCoordinator:
             if task.dataset == "core":
                 result = self._collect_core(task, started, lease)
             elif task.dataset == "limits" and self._limits_detail_enabled():
-                result = self._collect_limits(task, started, lease)
+                result = self._collect_limits(
+                    task,
+                    started,
+                    lease,
+                    fetch_previous_limit_details=fetch_previous_limit_details,
+                )
             else:
                 result = self._collect_chapter_dataset(task, started, lease)
             if result.status in {*SUCCESSFUL_TASK_STATUSES, "failed-retained"} and self.rebuild_aggregate is not None:
@@ -488,6 +544,8 @@ class CollectionCoordinator:
         task: CollectionTaskRecord,
         started: float,
         lease: LeaseToken,
+        *,
+        fetch_previous_limit_details: bool = True,
     ) -> CollectionTaskRecord:
         fetch = getattr(self.provider, "fetch_chapter01_limit_dataset_strict", None)
         if not callable(fetch):
@@ -511,7 +569,11 @@ class CollectionCoordinator:
         if not resolution.sufficient:
             warnings.append(resolution.reason or "missing session evidence")
 
-        if previous_as_of is not None and not self._has_complete_limit_details(previous_as_of):
+        if (
+            fetch_previous_limit_details
+            and previous_as_of is not None
+            and not self._has_complete_limit_details(previous_as_of)
+        ):
             lease_started = time.perf_counter()
             previous_lease = self.store.acquire_lease(
                 "limits",
@@ -574,7 +636,11 @@ class CollectionCoordinator:
             warnings.append("normalized limit detail is incomplete")
         timings["storeWriteMs"] = self._milliseconds(store_started)
 
-        if previous_as_of is not None and not self._has_complete_limit_details(previous_as_of):
+        if (
+            fetch_previous_limit_details
+            and previous_as_of is not None
+            and not self._has_complete_limit_details(previous_as_of)
+        ):
             warnings.append("previous session normalized detail is unavailable")
         status = "partial" if warnings else ("partial" if quality_status == "partial" else "success")
         warning = "; ".join(dict.fromkeys(warnings)) or None
@@ -684,7 +750,7 @@ class CollectionCoordinator:
         manifest = self.store.get_limit_security_dataset(as_of)
         return bool(
             manifest
-            and manifest["complete"]
+            and manifest.get("membership_complete") is True
             and manifest["actual_as_of"] == as_of
             and manifest["rule_version"] == PROMOTION_RULE_VERSION
         )

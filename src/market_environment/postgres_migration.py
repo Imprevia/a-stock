@@ -367,7 +367,19 @@ def _normalize_cell(column: str, value: Any) -> Any:
                 return json.loads(value)
             except json.JSONDecodeError:
                 return value
-    if column in {"settled", "is_session", "complete", "eligible", "is_st", "touched_limit_up", "closed_limit_up", "failed_limit_up"}:
+    if column in {
+        "settled",
+        "is_session",
+        "complete",
+        "membership_complete",
+        "streak_complete",
+        "eligible",
+        "is_st",
+        "is_new",
+        "touched_limit_up",
+        "closed_limit_up",
+        "failed_limit_up",
+    }:
         return bool(value)
     if column in {"as_of", "actual_as_of", "source_as_of", "target_as_of", "listing_date"}:
         if hasattr(value, "isoformat"):

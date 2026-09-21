@@ -53,7 +53,7 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 | 5 | 腾讯历史 K 线 | 最后历史降级；可能没有成交额 |
 | 6 | 腾讯财经实时行情 | 当前报价、涨跌幅、成交额和历史价格交叉校验 |
 
-市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度直接使用东方财富 `push2delay` 的涨跌幅排序分页，定位正负边界和有效样本中位数，不再先尝试被上游限制为不完整行数的名义全 A 主快照；容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败或返回无效载荷后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序，只保留形成前 30 聚集和前 10 展示所需字段。延迟域成功时质量来源为 `eastmoney-clist-delay`、状态为 `fallback`，并保留主域错误。东方财富日期化涨停、跌停和炸板池用于打板生态；三类池逐池请求 `push2ex` 主域，连接/读取错误或无效池载荷时降级到兼容延迟域，质量元数据保留逐池来源和错误。池日期优先读取响应日期；真实 `push2ex` 省略顶层日期时，显式 `date` 查询参数作为 `request-parameter` 绑定证据，仍检查逐行日期冲突，不能把未绑定日期或冲突池写成 V1 完整事实。行业板块排名同样先请求 `push2` 主域，主域恢复失败后降级到同口径 `push2delay`，并在质量元数据中保留 fallback 来源和主域错误。行业领涨股名称取 provider 的 `f128`，`f140` 仅为证券代码且不得显示为名称。当前快照型 provider 仅允许在上海时区的有效市场日采集：开市前目标日期由上一工作日/真实交易日解析器确定（周末跳过，节假日或无实际日期证据则 `insufficient`/拒绝），开市后才允许当前日期；已在盘后按交易日持久化的精确快照可以用于对应历史日期，禁止拿其他日期或今日数据回填。暂未接入的高/中/低位亏钱效应和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
+市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度直接使用东方财富 `push2delay` 的涨跌幅排序分页，定位正负边界和有效样本中位数，不再先尝试被上游限制为不完整行数的名义全 A 主快照；容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败或返回无效载荷后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序。涨跌停生态以扶摇日期化三类池为 membership 主源、东方财富为降级和交叉核对源；扶摇分页必须覆盖 `pagination.total`，请求日期先由交易日历确认并记录 `dateEvidence=request-parameter`，两源按规范证券身份取并集，差异行和整日质量标记 `degraded`。行业板块排名继续使用东方财富主域到延迟域降级，行业领涨股名称取 `f128`，`f140` 仅为代码。当前快照型 provider 仅允许在上海时区的有效市场日采集；已持久化的精确快照可用于对应历史日期，禁止拿其他日期或今日数据回填。未接入的独立亏钱收益和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
 
 研究看板交易日输入按浏览器本地时区生成：本地时间 15:00 前默认选择前一天，达到 15:00 后默认选择当天；首次核心响应若确认候选日为非交易日，前端只将自动日期同步为响应的有效 `asOf`，用户仍可在日期控件中手动选择不晚于当天的日期且手动值不被覆盖。数据采集页不复用研究页的 15:00 截止逻辑，但会在上海开市前（09:30）将省略 `as_of` 的请求解析为上一工作日对应的真实交易日（周末跳过）；若遇节假日或存储中没有可证明的实际日期，返回 `insufficient`/拒绝，不能猜测日期。开市前 provider 只能返回前一交易日数据时，必须以该实际日期保存，禁止将前一日行情写入当日键。开市后才允许按上海当天采集当前快照，用户手工切换后才发送显式日期。API 默认日期、“当前快照”判断和有效市场日解析统一使用 `Asia/Shanghai`，避免浏览器 UTC 转换或服务端部署时区把“今天”错位为前一日。东方财富全 A 快照解析同时接受数组和键值对象形式的 `data.diff`，仅保留有效对象行，并校验实际行数覆盖 `data.total` 后才允许按完整快照计算。
 
@@ -123,18 +123,18 @@ PostgreSQL 还保存 collection run/task 和 materialized market-environment agg
 | 表 | 主键/关键字段 | 约束 |
 |---|---|---|
 | `trading_sessions` | `as_of`；`previous_as_of`、`actual_as_of`、`is_session`、`source`、`checksum`、`fetched_at`、`warnings_json` | 只保存已证明的真实交易日和精确前一交易日；请求/实际日期不一致时不可用于晋级 |
-| `limit_security_datasets` | `as_of`；`actual_as_of`、`source_revision`、`rule_version`、`complete`、`excluded`、`dataset_checksum` | 保存每个 limits detail 数据集的完整性、排除数和 checksum；重复采集同日期/版本必须幂等 |
-| `limit_security_facts` | `(as_of, security_id, pool_type)`；交易所、板块、ST/上市窗口、制度、收盘状态、连板天数、`eligible`、`invalid_reason`、行/数据集 checksum | 仅规范证券身份可进入晋级和分层；缺少制度、上市窗口或收盘状态的行保留审计原因但不进入分母 |
+| `limit_security_datasets` | `as_of`；`actual_as_of`、`source_revision`、`rule_version`、`complete`、`membership_complete`、`streak_complete`、`pool_quality_json`、`dataset_checksum` | 分别保存严格 enrichment、集合和连板字段完整度；重复采集同日期/版本必须幂等 |
+| `limit_security_facts` | `(as_of, security_id, pool_type)`；身份、ST/新股/上市、价格、连板、事件字段、来源、行级质量、行/数据集 checksum | 规范身份和完整集合可进入基础晋级；高级属性缺失只降低对应分层，不删除基础成员 |
 
-`limit_security_facts` 的事实字段包括 `code`、`exchange`、`name`、`board`、`is_st`、`listing_date`/`listing_days`、`limit_regime`、`close_price`/`previous_close`/`change_pct`、`touched_limit_up`、`closed_limit_up`、`failed_limit_up`、`streak_days` 和 `actual_as_of`。证券名称不是身份键，provider 也不得推断固定 10% 制度。`limit_security_facts_date_security_idx`、`limit_security_facts_eligible_idx` 和 `limit_security_facts_pool_idx` 支持跨日 join、晋级、梯队与制度/板块分层。
+`limit_security_facts` 的事实字段包括 `code`、`exchange`、`name`、`board`、`is_st`、`is_new`、`listing_date`/`listing_days`、`limit_regime`、价格/涨跌幅、涨停时间/原因/封单额、跌停时间、开板次数、换手率、成交额、`closed_limit_up`、`failed_limit_up`、`streak_days`、行级质量和 `actual_as_of`。证券名称不是身份键，provider 也不得推断固定涨跌幅制度。
 
-晋级聚合只读取本地当前日和 `trading_sessions.previous_as_of` 指向的前一真实交易日：昨日 `eligible && closed_limit_up` 集合为分母，同一 `security_id` 在今日收盘涨停集合中的交集为分子。两日 detail manifest 的 `actual_as_of`、`rule_version`、`dataset_checksum` 必须匹配 limits 聚合中的 `_detailDatasetChecksum`，否则 `promotionQuality` 为 `insufficient`/`failed`。普通历史 GET 不调用 provider，不向更早日期回退；分母为 0 时 `promotionRatio` 为 `null`。
+晋级聚合只读取本地当前日和 `trading_sessions.previous_as_of` 指向的前一真实交易日：昨日 membership-complete 涨停身份集合为分母，与今日 membership-complete 涨停集合的交集为分子。ST、新股、制度和板块不从基础分母删除；两日 manifest 的 `actual_as_of`、`rule_version`、membership 完整度和 checksum 必须匹配聚合绑定，否则 `promotionQuality` 为 `insufficient`/`failed`。普通历史 GET 不调用 provider，不向更早日期回退；分母为 0 时 `promotionRatio` 为 `null`。
 
-近 5 日序列只接受精确日期快照；250 日分位、风险扩散和规则证据要求至少 60 个有效观测且日期连续，覆盖不足返回有效数、缺口和 `insufficient`，不能把缺失视为零风险。`QTS-01-03-01` 至 `QTS-01-03-05` 的 ID、权重和 `needs-backtest` 状态由 `trading-rules/` 维护，页面可展示经验分位/置信度/触发与失效条件，但不得标记为 `validated`。
+显式回填通过交易日历采集最近 6 个真实交易日并形成最近 5 个晋级点；缺失日期不替代。250 日分位、风险扩散和规则证据要求至少 60 个有效观测，覆盖不足返回有效数、缺口和 `insufficient`。`QTS-01-03-01` 至 `QTS-01-03-05` 的 ID、权重和 `needs-backtest` 状态不变。
 
 新 detail/V1 写入由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时继续提供旧五字段和本地快照读取；开启前须通过迁移、幂等、事务、generation fencing、lease/CAS、provider-free warm GET 和失败保留验证。刷新失败只写 collection attempt，保留同日期最后成功快照并返回 `failed-retained`；无旧值返回 `failed-missing`。回滚先关闭该开关，再恢复应用版本，保留 PVC、旧聚合、事实表、session 和 checksum，不删除或跨日期替代。
 
-严格 limits provider 必须同时验证顶层/逐行实际日期、规范身份、交易所/板块、ST/新股窗口、适用制度和收盘涨停状态；完整性不足时可以保留旧五字段，但不得生成晋级、梯队、分层或历史结论。真实 provider smoke 只在获授权的盘后窗口使用隔离 PostgreSQL 数据库执行，记录请求预算、两日日期、来源、排除计数和 checksum；SQLite 只作为可重复的迁移输入 fixture，字段无法证明时质量必须为 `failed`、`degraded` 或 `insufficient`，不写生产数据库。
+limits provider 将 membership、streak 和 enrichment 分层校验：交易日、完整分页和规范身份足够形成基础集合；连板数字段决定梯队；ST/上市窗口/制度/板块只决定对应高级分层。真实 provider smoke 只在获授权的盘后窗口使用隔离 PostgreSQL 执行，记录六个交易日、逐池来源、集合差异、checksum 和五个晋级点；密钥仅从环境/Secret 注入，字段不足保持 `failed`、`degraded` 或 `insufficient`，不写生产数据库。
 
 同步性广度变化的读取流为：核心指数历史确定 `as_of` 前一个真实交易日 → `SnapshotStore.get("breadth", previous_trading_date)` 精确日期读取 → 计算上涨占比与涨跌幅中位数变化。精确日期记录不存在时比较维度为 `insufficient`，不得继续向更早日期搜索，也不得在普通 GET 中触发 provider。materialized aggregate 重建复用同一只读路径；后补上一日快照不会自动回填所有后续历史聚合，需要通过既有重建路径显式刷新。
 
@@ -260,15 +260,15 @@ tests/                              公式、服务层和 API 契约测试
 
 ### Phase B-03 章节组件（2026-09-16，frontend-component-split）
 
-- `pages/dashboard/Document03LimitsPage.vue`：第 03 章全部 6 个区块（涨跌停质量条 / 5 张指标卡 + null 提示 / 连板晋级 + 字段质量 / 梯队 + 分层 / 近 5 日历史 + 250 日分位 / 规则证据 + 风险复核）。只读 `useMarketStore()`（`limits` getter、`sectionStates.limits`）与 `useDocumentContext()`（`limitWarnings` / `limitSectionPhase` / `promotionGap` / `limitTiers` / `limitHistory` / `limitHistoryMeta` / `limitStratifications` + label 字典）；刷新按钮通过 `refreshSection` emit 上抛。抓取时间显示读取 `preferences.effectiveTimeZone` 传给纯函数 `formatDateTime`——章节组件不直接读 store 时区状态。
+- `pages/dashboard/Document03LimitsPage.vue`：在既有质量、指标、晋级、梯队/分层、历史和规则区块后增加股票明细折叠区；四组明细使用分段切换、关键词搜索、20 行本地分页和表内横向滚动，行级来源/质量/warning 可见。刷新按钮仍通过 `refreshSection` emit 上抛。
 - `limits-page.test.ts` 改造：从 `mount(App)` 改为 `mount(Document03LimitsPage)`；预填走 `market.loadCore()` + `market.loadSection('limits')`（03 章数据来自 `chapter-01?section=limits`，与 01/02 的 core 直出不同）；刷新按钮的写操作在 mount 时通过 `onRefreshSection` prop 接线回 `market.loadSection('limits', true)`，验证了 emit 边界。
 
 测试边界：13 文件 / 92 tests / 全绿（B-03 不新增测试文件；limits-page 4 条断言随组件化迁移，总数不变）。
 
 ### Phase B-04 章节组件（2026-09-16，frontend-component-split）
 
-- `pages/dashboard/Document04TierRiskPage.vue`：第 04 章全部 2 个 section（高/中/低位 + 修复率 4 张指标卡、分层风险质量面板）。数据来自 core 直出的 `chapter01.tierRisk`——与 03 章不同，无需 section 预拉。只读 `useMarketStore()` + `useDocumentContext()`；质量警告沿用原 `quality.warning || fallback` 单数语义。
-- `Document04TierRiskPage.test.ts`：3 tests——指标卡与修复率渲染、tierRisk 缺失时的 fallback 文案、quality.warning 单数字段的显示。
+- `pages/dashboard/Document04TierRiskPage.vue`：第 04 章读取已预拉的 `chapter01.limits`，高/中/低位来自 `stratifications[dimension=risk_tier]`，修复率来自 `riskEvidence[code=failure-repair]`；四项分别沿用自身 quality，缺失单项显示 `--`，不依赖不存在的 `chapter01.tierRisk`。
+- `Document04TierRiskPage.test.ts`：覆盖真实 limits 映射、单项缺失、质量 warning 和 section 加载状态。
 
 测试边界：14 文件 / 95 tests / 全绿（92 基线 + 3 个 Document04 新测试）。
 

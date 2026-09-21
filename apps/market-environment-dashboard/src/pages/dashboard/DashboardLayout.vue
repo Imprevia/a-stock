@@ -9,7 +9,7 @@
  *   - select-index    → market.setSelectedCode (Document01 index cards)
  *   - refresh-section → market.loadSection(meta.section, true) (Document03)
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, RouterView } from 'vue-router'
 import { AlertTriangle, CircleAlert } from 'lucide-vue-next'
 
@@ -17,7 +17,7 @@ import { formatDateTime } from '../../composables/useFormatDateTime'
 import { useDocumentContext } from '../../composables/useDocumentContext'
 import { useMarketStore } from '../../stores/market'
 import { usePreferencesStore } from '../../stores/preferences'
-import type { Chapter01Section } from '../types'
+import type { Chapter01Section } from '../../types'
 
 const route = useRoute()
 const market = useMarketStore()
@@ -49,6 +49,10 @@ const DOCUMENTS: DocumentMeta[] = [
 ]
 
 const documentMeta = computed(() => DOCUMENTS.find((item) => item.id === documentId.value) ?? DOCUMENTS[0])
+const pageListeners = computed(() => ({
+  ...(documentId.value === '01' ? { selectIndex: onSelectIndex } : {}),
+  ...(documentId.value === '03' ? { refreshSection: onRefreshSection } : {}),
+}))
 
 const section = computed(() => (route.meta.section ?? null) as Chapter01Section | null)
 const sectionState = computed(() => (section.value ? market.sectionStates[section.value] : null))
@@ -97,6 +101,14 @@ function reloadCore(): void {
   void market.loadCore()
 }
 
+watch(() => market.loading, (isLoading, wasLoading) => {
+  if (!wasLoading || isLoading || market.error) return
+  const current = section.value
+  if (current && market.data?.asOf === market.selectedDate) {
+    void market.loadSection(current, true)
+  }
+})
+
 // The router guard prefetches core before navigation; this onMounted hook
 // is the fallback for mounts that bypass the guard (e.g. direct component
 // tests). Both paths are idempotent via the `!market.data` check.
@@ -121,7 +133,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <section v-if="market.error" class="state-panel error-panel" role="alert">
+    <section v-if="market.error && !market.data" class="state-panel error-panel" role="alert">
       <CircleAlert :size="22" />
       <div><strong>行情暂时不可用</strong><p>{{ market.error }}</p></div>
       <button class="text-button" type="button" @click="reloadCore">重新加载</button>
@@ -132,6 +144,11 @@ onMounted(() => {
     </section>
 
     <template v-else-if="market.data">
+      <section v-if="market.error" class="limits-refresh-error dashboard-refresh-error" role="alert">
+        <CircleAlert :size="17" />
+        <span>行情刷新失败，继续显示同日期最后一次证据：{{ market.error }}</span>
+        <button class="text-button" type="button" @click="reloadCore">重试</button>
+      </section>
       <section class="evidence-strip">
         <div><span>实际交易日</span><strong>{{ market.data.asOf }}</strong></div>
         <div><span>数据来源</span><strong>{{ sourceSummary }}</strong></div>
@@ -157,7 +174,7 @@ onMounted(() => {
 
       <template v-else>
         <RouterView v-slot="{ Component }">
-          <component :is="Component" @select-index="onSelectIndex" @refresh-section="onRefreshSection" />
+          <component :is="Component" v-on="pageListeners" />
         </RouterView>
         <section v-if="sectionWarning" class="warning-band">
           <AlertTriangle :size="17" />
