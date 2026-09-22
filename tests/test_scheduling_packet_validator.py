@@ -898,6 +898,34 @@ def test_live_compare_accepts_identical_documents_without_optional_default_keys(
     assert completed.returncode == 0, completed.stderr
 
 
+def test_live_compare_accepts_api_server_omitted_empty_env_values(tmp_path: Path) -> None:
+    desired = _desired_resources()
+    desired[1]["spec"]["template"]["spec"]["containers"][0]["env"] = [
+        {"name": "EMPTY_OPTIONAL", "value": ""},
+        {"name": "ENABLED", "value": "1"},
+    ]
+    live = _live_resources(desired)
+    live[1]["spec"]["template"]["spec"]["containers"][0]["env"][0].pop("value")
+
+    completed = _run_live_compare(tmp_path, desired, live)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_live_compare_rejects_missing_nonempty_env_value(tmp_path: Path) -> None:
+    desired = _desired_resources()
+    desired[1]["spec"]["template"]["spec"]["containers"][0]["env"] = [
+        {"name": "REQUIRED", "value": "1"},
+    ]
+    live = _live_resources(desired)
+    live[1]["spec"]["template"]["spec"]["containers"][0]["env"][0].pop("value")
+
+    completed = _run_live_compare(tmp_path, desired, live)
+
+    assert completed.returncode != 0
+    assert "declarative state differs" in completed.stderr
+
+
 def _drift_image(items: list[dict[str, Any]]) -> None:
     items[1]["spec"]["template"]["spec"]["containers"][0]["image"] = f"{IMAGE}-other"
 

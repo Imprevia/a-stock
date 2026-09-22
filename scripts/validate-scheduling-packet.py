@@ -730,6 +730,20 @@ def _normalize_container(live: dict[str, Any], desired: dict[str, Any]) -> None:
     pull_policy = _default_pull_policy(desired.get("image"))
     if pull_policy is not None:
         _drop_default(live, desired, "imagePullPolicy", pull_policy)
+    live_env = live.get("env")
+    desired_env = desired.get("env")
+    if isinstance(live_env, list) and isinstance(desired_env, list):
+        for live_item in live_env:
+            if not isinstance(live_item, dict):
+                continue
+            desired_item = _matching_named_item(desired_env, live_item.get("name"))
+            if (
+                desired_item.get("value") == ""
+                and "value" not in live_item
+                and "valueFrom" not in live_item
+            ):
+                # Kubernetes 1.26 can omit an explicitly empty env value on read-back.
+                live_item["value"] = ""
     for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
         live_probe = live.get(probe_name)
         desired_probe = desired.get(probe_name)

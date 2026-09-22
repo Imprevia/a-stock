@@ -222,6 +222,8 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 
 普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再由脚本完成 release write 并等待 Dashboard rollout。普通模式会冻结已验证的 chart/values，按 release-derived exact name 在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，在 Helm write 前重验 live state 与 frozen render hash，并在写后验证同一 postcondition。调度发布不通过这条普通构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 `--activate-schedule` 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values，激活前还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。入口不会自动创建 canary/Job。
 
+普通应用发布的 live declarative 比较会忽略 API server 生成的状态字段、分配字段和已批准的默认值；对于 Kubernetes 1.26 读回时省略的可选 EnvVar 空字符串（包括扶摇 revision），仅当 desired 明确为 `value: ""` 且 live 同名 EnvVar 同时没有 `value`/`valueFrom` 时视为等价。任何非空值、Secret 引用、变量缺失或其他 Deployment 字段差异仍会 fail closed，不得用裸 patch 绕过比较器。
+
 后续更新只需在 1.21 检出审阅后的 clean commit 并重新执行同一命令；如需明确指定版本，可在环境文件设置新的唯一 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。应用回退检出受审 rollback commit，并使用新的不可变 rollback tag 运行同一普通入口；不直接恢复历史 Helm revision。若 release 中存在 active/suspended schedule，必须先按上文完成受审 `--disable-schedule`。
 
 一键发布完成后，1.21 NGINX 建议新增独立 TLS 端口，例如 `8443`，反代到 1.20 的 Traefik HTTP 入口（若 Traefik 是 NodePort，使用其实际 HTTP NodePort）：
