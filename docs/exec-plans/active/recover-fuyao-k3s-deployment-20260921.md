@@ -29,6 +29,7 @@ in-progress（已完成受控停调度；待清理 retained CronJob 后执行扶
 - 线上 Helm revision 26 的 `a-stock-data-collection` 为 active，最近 Job 失败；扶摇 Secret 已注入，失败主要来自旧数据源缺失/拒绝。
 - 使用与线上镜像匹配的旧 Chart packet 执行受控 `--disable-schedule`，Helm revision 27 已部署，stored manifest 已无 CronJob；由于 `helm.sh/resource-policy: keep`，live exact CronJob 被失败安全补偿为 `suspend=true` 并保留，当前等待入口级 retained-resource 清理。
 - 新增入口校验：仅接受目标 release 所有、typed suspended 的 retained CronJob，通过受控删除并 server-observed absent；`bash -n` 与 `.venv/bin/pytest tests/test_truenas_scheduling_guard.py -q`（51 passed）通过。
+- `--component all` 增加最终完整 Helm manifest consolidation，避免 database/service 分阶段写入后 release stored values 停留在 `component=service`；部署相关回归 `238 passed`。
 
 ## Remaining Gaps
 

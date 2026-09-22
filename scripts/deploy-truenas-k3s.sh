@@ -1907,6 +1907,55 @@ if [[ "$COMPONENT_NAME" == "all" ]]; then
   COMPLETED_COMPONENTS+=" database"
   deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
   COMPLETED_COMPONENTS+=" service"
+
+  # Component writes are intentionally staged, but the Helm release must end
+  # with one complete stored manifest so future upgrades cannot inherit a
+  # service-only or database-only release state.
+  log 'component=all consolidating complete Helm release manifest'
+  FULL_PACKET="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+    --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" --set component=all)" \
+    || die 'component=all complete release packet render failed'
+  [[ "$(sha256_text "$FULL_PACKET")" == "$GENERIC_RENDER_SHA256" ]] \
+    || die 'component=all complete release packet drifted from preflight'
+  inspect_scheduling_packet "$FULL_PACKET" disabled "$TARGET_KUBERNETES_VERSION" >/dev/null \
+    || die 'component=all complete release packet could create or activate scheduled collection'
+  helm upgrade --install "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
+    --namespace "$NAMESPACE" \
+    --create-namespace \
+    "${HELM_VALUES_ARGS[@]}" \
+    --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" \
+    --set "image.tag=$DEPLOY_IMAGE_TAG" \
+    --set component=all \
+    --atomic \
+    --wait \
+    --timeout "$HELM_TIMEOUT"
+  FULL_POST_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$VALUES_FILE" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+    --set "image.repository=$DEPLOY_IMAGE_REPOSITORY" --set "image.tag=$DEPLOY_IMAGE_TAG" --set component=all)" \
+    || die 'component=all complete post-write render failed'
+  verify_rendered_component_contract "$FULL_POST_RENDER" "$DEPLOY_IMAGE_REPOSITORY" "$DEPLOY_IMAGE_TAG" \
+    || die 'component=all complete release contract failed'
+  if ! printf '%s\n' "$FULL_POST_RENDER" | python3 -c '
+import sys, yaml
+items = [item for item in yaml.safe_load_all(sys.stdin) if item]
+deployments = [item for item in items if item.get("kind") == "Deployment"]
+statefulsets = [item for item in items if item.get("kind") == "StatefulSet" and (item.get("metadata") or {}).get("name", "").endswith("-postgresql")]
+services = [item for item in items if item.get("kind") == "Service"]
+postgres_services = [item for item in services if (item.get("metadata") or {}).get("name", "").endswith("-postgresql")]
+dashboard_services = [item for item in services if not (item.get("metadata") or {}).get("name", "").endswith("-postgresql")]
+pvcs = [item for item in items if item.get("kind") == "PersistentVolumeClaim" and (item.get("metadata") or {}).get("name", "").endswith("-postgresql-data")]
+schema_jobs = [item for item in items if item.get("kind") == "Job" and (item.get("metadata") or {}).get("name", "").endswith("-schema-migration")]
+if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 1 or len(dashboard_services) != 1 or len(pvcs) != 1 or len(schema_jobs) != 1:
+    raise SystemExit("complete release must render database and service resources exactly once")
+'; then
+    die 'component=all complete service contract failed'
+  fi
+  DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  [[ -n "$DEPLOYMENT_NAME" ]] || die 'component=all complete release deployment is missing'
+  kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
+    || die 'component=all complete release rollout failed'
+  log 'component=all complete Helm release manifest consolidated'
 fi
 
 if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "schedule" || "$COMPONENT_NAME" == "all" ) ]]; then
