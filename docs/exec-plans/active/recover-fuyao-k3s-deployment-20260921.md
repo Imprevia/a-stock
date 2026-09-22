@@ -6,7 +6,7 @@
 
 ## Status
 
-in-progress
+in-progress（已完成受控停调度；待清理 retained CronJob 后执行扶摇版本普通发布）
 
 ## Scope
 
@@ -25,13 +25,17 @@ in-progress
 
 ## Completion Evidence
 
-- 待补充。
+- 只读预检确认 TrueNAS k3s `1.26.6+k3s-6a894050-dirty` 可达；PostgreSQL StatefulSet、Deployment、PVC、NodePort 与扶摇 Secret 均存在且健康。
+- 线上 Helm revision 26 的 `a-stock-data-collection` 为 active，最近 Job 失败；扶摇 Secret 已注入，失败主要来自旧数据源缺失/拒绝。
+- 使用与线上镜像匹配的旧 Chart packet 执行受控 `--disable-schedule`，Helm revision 27 已部署，stored manifest 已无 CronJob；由于 `helm.sh/resource-policy: keep`，live exact CronJob 被失败安全补偿为 `suspend=true` 并保留，当前等待入口级 retained-resource 清理。
+- 新增入口校验：仅接受目标 release 所有、typed suspended 的 retained CronJob，通过受控删除并 server-observed absent；`bash -n` 与 `.venv/bin/pytest tests/test_truenas_scheduling_guard.py -q`（51 passed）通过。
 
 ## Remaining Gaps
 
-- 当前 release 因分组件 Helm upgrade 缺少 PostgreSQL StatefulSet/Service，Dashboard 为 `CrashLoopBackOff`。
-- 定时任务虽保持 `suspend=true`，但仍使用旧镜像。
+- 当前 release stored manifest 已无 CronJob，但 live retained `a-stock-data-collection` 仍存在且 `suspend=true`；需由修复后的 `--disable-schedule` 入口完成精确删除并证明 absent。
+- 普通 `--component all` 发布尚未执行；当前 Deployment 仍使用旧扶摇镜像 tag，需重新构建、导入并完成 rollout/health 验证。
+- 采集任务失败原因和扶摇四类非 limits 数据集的可替换性仍保持 `degraded`/`unverified`，不得借部署结果宣称替换完成。
 
 ## Next Step
 
-离线渲染完整暂停 packet，核对资源/PVC/Secret/镜像后执行一次原子 Helm 恢复，再修复部署脚本并完成回归验证。
+使用修复后的受控入口清理 retained CronJob，确认 exact absent 后执行普通 `--component all`；完成镜像、rollout、API health、PostgreSQL migration/secret、NodePort 与 CronJob absent 的写后验证，并回写本计划。

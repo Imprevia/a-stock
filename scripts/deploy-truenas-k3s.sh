@@ -1006,6 +1006,33 @@ require_exact_cronjob_absent() {
   log "$phase: exact CronJob $cronjob_name is absent"
 }
 
+delete_exact_cronjob_after_disable() {
+  local phase="$1"
+  local cronjob_name="$2"
+  local live_cronjob state
+  if ! live_cronjob="$(capture_exact_cronjob "$cronjob_name")"; then
+    die "$phase: could not read exact CronJob $cronjob_name before deletion"
+  fi
+  if ! state="$(printf '%s\n' "$live_cronjob" | exact_cronjob_safety_state)"; then
+    die "$phase: exact CronJob $cronjob_name safety state could not be determined"
+  fi
+  case "$state" in
+    absent)
+      log "$phase: exact CronJob $cronjob_name is already absent"
+      ;;
+    suspended)
+      log "$phase: deleting retained exact CronJob $cronjob_name"
+      kubectl delete cronjob "$cronjob_name" --namespace "$NAMESPACE" --wait=true \
+        || die "$phase: failed to delete exact CronJob $cronjob_name"
+      ;;
+    *)
+      die "$phase: exact CronJob $cronjob_name is not safely suspended (state=$state)"
+      ;;
+  esac
+  require_exact_cronjob_absent "$phase postcondition" "$cronjob_name" \
+    || die "$phase: exact CronJob $cronjob_name deletion is unproven"
+}
+
 if [[ "$OPERATION" == offline-render ]]; then
   REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
@@ -1984,7 +2011,9 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   CURRENT_MANIFEST="$TMP_DIR/current-manifest.yaml"
   DESIRED_MANIFEST="$TMP_DIR/desired-manifest.yaml"
   LIVE_BEFORE_MANIFEST="$TMP_DIR/live-before.yaml"
+  LIVE_BEFORE_COMPARE="$TMP_DIR/live-before-compare.yaml"
   LIVE_AFTER_MANIFEST="$TMP_DIR/live-after.yaml"
+  RETAINED_RESOURCE_CLEANUP=false
   helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$CURRENT_MANIFEST"
   printf '%s\n' "$RENDERED_PACKET" > "$DESIRED_MANIFEST"
   if [[ "$OPERATION" == release-suspended ]]; then
@@ -1996,9 +2025,42 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
       --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
       --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST"
   else
-    python3 "$PACKET_VALIDATOR" compare-remove-cronjob \
+    if ! python3 "$PACKET_VALIDATOR" compare-remove-cronjob \
       --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
-      --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST"
+      --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST"; then
+      CURRENT_HAS_CRONJOB="$(python3 - "$CURRENT_MANIFEST" <<'PYEOF'
+import sys, yaml
+docs = [item for item in yaml.safe_load_all(open(sys.argv[1])) if item]
+print("yes" if any(item.get("kind") == "CronJob" for item in docs) else "no")
+PYEOF
+      )"
+      [[ "$CURRENT_HAS_CRONJOB" == no ]] \
+        || die 'disable-schedule stored manifest drift is not a retained-resource-only case'
+      RETAINED_CRONJOB_FILE="$TMP_DIR/retained-cronjob.yaml"
+      capture_exact_cronjob "$DISABLE_CRONJOB_NAME" > "$RETAINED_CRONJOB_FILE" \
+        || die 'disable-schedule could not read the retained exact CronJob'
+      RETAINED_STATE="$(cat "$RETAINED_CRONJOB_FILE" | exact_cronjob_safety_state)" \
+        || die 'disable-schedule retained CronJob safety state could not be determined'
+      [[ "$RETAINED_STATE" == suspended ]] \
+        || die "disable-schedule retained CronJob must already be suspended, got $RETAINED_STATE"
+      python3 - "$RETAINED_CRONJOB_FILE" "$DISABLE_CRONJOB_NAME" "$RELEASE_NAME" "$NAMESPACE" <<'PYEOF'
+import sys, yaml
+docs = [item for item in yaml.safe_load_all(open(sys.argv[1])) if item]
+if len(docs) != 1:
+    raise SystemExit("retained CronJob response must contain exactly one object")
+item = docs[0]
+metadata = item.get("metadata") or {}
+labels = metadata.get("labels") or {}
+annotations = metadata.get("annotations") or {}
+if item.get("kind") != "CronJob":
+    raise SystemExit("retained resource must be a CronJob")
+if metadata.get("name") != sys.argv[2] or metadata.get("namespace") != sys.argv[4]:
+    raise SystemExit("retained CronJob identity mismatch")
+if labels.get("app.kubernetes.io/instance") != sys.argv[3] or annotations.get("meta.helm.sh/release-name") != sys.argv[3] or annotations.get("meta.helm.sh/release-namespace") != sys.argv[4]:
+    raise SystemExit("retained CronJob is not owned by the expected Helm release")
+PYEOF
+      RETAINED_RESOURCE_CLEANUP=true
+    fi
     CURRENT_PACKET_INSPECTION="$(inspect_scheduling_packet "$(cat "$CURRENT_MANIFEST")" any "$TARGET_KUBERNETES_VERSION")" \
       || die 'could not identify the current scheduling state for disable-schedule'
     CURRENT_SCHEDULING_STATE="$(printf '%s\n' "$CURRENT_PACKET_INSPECTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
@@ -2010,9 +2072,26 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     fi
   fi
   capture_live_release "$LIVE_BEFORE_MANIFEST"
+  if [[ "$RETAINED_RESOURCE_CLEANUP" == true ]]; then
+    python3 - "$LIVE_BEFORE_MANIFEST" "$DISABLE_CRONJOB_NAME" "$LIVE_BEFORE_COMPARE" <<'PYEOF'
+import sys, yaml
+docs = [item for item in yaml.safe_load_all(open(sys.argv[1])) if item]
+docs = [
+    item for item in docs
+    if not (
+        item.get("kind") == "CronJob"
+        and (item.get("metadata") or {}).get("name") == sys.argv[2]
+    )
+]
+with open(sys.argv[3], "w", encoding="utf-8") as stream:
+    yaml.safe_dump_all(docs, stream, sort_keys=False)
+PYEOF
+  else
+    cp "$LIVE_BEFORE_MANIFEST" "$LIVE_BEFORE_COMPARE"
+  fi
   python3 "$PACKET_VALIDATOR" compare-live-desired \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
-    --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_MANIFEST"
+    --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_COMPARE"
 
   assert_clean_worktree
   if ! PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "$OPERATION_SCHEDULING_OVERLAY" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
@@ -2042,6 +2121,10 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
     --wait \
     --timeout "$HELM_TIMEOUT"; then
     die "$OPERATION failed; Helm atomic rollback was requested"
+  fi
+
+  if [[ "$OPERATION" == disable-schedule ]]; then
+    delete_exact_cronjob_after_disable 'disable-schedule retained-resource cleanup' "$DISABLE_CRONJOB_NAME"
   fi
 
   capture_live_release "$LIVE_AFTER_MANIFEST"

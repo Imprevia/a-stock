@@ -135,7 +135,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
   --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
 
-只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。instance label 缺失或漂移不是“资源不存在”的证据：normal validation 仍会 fail closed，但 active-to-off 的应急补偿按 release-derived exact API name 工作，不让 label 或非安全关键 shape drift 阻止暂停。任何 write、rollout 或写后状态读取失败都不得报告成功；应急检查把 existing resource 中任何非 typed `spec.suspend=true` 状态视为需补偿，至多一次精确 patch，再按同名读回只接受 absent 或 typed suspended。无法读取、补偿或证明时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
+只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。由于 CronJob 模板保留 `helm.sh/resource-policy: keep`，Helm off upgrade 后可能出现 stored manifest 已无 CronJob、但 live exact CronJob 仍存在的 retained-resource 状态；受控 `--disable-schedule` 会在确认该资源属于目标 release 且已是 typed `spec.suspend=true` 后删除它并再次证明 absent，禁止用裸 `kubectl delete` 绕过入口。instance label 缺失或漂移不是“资源不存在”的证据：normal validation 仍会 fail closed，但 active-to-off 的应急补偿按 release-derived exact API name 工作，不让 label 或非安全关键 shape drift 阻止暂停。任何 write、rollout 或写后状态读取失败都不得报告成功；应急检查把 existing resource 中任何非 typed `spec.suspend=true` 状态视为需补偿，至多一次精确 patch，再按同名读回只接受 absent 或 typed suspended。无法读取、补偿或证明时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
 
 渲染和检查：
 
