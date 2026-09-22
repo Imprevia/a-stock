@@ -677,6 +677,17 @@ def test_runtime_image_accepts_distinct_valid_config_digest(tmp_path: Path) -> N
     assert completed.returncode == 0, completed.stderr
 
 
+def test_runtime_image_accepts_cri_alias_for_same_image_repository(tmp_path: Path) -> None:
+    payloads = _runtime_payloads()
+    payloads[2]["items"][0]["status"]["containerStatuses"][0]["image"] = (
+        "localhost/a-stock-market-environment:previous-tag"
+    )
+
+    completed = _run_runtime(tmp_path, payloads)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_runtime_image_accepts_bare_sha256_image_id(tmp_path: Path) -> None:
     payloads = _runtime_payloads()
     payloads[2]["items"][0]["status"]["containerStatuses"][0]["imageID"] = (

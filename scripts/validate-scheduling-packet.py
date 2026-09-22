@@ -419,6 +419,15 @@ def image_id_digest(image_id: Any) -> str:
     return digest
 
 
+def image_repository(image: Any) -> str:
+    if not isinstance(image, str) or not image:
+        fail("image reference must be a non-empty string")
+    reference = image.split("@", 1)[0]
+    slash = reference.rfind("/")
+    colon = reference.rfind(":")
+    return reference[:colon] if colon > slash else reference
+
+
 def verify_containerd_image(payload: dict[str, Any], image: str, digest: str) -> None:
     if payload.get("Name") != image:
         fail(f"containerd image Name must equal {image}")
@@ -572,8 +581,9 @@ def verify_runtime_image(
     dashboard_statuses = named_entries(pod, ("status", "containerStatuses"), "dashboard")
     if len(dashboard_statuses) != 1 or dashboard_statuses[0].get("ready") is not True:
         fail("Dashboard container must be ready")
-    if dashboard_statuses[0].get("image") != image:
-        fail(f"running Dashboard Pod must use frozen image {image}")
+    runtime_image = dashboard_statuses[0].get("image")
+    if image_repository(runtime_image) != image_repository(image):
+        fail(f"running Dashboard Pod must use the frozen image repository {image_repository(image)}")
     # CRI imageID is commonly the image config digest, while containerd's
     # named image target is the manifest digest. Both are valid sha256 values
     # but are not interchangeable. The exact tag is already bound above and
@@ -616,8 +626,8 @@ def verify_pod_image(payload: dict[str, Any], release_name: str, image: str, dig
     dashboards = [item for item in statuses if item.get("name") == "dashboard"]
     if len(dashboards) != 1:
         fail("running Dashboard container status is missing")
-    if dashboards[0].get("image") != image:
-        fail(f"running Dashboard Pod must use frozen image {image}")
+    if image_repository(dashboards[0].get("image")) != image_repository(image):
+        fail(f"running Dashboard Pod must use the frozen image repository {image_repository(image)}")
     image_id_digest(dashboards[0].get("imageID"))
 
 

@@ -22,6 +22,7 @@ in-progress
 - 激活前只读检查：Helm revision 33 deployed、stored `component=all`、CronJob absent、Dashboard/PostgreSQL Ready。
 - 2026-09-22 22:23 Asia/Shanghai 已越过当日 16:30 触发的 1800 秒 deadline，采用 `next-schedule`，预期下一自然触发为 2026-09-23 16:30 Asia/Shanghai。
 - 离线 frozen render 校验通过：suspended packet SHA-256 `3006b108ea89fa7b27047b8841a2dac853e0fa071e532336bd944f6917cec6cd`，active packet SHA-256 `a212d38a423650673588c85d65d838769263f0246384a8d7beb27b4f2928cf00`；`compare-suspend-only` 通过。
+- 首次 suspended-release 预检发现 k3s CRI 回报同一镜像仓库的旧 tag 别名；校验器已改为同时要求 Deployment/ReplicaSet spec 精确 tag、Pod 状态仓库一致、containerd frozen tag manifest digest 精确匹配。相关部署/调度测试 `303 passed`。
 
 ## Remaining Gaps
 
