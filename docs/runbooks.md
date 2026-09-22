@@ -349,7 +349,7 @@ Helm 通过 `marketEnvironment.scheduledCollection` 配置，Chart 默认 `enabl
 仓库入口的目标模式按用途分为通用入口和调度专用入口；通用入口（`--component all|database|service`）只渲染或发布对应组件，且任何构建/目标写操作前都强制 typed `enabled=false / suspend=true` 默认值：
 
 ```bash
-# 一键：database -> service；schedule 默认 disabled/absent
+# 一键：database -> service 后再以完整 component=all packet 收敛 release；schedule 默认 disabled/absent
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component all
 
 # 通用离线 render；不访问 SSH 或目标 API
