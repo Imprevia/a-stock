@@ -2076,13 +2076,22 @@ PYEOF
     python3 - "$LIVE_BEFORE_MANIFEST" "$DISABLE_CRONJOB_NAME" "$LIVE_BEFORE_COMPARE" <<'PYEOF'
 import sys, yaml
 docs = [item for item in yaml.safe_load_all(open(sys.argv[1])) if item]
-docs = [
-    item for item in docs
-    if not (
-        item.get("kind") == "CronJob"
-        and (item.get("metadata") or {}).get("name") == sys.argv[2]
-    )
-]
+if len(docs) == 1 and docs[0].get("kind") == "List":
+    docs[0]["items"] = [
+        item for item in docs[0].get("items", [])
+        if not (
+            item.get("kind") == "CronJob"
+            and (item.get("metadata") or {}).get("name") == sys.argv[2]
+        )
+    ]
+else:
+    docs = [
+        item for item in docs
+        if not (
+            item.get("kind") == "CronJob"
+            and (item.get("metadata") or {}).get("name") == sys.argv[2]
+        )
+    ]
 with open(sys.argv[3], "w", encoding="utf-8") as stream:
     yaml.safe_dump_all(docs, stream, sort_keys=False)
 PYEOF
