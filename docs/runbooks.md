@@ -476,7 +476,7 @@ POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task
 
 每个指数的 `combination` 契约应包含 `key`、`state`、`matched`、`tone`、`evidence` 和 `tradingMode`。`chapter01.combinationOverview` 汇总 `strength`、`stage`、`capitalAcceptance`、`tradingMode`、`confidence` 和 `evidence`。浏览器 QA 必须切换至少两个指数，确认组合状态和证据同步变化；未命中状态显示“未命中明确组合”，不得补成六类中的任意一类。
 
-第 01 页每张指数卡的收盘指数值与右侧涨跌幅必须分别可复制；复制控件不得触发卡片选中，成功状态需可访问。浏览器或权限不支持剪贴板时只能显示明确失败或受控降级，不得显示“已复制”。桌面和 390px 检查均需确认复制控件、反馈文字和卡片内容不重叠。
+第 01 页每张指数卡的收盘指数值与右侧涨跌幅必须分别可复制；复制控件不得触发卡片选中，成功状态需可访问。涨跌幅在页面上保留百分号，写入剪贴板时去掉百分号并保留正负号和两位小数。浏览器或权限不支持剪贴板时只能显示明确失败或受控降级，不得显示“已复制”。桌面和 390px 检查均需确认复制控件、反馈文字和卡片内容不重叠。
 
 `summary.syncPattern` 只记录五指数当日方向模式；`summary.synchronizationAssessment` 是独立的联合研判，返回总状态、稳定结论码、中文结论、置信度，以及 `breadth`、`trend`、`turnover` 三项确认维度。排查结论时先核对原始模式，再逐项核对上涨占比/中位数、MA20 上下方指数数和 5 日成交额比值/放量下跌数，不能只看最终文案。权重指数领涨不等于个股偏弱，普遍走弱也不自动等于系统性下降。
 
@@ -802,3 +802,6 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 
 - app.test.ts 挂 App 时必须 createRouter + registerRouterGuards（守卫不再挂在测试自建 router 上会直接导致 loadCore 不执行、页面停在 loading 态）。
 - chart lifecycle 测试语义已更新：路由切换时旧章节组件卸载（dispose 其 echarts 实例）、新章节挂载（init 新实例），断言 init/dispose 累计次数（01→02→01 为 init 2→3→5、dispose 0→2→3）。
+- 扶摇能力验证：使用脱敏 fixture 执行 `python -m src.market_environment.cli fuyao capability-probe --fixture tests/fixtures/market-environment/fuyao-market-data.json --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3`。该命令不访问网络；报告为 `ineligible`/`unverified` 时不得填写批准 revision。
+- 真实验证只能在盘后、显式本地隔离路径执行：`python -m src.market_environment.cli fuyao real-probe --allow-real --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 --output /tmp/fuyao-real.json`，API key 仅来自 `MARKET_ENVIRONMENT_FUYAO_API_KEY`。缺 key、日期不一致、权限/限流错误均 fail closed。
+- 回滚按数据集清除 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或批准 revision；保留能力报告、任务元数据和同日期旧快照，不跨日期回填。Secret 不写入 values、日志、fixture 或 API 响应。

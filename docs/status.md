@@ -49,7 +49,7 @@
 
 ## 最近完成
 
-- `consolidate-helm-managed-scheduling`（2026-09-17）已完成仓库与生产验收：Helm revision 20 含唯一且 suspended 的 `a-stock-data-collection`；PostgreSQL、Dashboard 均 Ready，SQLite 历史已通过逐表 checksum 导入，最新已采集日 API 返回有效数据；全量测试 581 passed / 3 skipped，docs-contract full 通过。`manual-local` 因仍承载共享 PV 保留；调度激活与首次自然触发仍属后续授权范围。
+- `consolidate-helm-managed-scheduling`（2026-09-17）完成仓库与生产验收；随后 2026-09-21 恢复到 Helm revision 25 的 suspended 基线，并于 2026-09-22 通过受控 `--activate-schedule` 升至 revision 26。当前唯一 `a-stock-data-collection` 为 Helm-owned、`suspend=false`、工作日上海 16:30，Dashboard/PostgreSQL 均 Ready；首次自然触发和数据质量观察仍待完成。`manual-local` 因仍承载共享 PV 保留。
 - 2026-09-17 完成 TrueNAS PostgreSQL 生产切换与 SQLite 历史导入：生产 dry-run 发现并修复 migration Job `fsGroup`、只读 WAL `immutable=1` 和 revision trigger 冲突；隔离 PostgreSQL 16.4 集成测试 11 项通过，正式导入 `snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`，最新历史日 API 200。
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
 - Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
@@ -80,7 +80,7 @@
 ## 下一步
 
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集下一检查点是受审 packet 的只读 preflight、审核与生产激活决策；激活或回退由本次操作责任人书面确认后通过专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）执行，候选 diff 仅允许已审阅的 `spec.suspend: true -> false` 字段变化。生产 CronJob 激活或回退必须由本次操作责任人书面确认。
+- 定时采集已在 2026-09-22 通过专用 `--activate-schedule` 激活（revision 26，`suspend=false`）；下一检查点是首个自然工作日 16:30 的 Job/Pod、五类数据质量、`collection_runs` 和 exact-date API 观察。回退仍必须由本次操作责任人书面确认并通过 `--disable-schedule`，禁止裸 `kubectl patch`。
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
@@ -90,4 +90,4 @@
 
 ## 最后更新
 
-2026-09-20
+2026-09-22

@@ -1,0 +1,31 @@
+{
+  "core": {
+    "sh000001": [
+      {"date": "2026-09-18", "open": 3900, "close": 3920, "high": 3930, "low": 3890, "amount": 100000000000, "thscode": "000001.SH"},
+      {"date": "2026-09-19", "open": 3920, "close": 3940, "high": 3950, "low": 3910, "amount": 110000000000, "thscode": "000001.SH"},
+      {"date": "2026-09-20", "open": 3940, "close": 3952, "high": 3970, "low": 3935, "amount": 120000000000, "thscode": "000001.SH"}
+    ]
+  },
+  "breadth_pages": [
+    {
+      "pagination": {"page": 1, "pages": 2, "total": 4, "size": 2},
+      "item": [
+        {"date": "2026-09-18", "thscode": "600001.SH", "ticker": "600001", "exchange": "SH", "change_pct": 2.5},
+        {"date": "2026-09-18", "thscode": "000001.SZ", "ticker": "000001", "exchange": "SZ", "change_pct": -1.5}
+      ]
+    },
+    {
+      "pagination": {"page": 2, "pages": 2, "total": 4, "size": 2},
+      "item": [
+        {"date": "2026-09-18", "thscode": "430001.BJ", "ticker": "430001", "exchange": "BJ", "change_pct": 0},
+        {"date": "2026-09-18", "thscode": "600002.SH", "ticker": "600002", "exchange": "SH", "change_pct": 1.0}
+      ]
+    }
+  ],
+  "active_direction_row": {
+    "date": "2026-09-18", "thscode": "600001.SH", "ticker": "600001", "exchange": "SH", "name": "样本股", "industry": "电子", "change_pct": 3.0, "amount": 30000, "close": 11, "high": 12, "low": 10
+  },
+  "sectors": [
+    {"date": "2026-09-18", "code": "BK001", "name": "电子", "change_pct": 2.5, "amount": 1000, "main_net": 300, "main_net_pct": 3.0, "up_count": 20, "down_count": 5, "leader": "样本股"}
+  ]
+}

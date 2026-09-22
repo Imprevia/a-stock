@@ -6,11 +6,13 @@ import argparse
 import json
 import os
 from collections.abc import Callable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time as clock_time, timezone
 from pathlib import Path
 from typing import Any
 
 from .collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
+from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketClient
+from .provider_capability import ProviderCapabilityReport
 from .date_relabel import relabel_date, rollback_date_relabel
 from .postgres_migration import backup_sqlite, import_sqlite
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
@@ -99,7 +101,62 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--database-url", default=None, help="PostgreSQL URL (defaults to environment)")
     migrate.add_argument("--backup", default=None, help="optional non-existing before-image destination")
     migrate.add_argument("--apply", action="store_true", help="commit the import; omitted means dry-run")
+    fuyao = commands.add_parser("fuyao", help="audit Fuyao market-data capability")
+    fuyao_commands = fuyao.add_subparsers(dest="fuyao_command", required=True)
+    probe = fuyao_commands.add_parser("capability-probe", help="run a deterministic fixture probe")
+    probe.add_argument("--fixture", required=True, help="redacted JSON fixture path")
+    probe.add_argument("--as-of", required=True, type=date.fromisoformat)
+    probe.add_argument("--output", default=None, help="optional redacted report output path")
+    probe.add_argument("--path", default=None, help="optional isolated SQLite store for reports")
+    real = fuyao_commands.add_parser("real-probe", help="run an explicitly authorized local provider probe")
+    real.add_argument("--as-of", required=True, type=date.fromisoformat)
+    real.add_argument("--output", required=True, help="redacted report output path")
+    real.add_argument("--path", required=True, help="isolated SQLite store path")
+    real.add_argument("--allow-real", action="store_true", help="required explicit authorization")
     return parser
+
+
+def _capability_report_from_result(dataset: str, result: Any, as_of: date, *, revision: str = "fuyao-market-v1") -> ProviderCapabilityReport:
+    status = "eligible" if getattr(result, "status", "insufficient") == "ok" else "ineligible"
+    quality = getattr(result, "quality", {}) or {}
+    warnings = tuple(str(item) for item in getattr(result, "warnings", ()) or quality.get("warnings", ()))
+    if status != "eligible" and not warnings:
+        warnings = ("fixture contract evidence is incomplete",)
+    return ProviderCapabilityReport(
+        provider="fuyao",
+        dataset=dataset,
+        revision=revision,
+        status=status,
+        endpoint=f"fixture:{dataset}",
+        field_coverage={"qualityStatus": getattr(result, "status", None), "fields": sorted(result.payload) if hasattr(result, "payload") else []},
+        date_evidence={"requested": as_of.isoformat(), "response": quality.get("asOf")},
+        history_window={"proven": dataset == "core" and status == "eligible"},
+        pagination_evidence={"proven": dataset in {"breadth", "activeDirection"} and status == "eligible"},
+        permission_evidence={"configured": False, "mode": "offline-fixture"},
+        rate_limit_evidence={"requestBudget": 0},
+        sample_count=int(getattr(result, "observations", 0) or 0),
+        warnings=warnings,
+        missing_evidence=tuple(warnings) if status != "eligible" else (),
+        checked_at=datetime.combine(as_of, clock_time(12), tzinfo=timezone.utc),
+    ).normalized()
+
+
+def _run_offline_capability_probe(fixture_path: Path, as_of: date) -> dict[str, Any]:
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    adapter = FuyaoMarketAdapter()
+    reports: list[ProviderCapabilityReport] = []
+    core = adapter.normalize_core(fixture.get("core", {}), as_of, min_bars=1)
+    core_result = type("CoreProbe", (), {"status": "ok" if core and all(item.status == "ok" for item in core.values()) else "insufficient", "payload": {"indices": [item.payload for item in core.values()]}, "quality": {"asOf": as_of.isoformat()}, "warnings": (), "observations": sum(item.observations for item in core.values())})()
+    reports.append(_capability_report_from_result("core", core_result, as_of))
+    for dataset, method, key in (("breadth", "normalize_breadth", "breadth_pages"), ("activeDirection", "normalize_active_direction", "active_direction"), ("sectors", "normalize_sectors", "sectors")):
+        if dataset == "breadth":
+            result = adapter.normalize_breadth(fixture.get(key, ()), as_of)
+        elif dataset == "activeDirection":
+            result = adapter.normalize_active_direction(fixture.get(key, ()), as_of, ordering_proven=True)
+        else:
+            result = adapter.normalize_sectors(fixture.get(key, ()), as_of)
+        reports.append(_capability_report_from_result(dataset, result, as_of))
+    return {"provider": "fuyao", "asOf": as_of.isoformat(), "reports": [item.redacted_dict() for item in reports]}
 
 
 def _collection_payload(result: Any, **extra: Any) -> dict[str, Any]:
@@ -141,6 +198,45 @@ def main(
     now: Callable[[], datetime] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "fuyao":
+        if args.fuyao_command == "capability-probe":
+            try:
+                payload = _run_offline_capability_probe(Path(args.fixture), args.as_of)
+                if args.path:
+                    store = SnapshotStore(args.path)
+                    for item in payload["reports"]:
+                        store.put_capability_report(ProviderCapabilityReport.from_dict(item))
+                if args.output:
+                    Path(args.output).write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+                _print_payload(payload)
+                return 0
+            except Exception as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
+        if args.fuyao_command == "real-probe":
+            if not args.allow_real:
+                _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
+                return 2
+            if not os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "").strip():
+                _print_payload({"status": "rejected", "error": "MARKET_ENVIRONMENT_FUYAO_API_KEY is required"})
+                return 2
+            try:
+                adapter = FuyaoMarketAdapter(FuyaoMarketClient())
+                results = {
+                    "breadth": adapter.fetch_breadth(args.as_of),
+                    "activeDirection": adapter.fetch_active_direction(args.as_of),
+                    "sectors": adapter.fetch_sectors(args.as_of),
+                }
+                payload = {"provider": "fuyao", "asOf": args.as_of.isoformat(), "reports": [_capability_report_from_result(k, v, args.as_of).redacted_dict() for k, v in results.items()]}
+                Path(args.output).write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+                store = SnapshotStore(args.path)
+                for item in payload["reports"]:
+                    store.put_capability_report(ProviderCapabilityReport.from_dict(item))
+                _print_payload(payload)
+                return 0
+            except Exception as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
     if args.command == "database" and args.database_command == "migrate":
         try:
             source = Path(args.source)

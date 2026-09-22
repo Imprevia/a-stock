@@ -93,6 +93,24 @@
             }
           }
         },
+        "fuyao": {
+          "type": "object",
+          "required": ["existingSecret", "secretKey", "datasets"],
+          "properties": {
+            "existingSecret": {"type": "string"},
+            "secretKey": {"type": "string", "minLength": 1},
+            "datasets": {
+              "type": "object",
+              "required": ["core", "breadth", "sectors", "activeDirection"],
+              "properties": {
+                "core": {"$ref": "#/definitions/fuyaoDataset"},
+                "breadth": {"$ref": "#/definitions/fuyaoDataset"},
+                "sectors": {"$ref": "#/definitions/fuyaoDataset"},
+                "activeDirection": {"$ref": "#/definitions/fuyaoDataset"}
+              }
+            }
+          }
+        },
         "database": {
           "type": "object",
           "properties": {
@@ -126,6 +144,17 @@
             }
           }
         }
+      }
+    }
+  },
+  "definitions": {
+    "fuyaoDataset": {
+      "type": "object",
+      "required": ["enabled", "approvedRevision", "shadowEnabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "approvedRevision": {"type": "string"},
+        "shadowEnabled": {"type": "boolean"}
       }
     }
   }

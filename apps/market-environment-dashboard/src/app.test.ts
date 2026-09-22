@@ -341,7 +341,8 @@ describe('index card copy controls', () => {
     await flushPromises()
 
     expect(writeText).toHaveBeenNthCalledWith(1, '100.00')
-    expect(writeText).toHaveBeenNthCalledWith(2, '0.00%')
+    expect(writeText).toHaveBeenNthCalledWith(2, '0.00')
+    expect(firstCard.find('.copy-change').text()).toContain('0.00%')
     expect(firstCard.classes()).toContain('selected')
     expect(secondCard.classes()).not.toContain('selected')
     expect(wrapper.text()).toContain('已复制上证指数的涨跌幅')

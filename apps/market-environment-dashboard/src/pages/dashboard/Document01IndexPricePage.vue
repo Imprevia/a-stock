@@ -80,7 +80,7 @@ function copyStatusFor(code: string, field: 'value' | 'change') {
 }
 
 async function copyIndexField(index: NonNullable<typeof selectedIndex.value>, field: 'value' | 'change'): Promise<void> {
-  const text = field === 'value' ? index.close.toFixed(2) : formatPct(index.changePct)
+  const text = field === 'value' ? index.close.toFixed(2) : formatCopyPct(index.changePct)
   const label = field === 'value' ? '指数' : '涨跌幅'
   const success = await writeClipboard(text)
   copyStatus.value = {
@@ -112,6 +112,7 @@ onBeforeUnmount(() => {
 // ── formatting helpers (chapter-local) ──────────────────────────────
 function changeTone(value: number) { return value > 0 ? 'positive' : value < 0 ? 'negative' : 'flat' }
 function formatPct(value: number | null | undefined) { return value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%` }
+function formatCopyPct(value: number | null | undefined) { return value == null ? '--' : `${value > 0 ? '+' : ''}${value.toFixed(2)}` }
 function formatRatio(value: number | null | undefined) { return value == null ? '--' : `${value.toFixed(2)}x` }
 function formatVolumePrice(ratio: number | null | undefined, state: string | null | undefined) { return [formatRatio(ratio), state].filter(Boolean).join(' ') }
 function formatCount(value: number | null | undefined) { return value == null ? '--' : value.toLocaleString('zh-CN') }

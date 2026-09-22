@@ -24,6 +24,7 @@ from .limit_facts import (
     fact_row_checksum,
     limit_dataset_checksum,
 )
+from .provider_capability import ProviderCapabilityReport
 
 SNAPSHOT_SCHEMA_VERSION = 1
 TRADING_SESSION_SCHEMA_VERSION = 2
@@ -227,7 +228,7 @@ class CollectionTaskRecord:
     source: str = "none"
     observations: int = 0
     warning: str | None = None
-    timings: dict[str, float] | None = None
+    timings: dict[str, Any] | None = None
     queued_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -543,6 +544,31 @@ class SnapshotStore:
                     revision INTEGER NOT NULL,
                     PRIMARY KEY (component_kind, dataset, as_of)
                 );
+
+                CREATE TABLE IF NOT EXISTS provider_capability_reports (
+                    provider TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    revision TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    endpoint TEXT,
+                    field_coverage_json TEXT NOT NULL DEFAULT '{}',
+                    date_evidence_json TEXT NOT NULL DEFAULT '{}',
+                    history_window_json TEXT NOT NULL DEFAULT '{}',
+                    pagination_evidence_json TEXT NOT NULL DEFAULT '{}',
+                    permission_evidence_json TEXT NOT NULL DEFAULT '{}',
+                    rate_limit_evidence_json TEXT NOT NULL DEFAULT '{}',
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    missing_evidence_json TEXT NOT NULL DEFAULT '[]',
+                    checked_at TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    checksum TEXT NOT NULL,
+                    PRIMARY KEY (provider, dataset, revision)
+                );
+                CREATE INDEX IF NOT EXISTS provider_capability_reports_dataset_idx
+                    ON provider_capability_reports(dataset, checked_at DESC);
+                CREATE INDEX IF NOT EXISTS provider_capability_reports_status_idx
+                    ON provider_capability_reports(dataset, status);
 
                 CREATE TRIGGER IF NOT EXISTS snapshot_materialization_version_insert
                 AFTER INSERT ON snapshot_entries BEGIN
@@ -1092,6 +1118,138 @@ class SnapshotStore:
                 values,
             ).fetchall()
         return tuple(_as_date(row["as_of"]) for row in rows)
+
+    @staticmethod
+    def _capability_report_from_row(row: Any | None) -> ProviderCapabilityReport | None:
+        if row is None:
+            return None
+        return ProviderCapabilityReport.from_dict(
+            {
+                "provider": row["provider"],
+                "dataset": row["dataset"],
+                "revision": row["revision"],
+                "status": row["status"],
+                "endpoint": row["endpoint"],
+                "field_coverage": _json_value(row["field_coverage_json"], {}),
+                "date_evidence": _json_value(row["date_evidence_json"], {}),
+                "history_window": _json_value(row["history_window_json"], {}),
+                "pagination_evidence": _json_value(row["pagination_evidence_json"], {}),
+                "permission_evidence": _json_value(row["permission_evidence_json"], {}),
+                "rate_limit_evidence": _json_value(row["rate_limit_evidence_json"], {}),
+                "sample_count": row["sample_count"],
+                "warnings": _json_value(row["warnings_json"], []),
+                "missing_evidence": _json_value(row["missing_evidence_json"], []),
+                "checked_at": _as_datetime(row["checked_at"]).isoformat(),
+                "schema_version": row["schema_version"],
+                "checksum": row["checksum"],
+            }
+        )
+
+    def put_capability_report(self, report: ProviderCapabilityReport) -> ProviderCapabilityReport:
+        """Persist one capability revision idempotently.
+
+        A revision is immutable: repeating the same checksum is a no-op, while
+        attempting to reuse a revision for different evidence is rejected.
+        """
+
+        value = report.normalized()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT checksum FROM provider_capability_reports WHERE provider = ? AND dataset = ? AND revision = ?",
+                (value.provider, value.dataset, value.revision),
+            ).fetchone()
+            if existing is not None and existing["checksum"] != value.checksum:
+                raise ValueError(
+                    f"capability revision already exists with a different checksum: "
+                    f"{value.provider}/{value.dataset}/{value.revision}"
+                )
+            connection.execute(
+                """
+                INSERT INTO provider_capability_reports(
+                    provider, dataset, revision, status, endpoint,
+                    field_coverage_json, date_evidence_json, history_window_json,
+                    pagination_evidence_json, permission_evidence_json,
+                    rate_limit_evidence_json, sample_count, warnings_json,
+                    missing_evidence_json, checked_at, schema_version, checksum
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, dataset, revision) DO UPDATE SET
+                    status = excluded.status,
+                    endpoint = excluded.endpoint,
+                    field_coverage_json = excluded.field_coverage_json,
+                    date_evidence_json = excluded.date_evidence_json,
+                    history_window_json = excluded.history_window_json,
+                    pagination_evidence_json = excluded.pagination_evidence_json,
+                    permission_evidence_json = excluded.permission_evidence_json,
+                    rate_limit_evidence_json = excluded.rate_limit_evidence_json,
+                    sample_count = excluded.sample_count,
+                    warnings_json = excluded.warnings_json,
+                    missing_evidence_json = excluded.missing_evidence_json,
+                    checked_at = excluded.checked_at,
+                    schema_version = excluded.schema_version,
+                    checksum = excluded.checksum
+                """,
+                (
+                    value.provider,
+                    value.dataset,
+                    value.revision,
+                    value.status,
+                    value.endpoint,
+                    canonical_json(dict(value.field_coverage)),
+                    canonical_json(dict(value.date_evidence)),
+                    canonical_json(dict(value.history_window)),
+                    canonical_json(dict(value.pagination_evidence)),
+                    canonical_json(dict(value.permission_evidence)),
+                    canonical_json(dict(value.rate_limit_evidence)),
+                    value.sample_count,
+                    canonical_json(list(value.warnings)),
+                    canonical_json(list(value.missing_evidence)),
+                    value.checked_at.isoformat(),
+                    value.schema_version,
+                    value.checksum,
+                ),
+            )
+        return value
+
+    def get_capability_report(
+        self,
+        provider: str,
+        dataset: str,
+        revision: str | None = None,
+    ) -> ProviderCapabilityReport | None:
+        with self._connect() as connection:
+            if revision is None:
+                row = connection.execute(
+                    "SELECT * FROM provider_capability_reports WHERE provider = ? AND dataset = ? "
+                    "ORDER BY checked_at DESC, revision DESC LIMIT 1",
+                    (provider, dataset),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM provider_capability_reports WHERE provider = ? AND dataset = ? AND revision = ?",
+                    (provider, dataset, revision),
+                ).fetchone()
+        return self._capability_report_from_row(row)
+
+    def list_capability_reports(
+        self,
+        *,
+        provider: str | None = None,
+        dataset: str | None = None,
+        status: str | None = None,
+    ) -> tuple[ProviderCapabilityReport, ...]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        for field_name, field_value in (("provider", provider), ("dataset", dataset), ("status", status)):
+            if field_value is not None:
+                clauses.append(f"{field_name} = ?")
+                values.append(field_value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM provider_capability_reports {where} ORDER BY checked_at DESC, revision DESC",
+                values,
+            ).fetchall()
+        return tuple(self._capability_report_from_row(row) for row in rows if row is not None)
 
     def storage_schema_version(self) -> int:
         """Return the additive storage schema version."""
@@ -2303,7 +2461,7 @@ class SnapshotStore:
         source: str | None = None,
         observations: int | None = None,
         warning: str | None = None,
-        timings: dict[str, float] | None = None,
+        timings: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
         duration_ms: float | None = None,

@@ -31,6 +31,7 @@ IMPORT_TABLES = (
     "lease_fence_events",
     "timezone_preferences",
     "timezone_preference_audit",
+    "provider_capability_reports",
 )
 SKIP_TABLES = {"refresh_leases"}
 REQUIRED_IMPORT_TABLES = frozenset({

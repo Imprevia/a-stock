@@ -117,6 +117,28 @@ marketEnvironment:
       # PostgreSQL Secret. Leave empty to omit the optional API-key reference.
       existingSecret: ""
       secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  # Non-limits Fuyao cutover is independently gated per dataset.  The
+  # credential reference is optional and never rendered as a Secret value.
+  fuyao:
+    existingSecret: ""
+    secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    datasets:
+      core:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
+      breadth:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
+      sectors:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
+      activeDirection:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
   database:
     sslMode: prefer
     poolSize: 5

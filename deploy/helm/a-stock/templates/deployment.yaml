@@ -9,6 +9,11 @@
 {{- if and .Values.marketEnvironment.limits.fuyao.existingSecret (eq .Values.marketEnvironment.limits.fuyao.existingSecret .Values.database.existingSecret) }}
 {{- fail "marketEnvironment.limits.fuyao.existingSecret must be independent from database.existingSecret" }}
 {{- end }}
+{{- if and .Values.marketEnvironment.fuyao.existingSecret (eq .Values.marketEnvironment.fuyao.existingSecret .Values.database.existingSecret) }}
+{{- fail "marketEnvironment.fuyao.existingSecret must be independent from database.existingSecret" }}
+{{- end }}
+{{- $fuyaoSecret := default .Values.marketEnvironment.limits.fuyao.existingSecret .Values.marketEnvironment.fuyao.existingSecret }}
+{{- $fuyaoSecretKey := default .Values.marketEnvironment.limits.fuyao.secretKey .Values.marketEnvironment.fuyao.secretKey }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,12 +98,36 @@ spec:
               value: {{ .Values.marketEnvironment.settlementTime | quote }}
             - name: MARKET_ENVIRONMENT_LIMITS_V1_ENABLED
               value: {{ ternary "1" "0" .Values.marketEnvironment.limits.v1Enabled | quote }}
-            {{- with .Values.marketEnvironment.limits.fuyao.existingSecret }}
+            - name: MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.core.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.datasets.core.approvedRevision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.core.shadowEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.breadth.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_BREADTH_APPROVED_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.datasets.breadth.approvedRevision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_BREADTH_SHADOW_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.breadth.shadowEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.sectors.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.datasets.sectors.approvedRevision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.sectors.shadowEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.activeDirection.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_APPROVED_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.datasets.activeDirection.approvedRevision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_SHADOW_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.activeDirection.shadowEnabled | quote }}
+            {{- if $fuyaoSecret }}
             - name: MARKET_ENVIRONMENT_FUYAO_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ . | quote }}
-                  key: {{ $.Values.marketEnvironment.limits.fuyao.secretKey | quote }}
+                  name: {{ $fuyaoSecret | quote }}
+                  key: {{ $fuyaoSecretKey | quote }}
                   optional: true
             {{- end }}
             {{- with .Values.extraEnv }}
