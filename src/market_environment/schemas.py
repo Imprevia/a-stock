@@ -21,7 +21,14 @@ CollectionTaskState = Literal[
     "busy",
 ]
 EvidenceQualityStatus = Literal[
-    "ok", "partial", "fallback", "failed", "missing", "degraded", "insufficient"
+    "ok",
+    "partial",
+    "fallback",
+    "fallback-derived",
+    "failed",
+    "missing",
+    "degraded",
+    "insufficient",
 ]
 CacheState = Literal["fresh", "stale", "missing"]
 MetricQualityStatus = Literal["ok", "insufficient", "degraded", "failed"]

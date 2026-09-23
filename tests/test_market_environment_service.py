@@ -463,6 +463,21 @@ def test_service_exposes_index_combination_and_market_overview() -> None:
     MarketEnvironmentResponse.model_validate(payload)
 
 
+def test_service_accepts_fallback_derived_active_direction_quality() -> None:
+    payload = MarketEnvironmentService(provider=FakeProvider()).get(date(2026, 8, 28))
+    payload["chapter01"]["activeDirection"]["quality"]["status"] = "fallback-derived"
+
+    MarketEnvironmentResponse.model_validate(payload)
+    chapter = payload["chapter01"]
+    documents = MarketEnvironmentService._chapter_documents(
+        chapter["breadth"],
+        chapter["limits"],
+        chapter["sectors"],
+        chapter["activeDirection"],
+    )
+    assert next(item for item in documents if item["id"] == "06")["status"] == "partial"
+
+
 def test_service_keeps_partial_success_and_warning() -> None:
     failed = {INDEX_SPECS[0].code}
     payload = MarketEnvironmentService(provider=FakeProvider(failing=failed)).get(date(2026, 8, 28))

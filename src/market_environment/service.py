@@ -1098,7 +1098,7 @@ class MarketEnvironmentService:
     @staticmethod
     def _chapter_documents(breadth: dict, limits: dict, sectors: dict, active_direction: dict) -> list[dict]:
         def evidence_status(quality: dict) -> str:
-            return "partial" if quality["status"] in {"ok", "fallback", "partial"} else "insufficient"
+            return "partial" if quality["status"] in {"ok", "fallback", "fallback-derived", "partial"} else "insufficient"
 
         definitions = (
             ("01", "指数、趋势位置和成交额", "partial"),
