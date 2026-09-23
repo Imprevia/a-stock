@@ -69,6 +69,7 @@ def fixture_client(session=None, **kwargs):
         "fixture-key",
         session=session or FixtureSession(),
         sleep=lambda _delay: None,
+        min_request_interval_seconds=0,
         **kwargs,
     )
     client._PAGE_SIZE = 2
@@ -161,22 +162,91 @@ def test_permission_error_is_not_retried(code):
     assert len(calls) == 1
 
 
-def test_retry_exhaustion_uses_exponential_backoff():
+def test_rate_limit_retry_uses_slow_exponential_backoff():
     sleeps = []
 
     class LimitedSession:
         def get(self, *_args, **_kwargs):
-            return FakeResponse({"code": 4001, "message": "limited", "data": {}})
+            return FakeResponse(
+                {
+                    "code": 4001,
+                    "message": "limited",
+                    "request_id": "request-4001",
+                    "data": {},
+                }
+            )
 
     client = FuyaoClient(
         "fixture-key",
         session=LimitedSession(),
         sleep=sleeps.append,
         backoff_seconds=0.25,
+        slow_backoff_seconds=1.5,
+        min_request_interval_seconds=0,
     )
-    with pytest.raises(FuyaoTransportError, match="after retries"):
+    with pytest.raises(FuyaoTransportError, match=r"code=4001.*request_id=request-4001.*after retries"):
         client.fetch_trading_days()
-    assert sleeps == [0.25, 0.5]
+    assert sleeps == [1.5, 3.0]
+
+
+def test_data_source_unavailable_error_is_auditable_without_secret_echo():
+    calls = []
+
+    class UnavailableSession:
+        def get(self, *_args, **_kwargs):
+            calls.append(1)
+            return FakeResponse(
+                {
+                    "code": 5003,
+                    "message": "upstream temporarily unavailable",
+                    "request_id": "request-5003",
+                    "data": None,
+                }
+            )
+
+    sleeps = []
+    client = FuyaoClient(
+        "fixture-secret",
+        session=UnavailableSession(),
+        sleep=sleeps.append,
+        min_request_interval_seconds=0,
+        slow_backoff_seconds=1.25,
+    )
+    with pytest.raises(FuyaoTransportError, match=r"code=5003.*upstream temporarily unavailable.*request-5003") as error:
+        client.fetch_trading_days()
+    assert len(calls) == 3
+    assert sleeps == [1.25, 2.5]
+    assert "fixture-secret" not in str(error.value)
+
+
+def test_requests_are_spaced_by_a_shared_client_interval():
+    class Clock:
+        def __init__(self):
+            self.now = 100.0
+            self.sleeps = []
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, delay):
+            self.sleeps.append(delay)
+            self.now += delay
+
+    clock = Clock()
+    session = FixtureSession()
+    client = FuyaoClient(
+        "fixture-key",
+        session=session,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        min_request_interval_seconds=0.5,
+    )
+    client._PAGE_SIZE = 2
+
+    client.fetch_limit_dataset(AS_OF)
+
+    assert len(session.calls) == 6
+    assert clock.sleeps == pytest.approx([0.5] * 5)
 
 
 def test_missing_key_fails_closed_without_network_or_secret_echo(monkeypatch):

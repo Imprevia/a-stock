@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time as clock_time, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from .date_relabel import relabel_date, rollback_date_relabel
 from .postgres_migration import backup_sqlite, import_sqlite
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
 from .snapshot_store import SnapshotStore
+from .tdx_daily import TDXDailyPackageClient
 
 
 def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
@@ -113,6 +115,15 @@ def build_parser() -> argparse.ArgumentParser:
     real.add_argument("--output", required=True, help="redacted report output path")
     real.add_argument("--path", required=True, help="isolated SQLite store path")
     real.add_argument("--allow-real", action="store_true", help="required explicit authorization")
+    tdx = commands.add_parser("tdx", help="audit the TDX daily-package provider")
+    tdx_commands = tdx.add_subparsers(dest="tdx_command", required=True)
+    tdx_probe = tdx_commands.add_parser(
+        "real-probe",
+        help="read one settled package without writing snapshots or databases",
+    )
+    tdx_probe.add_argument("--as-of", required=True, type=date.fromisoformat)
+    tdx_probe.add_argument("--output", required=True, help="redacted report output path")
+    tdx_probe.add_argument("--allow-real", action="store_true", help="required explicit authorization")
     return parser
 
 
@@ -191,6 +202,27 @@ def _print_payload(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
+def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
+    started = time.perf_counter()
+    package = TDXDailyPackageClient().fetch(as_of)
+    rows = list(package.rows)
+    amount_count = sum(row.amount is not None for row in rows)
+    name_count = sum(bool(row.name) for row in rows)
+    return {
+        "provider": "tdx-daily-package",
+        "asOf": as_of.isoformat(),
+        "sourceDate": package.source_date.isoformat(),
+        "fetchedAt": package.fetched_at.isoformat(),
+        "sourceRevision": "2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7",
+        "rowCount": len(rows),
+        "amountCoverage": amount_count / len(rows) if rows else 0.0,
+        "nameCoverage": name_count / len(rows) if rows else 0.0,
+        "elapsedMs": round((time.perf_counter() - started) * 1000, 2),
+        "quality": "ok" if rows and amount_count == len(rows) and name_count == len(rows) else "insufficient",
+        "metadata": dict(package.metadata),
+    }
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -213,6 +245,21 @@ def main(
             except Exception as exc:
                 _print_payload({"status": "rejected", "error": str(exc)})
                 return 2
+    if args.command == "tdx" and args.tdx_command == "real-probe":
+        if not args.allow_real:
+            _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
+            return 2
+        try:
+            payload = _run_tdx_real_probe(args.as_of)
+            Path(args.output).write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            _print_payload(payload)
+            return 0 if payload["quality"] == "ok" else 2
+        except Exception as exc:
+            _print_payload({"status": "rejected", "error": str(exc)})
+            return 2
         if args.fuyao_command == "real-probe":
             if not args.allow_real:
                 _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ class FuyaoClient:
         "failed_limit_up": "/api/a-share/special-data/limit-break-pool",
     }
     _RETRYABLE_ENVELOPE_CODES = frozenset({4001, 5001, 5002, 5003})
+    _SLOW_RETRY_ENVELOPE_CODES = frozenset({4001, 5003})
     _PERMISSION_CODES = frozenset({2001, 2003})
     _PAGE_SIZE = 200
     _MAX_POOL_PAGES = 100
@@ -82,6 +84,8 @@ class FuyaoClient:
         base_url: str = FUYAO_BASE_URL,
         max_retries: int = 2,
         backoff_seconds: float = 0.2,
+        slow_backoff_seconds: float = 2.0,
+        min_request_interval_seconds: float = 0.5,
         ticker_cache_ttl_seconds: float = 300.0,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -92,11 +96,15 @@ class FuyaoClient:
         self.base_url = base_url.rstrip("/")
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
+        self.slow_backoff_seconds = max(self.backoff_seconds, float(slow_backoff_seconds))
+        self.min_request_interval_seconds = max(0.0, float(min_request_interval_seconds))
         self.ticker_cache_ttl_seconds = max(0.0, float(ticker_cache_ttl_seconds))
         self._sleep = sleep
         self._monotonic = monotonic
         self._ticker_cache: dict[str, dict[str, Any]] | None = None
         self._ticker_cache_created_at: float | None = None
+        self._request_lock = threading.Lock()
+        self._last_request_started_at: float | None = None
 
     @property
     def configured(self) -> bool:
@@ -277,6 +285,7 @@ class FuyaoClient:
         url = f"{self.base_url}{path}"
         for attempt in range(self.max_retries + 1):
             try:
+                self._wait_for_request_slot()
                 response = self.session.get(
                     url,
                     params=dict(params or {}),
@@ -293,9 +302,9 @@ class FuyaoClient:
             status = int(getattr(response, "status_code", 0))
             if status == 429 or 500 <= status < 600:
                 if attempt < self.max_retries:
-                    self._backoff(attempt)
+                    self._backoff(attempt, slow=status == 429)
                     continue
-                raise FuyaoTransportError(f"Fuyao HTTP {status} after retries")
+                raise FuyaoTransportError(f"Fuyao {self._http_error_detail(response, status)} after retries")
             if status < 200 or status >= 300:
                 raise FuyaoTransportError(f"Fuyao HTTP {status}")
             try:
@@ -310,21 +319,72 @@ class FuyaoClient:
                 raise FuyaoContractError("Fuyao response envelope has no valid code") from exc
             if code in self._RETRYABLE_ENVELOPE_CODES:
                 if attempt < self.max_retries:
-                    self._backoff(attempt)
+                    self._backoff(attempt, slow=code in self._SLOW_RETRY_ENVELOPE_CODES)
                     continue
-                raise FuyaoTransportError(f"Fuyao response code {code} after retries")
+                raise FuyaoTransportError(
+                    f"Fuyao response {self._envelope_error_detail(payload, code)} after retries"
+                )
             if code in self._PERMISSION_CODES:
-                raise FuyaoPermissionError(f"Fuyao authentication or permission denied (code={code})")
+                raise FuyaoPermissionError(
+                    f"Fuyao authentication or permission denied ({self._envelope_error_detail(payload, code)})"
+                )
             if code != 0:
-                raise FuyaoError(f"Fuyao request rejected (code={code})")
+                raise FuyaoError(f"Fuyao request rejected ({self._envelope_error_detail(payload, code)})")
             data = payload.get("data")
             if not isinstance(data, Mapping):
                 raise FuyaoContractError("Fuyao success envelope is missing data")
             return dict(data)
         raise AssertionError("unreachable retry loop")
 
-    def _backoff(self, attempt: int) -> None:
-        self._sleep(self.backoff_seconds * (2**attempt))
+    def _wait_for_request_slot(self) -> None:
+        if self.min_request_interval_seconds <= 0:
+            return
+        with self._request_lock:
+            now = self._monotonic()
+            if self._last_request_started_at is not None:
+                elapsed = now - self._last_request_started_at
+                delay = self.min_request_interval_seconds - elapsed
+                if delay > 0:
+                    self._sleep(delay)
+                    now = self._monotonic()
+            self._last_request_started_at = now
+
+    def _backoff(self, attempt: int, *, slow: bool = False) -> None:
+        base = self.slow_backoff_seconds if slow else self.backoff_seconds
+        self._sleep(base * (2**attempt))
+
+    def _http_error_detail(self, response: requests.Response, status: int) -> str:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return f"HTTP {status}"
+        if not isinstance(payload, Mapping):
+            return f"HTTP {status}"
+        try:
+            code = int(payload.get("code"))
+        except (TypeError, ValueError):
+            return f"HTTP {status}"
+        return f"HTTP {status} ({self._envelope_error_detail(payload, code)})"
+
+    def _envelope_error_detail(self, payload: Mapping[str, Any], code: int) -> str:
+        parts = [f"code={code}"]
+        message = self._safe_text(payload.get("message"))
+        request_id = self._safe_text(payload.get("request_id"), max_length=80)
+        if message:
+            parts.append(f"message={message}")
+        if request_id:
+            parts.append(f"request_id={request_id}")
+        return ", ".join(parts)
+
+    def _safe_text(self, value: Any, *, max_length: int = 160) -> str | None:
+        if value in (None, ""):
+            return None
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        if self.api_key:
+            text = text.replace(self.api_key, "<redacted>")
+        if len(text) > max_length:
+            text = f"{text[:max_length]}..."
+        return text or None
 
     @staticmethod
     def _validated_identity(row: Mapping[str, Any], *, context: str) -> str:

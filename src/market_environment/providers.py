@@ -20,6 +20,14 @@ from src.trading_system.data.providers import EastmoneyClient
 
 from .calculations import Bar
 from .fuyao import FuyaoClient, FuyaoLimitDataset, FuyaoNonTradingDayError
+from .tdx_config import TDXDailyPackageConfig
+from .tdx_daily import (
+    TDXDailyPackage,
+    TDXDailyPackageClient,
+    TDXDailyPackageError,
+    TDXDailyPackageRow,
+    normalize_tdx_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +107,9 @@ class MarketDataProvider:
         *,
         fuyao: FuyaoClient | None = None,
         require_fuyao_for_limits: bool | None = None,
+        tdx_daily_package: TDXDailyPackageClient | None = None,
+        tdx_fallback_enabled: bool | None = None,
+        tdx_trading_days: Callable[[], tuple[date, ...]] | None = None,
     ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
@@ -111,6 +122,16 @@ class MarketDataProvider:
             if require_fuyao_for_limits is None
             else bool(require_fuyao_for_limits)
         )
+        self.tdx_daily_package = tdx_daily_package or TDXDailyPackageClient(
+            timeout=max(timeout, 30.0),
+            session=self.session,
+        )
+        self.tdx_fallback_enabled = (
+            TDXDailyPackageConfig.from_environment().fallback_enabled
+            if tdx_fallback_enabled is None
+            else bool(tdx_fallback_enabled)
+        )
+        self._tdx_trading_days = tdx_trading_days
 
     def fetch(
         self,
@@ -253,7 +274,17 @@ class MarketDataProvider:
                 "市场广度直接使用涨跌幅排序分页统计，未请求名义全 A 主快照",
             )
         except Exception as exc:
-            return self._missing_breadth(as_of, f"东方财富市场广度不可用：{exc}", status="failed")
+            primary_warning = f"东方财富市场广度不可用：{exc}"
+            if not self.tdx_fallback_enabled:
+                return self._missing_breadth(as_of, primary_warning, status="failed")
+            try:
+                return self._fetch_tdx_breadth(as_of, [primary_warning])
+            except Exception as tdx_error:
+                return self._missing_breadth(
+                    as_of,
+                    f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
+                    status="failed",
+                )
 
     def fetch_chapter01_active_direction(
         self,
@@ -276,7 +307,198 @@ class MarketDataProvider:
                 warnings=warnings,
             )
         except Exception as exc:
-            return self._missing_active_direction(as_of, f"东方财富容量方向不可用：{exc}", status="failed")
+            primary_warning = f"东方财富容量方向不可用：{exc}"
+            if not self.tdx_fallback_enabled:
+                return self._missing_active_direction(as_of, primary_warning, status="failed")
+            try:
+                tdx_rows = self._fetch_tdx_active_direction_rows(as_of)
+                return self._build_active_direction(
+                    tdx_rows,
+                    as_of,
+                    source="tdx-daily-package",
+                    status="fallback",
+                    warnings=[primary_warning, "已降级到通达信盘后包"],
+                    preserve_order=True,
+                )
+            except Exception as tdx_error:
+                return self._missing_active_direction(
+                    as_of,
+                    f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
+                    status="failed",
+                )
+
+    def _fetch_tdx_package(self, as_of: date) -> TDXDailyPackage:
+        package = self.tdx_daily_package.fetch(as_of)
+        if not isinstance(package, TDXDailyPackage):
+            raise TDXDailyPackageError("TDX package client returned an invalid result")
+        if package.requested_date != as_of or package.source_date != as_of:
+            raise TDXDailyPackageError("TDX package date evidence does not match the requested date")
+        rows = normalize_tdx_rows(package.rows, as_of)
+        self._validate_tdx_market_completeness(package, rows, as_of)
+        return replace(package, rows=rows)
+
+    @staticmethod
+    def _validate_tdx_market_completeness(
+        package: TDXDailyPackage,
+        rows: tuple[TDXDailyPackageRow, ...],
+        as_of: date,
+    ) -> None:
+        if not rows:
+            raise TDXDailyPackageError("TDX package has no usable rows")
+        market_counts = package.metadata.get("marketCounts") if isinstance(package.metadata, Mapping) else None
+        if not isinstance(market_counts, Mapping):
+            return
+        required_markets = {"sh", "sz"}
+        if as_of >= date(2022, 5, 6):
+            required_markets.add("bj")
+        missing = sorted(market for market in required_markets if int(market_counts.get(market, 0) or 0) <= 0)
+        if missing:
+            raise TDXDailyPackageError(f"TDX package market coverage is incomplete: {','.join(missing)}")
+
+    def _fetch_tdx_breadth(self, as_of: date, warnings: list[str]) -> dict[str, Any]:
+        package = self._fetch_tdx_package(as_of)
+        rows = list(package.rows)
+        if any(row.amount is None for row in rows):
+            raise TDXDailyPackageError("TDX package is missing amount facts")
+        returns: list[float] = []
+        unresolved: list[TDXDailyPackageRow] = []
+        for row in rows:
+            if row.close is None:
+                raise TDXDailyPackageError("TDX package is missing close facts")
+            change_pct = row.change_pct
+            if change_pct is None and row.previous_close is not None and row.previous_close > 0:
+                change_pct = (row.close - row.previous_close) / row.previous_close * 100
+            if change_pct is None or not math.isfinite(change_pct):
+                unresolved.append(row)
+            else:
+                returns.append(float(change_pct))
+        if unresolved:
+            previous = self._fetch_tdx_previous_package(as_of)
+            previous_rows = {
+                self._tdx_row_identity(row): row
+                for row in previous.rows
+            }
+            overlap = sum(
+                self._tdx_row_identity(row) in previous_rows
+                for row in unresolved
+            ) / len(unresolved)
+            if overlap < 0.8:
+                raise TDXDailyPackageError("TDX preceding-session identity overlap is below the safety threshold")
+            for row in unresolved:
+                prior = previous_rows.get(self._tdx_row_identity(row))
+                if prior is None or prior.close is None or prior.close <= 0 or row.close is None:
+                    raise TDXDailyPackageError("TDX preceding-session package lacks a matching close")
+                returns.append((row.close - prior.close) / prior.close * 100)
+        if not returns or len(returns) != len(rows):
+            raise TDXDailyPackageError("TDX package has an incomplete breadth sample")
+        advance_count = sum(value > 0 for value in returns)
+        decline_count = sum(value < 0 for value in returns)
+        flat_count = sum(value == 0 for value in returns)
+        return self._breadth_result(
+            advance_count,
+            decline_count,
+            flat_count,
+            median(returns),
+            as_of,
+            source="tdx-daily-package",
+            status="fallback",
+            warnings=[*warnings, "已使用通达信盘后包的精确日期和全市场样本"],
+        )
+
+    def _fetch_tdx_previous_package(self, as_of: date) -> TDXDailyPackage:
+        calendar_fetch = self._tdx_trading_days or self.fuyao.fetch_trading_days
+        try:
+            sessions = tuple(calendar_fetch())
+        except Exception as exc:
+            raise TDXDailyPackageError("无法取得精确的前一交易日证据") from exc
+        previous_sessions = [session for session in sessions if session < as_of]
+        if as_of not in sessions or not previous_sessions:
+            raise TDXDailyPackageError("无法证明通达信盘后的相邻交易日")
+        return self._fetch_tdx_package(max(previous_sessions))
+
+    @staticmethod
+    def _tdx_row_identity(row: TDXDailyPackageRow) -> tuple[str | None, str]:
+        return row.market, row.code
+
+    def _fetch_tdx_active_direction_rows(self, as_of: date) -> list[dict[str, Any]]:
+        package = self._fetch_tdx_package(as_of)
+        rows = list(package.rows)
+        if len(rows) < self._ACTIVE_DIRECTION_MIN_ROWS:
+            raise TDXDailyPackageError(
+                f"TDX package has only {len(rows)} active-direction rows; "
+                f"at least {self._ACTIVE_DIRECTION_MIN_ROWS} are required"
+            )
+        seen_codes: set[str] = set()
+        amounts: list[float] = []
+        for row in rows:
+            if row.code in seen_codes:
+                raise TDXDailyPackageError("TDX active-direction rows contain duplicate codes")
+            seen_codes.add(row.code)
+            if row.amount is None or not math.isfinite(row.amount):
+                raise TDXDailyPackageError("TDX active-direction rows contain a missing amount")
+            if row.close is None or not math.isfinite(row.close):
+                raise TDXDailyPackageError("TDX active-direction rows contain a missing close")
+            amounts.append(float(row.amount))
+        if any(left < right for left, right in zip(amounts, amounts[1:])):
+            raise TDXDailyPackageError("TDX active-direction rows are not in source descending amount order")
+
+        top_rows = rows[: self._ACTIVE_DIRECTION_MIN_ROWS]
+        missing_name_rows = [row for row in top_rows if not self._valid_tdx_name(row.name, row.code)]
+        names: dict[str, str] = {}
+        if missing_name_rows:
+            names = self._fetch_tencent_names(top_rows)
+        resolved: list[TDXDailyPackageRow] = []
+        for row in top_rows:
+            name = row.name if self._valid_tdx_name(row.name, row.code) else names.get(row.code)
+            if not self._valid_tdx_name(name, row.code):
+                raise TDXDailyPackageError(f"TDX active-direction name is unresolved for {row.code}")
+            resolved.append(replace(row, name=name))
+        return [
+            {
+                "f12": row.code,
+                "f14": row.name,
+                "f2": row.close,
+                "f3": row.change_pct,
+                "f6": row.amount,
+                "f15": row.high,
+                "f16": row.low,
+                "f100": None,
+            }
+            for row in resolved
+        ]
+
+    @staticmethod
+    def _valid_tdx_name(name: str | None, code: str) -> bool:
+        value = str(name or "").strip()
+        return bool(value and value not in {"-", "--", code})
+
+    def _fetch_tencent_names(self, rows: list[TDXDailyPackageRow]) -> dict[str, str]:
+        symbols = []
+        for row in rows:
+            if row.market not in {"sh", "sz"}:
+                continue
+            symbols.append(f"{row.market}{row.code}")
+        if not symbols:
+            return {}
+        url = f"https://qt.gtimg.cn/q={','.join(symbols)}"
+        try:
+            response = self.session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            content = response.content.decode("gbk", errors="strict")
+        except (requests.RequestException, UnicodeDecodeError) as exc:
+            raise TDXDailyPackageError("Tencent name lookup failed") from exc
+        result: dict[str, str] = {}
+        for line in content.split(";"):
+            if "=" not in line or '"' not in line:
+                continue
+            key, quoted = line.split('"', 1)[0], line.split('"', 2)[1]
+            code = key.rsplit("_", 1)[-1].lower()
+            values = quoted.split("~")
+            name = values[1].strip() if len(values) > 1 else ""
+            digits = code[-6:]
+            if _CODE_RE.fullmatch(digits) and self._valid_tdx_name(name, digits):
+                result[digits] = name
+        return result
 
     def fetch_chapter01_limits(self, as_of: date) -> dict[str, Any]:
         return self.fetch_chapter01_limit_dataset(as_of).payload
@@ -1702,11 +1924,16 @@ class MarketDataProvider:
         source: str,
         status: str,
         warnings: list[str],
+        preserve_order: bool = False,
     ) -> dict[str, Any]:
-        ranked = sorted(
-            (row for row in rows if self._optional_float(row.get("f6")) is not None),
-            key=lambda row: self._optional_float(row.get("f6")) or 0,
-            reverse=True,
+        ranked = (
+            list(rows)
+            if preserve_order
+            else sorted(
+                (row for row in rows if self._optional_float(row.get("f6")) is not None),
+                key=lambda row: self._optional_float(row.get("f6")) or 0,
+                reverse=True,
+            )
         )
         top30 = ranked[:30]
         industries = Counter(

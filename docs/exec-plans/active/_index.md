@@ -27,7 +27,8 @@
 | `restore-limit-ecosystem-data-availability` | Codex | completed-with-insufficient-provider-evidence | 2026-09-21 |
 | `recover-fuyao-k3s-deployment-20260921` | Codex | completed-with-production-write | 2026-09-22 |
 | `activate-scheduled-collection-20260922` | 操作发起人 | completed-activation-observation-pending | 2026-09-22 |
-| `reactivate-fuyao-scheduled-collection-20260922` | Codex | completed-activation-observation-pending | 2026-09-22 |
+| `reactivate-fuyao-scheduled-collection-20260922` | Codex | completed-with-backfill-provider-failure | 2026-09-22 |
+| `fix-fuyao-5003-retry-budget-20260922` | Codex | completed-without-production-write | 2026-09-22 |
 | `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-15 |
 | `fix-market-collection-effective-date-and-timezone` | Codex | completed-with-production-write-code-deploy-pending | 2026-09-15 |
 | `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |
@@ -36,6 +37,7 @@
 | `remove-gate-abc-deployment-checks-20260917` | Codex | completed-without-production-write | 2026-09-17 |
 | `refine-index-copy-format-20260921` | Codex | in-progress | 2026-09-21 |
 | `evaluate-fuyao-market-data-provider` | Codex | in-progress | 2026-09-22 |
+| `add-tdx-daily-package-fallback` | Codex | completed-with-active-direction-rollout-gate | 2026-09-23 |
 
 ## 说明
 

@@ -298,6 +298,21 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序；数组、键值对象和已登记字段别名统一进入同一校验。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
 
+### 通达信盘后包备用 probe
+
+通达信备用只允许在上海市场收盘后、隔离网络输出目录中执行显式只读 probe。probe 不创建 collection run，不写 PostgreSQL、SQLite 或快照；`--allow-real` 是额外的本地授权开关，feature flag 仍保持默认关闭。示例：
+
+```bash
+.venv/bin/python -m src.market_environment.cli tdx real-probe \
+  --as-of <已结算交易日> \
+  --output <隔离输出目录>/tdx-probe.json \
+  --allow-real
+```
+
+报告必须检查并记录 `sourceDate` 与请求日期一致、沪深北市场行数、总行数、成交额覆盖率、名称覆盖率、耗时、`sourceRevision` 和最终 `quality`。404 或空响应通常表示非交易日或盘后包尚未发布，应等待下一次获批盘后重试；不得用当前报价、前一日快照或零值把未发布包转成成功。若 `breadth` 需要前收而当前包没有可用前收，只能使用精确交易日历指向的相邻上一交易日包，覆盖率不足即保持 `insufficient`。
+
+probe 成功也不等于生产启用资格；启用前需审阅脱敏报告，并显式设置 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1`。发现包格式、日期、排序或名称问题时，先将该开关保持为 `0`，重试或回滚不涉及数据库 schema、CronJob 或快照删除。恢复路径是关闭开关并重启采集进程，确认 Eastmoney 主/延迟链路和 provider-free 状态读取正常；禁止跨日期回填、删除 PVC、卸载 release 或执行生产写入命令。
+
 ### 第 02 页市场广度派生边界（2026-09-16）
 
 第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照之上，由 `MarketEnvironmentService._enrich_breadth` 在每次章节请求时串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 `SnapshotStore.list_snapshot_dates("breadth")` + `SnapshotStore.get("breadth", date)`，与第 01 章 `syncPattern` / `next-session` 共用同一快照读取路径。派生过程只读取本地快照，不调用 provider、不引入新的 API 路由、不修改 PostgreSQL schema、不增加新采集任务。`QTS-01-02-01..05` 规则 ID、阈值、权重与 YAML 保持不变；`rules validate` 仍输出 49 条规则。
@@ -312,7 +327,7 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 limits detail/V1 是独立于旧五字段池聚合的增量能力，由 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 控制，默认值为 `0`。关闭时只提供既有 `limitUpCount`、`limitDownCount`、`failedLimitUpCount`、`failedLimitUpRatio`、`maxStreak` 和 PostgreSQL 快照读取；开启前必须在固定 fixture 上通过契约、Alembic schema、幂等、lease/CAS、失败保留、SQLite 导入源 `PRAGMA quick_check` 和 provider-free GET 验证。
 
-扶摇作为三类池 membership 主源，必须校验交易日历、响应信封、逐页 `total/pages`、去重规范身份和日期冲突；池不回显日期时记录 `dateEvidence=request-parameter` warning。东方财富用于降级和交叉核对，两源集合差异按规范身份取并集并标记 degraded。基础晋级只要求精确相邻交易日、两日完整涨停集合和规范身份；ST、上市窗口、制度和板块缺失只降低对应分层，不得阻断基础晋级。不得使用证券名称匹配、自然日减一或固定涨跌幅制度推断。
+扶摇作为三类池 membership 主源，必须校验交易日历、响应信封、逐页 `total/pages`、去重规范身份和日期冲突；池不回显日期时记录 `dateEvidence=request-parameter` warning。客户端在单个采集实例内串行控制扶摇请求间隔；HTTP 429、响应 `code=4001` 和 `code=5003` 使用较慢的有界指数退避，最终错误保留脱敏 `code`、`message` 和 `request_id`，不得记录 API key、请求头或完整响应体。东方财富用于降级和交叉核对，两源集合差异按规范身份取并集并标记 degraded。基础晋级只要求精确相邻交易日、两日完整涨停集合和规范身份；ST、上市窗口、制度和板块缺失只降低对应分层，不得阻断基础晋级。不得使用证券名称匹配、自然日减一或固定涨跌幅制度推断。
 
 状态排查应同时查看 `/api/market-environment/data-collection?as_of=<date>` 和 limits snapshot：状态 GET 只读 PostgreSQL、provider 调用数为 0；每个 limits task 显示当前/前一样本日期、实际日期、observations、排除数、checksum、晋级依赖和 warning。单项重试只启动 limits task，不重跑 `core`、`breadth`、`sectors` 或 `activeDirection`。刷新失败只记录 attempt，并保留同日期最后成功值为 `failed-retained` / `degraded`；没有旧值才为 `failed-missing`。
 
