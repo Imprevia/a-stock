@@ -293,6 +293,11 @@ class CollectionCoordinator:
                     "lastSuccessAt": snapshot.fetched_at if snapshot else None,
                     "settled": snapshot.settled if snapshot else False,
                     "refreshWarning": snapshot.refresh_warning if snapshot else None,
+                    "quality": (
+                        dict(snapshot.payload.get("quality") or {})
+                        if snapshot is not None and isinstance(snapshot.payload, dict)
+                        else None
+                    ),
                     "latestAttempt": attempt,
                     "activeTaskId": active.task_id if active else None,
                     "collectionAllowed": historical_allowed,
@@ -590,7 +595,7 @@ class CollectionCoordinator:
                 warning = "; ".join(value for value in (warning, f"扶摇 shadow 不可用：{exc}") if value)
         return self.store.transition_collection_task(
             task.task_id,
-            "partial" if quality_status == "partial" else "success",
+            "partial" if quality_status in {"partial", "fallback-derived"} else "success",
             expected_statuses=("collecting",),
             source=source,
             observations=observations,

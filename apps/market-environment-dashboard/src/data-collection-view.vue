@@ -130,7 +130,16 @@ function limitsDetail(item: DatasetCollectionStatus) {
 }
 
 function qualityLabel(value?: string | null) {
-  return ({ ok: '正常', partial: '部分覆盖', degraded: '降级', insufficient: '数据不足', failed: '失败' } as Record<string, string>)[value ?? ''] ?? '数据不足'
+  return ({ ok: '正常', partial: '部分覆盖', fallback: '降级来源', 'fallback-derived': '本地派生降级', degraded: '降级', insufficient: '数据不足', failed: '失败' } as Record<string, string>)[value ?? ''] ?? '数据不足'
+}
+
+function collectionQuality(item: DatasetCollectionStatus) {
+  const quality = item.quality as { status?: string; rankingMethod?: string; industryMappingCoverage?: number } | null | undefined
+  if (!quality || item.dataset !== 'activeDirection') return null
+  const details = [quality.status ? qualityLabel(quality.status) : null]
+  if (quality.rankingMethod) details.push('本地成交额排序')
+  if (quality.industryMappingCoverage != null) details.push(`行业映射 ${(quality.industryMappingCoverage * 100).toFixed(0)}%`)
+  return details.filter(Boolean).join(' · ')
 }
 
 onMounted(loadStatus)
@@ -202,7 +211,7 @@ onMounted(loadStatus)
                 </td>
                 <td data-label="可用状态"><span class="collection-badge" :class="item.available ? 'success' : 'failed'">{{ availabilityLabel(item) }}</span></td>
                 <td data-label="最近尝试"><span class="collection-badge" :class="statusTone(item.latestAttempt?.status)">{{ attemptLabel(item) }}</span><time v-if="item.latestAttempt?.completedAt || item.latestAttempt?.startedAt || item.latestAttempt?.queuedAt" class="collection-attempt-time" :datetime="item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt || undefined" :title="formatDateTimeTitle(item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt)">{{ formatDateTime(item.latestAttempt.completedAt || item.latestAttempt.startedAt || item.latestAttempt.queuedAt, { precision: 'second', timeZone: MARKET_TIME_ZONE }) }}</time></td>
-                <td data-label="来源 / 样本"><strong>{{ item.source === 'none' ? '--' : item.source }}</strong><span>{{ item.observations.toLocaleString('zh-CN') }} 条</span></td>
+                <td data-label="来源 / 样本"><strong>{{ item.source === 'none' ? '--' : item.source }}</strong><span>{{ item.observations.toLocaleString('zh-CN') }} 条</span><small v-if="collectionQuality(item)">{{ collectionQuality(item) }}</small></td>
                 <td data-label="最近成功"><span :title="formatDateTimeTitle(item.lastSuccessAt)">{{ formatDateTime(item.lastSuccessAt, { precision: 'second', timeZone: MARKET_TIME_ZONE }) }}</span></td>
                 <td data-label="耗时">{{ formatDuration(item.latestAttempt?.durationMs) }}</td>
                 <td data-label="提示" class="collection-warning"><span class="collection-warning-text" :title="item.latestAttempt?.warning || item.refreshWarning || item.restriction || undefined">{{ item.latestAttempt?.warning || item.refreshWarning || item.restriction || '--' }}</span></td>

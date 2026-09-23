@@ -40,6 +40,8 @@ marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
   settlementTime: "15:10"
+  tdx:
+    derivedActiveDirectionEnabled: true
   limits:
     v1Enabled: true
     fuyao:

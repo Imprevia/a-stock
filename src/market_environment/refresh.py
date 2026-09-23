@@ -22,7 +22,7 @@ MARKET_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 # calendar date.
 MARKET_OPEN_TIME = clock_time(9, 30)
 SUPPORTED_SNAPSHOT_DATASETS = ("breadth", "activeDirection")
-SUCCESS_STATUSES = frozenset({"ok", "fallback", "partial"})
+SUCCESS_STATUSES = frozenset({"ok", "fallback", "fallback-derived", "partial"})
 SUCCESS_CACHE_RESULTS = frozenset({"stored", "reused"})
 logger = logging.getLogger(__name__)
 

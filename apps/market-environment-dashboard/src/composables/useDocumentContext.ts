@@ -70,6 +70,7 @@ limitHistory: ComputedRef<NonNullable<NonNullable<ReturnType<typeof useMarketSto
 const QUALITY_LABEL: Record<string, string> = {
   ok: '正常',
   fallback: '降级来源',
+  'fallback-derived': '本地派生降级',
   partial: '部分覆盖',
   missing: '缺失',
   failed: '失败',
@@ -78,7 +79,7 @@ const QUALITY_LABEL: Record<string, string> = {
 }
 
 const QUALITY_TONE_OK: ReadonlyArray<QualityStatus> = ['ok']
-const QUALITY_TONE_FALLBACK: ReadonlyArray<QualityStatus> = ['fallback', 'partial', 'degraded']
+const QUALITY_TONE_FALLBACK: ReadonlyArray<QualityStatus> = ['fallback', 'fallback-derived', 'partial', 'degraded']
 
 const METRIC_QUALITY_LABEL: Record<string, string> = {
   ok: '正常',

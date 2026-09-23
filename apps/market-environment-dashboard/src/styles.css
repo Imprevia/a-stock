@@ -241,6 +241,7 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .quality-badge { display: inline-flex; min-height: 28px; align-items: center; padding: 0 9px; border-radius: 4px; background: #eef1f0; color: #6f7b76; font-size: 14px; font-weight: 700; }
 .quality-badge.ok { background: #e7f3ed; color: #257153; }
 .quality-badge.fallback { background: #f6f0df; color: #8b682e; }
+.quality-badge.fallback-derived { background: #f6f0df; color: #8b682e; }
 .quality-badge.missing { background: #f2eceb; color: #95605b; }
 .breadth-visual { margin-top: 34px; }
 .breadth-bar { display: flex; height: 18px; overflow: hidden; border-radius: 4px; background: #edf0ef; }
@@ -251,7 +252,7 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .breadth-legend { display: flex; justify-content: space-between; gap: 14px; margin-top: 14px; color: #697671; font-size: 14px; }
 .breadth-legend span { display: flex; align-items: center; gap: 6px; }
 .breadth-legend i { width: 7px; height: 7px; border-radius: 2px; }
-.rule-panel > p, .panel-summary { margin: 22px 0 0; color: #6f7c77; font-size: 14px; line-height: 1.8; }
+.rule-panel > p, .panel-summary, .panel-quality-note { margin: 22px 0 0; color: #6f7c77; font-size: 14px; line-height: 1.8; }
 .source-row { margin-top: 28px; padding-top: 14px; border-top: 1px solid #e6ebe8; color: #85908b; font-size: 14px; }
 .source-row strong { max-width: 65%; overflow-wrap: anywhere; color: #40504a; text-align: right; }
 .signal-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 24px; }
@@ -452,6 +453,7 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .collection-table td:first-child { min-width: 130px; }
 .collection-table td:nth-child(7) { min-width: 190px; }
 .collection-table td > strong { display: block; color: #34413c; }
+.collection-table td > small { display: block; margin-top: 3px; color: #8b682e; font-size: 14px; }
 .collection-badge { display: inline-flex; min-height: 26px; align-items: center; padding: 0 7px; border-radius: 4px; font-size: 14px; font-weight: 700; white-space: nowrap; }
 .collection-badge.success { background: #e7f3ed; color: #257153; }
 .collection-badge.warning { background: #f6f0df; color: #8b682e; }

@@ -6,7 +6,7 @@ from src.market_environment import api
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.service import MarketEnvironmentService
-from src.market_environment.snapshot_store import SnapshotStore
+from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 from tests.test_market_environment_collection import AS_OF, CollectionProvider
 
 
@@ -191,6 +191,44 @@ def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, 
     rows = {item["dataset"]: item for item in response.json()["datasets"]}
     assert rows["breadth"]["available"] is True
     assert rows["core"]["available"] is False
+
+
+def test_collection_status_exposes_derived_quality_from_local_snapshot(monkeypatch, tmp_path) -> None:
+    coordinator = collection_coordinator(tmp_path)
+    coordinator.store.put(
+        SnapshotRecord(
+            dataset="activeDirection",
+            as_of=AS_OF,
+            payload={
+                "state": "unverified",
+                "summary": "derived fixture",
+                "topStocks": [],
+                "quality": {
+                    "source": "tdx-daily-package-derived",
+                    "status": "fallback-derived",
+                    "rankingMethod": "local-turnover-desc-identity-asc",
+                    "industryMappingCoverage": 0.5,
+                },
+            },
+            source="tdx-daily-package-derived",
+            status="fallback-derived",
+            observations=30,
+            warnings=("fixture warning",),
+            fetched_at=datetime(2026, 9, 3, 16, tzinfo=MARKET_TIME_ZONE),
+            settled=True,
+        )
+    )
+    monkeypatch.setattr(api, "collection_coordinator", coordinator)
+
+    response = TestClient(api.app).get(
+        f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
+    )
+
+    assert response.status_code == 200
+    active = next(item for item in response.json()["datasets"] if item["dataset"] == "activeDirection")
+    assert active["source"] == "tdx-daily-package-derived"
+    assert active["quality"]["rankingMethod"] == "local-turnover-desc-identity-asc"
+    assert active["quality"]["industryMappingCoverage"] == 0.5
 
 
 def test_collection_single_run_is_enabled_by_default_and_can_be_polled(monkeypatch, tmp_path) -> None:

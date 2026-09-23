@@ -27,6 +27,8 @@ marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
   settlementTime: "15:10"
+  tdx:
+    derivedActiveDirectionEnabled: true
   limits:
     v1Enabled: true
     fuyao:
@@ -39,4 +41,6 @@ marketEnvironment:
 
 extraEnv:
   - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
     value: "1"

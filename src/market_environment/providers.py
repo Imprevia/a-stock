@@ -20,12 +20,14 @@ from src.trading_system.data.providers import EastmoneyClient
 
 from .calculations import Bar
 from .fuyao import FuyaoClient, FuyaoLimitDataset, FuyaoNonTradingDayError
+from .industry_mapping import IndustryMappingResult, VersionedIndustryMapper, normalized_identity
 from .tdx_config import TDXDailyPackageConfig
 from .tdx_daily import (
     TDXDailyPackage,
     TDXDailyPackageClient,
     TDXDailyPackageError,
     TDXDailyPackageRow,
+    TDX_UPSTREAM_REVISION,
     normalize_tdx_rows,
 )
 
@@ -109,6 +111,8 @@ class MarketDataProvider:
         require_fuyao_for_limits: bool | None = None,
         tdx_daily_package: TDXDailyPackageClient | None = None,
         tdx_fallback_enabled: bool | None = None,
+        tdx_active_direction_derived_enabled: bool | None = None,
+        tdx_industry_mapper: VersionedIndustryMapper | None = None,
         tdx_trading_days: Callable[[], tuple[date, ...]] | None = None,
     ) -> None:
         self.timeout = timeout
@@ -126,11 +130,16 @@ class MarketDataProvider:
             timeout=max(timeout, 30.0),
             session=self.session,
         )
+        tdx_config = TDXDailyPackageConfig.from_environment()
         self.tdx_fallback_enabled = (
-            TDXDailyPackageConfig.from_environment().fallback_enabled
-            if tdx_fallback_enabled is None
-            else bool(tdx_fallback_enabled)
+            tdx_config.fallback_enabled if tdx_fallback_enabled is None else bool(tdx_fallback_enabled)
         )
+        self.tdx_active_direction_derived_enabled = (
+            tdx_config.derived_active_direction_enabled
+            if tdx_active_direction_derived_enabled is None
+            else bool(tdx_active_direction_derived_enabled)
+        )
+        self.tdx_industry_mapper = tdx_industry_mapper
         self._tdx_trading_days = tdx_trading_days
 
     def fetch(
@@ -308,17 +317,18 @@ class MarketDataProvider:
             )
         except Exception as exc:
             primary_warning = f"东方财富容量方向不可用：{exc}"
-            if not self.tdx_fallback_enabled:
+            if not self.tdx_active_direction_derived_enabled:
                 return self._missing_active_direction(as_of, primary_warning, status="failed")
             try:
-                tdx_rows = self._fetch_tdx_active_direction_rows(as_of)
+                tdx_rows, tdx_metadata = self._fetch_tdx_active_direction_rows(as_of)
                 return self._build_active_direction(
                     tdx_rows,
                     as_of,
-                    source="tdx-daily-package",
-                    status="fallback",
-                    warnings=[primary_warning, "已降级到通达信盘后包"],
+                    source="tdx-daily-package-derived",
+                    status="fallback-derived",
+                    warnings=[primary_warning, "已降级到通达信盘后包并进行本地成交额排序"],
                     preserve_order=True,
+                    quality_metadata=tdx_metadata,
                 )
             except Exception as tdx_error:
                 return self._missing_active_direction(
@@ -420,7 +430,7 @@ class MarketDataProvider:
     def _tdx_row_identity(row: TDXDailyPackageRow) -> tuple[str | None, str]:
         return row.market, row.code
 
-    def _fetch_tdx_active_direction_rows(self, as_of: date) -> list[dict[str, Any]]:
+    def _fetch_tdx_active_direction_rows(self, as_of: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         package = self._fetch_tdx_package(as_of)
         rows = list(package.rows)
         if len(rows) < self._ACTIVE_DIRECTION_MIN_ROWS:
@@ -428,32 +438,33 @@ class MarketDataProvider:
                 f"TDX package has only {len(rows)} active-direction rows; "
                 f"at least {self._ACTIVE_DIRECTION_MIN_ROWS} are required"
             )
-        seen_codes: set[str] = set()
-        amounts: list[float] = []
+        seen_identities: set[str] = set()
         for row in rows:
-            if row.code in seen_codes:
-                raise TDXDailyPackageError("TDX active-direction rows contain duplicate codes")
-            seen_codes.add(row.code)
+            identity = normalized_identity(row.market, row.code)
+            if identity in seen_identities:
+                raise TDXDailyPackageError("TDX active-direction rows contain duplicate identities")
+            seen_identities.add(identity)
             if row.amount is None or not math.isfinite(row.amount):
                 raise TDXDailyPackageError("TDX active-direction rows contain a missing amount")
             if row.close is None or not math.isfinite(row.close):
                 raise TDXDailyPackageError("TDX active-direction rows contain a missing close")
-            amounts.append(float(row.amount))
-        if any(left < right for left, right in zip(amounts, amounts[1:])):
-            raise TDXDailyPackageError("TDX active-direction rows are not in source descending amount order")
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (-float(row.amount or 0.0), normalized_identity(row.market, row.code)),
+        )
 
-        top_rows = rows[: self._ACTIVE_DIRECTION_MIN_ROWS]
+        top_rows = ranked_rows[: self._ACTIVE_DIRECTION_MIN_ROWS]
         missing_name_rows = [row for row in top_rows if not self._valid_tdx_name(row.name, row.code)]
         names: dict[str, str] = {}
         if missing_name_rows:
-            names = self._fetch_tencent_names(top_rows)
+            names = self._fetch_tencent_names(missing_name_rows)
         resolved: list[TDXDailyPackageRow] = []
         for row in top_rows:
             name = row.name if self._valid_tdx_name(row.name, row.code) else names.get(row.code)
             if not self._valid_tdx_name(name, row.code):
                 raise TDXDailyPackageError(f"TDX active-direction name is unresolved for {row.code}")
             resolved.append(replace(row, name=name))
-        return [
+        normalized_rows = [
             {
                 "f12": row.code,
                 "f14": row.name,
@@ -463,9 +474,29 @@ class MarketDataProvider:
                 "f15": row.high,
                 "f16": row.low,
                 "f100": None,
+                "_identity": normalized_identity(row.market, row.code),
+                "_market": row.market,
             }
             for row in resolved
         ]
+        mapping_result = self._map_tdx_industries(resolved)
+        for item in normalized_rows:
+            item["f100"] = mapping_result.mapped.get(item["_identity"])
+        return normalized_rows, {
+            "derived": True,
+            "rankingMethod": "local-turnover-desc-identity-asc",
+            "sourceRevision": TDX_UPSTREAM_REVISION,
+            "industryMappingRevision": mapping_result.revision,
+            "industryMappingCoverage": round(mapping_result.coverage, 4),
+            "industryMappingCovered": mapping_result.covered,
+            "industryMappingTotal": mapping_result.total,
+        }
+
+    def _map_tdx_industries(self, rows: list[TDXDailyPackageRow]) -> IndustryMappingResult:
+        mapper = self.tdx_industry_mapper or VersionedIndustryMapper()
+        return mapper.resolve(
+            [{"code": row.code, "market": row.market} for row in rows]
+        )
 
     @staticmethod
     def _valid_tdx_name(name: str | None, code: str) -> bool:
@@ -1925,6 +1956,7 @@ class MarketDataProvider:
         status: str,
         warnings: list[str],
         preserve_order: bool = False,
+        quality_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         ranked = (
             list(rows)
@@ -1940,7 +1972,15 @@ class MarketDataProvider:
             industry for row in top30 if (industry := self._optional_text(row.get("f100"))) is not None
         )
         cluster_name, cluster_count = industries.most_common(1)[0] if industries else (None, 0)
-        if cluster_name and cluster_count >= 3:
+        metadata = dict(quality_metadata or {})
+        mapping_incomplete = bool(
+            metadata.get("derived")
+            and metadata.get("industryMappingCoverage") != 1.0
+        )
+        if mapping_incomplete:
+            state = "unverified"
+            summary = "TDX 派生成交额榜已生成，但 Top30 行业映射覆盖不足，暂不形成方向聚集结论"
+        elif cluster_name and cluster_count >= 3:
             state = "candidate"
             summary = f"成交额前30中 {cluster_name} 有 {cluster_count} 只，形成方向聚集线索，尚未完成连续性确认"
         else:
@@ -1968,11 +2008,23 @@ class MarketDataProvider:
             *warnings,
             "仅有当日成交额、涨跌幅和收盘位置；20日成交放大、超额收益与连续2日确认尚未接入",
         ]
+        if mapping_incomplete:
+            quality_warnings.append(
+                "行业映射覆盖不足：仅展示股票榜，不生成方向聚集结论"
+            )
         return {
             "state": state,
             "summary": summary,
             "topStocks": stocks,
-            "quality": self._quality("active-direction", source, status, len(top30), as_of, quality_warnings),
+            "quality": self._quality(
+                "active-direction",
+                source,
+                status,
+                len(top30),
+                as_of,
+                quality_warnings,
+                metadata,
+            ),
         }
 
     @classmethod
@@ -2025,8 +2077,9 @@ class MarketDataProvider:
         observations: int,
         as_of: date,
         warnings: list[str],
+        metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "dataset": dataset,
             "source": provider,
             "provider": provider,
@@ -2036,6 +2089,8 @@ class MarketDataProvider:
             "warning": "；".join(warnings) if warnings else None,
             "warnings": warnings,
         }
+        result.update(dict(metadata or {}))
+        return result
 
     @staticmethod
     def _optional_float(value: Any) -> float | None:

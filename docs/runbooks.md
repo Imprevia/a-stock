@@ -296,7 +296,7 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
 
 当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 仅用于显式本地诊断。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
 
-容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序；数组、键值对象和已登记字段别名统一进入同一校验。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时只允许保留同日期旧快照。
+容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序；数组、键值对象和已登记字段别名统一进入同一校验。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时，只有显式开启 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才会尝试 TDX 派生路径，否则只保留同日期旧快照。派生成功应看到 `source=tdx-daily-package-derived`、`quality.status=fallback-derived`、`rankingMethod=local-turnover-desc-identity-asc` 和 TDX revision；同额记录按规范证券身份升序稳定排序。
 
 ### 通达信盘后包备用 probe
 
@@ -309,9 +309,17 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --data
   --allow-real
 ```
 
-报告必须检查并记录 `sourceDate` 与请求日期一致、沪深北市场行数、总行数、成交额覆盖率、名称覆盖率、耗时、`sourceRevision` 和最终 `quality`。404 或空响应通常表示非交易日或盘后包尚未发布，应等待下一次获批盘后重试；不得用当前报价、前一日快照或零值把未发布包转成成功。若 `breadth` 需要前收而当前包没有可用前收，只能使用精确交易日历指向的相邻上一交易日包，覆盖率不足即保持 `insufficient`。
+报告必须检查并记录 `requestedDate` 与 `sourceDate`、沪深北市场行数、总行数、有效行数、Top-N 名称覆盖率、`rankingMethod`、行业映射 revision/覆盖率、耗时、`sourceRevision` 和最终 `quality`。404 或空响应通常表示非交易日或盘后包尚未发布，应等待下一次获批盘后重试；不得用当前报价、前一日快照或零值把未发布包转成成功。probe 只写隔离的脱敏 JSON 报告，不创建 snapshot/database；`--allow-real` 是必要授权，报告不打印请求凭据。若 `breadth` 需要前收而当前包没有可用前收，只能使用精确交易日历指向的相邻上一交易日包，覆盖率不足即保持 `insufficient`。
 
-probe 成功也不等于生产启用资格；启用前需审阅脱敏报告，并显式设置 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1`。发现包格式、日期、排序或名称问题时，先将该开关保持为 `0`，重试或回滚不涉及数据库 schema、CronJob 或快照删除。恢复路径是关闭开关并重启采集进程，确认 Eastmoney 主/延迟链路和 provider-free 状态读取正常；禁止跨日期回填、删除 PVC、卸载 release 或执行生产写入命令。
+probe 成功也不等于生产启用资格；启用前需审阅脱敏报告，并分别设置 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 或 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1`。发现包格式、日期、排序或名称问题时，先将两个 TDX 开关保持为 `0`，重试或回滚不涉及数据库 schema、CronJob 或快照删除。activeDirection 派生路径的回滚只关闭 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED`，不改变 breadth 开关；恢复路径是重启采集进程并确认 Eastmoney 主/延迟链路和 provider-free 状态读取正常。禁止跨日期回填、删除 PVC、卸载 release 或执行生产写入命令。
+
+2026-09-23 的 TrueNAS 发布已完成生产开关评审：`values-secure-manual-collection.yaml` 显式设置
+`MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1`，仅用于 Eastmoney 两条广度路径失败后的
+`breadth` 备用。真实包虽然通过日期、完整性、市场覆盖、名称和成交额字段验证，但原始成交额记录存在逆序，
+因此 `activeDirection` 仍拒绝 TDX candidate，不得本地排序后伪造 Top-30 证据。该次发布使用
+`20260923-185132-9a4910f` 镜像，CronJob 通过受控 `--release-suspended` / `--activate-schedule`
+恢复为 `30 16 * * 1-5`、`suspend=false`；首个生产验证以 2026-09-24 自然触发 Job 为准。回滚时先关闭该
+feature flag 并使用 `--disable-schedule` 或新的受审发布 packet，保留失败质量和精确日期边界。
 
 ### 第 02 页市场广度派生边界（2026-09-16）
 

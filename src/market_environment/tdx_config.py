@@ -9,6 +9,9 @@ from dataclasses import dataclass
 TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV = (
     "MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED"
 )
+TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV = (
+    "MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED"
+)
 
 
 class TDXConfigurationError(ValueError):
@@ -31,6 +34,7 @@ class TDXDailyPackageConfig:
     """Runtime switch; no credentials or provider routing live in this config."""
 
     fallback_enabled: bool = False
+    derived_active_direction_enabled: bool = False
 
     @classmethod
     def from_environment(cls, environ: dict[str, str] | None = None) -> "TDXDailyPackageConfig":
@@ -39,12 +43,17 @@ class TDXDailyPackageConfig:
             fallback_enabled=_parse_bool(
                 env.get(TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV, "0"),
                 name=TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV,
-            )
+            ),
+            derived_active_direction_enabled=_parse_bool(
+                env.get(TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV, "0"),
+                name=TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV,
+            ),
         )
 
 
 __all__ = [
     "TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV",
+    "TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV",
     "TDXConfigurationError",
     "TDXDailyPackageConfig",
 ]

@@ -37,7 +37,9 @@
 | `remove-gate-abc-deployment-checks-20260917` | Codex | completed-without-production-write | 2026-09-17 |
 | `refine-index-copy-format-20260921` | Codex | in-progress | 2026-09-21 |
 | `evaluate-fuyao-market-data-provider` | Codex | in-progress | 2026-09-22 |
-| `add-tdx-daily-package-fallback` | Codex | completed-with-active-direction-rollout-gate | 2026-09-23 |
+| `add-tdx-daily-package-fallback` | Codex | completed-with-breadth-only-production-rollout | 2026-09-23 |
+| `deploy-tdx-fallback-and-scheduled-collection-20260923` | Codex | in-progress | 2026-09-23 |
+| `enable-tdx-derived-active-direction` | Codex | offline-complete-awaiting-production-authorization | 2026-09-23 |
 
 ## 说明
 

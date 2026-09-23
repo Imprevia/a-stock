@@ -78,6 +78,12 @@
             "Asia/Shanghai"
           ]
         },
+        "tdx": {
+          "type": "object",
+          "properties": {
+            "derivedActiveDirectionEnabled": {"type": "boolean"}
+          }
+        },
         "limits": {
           "type": "object",
           "required": ["v1Enabled", "fuyao"],

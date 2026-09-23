@@ -6,6 +6,7 @@ import pytest
 
 from src.market_environment.tdx_config import (
     TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV,
+    TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV,
     TDXConfigurationError,
     TDXDailyPackageConfig,
 )
@@ -20,7 +21,9 @@ from src.market_environment.tdx_daily import (
 )
 from tests.fixtures.tdx_daily import make_tdx_package
 from src.market_environment.providers import MarketDataProvider
+from src.market_environment.industry_mapping import VersionedIndustryMapper
 from src.market_environment.collection import CollectionCoordinator
+from src.market_environment import cli as market_cli
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
@@ -41,13 +44,22 @@ class Response:
 def test_tdx_fallback_config_is_fail_closed_and_has_no_credentials():
     default = TDXDailyPackageConfig.from_environment({})
     assert default.fallback_enabled is False
+    assert default.derived_active_direction_enabled is False
     assert TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV not in {}
 
     enabled = TDXDailyPackageConfig.from_environment({TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV: "true"})
     assert enabled.fallback_enabled is True
+    assert enabled.derived_active_direction_enabled is False
+
+    derived = TDXDailyPackageConfig.from_environment(
+        {TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV: "ON"}
+    )
+    assert derived.derived_active_direction_enabled is True
 
     with pytest.raises(TDXConfigurationError):
         TDXDailyPackageConfig.from_environment({TDX_DAILY_PACKAGE_FALLBACK_ENABLED_ENV: "maybe"})
+    with pytest.raises(TDXConfigurationError):
+        TDXDailyPackageConfig.from_environment({TDX_DERIVED_ACTIVE_DIRECTION_ENABLED_ENV: "maybe"})
 
 
 def test_parse_valid_package_retains_date_identity_and_metadata():
@@ -182,7 +194,7 @@ def test_provider_uses_tdx_after_eastmoney_failure_and_preserves_warning(monkeyp
     package_client = PackageClient(_package(_active_package_rows()))
     provider = MarketDataProvider(
         tdx_daily_package=package_client,
-        tdx_fallback_enabled=True,
+        tdx_active_direction_derived_enabled=True,
     )
 
     def fail(url, _params):
@@ -194,12 +206,71 @@ def test_provider_uses_tdx_after_eastmoney_failure_and_preserves_warning(monkeyp
     result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
 
     assert package_client.calls == [AS_OF]
-    assert result["quality"]["source"] == "tdx-daily-package"
-    assert result["quality"]["status"] == "fallback"
+    assert result["quality"]["source"] == "tdx-daily-package-derived"
+    assert result["quality"]["status"] == "fallback-derived"
+    assert result["quality"]["derived"] is True
+    assert result["quality"]["rankingMethod"] == "local-turnover-desc-identity-asc"
+    assert result["quality"]["sourceRevision"]
+    assert result["quality"]["industryMappingCoverage"] == 0.0
     assert result["quality"]["observations"] == 30
     assert "primary disconnected" in result["quality"]["warning"]
     assert "delayed unavailable" in result["quality"]["warning"]
     assert [item["code"] for item in result["topStocks"]] == [f"{i:06d}" for i in range(10)]
+
+
+def test_provider_does_not_call_tdx_when_eastmoney_succeeds(monkeypatch):
+    package_client = PackageClient(_package(_active_package_rows()))
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (
+            [
+                {"f12": row.code, "f14": row.name, "f6": row.amount, "f2": row.close}
+                for row in _active_package_rows()
+            ],
+            "eastmoney-clist",
+            "partial",
+            [],
+        ),
+    )
+
+    result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
+
+    assert package_client.calls == []
+    assert result["quality"]["source"] == "eastmoney-clist"
+    assert result["quality"]["status"] == "partial"
+
+
+def _replace_row(row, **changes):
+    return TDXDailyPackageRow(**{**row.__dict__, **changes})
+
+
+def test_provider_locally_ranks_unsorted_tdx_rows_and_breaks_amount_ties_by_identity(monkeypatch):
+    rows = _active_package_rows()
+    rows[0] = _replace_row(rows[0], amount=50_000)
+    rows[1] = _replace_row(rows[1], amount=50_000)
+    rows[2] = _replace_row(rows[2], amount=60_000)
+    package_client = PackageClient(_package(list(reversed(rows))))
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (_ for _ in ()).throw(RuntimeError("eastmoney unavailable")),
+    )
+
+    first = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
+    second = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
+
+    assert first["quality"]["status"] == "fallback-derived"
+    assert [item["code"] for item in first["topStocks"][:3]] == ["000002", "000000", "000001"]
+    assert first["topStocks"] == second["topStocks"]
 
 
 def test_provider_uses_tdx_for_breadth_only_after_eastmoney_failure():
@@ -236,13 +307,15 @@ def test_provider_uses_tdx_for_breadth_only_after_eastmoney_failure():
     "rows, expected",
     [
         (_active_package_rows(count=29), "at least 30"),
-        (_active_package_rows(unsorted=True), "descending amount"),
         (_active_package_rows(names=False), "name is unresolved"),
     ],
 )
 def test_provider_rejects_invalid_tdx_active_direction_candidates(monkeypatch, rows, expected):
     package_client = PackageClient(_package(rows))
-    provider = MarketDataProvider(tdx_daily_package=package_client, tdx_fallback_enabled=True)
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+    )
     if any(row.name is None for row in rows):
         monkeypatch.setattr(provider, "_fetch_tencent_names", lambda _rows: {})
 
@@ -257,6 +330,55 @@ def test_provider_rejects_invalid_tdx_active_direction_candidates(monkeypatch, r
     assert result["topStocks"] == []
     assert result["quality"]["status"] == "failed"
     assert expected in result["quality"]["warning"]
+
+
+def test_provider_maps_complete_industry_coverage_and_derives_cluster(monkeypatch):
+    rows = _active_package_rows()
+    mapper = VersionedIndustryMapper(
+        {f"{row.code}.SZ": "算力" for row in rows},
+        revision="industry-map-fixture-v1",
+    )
+    package_client = PackageClient(_package(rows))
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+        tdx_industry_mapper=mapper,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (_ for _ in ()).throw(RuntimeError("eastmoney unavailable")),
+    )
+
+    result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
+
+    assert result["state"] == "candidate"
+    assert result["quality"]["industryMappingRevision"] == "industry-map-fixture-v1"
+    assert result["quality"]["industryMappingCoverage"] == 1.0
+    assert result["topStocks"][0]["industry"] == "算力"
+
+
+def test_provider_keeps_top_stocks_but_marks_incomplete_industry_mapping_unverified(monkeypatch):
+    package_client = PackageClient(_package(_active_package_rows()))
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+        tdx_industry_mapper=VersionedIndustryMapper(
+            {"000000.SZ": "算力"}, revision="industry-map-partial-v1"
+        ),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (_ for _ in ()).throw(RuntimeError("eastmoney unavailable")),
+    )
+
+    result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
+
+    assert len(result["topStocks"]) == 10
+    assert result["state"] == "unverified"
+    assert result["quality"]["industryMappingCoverage"] < 1.0
+    assert "行业映射覆盖不足" in result["quality"]["warning"]
 
 
 def test_provider_does_not_call_tdx_when_feature_is_disabled(monkeypatch):
@@ -274,10 +396,81 @@ def test_provider_does_not_call_tdx_when_feature_is_disabled(monkeypatch):
     assert result["quality"]["source"] == "eastmoney-clist"
 
 
+def test_provider_rejects_historical_active_direction_before_provider_calls(monkeypatch):
+    package_client = PackageClient(_package(_active_package_rows()))
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_active_direction",
+        lambda: (_ for _ in ()).throw(AssertionError("historical request called provider")),
+    )
+
+    result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=False)
+
+    assert package_client.calls == []
+    assert result["quality"]["status"] == "missing"
+    assert "历史日期" in result["quality"]["warning"]
+
+
+def test_tdx_real_probe_requires_explicit_authorization(capsys, tmp_path):
+    output = tmp_path / "probe.json"
+
+    exit_code = market_cli.main(
+        [
+            "tdx",
+            "real-probe",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "requires --allow-real" in capsys.readouterr().out
+    assert not output.exists()
+
+
+def test_tdx_real_probe_reports_derived_fields_without_snapshot_write(monkeypatch, tmp_path):
+    class ProbePackageClient:
+        def fetch(self, requested_date):
+            return _package(_active_package_rows())
+
+    monkeypatch.setattr(market_cli, "TDXDailyPackageClient", ProbePackageClient)
+    output = tmp_path / "probe.json"
+
+    exit_code = market_cli.main(
+        [
+            "tdx",
+            "real-probe",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--output",
+            str(output),
+            "--allow-real",
+        ]
+    )
+
+    assert exit_code == 0
+    report = output.read_text(encoding="utf-8")
+    assert '"requestedDate": "2026-09-18"' in report
+    assert '"sourceDate": "2026-09-18"' in report
+    assert '"derivedTopRows": 30' in report
+    assert '"rankingMethod": "local-turnover-desc-identity-asc"' in report
+    assert '"industryMappingCoverage": 0.0' in report
+    assert '"quality": "fallback-derived"' in report
+
+
 def test_provider_resolves_only_names_from_batched_tencent_lookup(monkeypatch):
     rows = _active_package_rows(names=False)
     package_client = PackageClient(_package(rows))
-    provider = MarketDataProvider(tdx_daily_package=package_client, tdx_fallback_enabled=True)
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+    )
     monkeypatch.setattr(
         provider,
         "_fetch_eastmoney_active_direction",
@@ -287,7 +480,7 @@ def test_provider_resolves_only_names_from_batched_tencent_lookup(monkeypatch):
 
     result = provider.fetch_chapter01_active_direction(AS_OF, allow_current_snapshot=True)
 
-    assert result["quality"]["source"] == "tdx-daily-package"
+    assert result["quality"]["source"] == "tdx-daily-package-derived"
     assert result["topStocks"][0]["name"] == "腾讯名000000"
     assert result["topStocks"][0]["amount"] == 30_000
     assert result["topStocks"][0]["changePct"] == pytest.approx(11.1111)
@@ -354,7 +547,11 @@ def test_breadth_uses_only_exact_previous_session_when_package_lacks_change_fiel
 
 def test_collection_writes_breadth_and_active_direction_independently_from_tdx(tmp_path, monkeypatch):
     package_client = PackageClient(_package(_active_package_rows()))
-    provider = MarketDataProvider(tdx_daily_package=package_client, tdx_fallback_enabled=True)
+    provider = MarketDataProvider(
+        tdx_daily_package=package_client,
+        tdx_active_direction_derived_enabled=True,
+        tdx_fallback_enabled=True,
+    )
     monkeypatch.setattr(
         provider,
         "_fetch_eastmoney_breadth_fallback",
@@ -372,10 +569,13 @@ def test_collection_writes_breadth_and_active_direction_independently_from_tdx(t
         now=lambda: datetime(2026, 9, 18, 15, 20, tzinfo=MARKET_TIME_ZONE),
     ).collect(AS_OF, ["breadth", "activeDirection"])
 
-    assert result.run.status == "success"
+    assert result.run.status == "partial"
     assert {task.dataset for task in result.tasks} == {"breadth", "activeDirection"}
     assert store.get("breadth", AS_OF).source == "tdx-daily-package"
-    assert store.get("activeDirection", AS_OF).source == "tdx-daily-package"
+    assert store.get("activeDirection", AS_OF).source == "tdx-daily-package-derived"
+    assert store.get("activeDirection", AS_OF).status == "fallback-derived"
+    tasks = {task.dataset: task for task in result.tasks}
+    assert tasks["activeDirection"].status == "partial"
     assert package_client.calls == [AS_OF, AS_OF]
 
 
@@ -384,7 +584,10 @@ def test_collection_retains_same_date_snapshot_when_tdx_fallback_fails(tmp_path,
         def fetch(self, requested_date):
             raise TDXDailyPackageUnavailable("not published")
 
-    provider = MarketDataProvider(tdx_daily_package=FailingClient(), tdx_fallback_enabled=True)
+    provider = MarketDataProvider(
+        tdx_daily_package=FailingClient(),
+        tdx_active_direction_derived_enabled=True,
+    )
     monkeypatch.setattr(
         provider,
         "_fetch_eastmoney_active_direction",

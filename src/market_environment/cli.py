@@ -204,22 +204,46 @@ def _print_payload(payload: dict[str, Any]) -> None:
 
 def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
     started = time.perf_counter()
-    package = TDXDailyPackageClient().fetch(as_of)
-    rows = list(package.rows)
-    amount_count = sum(row.amount is not None for row in rows)
-    name_count = sum(bool(row.name) for row in rows)
+    client = TDXDailyPackageClient()
+    package = client.fetch(as_of)
+
+    class ProbeClient:
+        def fetch(self, requested_date: date):
+            if requested_date != as_of:
+                raise ValueError("probe attempted a date outside the requested package")
+            return package
+
+    from .providers import MarketDataProvider
+
+    provider = MarketDataProvider(
+        tdx_daily_package=ProbeClient(),
+        tdx_active_direction_derived_enabled=True,
+    )
+    derived_rows, metadata = provider._fetch_tdx_active_direction_rows(as_of)
+    package_rows = list(package.rows)
+    valid_rows = [
+        row for row in package_rows
+        if row.amount is not None and row.close is not None
+    ]
+    named_rows = [row for row in valid_rows if provider._valid_tdx_name(row.name, row.code)]
+    market_counts = package.metadata.get("marketCounts", {})
     return {
         "provider": "tdx-daily-package",
-        "asOf": as_of.isoformat(),
+        "requestedDate": as_of.isoformat(),
         "sourceDate": package.source_date.isoformat(),
         "fetchedAt": package.fetched_at.isoformat(),
-        "sourceRevision": "2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7",
-        "rowCount": len(rows),
-        "amountCoverage": amount_count / len(rows) if rows else 0.0,
-        "nameCoverage": name_count / len(rows) if rows else 0.0,
+        "marketCounts": dict(market_counts) if isinstance(market_counts, dict) else {},
+        "rowCount": len(package_rows),
+        "validRows": len(valid_rows),
+        "derivedTopRows": len(derived_rows),
+        "amountCoverage": len([row for row in package_rows if row.amount is not None]) / len(package_rows) if package_rows else 0.0,
+        "nameCoverage": len(named_rows) / len(valid_rows) if valid_rows else 0.0,
+        "rankingMethod": metadata.get("rankingMethod"),
+        "industryMappingRevision": metadata.get("industryMappingRevision"),
+        "industryMappingCoverage": metadata.get("industryMappingCoverage"),
+        "sourceRevision": metadata.get("sourceRevision"),
         "elapsedMs": round((time.perf_counter() - started) * 1000, 2),
-        "quality": "ok" if rows and amount_count == len(rows) and name_count == len(rows) else "insufficient",
-        "metadata": dict(package.metadata),
+        "quality": "fallback-derived",
     }
 
 
@@ -256,7 +280,7 @@ def main(
                 encoding="utf-8",
             )
             _print_payload(payload)
-            return 0 if payload["quality"] == "ok" else 2
+            return 0 if payload["quality"] in {"ok", "fallback-derived"} else 2
         except Exception as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
             return 2

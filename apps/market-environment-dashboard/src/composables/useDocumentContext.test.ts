@@ -203,6 +203,7 @@ describe('useDocumentContext — label dictionaries', () => {
     const ctx = useDocumentContext()
     expect(ctx.qualityLabel({ status: 'ok', warnings: [] } as never)).toBe('正常')
     expect(ctx.qualityLabel({ status: 'missing', warnings: [] } as never)).toBe('缺失')
+    expect(ctx.qualityLabel({ status: 'fallback-derived', warnings: [] } as never)).toBe('本地派生降级')
     expect(ctx.qualityLabel(undefined)).toBe('数据不足')
   })
 
@@ -210,6 +211,7 @@ describe('useDocumentContext — label dictionaries', () => {
     const ctx = useDocumentContext()
     expect(ctx.qualityTone({ status: 'ok', warnings: [] } as never)).toBe('ok')
     expect(ctx.qualityTone({ status: 'partial', warnings: [] } as never)).toBe('fallback')
+    expect(ctx.qualityTone({ status: 'fallback-derived', warnings: [] } as never)).toBe('fallback')
     expect(ctx.qualityTone({ status: 'missing', warnings: [] } as never)).toBe('missing')
   })
 

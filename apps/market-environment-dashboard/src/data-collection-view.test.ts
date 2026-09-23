@@ -9,8 +9,9 @@ let wrapper: VueWrapper | null = null
 
 function dataset(dataset: string, detail?: Record<string, unknown>) {
   return {
-    dataset, available: dataset === 'limits', source: 'fixture', observations: dataset === 'limits' ? 64 : 0,
+    dataset, available: dataset === 'limits' || dataset === 'activeDirection', source: dataset === 'activeDirection' ? 'tdx-daily-package-derived' : 'fixture', observations: dataset === 'limits' ? 64 : dataset === 'activeDirection' ? 30 : 0,
     lastSuccessAt: '2026-09-10T16:00:00+08:00', settled: true, refreshWarning: null,
+    quality: dataset === 'activeDirection' ? { status: 'fallback-derived', rankingMethod: 'local-turnover-desc-identity-asc', industryMappingCoverage: 0.5 } : null,
     latestAttempt: dataset === 'limits' ? {
       taskId: 'task-limits', runId: 'run-1', status: 'failed-retained', source: 'fixture', observations: 64,
       warning: '上次刷新失败，保留旧值', queuedAt: null, startedAt: null, completedAt: null, durationMs: 100, settled: true,
@@ -60,5 +61,17 @@ describe('data collection limits detail', () => {
     expect(attemptTime.exists()).toBe(true)
     expect(attemptTime.text()).toBe('2026-09-15 08:00:00 GMT+8')
     expect(wrapper.find('[data-label="最近成功"] span').text()).toBe('2026-09-10 16:00:00 GMT+8')
+  })
+
+  it('labels the locally derived active-direction quality from local status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+      asOf: '2026-09-15', manualRefreshEnabled: true,
+      datasets: [dataset('core'), dataset('breadth'), dataset('limits'), dataset('sectors'), dataset('activeDirection')],
+    }) })))
+    wrapper = mount(DataCollectionView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('tdx-daily-package-derived')
+    expect(wrapper.text()).toContain('本地派生降级 · 本地成交额排序 · 行业映射 50%')
   })
 })

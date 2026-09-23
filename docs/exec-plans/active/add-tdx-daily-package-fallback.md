@@ -6,7 +6,7 @@ Stage 1 — 独立盘后包客户端、`breadth`/`activeDirection` fallback、�
 
 ## Status
 
-completed（实现与验证阶段完成；真实 `activeDirection` 资格仍因原始包未排序而保持 rollout gated，生产默认关闭）
+completed-with-breadth-only-production-rollout（实现与验证完成；生产仅启用 `breadth` fallback，真实 `activeDirection` 资格仍因原始包未排序而保持 rollout gated）
 
 ## Acceptance
 
@@ -30,8 +30,8 @@ completed（实现与验证阶段完成；真实 `activeDirection` 资格仍因�
 
 - 2026-09-18 真实包虽可解析，但原始记录不是成交额非递增顺序（约 5,209 个逆序点）；按当前规格 `activeDirection` 会拒绝该包，禁止本地排序伪造 provider-ranked 证据。需要单独更新规格并重新评审后，才能决定是否允许“完整包本地确定性排序”作为另一种质量状态。
 - 真实 probe 证明了包级字段覆盖，但尚未证明 `activeDirection` 的真实资格；腾讯名称回退仅通过离线注入测试验证，未执行真实腾讯请求。
-- feature flag 必须保持关闭，直到 active-direction 排序证据边界被明确接受；不能将 package `quality=ok` 误当作两个数据集均可启用。
+- feature flag 的默认值仍为关闭；2026-09-23 生产发布仅显式打开该开关以启用 `breadth` fallback。不能将 package `quality=ok` 误当作 `activeDirection` 也具备资格。
 
 ## Next Step
 
-归档本变更前，产品/数据质量负责人需要决定是否另开变更处理真实包未排序与 `activeDirection` 的证据边界；在该决策前保持 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=0`，只允许复用已验证的包解析与 `breadth` fallback。
+后续仍需由产品/数据质量负责人决定是否另开变更处理真实包未排序与 `activeDirection` 的证据边界；在该决策前保持 activeDirection candidate fail-closed。生产回滚时关闭 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED`，不删除快照或跨日期回填。

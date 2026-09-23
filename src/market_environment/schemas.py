@@ -843,6 +843,7 @@ class DatasetCollectionStatus(BaseModel):
     lastSuccessAt: datetime | None
     settled: bool
     refreshWarning: str | None
+    quality: dict[str, Any] | None = None
     latestAttempt: CollectionAttemptSummary | None
     activeTaskId: str | None
     collectionAllowed: bool

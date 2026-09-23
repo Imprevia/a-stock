@@ -160,6 +160,13 @@ export interface DataSetQuality {
   snapshotFetchedAt?: string | null
   refreshing?: boolean | null
   refreshWarning?: string | null
+  derived?: boolean
+  rankingMethod?: string | null
+  sourceRevision?: string | null
+  industryMappingRevision?: string | null
+  industryMappingCoverage?: number | null
+  industryMappingCovered?: number | null
+  industryMappingTotal?: number | null
 }
 
 export type MetricQualityStatus = 'ok' | 'insufficient' | 'degraded' | 'failed' | string

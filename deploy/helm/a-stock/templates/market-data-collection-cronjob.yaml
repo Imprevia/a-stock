@@ -180,6 +180,8 @@ spec:
                   value: {{ ternary "1" "0" .Values.marketEnvironment.persistentCache | quote }}
                 - name: MARKET_ENVIRONMENT_SETTLEMENT_TIME
                   value: {{ .Values.marketEnvironment.settlementTime | quote }}
+                - name: MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED
+                  value: {{ ternary "1" "0" .Values.marketEnvironment.tdx.derivedActiveDirectionEnabled | quote }}
                 - name: MARKET_ENVIRONMENT_LIMITS_V1_ENABLED
                   value: {{ ternary "1" "0" .Values.marketEnvironment.limits.v1Enabled | quote }}
                 - name: MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED

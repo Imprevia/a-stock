@@ -110,6 +110,8 @@ persistence:
 marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
+  tdx:
+    derivedActiveDirectionEnabled: false
   limits:
     v1Enabled: false
     fuyao:

@@ -30,6 +30,7 @@ export interface CollectionAttempt {
   promotionQuality?: string | null
   promotionDependency?: string | null
   promotionRequired?: boolean | null
+  quality?: Record<string, unknown> | null
 }
 
 export interface LimitsCollectionDetail {
@@ -50,6 +51,7 @@ export interface DatasetCollectionStatus {
   lastSuccessAt: string | null
   settled: boolean
   refreshWarning: string | null
+  quality?: Record<string, unknown> | null
   latestAttempt: CollectionAttempt | null
   activeTaskId: string | null
   collectionAllowed: boolean

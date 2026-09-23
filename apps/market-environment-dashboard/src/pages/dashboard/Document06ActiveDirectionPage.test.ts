@@ -32,7 +32,7 @@ function makeResponse(withStocks: boolean) {
               { code: '600000', name: '某算力股', changePct: 5.2, amount: 3200000000, industry: '算力', closePosition: 0.92 },
               { code: '300001', name: '某半导体股', changePct: -2.1, amount: 1800000000, industry: null, closePosition: null },
             ],
-            quality: { dataset: 'active-direction', source: 'fixture', provider: 'fixture', status: 'ok', observations: 30, asOf: '2026-09-03', warnings: [] },
+            quality: { dataset: 'active-direction', source: 'tdx-daily-package-derived', provider: 'tdx-daily-package-derived', status: 'fallback-derived', observations: 30, asOf: '2026-09-03', derived: true, rankingMethod: 'local-turnover-desc-identity-asc', industryMappingCoverage: 0.5, warnings: [] },
           }
         : {
             state: 'insufficient',
@@ -75,6 +75,8 @@ describe('Document06ActiveDirectionPage', () => {
     expect(wrapper.text()).toContain('32.0 亿')
     expect(wrapper.text()).toContain('92%')
     expect(wrapper.text()).toContain('--')
+    expect(wrapper.text()).toContain('tdx-daily-package-derived')
+    expect(wrapper.text()).toContain('行业映射覆盖 50%')
   })
 
   it('renders the empty fallback when topStocks is empty', async () => {

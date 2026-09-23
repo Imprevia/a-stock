@@ -17,6 +17,7 @@ const ctx = useDocumentContext()
 
 const activeDirection = computed(() => market.chapter?.activeDirection)
 const topStocks = computed(() => activeDirection.value?.topStocks ?? [])
+const derivedQuality = computed(() => activeDirection.value?.quality?.derived ? activeDirection.value.quality : null)
 
 function formatCount(value: number | null | undefined): string {
   return value == null ? '--' : value.toLocaleString('zh-CN')
@@ -51,6 +52,10 @@ function formatPosition(value: number | null | undefined): string {
       <span class="quality-badge" :class="ctx.qualityTone(activeDirection?.quality)">{{ ctx.qualityLabel(activeDirection?.quality) }}</span>
     </div>
     <p v-if="activeDirection?.summary" class="panel-summary">{{ activeDirection.summary }}</p>
+    <p v-if="derivedQuality" class="panel-quality-note">
+      来源 {{ derivedQuality.source }} · {{ derivedQuality.rankingMethod || '本地派生排序' }}
+      <span v-if="derivedQuality.industryMappingCoverage != null"> · 行业映射覆盖 {{ (derivedQuality.industryMappingCoverage * 100).toFixed(0) }}%</span>
+    </p>
     <div v-if="topStocks.length" class="table-scroll">
       <table>
         <thead><tr><th>个股</th><th>涨跌幅</th><th>成交额</th><th>方向</th><th>收盘位置</th></tr></thead>
