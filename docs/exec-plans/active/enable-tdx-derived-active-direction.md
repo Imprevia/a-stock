@@ -2,11 +2,11 @@
 
 ## Stage
 
-实现、离线验证与受控发布准备
+实现、离线验证与受控生产发布
 
 ## Status
 
-offline-complete-awaiting-production-authorization
+production-deployed-first-natural-job-pending
 
 ## Acceptance
 
@@ -22,12 +22,14 @@ offline-complete-awaiting-production-authorization
 - 已补齐后端和前端的派生质量契约测试源码，并通过 `python3 -m compileall -q src tests`。
 - 已补齐 TDX real probe 的显式授权和脱敏报告字段；2026-09-23 隔离 probe 成功，报告写入 `/tmp`，未写快照或数据库：包日期一致，沪 `27383` / 深 `24160` / 北 `378`，总行数/有效行数 `51921`，名称覆盖 `1.0`，排序方法为 `local-turnover-desc-identity-asc`，行业映射覆盖 `0.0`，最终质量 `fallback-derived`。
 - 离线验证已通过：`.venv/bin/python -m pytest tests -q` 为 `680 passed, 3 skipped, 2 warnings`；Dashboard Vitest 为 `122 passed`；Vite build、Helm lint/render、`python scripts/check-docs-contract.py --mode=full`、OpenSpec strict、docs sync-check、rules validate/coverage 均通过。
+- 2026-09-24 受控生产发布完成：旧 active CronJob 先经 revision 51/52 停用并删除；修复后的服务镜像 `20260924-000048-188a2d9`、manifest digest `sha256:c615af6199b53c42df4abd3350dfc7347f39dba8e9220c2e499e28f3aa9cbbb1` 在 revision 55 完成 Dashboard rollout，revision 56 创建暂停 CronJob，revision 57 按 `next-schedule` 激活。
+- 生产写后只读验收通过：Deployment/CronJob 均 `1/1`、新开关为 `1`、CronJob 为 `30 16 * * 1-5` 且 `suspend=false`、PostgreSQL/PVC 为 Ready/Bound、`/api/health` 为 `ok`；`/api/market-environment?as_of=2026-09-23` 返回 `activeDirection.source=tdx-daily-package-derived`、`quality.status=fallback-derived`、文档 06 为 `partial`，数据状态接口不再出现 fallback-derived 枚举校验错误。
 
 ## Remaining Gaps
 
-- 未执行生产 Deployment/CronJob 写操作；新开关保持默认关闭，不能把本地实现当作生产部署成功。
 - real probe 证明目标包可以派生 Top-30，但行业映射覆盖为 `0.0`，因此生产看板只能显示股票榜，方向聚集保持 `unverified`，不能宣称已形成行业方向结论。
+- 最终镜像激活后首个自然盘后 Job 尚未到触发时间；下一次触发为 `2026-09-24 16:30 Asia/Shanghai`。在该 Job 完成前，OpenSpec 任务 `5.4` 保持未勾选，不把已有旧镜像/手工采集结果冒充为新 CronJob 的自然触发证据。
 
 ## Next Step
 
-所有离线门禁和 real probe 已完成。下一步只有在取得单独生产写授权后，才通过受控 deployment/schedule 入口将新开关独立设为 `1` 并观察一个盘后 Job；回滚仅关闭 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED`，不改变 breadth 开关。
+部署和激活已完成。下一步在 `2026-09-24 16:30 Asia/Shanghai` 后读取首个自然 Job 的 run/task 状态，确认 `activeDirection` 为 `fallback-derived` 或精确的 `failed-retained`/`failed-missing`；回滚仅关闭 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED`，不改变 breadth 开关。
