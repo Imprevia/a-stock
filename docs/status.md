@@ -35,6 +35,7 @@
   - TrueNAS k3s 组件化部署已落地：`scripts/deploy-truenas-k3s.sh --component all|database|service|schedule` 共享一个 Helm release，`all` 固定按 `database -> service -> schedule` 执行；database 使用 PostgreSQL Retain RWO PVC，service/schedule 仅通过 existingSecret 连接配置访问，旧 SQLite PVC 仅作为迁移输入保留。离线 manifest 与 TrueNAS scheduling guard 套件未访问真实 TrueNAS、provider 或生产 PVC。
   - 已新增部署内盘后自动采集：k3s/Helm CronJob 的业务目标为 `Asia/Shanghai` 工作日 16:30，覆盖五类数据并与 Dashboard 共享 PostgreSQL、task/lease 和失败隔离；native timezone 限 1.27+，1.26 的 controller 兼容实现与 TrueNAS overlays 已形成离线实现。生产调度保持 fail-closed 默认（`enabled=false / suspend=true`）。
   - scheduled-refresh 在周末无 provider 调用并返回 skipped，结算前拒绝；`partial` 保留成功兄弟任务且不自动整批重跑。旧结构化 CommonMark/Bash AST 审计和发布测试结果均为历史证据：它们未覆盖 canonical rollback binding、label/shape drift 下的 active-to-off 补偿，以及 stdin/source/alias 等二次解释路径。focused/deployment/guard 与 fake-provider 测试范围绑定 `cd26dff3e6bebe012198dcd38074c354c1a9afac`；全库、OpenSpec、docs-contract、clean/review 证据绑定冻结 docs-only review/evidence tip `4f6d2b28b1694c78f53eb3ce007b8530b0667ead`，旧 SHA 结果不作为当前验收。
+  - TDX 盘后包已新增 `tdx-stock-universe-v1` 普通 A 股过滤边界：`breadth` 和 TDX 派生 `activeDirection` 只消费过滤后的普通股票，质量对象保留原始/保留/排除/未分类数量、按市场保留统计和排除原因；过滤后不足时返回失败/保留语义，不把约 5 万行全证券包作为 A 股广度样本。2026-09-23、2026-09-24 已在新镜像中按原日期完成生产重采集，保留数分别为 5560 / 5561，未分类均为 0。
 - 交易规则工程化产品范围已定义：`docs/product-specs/trading-rule-engineering.md`。
 - OpenSpec change `engineer-trading-rules-ci` 已建立 proposal、4 份 capability spec、design 和 19 项实施任务。
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
@@ -50,6 +51,7 @@
 ## 最近完成
 
 - `consolidate-helm-managed-scheduling`（2026-09-17）完成仓库与生产验收；随后 2026-09-21 恢复到 Helm revision 25 的 suspended 基线，并于 2026-09-22 通过受控 `--activate-schedule` 升至 revision 26。当前唯一 `a-stock-data-collection` 为 Helm-owned、`suspend=false`、工作日上海 16:30，Dashboard/PostgreSQL 均 Ready；首次自然触发和数据质量观察仍待完成。`manual-local` 因仍承载共享 PV 保留。
+- `fix-tdx-breadth-stock-universe`（2026-09-25）完成 TDX 普通 A 股 universe 过滤、生产部署、只读 real probe、2026-09-23/24 精确日期重采集、provider/collection/API 契约、文档更新和离线门禁；生产 CronJob 按 fail-closed 规则保持 absent。
 - 2026-09-17 完成 TrueNAS PostgreSQL 生产切换与 SQLite 历史导入：生产 dry-run 发现并修复 migration Job `fsGroup`、只读 WAL `immutable=1` 和 revision trigger 冲突；隔离 PostgreSQL 16.4 集成测试 11 项通过，正式导入 `snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`，最新历史日 API 200。
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
 - Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
@@ -84,10 +86,11 @@
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
+- 后续盘后观察新日期的 TDX universe 审计；若需恢复定时采集，先完成独立 suspended release/canary 审核，不直接激活 CronJob。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。
 - 积累 500–750 个交易日快照，回测市场环境阈值与分类稳定性。
 - 后续按覆盖清单逐章实现第 02 至 11 章 evaluator。
 
 ## 最后更新
 
-2026-09-22
+2026-09-25

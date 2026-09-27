@@ -8,7 +8,7 @@ import logging
 import math
 import os
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -27,8 +27,14 @@ from .tdx_daily import (
     TDXDailyPackageClient,
     TDXDailyPackageError,
     TDXDailyPackageRow,
+    TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO,
+    TDX_STOCK_UNIVERSE_MINIMUMS,
+    TDX_STOCK_UNIVERSE_MIN_TOTAL,
+    TDXStockUniverseError,
     TDX_UPSTREAM_REVISION,
+    classify_tdx_stock_universe,
     normalize_tdx_rows,
+    validate_tdx_stock_universe,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +120,10 @@ class MarketDataProvider:
         tdx_active_direction_derived_enabled: bool | None = None,
         tdx_industry_mapper: VersionedIndustryMapper | None = None,
         tdx_trading_days: Callable[[], tuple[date, ...]] | None = None,
+        tdx_stock_universe_minimums: Mapping[str, int] | None = None,
+        tdx_stock_universe_minimum_total: int | None = None,
+        tdx_stock_universe_required_markets: Iterable[str] | None = None,
+        tdx_stock_universe_max_unclassified_ratio: float | None = None,
     ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
@@ -138,6 +148,50 @@ class MarketDataProvider:
             tdx_config.derived_active_direction_enabled
             if tdx_active_direction_derived_enabled is None
             else bool(tdx_active_direction_derived_enabled)
+        )
+        package_minimums = getattr(self.tdx_daily_package, "stock_universe_minimums", None)
+        self.tdx_stock_universe_minimums = dict(
+            tdx_stock_universe_minimums
+            if tdx_stock_universe_minimums is not None
+            else (package_minimums if package_minimums is not None else TDX_STOCK_UNIVERSE_MINIMUMS)
+        )
+        package_minimum_total = getattr(self.tdx_daily_package, "stock_universe_minimum_total", None)
+        self.tdx_stock_universe_minimum_total = int(
+            tdx_stock_universe_minimum_total
+            if tdx_stock_universe_minimum_total is not None
+            else (
+                package_minimum_total
+                if package_minimum_total is not None
+                else TDX_STOCK_UNIVERSE_MIN_TOTAL
+            )
+        )
+        package_required_markets = getattr(
+            self.tdx_daily_package,
+            "stock_universe_required_markets",
+            None,
+        )
+        self.tdx_stock_universe_required_markets = tuple(
+            tdx_stock_universe_required_markets
+            if tdx_stock_universe_required_markets is not None
+            else (
+                package_required_markets
+                if package_required_markets is not None
+                else ("sh", "sz", "bj")
+            )
+        )
+        package_max_unclassified_ratio = getattr(
+            self.tdx_daily_package,
+            "stock_universe_max_unclassified_ratio",
+            None,
+        )
+        self.tdx_stock_universe_max_unclassified_ratio = float(
+            tdx_stock_universe_max_unclassified_ratio
+            if tdx_stock_universe_max_unclassified_ratio is not None
+            else (
+                package_max_unclassified_ratio
+                if package_max_unclassified_ratio is not None
+                else TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO
+            )
         )
         self.tdx_industry_mapper = tdx_industry_mapper
         self._tdx_trading_days = tdx_trading_days
@@ -284,16 +338,31 @@ class MarketDataProvider:
             )
         except Exception as exc:
             primary_warning = f"东方财富市场广度不可用：{exc}"
-            if not self.tdx_fallback_enabled:
-                return self._missing_breadth(as_of, primary_warning, status="failed")
-            try:
-                return self._fetch_tdx_breadth(as_of, [primary_warning])
-            except Exception as tdx_error:
-                return self._missing_breadth(
-                    as_of,
-                    f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
-                    status="failed",
-                )
+        if not self.tdx_fallback_enabled:
+            return self._missing_breadth(as_of, primary_warning, status="failed")
+        try:
+            return self._fetch_tdx_breadth(as_of, [primary_warning])
+        except TDXStockUniverseError as tdx_error:
+            return self._missing_breadth(
+                as_of,
+                f"{primary_warning}；通达信普通 A 股 universe 不足：{tdx_error}",
+                status="failed",
+                source="tdx-daily-package",
+                metadata=tdx_error.classification.metadata(),
+            )
+        except TDXDailyPackageError as tdx_error:
+            return self._missing_breadth(
+                as_of,
+                f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
+                status="failed",
+                source="tdx-daily-package",
+            )
+        except Exception as tdx_error:
+            return self._missing_breadth(
+                as_of,
+                f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
+                status="failed",
+            )
 
     def fetch_chapter01_active_direction(
         self,
@@ -330,6 +399,21 @@ class MarketDataProvider:
                     preserve_order=True,
                     quality_metadata=tdx_metadata,
                 )
+            except TDXStockUniverseError as tdx_error:
+                return self._missing_active_direction(
+                    as_of,
+                    f"{primary_warning}；通达信普通 A 股 universe 不足：{tdx_error}",
+                    status="failed",
+                    source="tdx-daily-package-derived",
+                    metadata=tdx_error.classification.metadata(),
+                )
+            except TDXDailyPackageError as tdx_error:
+                return self._missing_active_direction(
+                    as_of,
+                    f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
+                    status="failed",
+                    source="tdx-daily-package-derived",
+                )
             except Exception as tdx_error:
                 return self._missing_active_direction(
                     as_of,
@@ -345,7 +429,48 @@ class MarketDataProvider:
             raise TDXDailyPackageError("TDX package date evidence does not match the requested date")
         rows = normalize_tdx_rows(package.rows, as_of)
         self._validate_tdx_market_completeness(package, rows, as_of)
-        return replace(package, rows=rows)
+        classification = classify_tdx_stock_universe(rows, as_of)
+        metadata = dict(package.metadata)
+        metadata.update(classification.metadata())
+        try:
+            validate_tdx_stock_universe(
+                classification,
+                minimum_market_rows=self.tdx_stock_universe_minimums,
+                minimum_total=self.tdx_stock_universe_minimum_total,
+                required_markets=self.tdx_stock_universe_required_markets,
+                max_unclassified_ratio=self.tdx_stock_universe_max_unclassified_ratio,
+            )
+        except TDXStockUniverseError as exc:
+            raise TDXStockUniverseError(
+                f"{exc}; "
+                f"policy={classification.policy_version}, "
+                f"raw={classification.raw_count}, "
+                f"retained={classification.retained_count}, "
+                f"excluded={classification.excluded_count}, "
+                f"unclassified={classification.unclassified_count}",
+                classification,
+            ) from exc
+        return replace(package, rows=classification.rows, metadata=metadata)
+
+    @staticmethod
+    def _tdx_universe_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in metadata.items()
+            if key.startswith("stockUniverse")
+        }
+
+    @classmethod
+    def _tdx_universe_warning(cls, metadata: Mapping[str, Any]) -> str:
+        return (
+            "已按 "
+            f"{metadata.get('stockUniversePolicyVersion', 'unknown')} "
+            "过滤普通 A 股："
+            f"原始 {metadata.get('stockUniverseRawCount', 0)}，"
+            f"保留 {metadata.get('stockUniverseRetainedCount', 0)}，"
+            f"排除 {metadata.get('stockUniverseExcludedCount', 0)}，"
+            f"未分类 {metadata.get('stockUniverseUnclassifiedCount', 0)}"
+        )
 
     @staticmethod
     def _validate_tdx_market_completeness(
@@ -412,7 +537,12 @@ class MarketDataProvider:
             as_of,
             source="tdx-daily-package",
             status="fallback",
-            warnings=[*warnings, "已使用通达信盘后包的精确日期和全市场样本"],
+            warnings=[
+                *warnings,
+                "已使用通达信盘后包的精确日期和过滤后的普通 A 股样本",
+                self._tdx_universe_warning(package.metadata),
+            ],
+            quality_metadata=self._tdx_universe_metadata(package.metadata),
         )
 
     def _fetch_tdx_previous_package(self, as_of: date) -> TDXDailyPackage:
@@ -486,6 +616,7 @@ class MarketDataProvider:
             "derived": True,
             "rankingMethod": "local-turnover-desc-identity-asc",
             "sourceRevision": TDX_UPSTREAM_REVISION,
+            **self._tdx_universe_metadata(package.metadata),
             "industryMappingRevision": mapping_result.revision,
             "industryMappingCoverage": round(mapping_result.coverage, 4),
             "industryMappingCovered": mapping_result.covered,
@@ -1890,6 +2021,7 @@ class MarketDataProvider:
         source: str,
         status: str,
         warnings: list[str],
+        quality_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         valid_count = advance_count + decline_count + flat_count
         if valid_count <= 0:
@@ -1909,7 +2041,15 @@ class MarketDataProvider:
             "advanceRatio": round(advance_ratio, 4),
             "medianReturn": round(float(middle), 4),
             "state": state,
-            "quality": self._quality("market-breadth", source, status, valid_count, as_of, warnings),
+            "quality": self._quality(
+                "market-breadth",
+                source,
+                status,
+                valid_count,
+                as_of,
+                warnings,
+                quality_metadata,
+            ),
         }
 
     def _build_sectors(
@@ -2028,7 +2168,15 @@ class MarketDataProvider:
         }
 
     @classmethod
-    def _missing_breadth(cls, cls_as_of: date, warning: str, status: str = "missing") -> dict[str, Any]:
+    def _missing_breadth(
+        cls,
+        cls_as_of: date,
+        warning: str,
+        status: str = "missing",
+        *,
+        source: str = "eastmoney-clist",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "advanceCount": None,
             "declineCount": None,
@@ -2037,7 +2185,15 @@ class MarketDataProvider:
             "advanceRatio": None,
             "medianReturn": None,
             "state": "insufficient",
-            "quality": cls._quality("market-breadth", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+            "quality": cls._quality(
+                "market-breadth",
+                source,
+                status,
+                0,
+                cls_as_of,
+                [warning],
+                metadata,
+            ),
             # New 02-page fields; null when breadth itself is missing.
             "declineRatio": None,
             "advanceDeclineSpread": None,
@@ -2061,12 +2217,28 @@ class MarketDataProvider:
         }
 
     @classmethod
-    def _missing_active_direction(cls, cls_as_of: date, warning: str, status: str = "missing") -> dict[str, Any]:
+    def _missing_active_direction(
+        cls,
+        cls_as_of: date,
+        warning: str,
+        status: str = "missing",
+        *,
+        source: str = "eastmoney-clist",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "state": "insufficient",
             "summary": None,
             "topStocks": [],
-            "quality": cls._quality("active-direction", "eastmoney-clist", status, 0, cls_as_of, [warning]),
+            "quality": cls._quality(
+                "active-direction",
+                source,
+                status,
+                0,
+                cls_as_of,
+                [warning],
+                metadata,
+            ),
         }
 
     @staticmethod

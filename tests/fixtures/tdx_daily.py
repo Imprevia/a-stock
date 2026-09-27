@@ -6,7 +6,7 @@ import io
 import struct
 import zipfile
 from datetime import date
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 
 
 def make_tdx_package(
@@ -14,6 +14,7 @@ def make_tdx_package(
     *,
     markets: Iterable[str] = ("sh", "sz", "bj"),
     rows_per_market: int = 1,
+    codes_by_market: Mapping[str, Sequence[str]] | None = None,
     duplicate_code: bool = False,
     truncated: bool = False,
     invalid_numeric: bool = False,
@@ -26,8 +27,12 @@ def make_tdx_package(
         for market in markets:
             cod = bytearray()
             md1 = bytearray()
-            for index in range(rows_per_market):
-                code = "600000" if duplicate_code else f"{index + 1:06d}"
+            market_codes = tuple(
+                codes_by_market.get(market, ()) if codes_by_market is not None else ()
+            )
+            codes = market_codes or tuple(f"{index + 1:06d}" for index in range(rows_per_market))
+            for index, code in enumerate(codes):
+                code = "600000" if duplicate_code else code
                 record = bytearray(150)
                 record[0:6] = code.encode("ascii")
                 struct.pack_into("<H", record, 32, index)

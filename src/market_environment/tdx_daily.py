@@ -29,9 +29,76 @@ TDX_UPSTREAM_REVISION = "2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7"
 TDX_UPSTREAM_LICENSE = "Apache-2.0"
 TDX_PACKAGE_URL = "https://www.tdx.com.cn/products/data/data/g4day/{ymd}.zip"
 TDX_BJ_FIRST_DAY = date(2022, 5, 6)
+TDX_BJ_920_EFFECTIVE_DATE = date(2025, 10, 9)
 TDX_MIN_PRICED = {"sh": 10_000, "sz": 3_000, "bj": 50}
 TDX_MARKETS = ("sh", "sz", "bj")
+TDX_STOCK_UNIVERSE_POLICY_VERSION = "tdx-stock-universe-v1"
+TDX_STOCK_UNIVERSE_MINIMUMS = {"sh": 1_000, "sz": 1_500, "bj": 100}
+TDX_STOCK_UNIVERSE_MIN_TOTAL = 4_000
+TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO = 0.0
 _CODE_RE = re.compile(r"^[0-9]{6}$")
+
+_TDX_STOCK_PREFIXES = {
+    "sh": ("600", "601", "603", "605", "688"),
+    "sz": ("000", "001", "002", "003", "004", "300", "301"),
+    "bj": ("43", "83", "87", "88"),
+}
+_TDX_EXPLICIT_NON_STOCK_PREFIXES = {
+    "sh": (
+        (("000", "880", "881", "999"), "index"),
+        (("900",), "b-share"),
+        (
+            tuple(f"{prefix:03d}" for prefix in range(500, 590)),
+            "fund",
+        ),
+        (tuple(f"{prefix:03d}" for prefix in range(160, 170)), "fund"),
+        (
+            (
+                "010",
+                "018",
+                "019",
+                "020",
+                "152",
+                "155",
+                "157",
+                *tuple(f"{prefix:03d}" for prefix in range(100, 150)),
+                *tuple(f"{prefix:03d}" for prefix in range(170, 180)),
+                *tuple(f"{prefix:03d}" for prefix in range(184, 189)),
+                "198",
+                *tuple(f"{prefix:03d}" for prefix in range(230, 250)),
+                *tuple(f"{prefix:03d}" for prefix in range(270, 272)),
+                "302",
+            ),
+            "bond",
+        ),
+        (
+            (
+                *tuple(f"{prefix:03d}" for prefix in range(180, 184)),
+                *tuple(f"{prefix:03d}" for prefix in range(190, 200)),
+            ),
+            "non-stock-security",
+        ),
+        (("360", "362"), "preferred-or-other"),
+        (("580", "582"), "warrant"),
+        (("689",), "depositary-receipt"),
+        (("204", "888"), "non-stock-security"),
+    ),
+    "sz": (
+        (("20",), "b-share"),
+        (("10", "11", "12", "13", "14", "15", "16", "18"), "fund-or-bond"),
+        (("17", "19"), "bond"),
+        (("399",), "index"),
+        (("03",), "warrant"),
+        (("889",), "depositary-receipt"),
+        (("302", "500", "501"), "non-stock-security"),
+        (("520", "524", "525", "563", "564", "565", "566", "567"), "bond"),
+    ),
+    "bj": (
+        (("899",), "index"),
+        (("821", "910"), "non-stock-security"),
+        (("92",), "non-stock-security"),
+    ),
+}
 
 
 class TDXDailyPackageError(ProviderFailure):
@@ -40,6 +107,14 @@ class TDXDailyPackageError(ProviderFailure):
 
 class TDXDailyPackageUnavailable(TDXDailyPackageError):
     """The requested package is missing or has not been published yet."""
+
+
+class TDXStockUniverseError(TDXDailyPackageError):
+    """The package is parseable but cannot prove a complete stock universe."""
+
+    def __init__(self, message: str, classification: "TDXStockUniverseClassification") -> None:
+        super().__init__(message)
+        self.classification = classification
 
 
 @dataclass(frozen=True)
@@ -56,6 +131,33 @@ class TDXDailyPackageRow:
     high: float | None = None
     low: float | None = None
     volume: int | None = None
+
+
+@dataclass(frozen=True)
+class TDXStockUniverseClassification:
+    """Auditable ordinary A-share classification for one requested date."""
+
+    rows: tuple[TDXDailyPackageRow, ...]
+    policy_version: str
+    raw_count: int
+    retained_count: int
+    excluded_count: int
+    unclassified_count: int
+    retained_by_market: Mapping[str, int]
+    excluded_by_reason: Mapping[str, int]
+    unclassified_by_reason: Mapping[str, int]
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "stockUniversePolicyVersion": self.policy_version,
+            "stockUniverseRawCount": self.raw_count,
+            "stockUniverseRetainedCount": self.retained_count,
+            "stockUniverseExcludedCount": self.excluded_count,
+            "stockUniverseUnclassifiedCount": self.unclassified_count,
+            "stockUniverseRetainedByMarket": dict(self.retained_by_market),
+            "stockUniverseExcludedByReason": dict(self.excluded_by_reason),
+            "stockUniverseUnclassifiedByReason": dict(self.unclassified_by_reason),
+        }
 
 
 @dataclass(frozen=True)
@@ -169,6 +271,146 @@ def normalize_tdx_rows(
             )
         )
     return tuple(normalized)
+
+
+def _tdx_non_stock_reason(market: str, code: str) -> str | None:
+    for prefixes, reason in _TDX_EXPLICIT_NON_STOCK_PREFIXES.get(market, ()):
+        if code.startswith(prefixes):
+            return reason
+    return None
+
+
+def _tdx_stock_code_allowed(market: str, code: str, as_of: date) -> tuple[bool, str | None]:
+    if market == "bj" and code.startswith("920"):
+        if as_of < TDX_BJ_920_EFFECTIVE_DATE:
+            return False, "bj-920-before-effective-date"
+        return True, None
+    if code.startswith(_TDX_STOCK_PREFIXES.get(market, ())):
+        return True, None
+    if (reason := _tdx_non_stock_reason(market, code)) is not None:
+        return False, reason
+    return False, "unrecognized-code-range"
+
+
+def classify_tdx_stock_universe(
+    rows: Iterable[TDXDailyPackageRow],
+    requested_date: date | str,
+) -> TDXStockUniverseClassification:
+    """Keep only ordinary A-share rows using a date-versioned code policy."""
+
+    expected = _as_date(requested_date, field="requested date")
+    retained: list[TDXDailyPackageRow] = []
+    retained_by_market = {market: 0 for market in TDX_MARKETS}
+    excluded_by_reason: dict[str, int] = {}
+    unclassified_by_reason: dict[str, int] = {}
+    seen: set[tuple[str | None, str]] = set()
+    raw_count = 0
+
+    for raw in rows:
+        raw_count += 1
+        if not isinstance(raw, TDXDailyPackageRow):
+            unclassified_by_reason["malformed-row"] = unclassified_by_reason.get("malformed-row", 0) + 1
+            continue
+        market = str(raw.market or "").strip().lower() or None
+        identity = (market, raw.code)
+        if identity in seen:
+            unclassified_by_reason["duplicate-identity"] = (
+                unclassified_by_reason.get("duplicate-identity", 0) + 1
+            )
+            continue
+        seen.add(identity)
+        if raw.date != expected:
+            unclassified_by_reason["conflicting-date"] = (
+                unclassified_by_reason.get("conflicting-date", 0) + 1
+            )
+            continue
+        if market not in TDX_MARKETS:
+            unclassified_by_reason["unsupported-market"] = (
+                unclassified_by_reason.get("unsupported-market", 0) + 1
+            )
+            continue
+        if not _CODE_RE.fullmatch(raw.code):
+            unclassified_by_reason["invalid-code"] = (
+                unclassified_by_reason.get("invalid-code", 0) + 1
+            )
+            continue
+        allowed, reason = _tdx_stock_code_allowed(market, raw.code, expected)
+        if allowed:
+            retained.append(raw)
+            retained_by_market[market] += 1
+        elif reason in {
+            "b-share",
+            "fund",
+            "fund-or-bond",
+            "bond",
+            "preferred-or-other",
+            "warrant",
+            "index",
+            "depositary-receipt",
+            "non-stock-security",
+        }:
+            excluded_by_reason[reason] = excluded_by_reason.get(reason, 0) + 1
+        else:
+            reason = reason or "unclassified"
+            unclassified_by_reason[reason] = unclassified_by_reason.get(reason, 0) + 1
+
+    excluded_count = sum(excluded_by_reason.values())
+    unclassified_count = sum(unclassified_by_reason.values())
+    return TDXStockUniverseClassification(
+        rows=tuple(retained),
+        policy_version=TDX_STOCK_UNIVERSE_POLICY_VERSION,
+        raw_count=raw_count,
+        retained_count=len(retained),
+        excluded_count=excluded_count,
+        unclassified_count=unclassified_count,
+        retained_by_market=retained_by_market,
+        excluded_by_reason=excluded_by_reason,
+        unclassified_by_reason=unclassified_by_reason,
+    )
+
+
+def validate_tdx_stock_universe(
+    classification: TDXStockUniverseClassification,
+    *,
+    minimum_market_rows: Mapping[str, int] | None = None,
+    minimum_total: int = TDX_STOCK_UNIVERSE_MIN_TOTAL,
+    required_markets: Iterable[str] = TDX_MARKETS,
+    max_unclassified_ratio: float = TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO,
+) -> None:
+    """Reject a filtered package that cannot prove a complete stock universe."""
+
+    minimums = dict(TDX_STOCK_UNIVERSE_MINIMUMS if minimum_market_rows is None else minimum_market_rows)
+    required = tuple(dict.fromkeys(required_markets))
+    if classification.raw_count <= 0 or classification.retained_count <= 0:
+        raise TDXStockUniverseError("TDX ordinary A-share universe is empty", classification)
+    duplicate_count = classification.unclassified_by_reason.get("duplicate-identity", 0)
+    if duplicate_count:
+        raise TDXStockUniverseError(
+            "TDX ordinary A-share universe has duplicate identities",
+            classification,
+        )
+    if classification.raw_count and (
+        classification.unclassified_count / classification.raw_count > max_unclassified_ratio
+    ):
+        raise TDXStockUniverseError(
+            "TDX ordinary A-share universe has unclassified security identities",
+            classification,
+        )
+    missing = [
+        market
+        for market in required
+        if classification.retained_by_market.get(market, 0) < int(minimums.get(market, 0))
+    ]
+    if missing:
+        raise TDXStockUniverseError(
+            "TDX ordinary A-share universe is incomplete: " + ",".join(sorted(missing)),
+            classification,
+        )
+    if classification.retained_count < int(minimum_total):
+        raise TDXStockUniverseError(
+            f"TDX ordinary A-share universe has only {classification.retained_count} rows",
+            classification,
+        )
 
 
 def _parse_package_bytes(
@@ -321,12 +563,22 @@ class TDXDailyPackageClient:
         session: requests.Session | None = None,
         max_bytes: int = 8 * 1024 * 1024,
         minimum_market_rows: Mapping[str, int] | None = None,
+        stock_universe_minimums: Mapping[str, int] | None = None,
+        stock_universe_minimum_total: int = TDX_STOCK_UNIVERSE_MIN_TOTAL,
+        stock_universe_required_markets: Iterable[str] = TDX_MARKETS,
+        stock_universe_max_unclassified_ratio: float = TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.timeout = timeout
         self.session = session or requests.Session()
         self.max_bytes = max(1024, int(max_bytes))
         self.minimum_market_rows = dict(minimum_market_rows or TDX_MIN_PRICED)
+        self.stock_universe_minimums = dict(
+            stock_universe_minimums or TDX_STOCK_UNIVERSE_MINIMUMS
+        )
+        self.stock_universe_minimum_total = int(stock_universe_minimum_total)
+        self.stock_universe_required_markets = tuple(stock_universe_required_markets)
+        self.stock_universe_max_unclassified_ratio = float(stock_universe_max_unclassified_ratio)
         self.now = now or (lambda: datetime.now(timezone.utc))
 
     def fetch(self, requested_date: date | str) -> TDXDailyPackage:

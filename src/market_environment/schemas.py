@@ -218,6 +218,21 @@ class EvidenceQuality(BaseModel):
     snapshotFetchedAt: str | None = None
     refreshing: bool | None = None
     refreshWarning: str | None = None
+    derived: bool | None = None
+    rankingMethod: str | None = None
+    sourceRevision: str | None = None
+    industryMappingRevision: str | None = None
+    industryMappingCoverage: float | None = Field(default=None, ge=0, le=1)
+    industryMappingCovered: int | None = Field(default=None, ge=0)
+    industryMappingTotal: int | None = Field(default=None, ge=0)
+    stockUniversePolicyVersion: str | None = None
+    stockUniverseRawCount: int | None = Field(default=None, ge=0)
+    stockUniverseRetainedCount: int | None = Field(default=None, ge=0)
+    stockUniverseExcludedCount: int | None = Field(default=None, ge=0)
+    stockUniverseUnclassifiedCount: int | None = Field(default=None, ge=0)
+    stockUniverseRetainedByMarket: dict[str, int] | None = None
+    stockUniverseExcludedByReason: dict[str, int] | None = None
+    stockUniverseUnclassifiedByReason: dict[str, int] | None = None
 
 
 def _validate_iso_date(value: str | None) -> str | None:

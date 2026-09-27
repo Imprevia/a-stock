@@ -40,6 +40,7 @@
 | `add-tdx-daily-package-fallback` | Codex | completed-with-breadth-only-production-rollout | 2026-09-23 |
 | `deploy-tdx-fallback-and-scheduled-collection-20260923` | Codex | completed-final-image-activation-observation-pending | 2026-09-24 |
 | `enable-tdx-derived-active-direction` | Codex | production-deployed-first-natural-job-pending | 2026-09-24 |
+| `fix-tdx-breadth-stock-universe` | Codex | production-repair-complete | 2026-09-25 |
 
 ## 说明
 

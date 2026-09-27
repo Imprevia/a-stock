@@ -294,7 +294,7 @@ python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02
 python -m src.market_environment.cli snapshots refresh --as-of 2026-09-02 --dataset core --dataset breadth --dataset limits --dataset sectors --dataset activeDirection
 ```
 
-当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 仅用于显式本地诊断。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
+当前快照型 provider 默认只允许在上海时区目标市场日且达到结算时间后刷新；`--force` 用于显式本地诊断，并且是历史 latest-only 精确日期修复的唯一 CLI 许可。对已审计的 `2026-09-23` / `2026-09-24` 等错误快照，必须在生产 Pod 或其他明确绑定生产数据库的受控上下文中按原日期、指定 `breadth` / `activeDirection` 运行；逐日期核对 snapshot checksum、aggregate checksum、质量过滤统计和 collection run。普通 API、CronJob 与 provider-free GET 不获得该许可，也不得直接 SQL 修改 payload。命令输出每个数据集的 source、observations、duration、cache result 和 quality。单个数据集失败不会回滚其他成功数据集，也不会覆盖该日期上一次成功快照。
 
 容量方向单项验证可运行 `python -m src.market_environment.cli snapshots refresh --as-of <上海市场当天> --dataset activeDirection --force`。采集先请求 `push2` 主域；连接/读取错误、429 或 5xx 在共享客户端有界恢复后仍失败，或主域载荷不满足契约时，再请求 `push2delay`。两个端点都必须返回至少 30 个含代码、名称和成交额的有效样本，并保持成交额非递增排序；数组、键值对象和已登记字段别名统一进入同一校验。延迟域成功时应看到 `source=eastmoney-clist-delay`、`quality.status=fallback` 和包含主域错误的 warning；两个端点都失败时，只有显式开启 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才会尝试 TDX 派生路径，否则只保留同日期旧快照。派生成功应看到 `source=tdx-daily-package-derived`、`quality.status=fallback-derived`、`rankingMethod=local-turnover-desc-identity-asc` 和 TDX revision；同额记录按规范证券身份升序稳定排序。
 
@@ -648,6 +648,9 @@ kubectl delete pv a-stock-market-environment-data
 - **行业板块采集偶发 `RemoteDisconnected`**：确认请求经过共享串行门；主域会先执行有限连接重试，再降级到 `push2delay`。若两个域都失败，查看 task warning 和同日期 snapshot 是否触发 `failed-retained`，不要删除旧值或跨日期回填。
 - **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。
 - **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连或载荷无效，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。
+- **TDX breadth/activeDirection 样本异常**：先查看 `quality.stockUniversePolicyVersion`、`stockUniverseRawCount`、`stockUniverseRetainedCount`、`stockUniverseExcludedCount`、`stockUniverseUnclassifiedCount`、`stockUniverseRetainedByMarket` 和 `stockUniverseExcludedByReason`。`observations`、`validCount`、上涨/下跌/平盘计数和 TDX 派生成交额 Top-N 只能来自保留普通 A 股；约 5 万行通常表示把基金、债券或指数混入了全证券包，不能按前端重复计算处理。
+- **TDX 过滤后不足或分类未知**：确认请求日期、包日期、三地市场覆盖和 `tdx-stock-universe-v1` 规则版本；缺少市场、未分类行超阈值或过滤后样本不足时必须为 `insufficient`/`failed`。不要根据名称、价格、成交额猜股票类型，也不要把原始 `marketCounts` 当作普通股票数。
+- **修复 2026-09-23/2026-09-24 错误 breadth 快照**：先完成应用离线验证和只读 probe，再经单独授权对原日期分别执行精确日期重采集；成功才原子替换同日期 payload 并核对 checksum/聚合，失败记录 `failed-retained` 或 `failed-missing`。普通 GET 不联网修复，不直接 SQL 改 payload，不跨日期改名或回填；回滚只关闭对应 TDX 开关并保留快照和审计记录。
 - **涨跌停生态采集为 `failed-missing`**：逐池检查 `push2ex` 主域和兼容延迟域的请求记录。延迟池成功时必须在池证据中记录 fallback 来源和主域错误；缺少顶层日期但请求 `date` 明确时应记录 `dateEvidence=request-parameter`，显式行日期冲突、池格式无效或两端点均失败时仍保持 `failed`/`insufficient`，不得把空响应当作 0 或跨日期回填。
 - **需要紧急回滚持久缓存**：设置 `MARKET_ENVIRONMENT_PERSISTENT_CACHE=0` 并重启 API；PostgreSQL 数据库和旧 SQLite 归档均保留用于诊断，不需要删除。
 - **指数价格异常**：检查实时腾讯报价是否可用。沪市歧义代码没有实时交叉校验时，mootdx/百度结果会被拒绝，避免错误股票数据进入页面。

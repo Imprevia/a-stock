@@ -336,6 +336,35 @@ def test_latest_only_historical_collection_is_rejected_before_provider_calls(tmp
     assert provider.calls == ["limits"]
 
 
+def test_forced_cli_refresh_allows_historical_latest_only_exact_date(tmp_path, capsys) -> None:
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(
+        provider,
+        SnapshotStore(tmp_path / "snapshots.sqlite3"),
+        now=lambda: AFTER_MARKET,
+    )
+
+    exit_code = cli_main(
+        [
+            "snapshots",
+            "refresh",
+            "--as-of",
+            (AS_OF - timedelta(days=1)).isoformat(),
+            "--dataset",
+            "breadth",
+            "--force",
+        ],
+        coordinator=coordinator,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["forced"] is True
+    assert payload["status"] == "success"
+    assert provider.calls == ["breadth"]
+    assert coordinator.store.get("breadth", AS_OF - timedelta(days=1)) is not None
+
+
 def test_scheduled_refresh_collects_all_datasets_and_emits_structured_success(
     tmp_path,
     capsys,

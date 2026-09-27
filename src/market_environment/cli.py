@@ -208,6 +208,15 @@ def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
     package = client.fetch(as_of)
 
     class ProbeClient:
+        stock_universe_minimums = getattr(client, "stock_universe_minimums", None)
+        stock_universe_minimum_total = getattr(client, "stock_universe_minimum_total", None)
+        stock_universe_required_markets = getattr(client, "stock_universe_required_markets", None)
+        stock_universe_max_unclassified_ratio = getattr(
+            client,
+            "stock_universe_max_unclassified_ratio",
+            None,
+        )
+
         def fetch(self, requested_date: date):
             if requested_date != as_of:
                 raise ValueError("probe attempted a date outside the requested package")
@@ -235,6 +244,14 @@ def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
         "marketCounts": dict(market_counts) if isinstance(market_counts, dict) else {},
         "rowCount": len(package_rows),
         "validRows": len(valid_rows),
+        "stockUniversePolicyVersion": metadata.get("stockUniversePolicyVersion"),
+        "stockUniverseRawCount": metadata.get("stockUniverseRawCount"),
+        "stockUniverseRetainedCount": metadata.get("stockUniverseRetainedCount"),
+        "stockUniverseExcludedCount": metadata.get("stockUniverseExcludedCount"),
+        "stockUniverseUnclassifiedCount": metadata.get("stockUniverseUnclassifiedCount"),
+        "stockUniverseRetainedByMarket": metadata.get("stockUniverseRetainedByMarket"),
+        "stockUniverseExcludedByReason": metadata.get("stockUniverseExcludedByReason"),
+        "stockUniverseUnclassifiedByReason": metadata.get("stockUniverseUnclassifiedByReason"),
         "derivedTopRows": len(derived_rows),
         "amountCoverage": len([row for row in package_rows if row.amount is not None]) / len(package_rows) if package_rows else 0.0,
         "nameCoverage": len(named_rows) / len(valid_rows) if valid_rows else 0.0,
@@ -399,7 +416,14 @@ def main(
             )
             return 2 if failures else 0
         try:
-            result = active_coordinator.collect(args.as_of, args.datasets)
+            if args.force:
+                result = active_coordinator.collect(
+                    args.as_of,
+                    args.datasets,
+                    allow_historical_latest_only=True,
+                )
+            else:
+                result = active_coordinator.collect(args.as_of, args.datasets)
         except ValueError as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
             return 2

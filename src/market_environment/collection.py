@@ -97,9 +97,15 @@ class CollectionCoordinator:
         self,
         as_of: date,
         datasets: Iterable[str] | None = None,
+        *,
+        allow_historical_latest_only: bool = False,
     ) -> CollectionStartResult:
         selected = tuple(dict.fromkeys(datasets or SUPPORTED_COLLECTION_DATASETS))
-        self.validate_request(as_of, selected)
+        self.validate_request(
+            as_of,
+            selected,
+            allow_historical_latest_only=allow_historical_latest_only,
+        )
         current = self._market_now()
         self.store.expire_inactive_collection_tasks(now=current.astimezone(ZoneInfo("UTC")))
         run_id = uuid.uuid4().hex
@@ -213,8 +219,13 @@ class CollectionCoordinator:
         datasets: Iterable[str] | None = None,
         *,
         fetch_previous_limit_details: bool = True,
+        allow_historical_latest_only: bool = False,
     ) -> CollectionStartResult:
-        started = self.start_run(as_of, datasets)
+        started = self.start_run(
+            as_of,
+            datasets,
+            allow_historical_latest_only=allow_historical_latest_only,
+        )
         run = self.execute_run(
             started.run.run_id,
             fetch_previous_limit_details=fetch_previous_limit_details,
@@ -368,7 +379,13 @@ class CollectionCoordinator:
             "warnings": list(dict.fromkeys([*(quality.get("warnings") or []), *promotion_warnings])),
         }
 
-    def validate_request(self, as_of: date, datasets: Iterable[str]) -> None:
+    def validate_request(
+        self,
+        as_of: date,
+        datasets: Iterable[str],
+        *,
+        allow_historical_latest_only: bool = False,
+    ) -> None:
         selected = tuple(datasets)
         unknown = sorted(set(selected) - set(SUPPORTED_COLLECTION_DATASETS))
         if unknown:
@@ -379,7 +396,7 @@ class CollectionCoordinator:
         if as_of > current:
             raise ValueError("collection date cannot be later than the Shanghai market date")
         restricted = sorted(set(selected) & LATEST_ONLY_DATASETS)
-        if restricted and as_of != current:
+        if restricted and as_of != current and not allow_historical_latest_only:
             raise ValueError(
                 "latest-only datasets require the selected date to match the Shanghai market date: "
                 + ", ".join(restricted)
