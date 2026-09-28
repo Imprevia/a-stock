@@ -42,6 +42,14 @@ snapshot JSON ──► evaluation ──► trace + aggregate result
 - `backtest`：按交易日回放、样本切分、成本、覆盖缺口和验证证据。
 - `cli`：提供规则校验、快照、执行、回测、证据和文档同步命令。
 
+### 本地交易知识 MCP 边界（2026-09-27）
+
+`src/trading_knowledge/` 是独立于市场环境 API 和交易规则执行器的本地知识服务。离线构建命令发现 `搭建交易系统/`、`搭建交易系统-量化版/`、`trading-rules/rule-sets/`、`trading-rules/coverage.yaml` 和 Git 中的 `evidence/` YAML，在 `.artifacts/knowledge-base/knowledge.sqlite3` 中生成 SQLite FTS5 索引。索引记录来源层级、标题路径、行号、规则 ID、状态和源文件 hash；CJK 二元字段用于中文检索，规则 ID、路径和状态使用精确字段。
+
+Codex 通过 MCP stdio 调用五个只读工具：`search_trading_knowledge`、`get_source_excerpt`、`get_rule`、`get_evidence_status` 和 `get_index_status`。服务进程只打开本地索引和受控仓库文件，不导入 provider，不连接 PostgreSQL，不执行 shell，不访问网络，也没有写入工具。源文件 hash 发生漂移时查询返回 `stale`，必须重新运行索引构建；构建失败不会替换上一次索引。
+
+机器规则、覆盖清单、证据摘要、量化说明和原始观点保持独立引用。YAML 是执行字段事实源，`latestEvidence: null`、`needs-backtest`、`documented-only`、`unverified` 和 `insufficient` 不得升级为 `validated`。
+
 ## 主要数据源
 
 | 优先级 | 数据源 | 用途 |

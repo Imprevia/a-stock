@@ -2,7 +2,7 @@
 
 ## 仓库目的
 
-a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/market-environment-dashboard.md` 与 `docs/product-specs/trading-rule-engineering.md`；市场环境看板设计规范见 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
+a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/market-environment-dashboard.md`、`docs/product-specs/trading-rule-engineering.md` 与 `docs/product-specs/trading-knowledge-mcp.md`；市场环境看板设计规范见 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。
 
 ## 顶层目录地图
 
@@ -20,6 +20,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `搭建交易系统-量化版/` | 原交易系统知识库的一对一量化重写；统一规则 ID、数据口径、公式、阈值状态、评分和否决条件 | 与原目录保持相对路径一致；规则变化同步量化版索引和状态文档 |
 | `trading-rules/` | YAML 机器规则事实源、schema 和 327 条规则覆盖清单 | 规则变化必须同步量化文档、测试和证据引用 |
 | `src/trading_system/` | 规则加载、标准快照、确定性执行、证据、回测和 CLI | 修改契约时同步产品规格、架构和 runbook |
+| `src/trading_knowledge/` | 本地交易知识源解析、SQLite FTS5 索引、只读查询和 MCP stdio 服务 | 修改知识源边界、引用契约或工具 schema 时同步产品规格、架构和 runbook |
 | `evidence/` | 可入库的验证清单和月度 SHA-256 摘要 | 不提交大体积输入快照和 trace |
 | `.github/workflows/` | 离线 PR 门禁和盘后证据运行 | PR workflow 禁止依赖外部行情网络 |
 | `src/market_environment/` | 市场环境分析 API、行情适配、指标计算和响应模型 | 修改数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
@@ -38,6 +39,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 - 交易系统原始知识库：`搭建交易系统/01-如何判断市场环境/` 至 `搭建交易系统/11-量化交易环境下的应对/`；每章目录包含 `0-主题.md` 总览和按 `01.`、`02.` 编号的正文。
 - 交易系统量化说明层：`搭建交易系统-量化版/`；与原版保持一对一路径，解释规则口径并引用稳定规则 ID。
 - 交易系统机器规则库：`trading-rules/`；YAML 是执行事实源，`coverage.yaml` 覆盖全部文档规则 ID。
+- 交易知识 MCP：`src/trading_knowledge/`；消费上述 Git 事实源，索引放在被忽略的 `.artifacts/knowledge-base/`，不进入市场环境 API 或生产数据库。
 - 交易系统目录索引：`docs/trading-system-directory.md` 与 `docs/trading-system-quantified-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
 
 ## 安全修改区
@@ -59,6 +61,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 |--------|-------------|----------|
 | `src/**`（未来） | `docs/architecture.md` | fail |
 | `src/trading_system/**` / `trading-rules/**` | `docs/product-specs/trading-rule-engineering.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
+| `src/trading_knowledge/**` | `docs/product-specs/trading-knowledge-mcp.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `.github/workflows/**` | `docs/runbooks.md`, active plan | fail |
 | `apps/**` | `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `deploy/truenas/**` | `docs/architecture.md`, `docs/runbooks.md`, active plan | fail |

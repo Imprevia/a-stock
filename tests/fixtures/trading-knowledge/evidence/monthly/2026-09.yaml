@@ -1,0 +1,7 @@
+- evidenceId: fixture-2026-09-01
+  asOf: 2026-09-01
+  ruleSet: test
+  ruleSetVersion: 1
+  gitSha: fixture
+  status: insufficient
+  manifestSha256: fixture

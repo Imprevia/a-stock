@@ -13,3 +13,4 @@ bashlex>=0.18,<1
 SQLAlchemy>=2.0,<3
 psycopg[binary,pool]>=3.2,<4
 alembic>=1.13,<2
+mcp==2.2.0

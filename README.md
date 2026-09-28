@@ -7,6 +7,7 @@ A 股分析与交易规则工程工作区。当前包含市场环境分析看板
 - `docs/` 是事实源：规格、架构、runbook、执行计划、状态全部落在仓库里，不依赖聊天历史。
 - 任何多步工作以 `docs/exec-plans/active/*.md` 起手，完成前回写 Status / 证据 / 缺口。
 - 本地 gate 强制"代码改动必须伴随文档更新"：`.githooks/` + `scripts/check-docs-contract.py`。
+- 本地交易知识 MCP 只读消费交易系统文档、规则和证据摘要，索引位于被忽略的 `.artifacts/knowledge-base/`。
 
 ## 快速开始
 
@@ -98,6 +99,17 @@ python -m src.trading_system.cli evidence verify .artifacts/evidence
 ```
 
 `trading-rules/` 是机器执行事实源，`搭建交易系统-量化版/` 是人读说明层。首期实现市场环境第 01 章 46 条规则；经验阈值不代表已经验证的收益优势。
+
+## 交易知识 MCP
+
+```bash
+python -m src.trading_knowledge.cli index build --repo-root /home/gyt/a-stock
+codex mcp add trading-knowledge -- \
+  /home/gyt/a-stock/.venv/bin/python -m src.trading_knowledge.mcp_server \
+  --repo-root /home/gyt/a-stock
+```
+
+注册后 Codex 可调用中文检索、原文摘录、`QTS-*` 规则、证据状态和索引状态五个只读工具。源文件变化会返回 `stale`；证据不足和 `needs-backtest` 状态不会被升级为已验证结论。详细操作见 [`docs/runbooks.md`](docs/runbooks.md)。
 
 ## 下一步去哪
 

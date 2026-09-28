@@ -2,6 +2,8 @@
 
 ## 已实现
 
+- 2026-09-27 新增本地交易知识 MCP：`src/trading_knowledge/` 将原版/量化版 Markdown、YAML 规则、coverage 和 Git 证据摘要离线索引到 `.artifacts/knowledge-base/`，提供中文检索、精确引用、规则/证据/索引状态和五个只读 stdio MCP 工具。索引记录来源层级、行号、规则 ID、生命周期、证据状态和内容 hash；当前构建为 143 个源文件、3,699 个 chunk、330 个规则记录，`evidence/rules/index.yaml` 的 `latestEvidence: null` 保持 `insufficient`，不把经验阈值解释为已验证收益。
+
 - 2026-09-14 启动的 `market-environment-multipage-rework` 已完成：01–09 独立页面、第 01 页市场级句式和第 01/09 页精确下一交易日只读对照均已落地。
 
 - harness 骨架：`docs/` 事实源体系、exec-plans 落地位、本地门禁（`.githooks/` + `scripts/check-docs-contract.py` + `scripts/install-hooks.py`）。

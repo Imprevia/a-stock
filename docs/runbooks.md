@@ -539,6 +539,33 @@ python -m src.trading_system.cli backtest --rule-set market-environment --snapsh
 
 PR 验证必须只使用 `tests/fixtures/trading-system/`，不得访问外部网络。盘后 workflow 可访问真实数据；任何 provider 失败必须写入 snapshot 的质量状态，并上传 `degraded` 或 `insufficient` 证据，不能用 0 填充缺失数据。
 
+### 交易知识 MCP（本地离线）
+
+知识库索引只消费 `搭建交易系统/`、`搭建交易系统-量化版/`、`trading-rules/` 和 Git 中的 `evidence/` 摘要。索引文件位于被忽略的 `.artifacts/knowledge-base/knowledge.sqlite3`，可以删除后重建，不是生产数据库或市场环境快照。
+
+首次构建或源文件变更后重建：
+
+```bash
+python -m src.trading_knowledge.cli index build --repo-root /home/gyt/a-stock
+python -m src.trading_knowledge.cli index status --repo-root /home/gyt/a-stock
+python -m src.trading_knowledge.cli search --repo-root /home/gyt/a-stock "防守或空仓" --source-layer quantified
+python -m src.trading_knowledge.cli rule --repo-root /home/gyt/a-stock QTS-01-01-01
+python -m src.trading_knowledge.cli evidence --repo-root /home/gyt/a-stock --rule-id QTS-01-01-01
+```
+
+索引构建会先执行规则注册和覆盖校验，再写入临时 SQLite 文件并原子替换；解析失败、重复规则 ID、文档引用断裂或校验失败时返回非零，不替换旧索引。查询发现源文件 hash 漂移会返回 `stale`，必须重新构建，不能手工修改 SQLite。
+
+将本地服务注册到 Codex（只修改当前用户的 Codex 配置，不提交配置文件）：
+
+```bash
+codex mcp add trading-knowledge -- \
+  /home/gyt/a-stock/.venv/bin/python -m src.trading_knowledge.mcp_server \
+  --repo-root /home/gyt/a-stock
+codex mcp list
+```
+
+服务通过 stdio 暴露且只有五个只读工具：`search_trading_knowledge`、`get_source_excerpt`、`get_rule`、`get_evidence_status`、`get_index_status`。它不访问网络、行情 provider、生产 PostgreSQL、交易账户或 shell；`documented-only`、`needs-backtest`、`unverified`、`insufficient` 和 `degraded` 不会被改写成 `validated`。
+
 ### Helm schedule 组件（合并所有权）
 
 适用：TrueNAS k3s 1.26.6 上的盘后采集调度。release-derived `a-stock-data-collection` 与 Dashboard / PostgreSQL 同属 Helm release `a-stock`；仓库不再保留独立 operator override 清单、脚本或 `market-environment-data` PVC/PV/StorageClass。CronJob 通过 `a-stock-postgresql` ClusterIP Service 和同名 Secret 访问 PostgreSQL，不挂载数据库 PVC。

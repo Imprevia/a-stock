@@ -1,0 +1,31 @@
+ruleSet: test
+version: 1
+rules:
+- ruleId: QTS-01-01-01
+  version: 1
+  title: 市场宽度
+  status: defined
+  scope: market
+  evaluator: metric.band
+  inputs:
+  - market.width
+  windows:
+  - 1
+  parameters: {}
+  thresholds:
+    provenance: empirical-initial
+    bands:
+    - lt: 0.5
+      score: 0
+    - gte: 0.5
+      score: 100
+  scoring:
+    weight: 1.0
+    direction: positive
+  vetoes: []
+  missingData: insufficient
+  outputs:
+  - score
+  documentRefs:
+  - 搭建交易系统-量化版/01-市场环境.md
+  evidenceRefs: []

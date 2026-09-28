@@ -1,0 +1,8 @@
+schemaVersion: 1
+ruleSets:
+  test:
+    version: 1
+    lifecycle: defined
+    latestEvidence: null
+    validationEvidence: []
+    note: "fixture rule has no validation evidence"
