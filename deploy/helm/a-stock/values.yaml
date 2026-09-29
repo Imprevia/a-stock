@@ -134,7 +134,11 @@ marketEnvironment:
         approvedRevision: ""
         shadowEnabled: false
       sectors:
+        # THS industry fallback is fail-closed by default. Enable only after
+        # an after-hours redacted capability report and isolated shadow review.
         enabled: false
+        # Must exactly match the reviewed capability report; this is metadata,
+        # never a credential or a substitute for the independent Secret.
         approvedRevision: ""
         shadowEnabled: false
       activeDirection:

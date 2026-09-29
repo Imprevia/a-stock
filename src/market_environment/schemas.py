@@ -814,7 +814,9 @@ class CollectionTaskResponse(BaseModel):
     source: str
     observations: int
     warning: str | None
-    timings: dict[str, float]
+    # Provider fallback evidence includes both numeric durations and
+    # structured source/revision/failure metadata.
+    timings: dict[str, Any]
     queuedAt: datetime | None
     startedAt: datetime | None
     completedAt: datetime | None
@@ -849,6 +851,7 @@ class CollectionAttemptSummary(BaseModel):
     completedAt: datetime | None
     durationMs: float | None
     settled: bool
+    timings: dict[str, Any] = Field(default_factory=dict)
     sampleAsOf: date | None = None
     previousAsOf: date | None = None
     excludedCount: int | None = Field(default=None, ge=0)

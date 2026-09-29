@@ -463,7 +463,7 @@ def test_provider_uses_tdx_for_breadth_only_after_eastmoney_failure():
     assert result["declineCount"] == 1
     assert result["flatCount"] == 1
     assert result["quality"]["source"] == "tdx-daily-package"
-    assert "eastmoney unavailable" in result["quality"]["warning"]
+    assert "通达信盘后包" in result["quality"]["warning"]
     assert result["quality"]["stockUniverseRetainedCount"] == 4
     assert result["quality"]["stockUniverseRawCount"] == 4
 
@@ -541,7 +541,7 @@ def test_provider_rejects_incomplete_filtered_market_coverage():
 
     assert result["state"] == "insufficient"
     assert result["validCount"] is None
-    assert result["quality"]["source"] == "tdx-daily-package"
+    assert result["quality"]["source"] == "eastmoney-clist"
     assert result["quality"]["status"] == "failed"
     assert "market coverage" in result["quality"]["warning"] or "universe" in result["quality"]["warning"]
 
@@ -566,7 +566,7 @@ def test_provider_rejects_tdx_package_date_mismatch_before_counting():
 
     assert result["state"] == "insufficient"
     assert result["validCount"] is None
-    assert result["quality"]["source"] == "tdx-daily-package"
+    assert result["quality"]["source"] == "eastmoney-clist"
     assert "date evidence" in result["quality"]["warning"]
 
 

@@ -93,6 +93,49 @@ Helm `a-stock` 默认 `scheduledCollection.enabled=false / suspend=true`：Chart
 
 - 排错动作顺序：先用 `helm get manifest <release> -n <namespace>`、`helm get values <release> -n <namespace>` 与 `kubectl get cronjob -n <namespace>` 核对 Helm stored manifest 和 live exact CronJob。合并所有权后的 release-derived `a-stock-data-collection` 必须带 Helm release metadata；若发现非 Helm-owned legacy `market-data-collection`，停止发布并按本节的迁移步骤处理，不得让两个 owner 并存。
 
+### 扶摇行业 fallback 盘后验证与回滚（2026-09-29）
+
+行业 fallback 的服务基址固定为 `https://fuyao.aicubes.cn`，仅使用扶摇公开的同花顺行业指数组合：
+
+```text
+GET /api/a-share/calendar/trading-days
+GET /api/a-share-index/catalog/ths-index-list?tag=industry
+GET /api/a-share-index/prices/snapshot?thscodes=<comma-separated-thscodes>
+```
+
+真实 probe 只能在上海盘后、显式授权的隔离环境运行。先确认东方财富
+`push2` 与 `push2delay` 的失败证据已记录，再从独立 Secret 注入
+`MARKET_ENVIRONMENT_FUYAO_API_KEY`，执行带明确日期的 probe；不要把 key 放进命令行参数、
+values、shell history 或日志。probe 必须脱敏输出 endpoint、请求日期、交易日历命中、目录数量、
+快照覆盖、批次时间一致性、字段覆盖、权限和限流结果；当前已知探针覆盖 320 个行业目录和
+320 个行情快照。报告中不得出现 API key、Authorization header、完整响应或凭据派生值。
+
+```bash
+# 离线先验证报告结构；此命令不访问网络
+python -m src.market_environment.cli fuyao capability-probe \
+  --fixture tests/fixtures/market-environment/fuyao-market-data.json \
+  --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3
+
+# 仅在盘后隔离环境、已获授权时运行真实探针；不得写正式 sectors 快照
+python -m src.market_environment.cli fuyao real-probe --allow-real \
+  --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 \
+  --output /tmp/fuyao-real.json
+```
+
+批准 revision 只能在离线契约、脱敏 real probe 和隔离 shadow 对账均通过后填写到
+`marketEnvironment.fuyao.datasets.sectors.approvedRevision`，并同步设置
+`MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION`。正式启用必须同时设置
+`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`；开关默认 `0`，revision 为空或与 capability
+report 不一致时 fail closed，继续保留 Eastmoney 同日期失败语义。
+
+受控启用后观察 collection task 的 `source`、`fallback`/`partial` 质量、exact-date、字段
+warning、前序 Eastmoney warning 和 status/API；扶摇只提供行业指数排名、涨跌幅和成交额，
+不得将缺失资金流、宽度或领涨股显示为完整行业事实。任何日期不一致、目录/快照覆盖不足、
+权限/限流错误或 shadow 异常，先将 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0` 并重新部署，
+再确认 Eastmoney 双失败后的 `failed-retained`/`failed-missing` 和 provider-free GET；不删除
+PVC、不跨日期回填、不手工 SQL 写入快照。Secret 仍只由 existingSecret 引用，回滚时不得把
+凭据写进 values 或日志。
+
 ### Helm Chart 与受控发布入口
 
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；仓库没有通用 uninstall 入口，退役必须另建受审 exact-resource 操作包。先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：
@@ -199,9 +242,15 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component database
 # 只更新 Dashboard 服务；会复用不可变镜像并等待单副本 rollout
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component service
-# 只处理调度层；必须提供此前审核通过的 frozen image 三元组
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component schedule
+# 调度生产写入不得使用 --component schedule；必须走下方受控完整 release 入口
 ```
+
+调度状态专用入口（`--release-suspended`、`--activate-schedule`、`--disable-schedule`）始终
+渲染并提交完整的 `a-stock` Helm release manifest；不得附带 `--component`。Helm upgrade
+会以本次完整 manifest 作为 release 的 stored ownership，使用 `--component schedule` 会裁剪
+Dashboard、PostgreSQL 和 PVC 的 ownership，属于禁止的漂移路径。调度入口只允许在完整
+release 基线上先发布 `suspend=true`，再由 `--activate-schedule` 执行单字段
+`suspend=true -> false` 翻转。
 
 `service` 在写入前必须观察到 namespace、PostgreSQL StatefulSet/Service 就绪、数据库 PVC
 为 `Bound` 和目标镜像；`schedule` 还必须观察到 service 就绪以及目标运行时中与 frozen digest
@@ -209,8 +258,8 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 后续写入前返回非零。`all` 按上述顺序逐组件执行，输出每个组件的 `completed`/`failed`
 状态和唯一重试目标；前一组件成功后即使后一组件失败，也保留 PVC 和已成功资源。
 
-调度组件默认只创建或校验 `spec.suspend: true` 的 CronJob（或按 baseline 保持 absent），
-不会因 `--component schedule` 自动激活生产采集。生产激活仍只能使用已审阅的
+调度组件默认只创建或校验 `spec.suspend: true` 的 CronJob（或按 baseline 保持 absent）。
+生产激活仍只能使用已审阅的
 `--release-suspended`、`--activate-schedule` 与独立 rollback 授权；禁止直接 `kubectl apply`
 或直接修改 `spec.suspend` 绕过受控入口。
 
@@ -283,7 +332,7 @@ curl "http://127.0.0.1:8001/api/market-environment/data-collection"
 curl "http://127.0.0.1:8001/api/market-environment/data-collection?as_of=2026-08-28"
 ```
 
-`/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。
+`/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。`/api/market-environment/collection-runs/{run_id}` 的 task `timings` 同时承载数值耗时和 provider fallback 的来源、revision、失败证据字符串，客户端不得把该对象强制解析为纯数值表。
 
 普通市场环境 GET 优先读取 PostgreSQL 中精确日期的数据集快照或 materialized aggregate，不自动启动 provider 采集。五类数据 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止其他结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 PostgreSQL transaction/store write 计时。
 
@@ -477,6 +526,12 @@ pg_restore --clean --if-exists --no-owner \
 - `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`：显式关闭数据采集页面写操作和 collection POST；默认开启。TrueNAS 固定 NodePort 是经负责人接受的例外，启用时向所有可路由客户端匿名开放写操作；出现异常时先将此项设为 `0`，再按现场捕获的回退基线决定网络入口。
 - `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0`：关闭 limits detail/V1 事实写入和晋级扩展，继续服务旧五字段与 PostgreSQL 快照；开启前须完成离线门禁，真实 smoke 只能写隔离 PostgreSQL 数据库。
 - `MARKET_ENVIRONMENT_FUYAO_API_KEY`：扶摇 provider 密钥，只能通过独立 Secret/进程环境注入；不得写入 values、日志、API 响应或仓库文件。V1 开启但变量缺失时采集失败并保留旧快照，普通 GET 仍可用。
+- `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=0` / `MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED=0`：v2 core/breadth 主源开关，默认关闭；开启前必须存在状态为 `eligible` 且 revision 为 `fuyao-market-v2` 的 capability report。
+- `MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION` / `MARKET_ENVIRONMENT_FUYAO_BREADTH_APPROVED_REVISION`：分别绑定 v2 capability report；为空、未知或与报告不匹配时 fail closed，不能用旧 `fuyao-market-v1` 绕过门禁。
+- `MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED=0` / `MARKET_ENVIRONMENT_FUYAO_BREADTH_SHADOW_ENABLED=0`：只写 collection task shadow 元数据，不改变正式 source、快照或 checksum。
+- `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0`：行业扶摇 fallback 的数据集开关，默认关闭；只有 Eastmoney 两端点失败、capability report 为 `eligible` 且批准 revision 完全匹配时才可设为 `1`。
+- `MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION`：显式绑定脱敏 capability report 的批准 revision；为空、未知或不匹配时 fail closed。该值不是 Secret，也不能替代 real probe/shadow 审批。
+- `MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED=0`：仅启用隔离 shadow 对账观测；shadow 失败只降低质量/可观测性，不得阻断已通过 capability 门禁的正式 fallback，也不得写入凭据。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard/CronJob 作为共享协调边界。
 
@@ -593,7 +648,6 @@ kubectl delete cronjob market-data-collection -n a-stock
 
 # 3. 由专用入口重新创建为 Helm-owned 且 suspended
 bash scripts/deploy-truenas-k3s.sh \
-  --component schedule \
   --release-suspended \
   --baseline-values deploy/truenas/values-scheduled-baseline-20260917.yaml \
   --scheduling-overlay deploy/truenas/values-scheduled-suspended.yaml \
@@ -857,6 +911,10 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 
 - app.test.ts 挂 App 时必须 createRouter + registerRouterGuards（守卫不再挂在测试自建 router 上会直接导致 loadCore 不执行、页面停在 loading 态）。
 - chart lifecycle 测试语义已更新：路由切换时旧章节组件卸载（dispose 其 echarts 实例）、新章节挂载（init 新实例），断言 init/dispose 累计次数（01→02→01 为 init 2→3→5、dispose 0→2→3）。
-- 扶摇能力验证：使用脱敏 fixture 执行 `python -m src.market_environment.cli fuyao capability-probe --fixture tests/fixtures/market-environment/fuyao-market-data.json --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3`。该命令不访问网络；报告为 `ineligible`/`unverified` 时不得填写批准 revision。
+- 扶摇能力验证：使用脱敏 fixture 执行 `python -m src.market_environment.cli fuyao capability-probe --fixture tests/fixtures/market-environment/fuyao-market-data.json --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3`。该命令不访问网络；core 报告必须同时证明五个指数和至少 280 根有效 K 线，breadth 报告必须证明完整分页与稳定 timestamp；报告为 `ineligible`/`unverified` 时不得填写批准 revision。当前通用能力 revision 为 `fuyao-market-v2`，旧 `fuyao-market-v1` 不得用于 core/breadth/activeDirection 的批准。
+- v2 数据集边界：`core` 使用 `/api/a-share-index/prices/historical`，逐指数传 `thscode`、`interval=1d`、上海时区 `start/end` 毫秒时间戳；每项必须有 OHLC、成交额且最后有效 `date_ms` 等于 `as_of`。当前日期还必须有独立腾讯报价校验，历史日期不得调用实时报价。`breadth` 使用 `/api/a-share/prices/snapshot`，按 `limit/offset` 拉完 `total`；所有页的 `total` 和规范身份集合必须稳定，每页 `timestamp` 均须存在且映射到同一上海交易日；原始值允许漂移但要保留 exact/date stability 与 span 证据。历史 breadth 只读本地精确快照，Fuyao latest-only 接口不得回填历史。
+- 分数据集切换：批准并启用 `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=1` 或 `MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED=1` 后，core 链为 `Fuyao -> mootdx -> baidu -> sina -> tencent -> Eastmoney`，breadth 链为 `Fuyao -> TDX`（仅在 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 时）`-> Eastmoney`。`limits` 仍为 Fuyao 主源加东方财富交叉核对/降级；`sectors` 仍为东方财富主链失败后的 Fuyao fallback；`activeDirection` 不进入 Fuyao 切换，继续 Eastmoney/TDX。
+- 请求预算和回滚：limits 与通用 Fuyao 客户端共享进程级串行请求门、最小间隔和有界慢退避；最终错误只记录脱敏 `code/message/request_id`。出现 429、权限、字段、日期或分页异常时，先关闭对应 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或移除批准 revision，保留旧快照与 task 记录，不删除 PVC、不跨日期回填。
 - 真实验证只能在盘后、显式本地隔离路径执行：`python -m src.market_environment.cli fuyao real-probe --allow-real --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 --output /tmp/fuyao-real.json`，API key 仅来自 `MARKET_ENVIRONMENT_FUYAO_API_KEY`。缺 key、日期不一致、权限/限流错误均 fail closed。
+- 行业 real probe 必须明确记录扶摇的交易日历、同花顺行业目录和行业快照三个 endpoint，以及目录/快照覆盖和快照时间戳日期一致性；快照 `data.timestamp` 是响应时间戳，分批原始毫秒值可以不同，但必须全部映射到同一精确上海交易日。报告必须说明行业 fallback 不提供主力净流入、上涨/下跌家数或领涨股，缺失字段保持 `null`，不得以代码或零值填充。
 - 回滚按数据集清除 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或批准 revision；保留能力报告、任务元数据和同日期旧快照，不跨日期回填。Secret 不写入 values、日志、fixture 或 API 响应。

@@ -240,30 +240,30 @@ class MarketDataProvider:
             errors.append(f"新浪 K 线: {exc}")
 
         try:
-            bars = self._fetch_eastmoney_kline(spec, limit)
-            if len(bars) >= 60 and self._price_matches(bars, expected_price):
-                return ProviderResult(
-                    bars=bars,
-                    source="eastmoney-kline",
-                    warning="通达信和百度不可用，已降级到东方财富历史 K 线",
-                )
-            errors.append("东方财富历史 K 线数据不足")
-        except Exception as exc:
-            logger.warning("Eastmoney kline failed for %s: %s", spec.code, exc)
-            errors.append(f"东方财富 K 线: {exc}")
-
-        try:
             bars = self._fetch_tencent_kline(spec, limit)
             if len(bars) >= 60 and self._price_matches(bars, expected_price):
                 return ProviderResult(
                     bars=bars,
                     source="tencent-kline",
-                    warning="通达信和百度不可用，已降级到腾讯历史 K 线；历史成交额可能不可用",
+                    warning="通达信、百度和新浪不可用，已降级到腾讯历史 K 线；历史成交额可能不可用",
                 )
             errors.append("腾讯历史 K 线数据不足")
         except Exception as exc:
             logger.warning("Tencent kline failed for %s: %s", spec.code, exc)
             errors.append(f"腾讯 K 线: {exc}")
+
+        try:
+            bars = self._fetch_eastmoney_kline(spec, limit)
+            if len(bars) >= 60 and self._price_matches(bars, expected_price):
+                return ProviderResult(
+                    bars=bars,
+                    source="eastmoney-kline",
+                    warning="通达信、百度、新浪和腾讯不可用，已降级到东方财富历史 K 线",
+                )
+            errors.append("东方财富历史 K 线数据不足")
+        except Exception as exc:
+            logger.warning("Eastmoney kline failed for %s: %s", spec.code, exc)
+            errors.append(f"东方财富 K 线: {exc}")
 
         raise RuntimeError("；".join(errors))
 
@@ -331,38 +331,28 @@ class MarketDataProvider:
     def fetch_chapter01_breadth(self, as_of: date, *, allow_current_snapshot: bool) -> dict[str, Any]:
         if not allow_current_snapshot:
             return self._missing_breadth(as_of, "该数据源仅提供最新市场快照，历史日期不使用当前数据回填")
+        tdx_warning: str | None = None
+        if self.tdx_fallback_enabled:
+            try:
+                return self._fetch_tdx_breadth(as_of, [])
+            except TDXStockUniverseError as tdx_error:
+                tdx_warning = f"通达信普通 A 股 universe 不足：{tdx_error}"
+            except TDXDailyPackageError as tdx_error:
+                tdx_warning = f"通达信盘后包不可用：{tdx_error}"
+            except Exception as tdx_error:
+                tdx_warning = f"通达信盘后包不可用：{tdx_error}"
+
+        eastmoney_warning = (
+            f"{tdx_warning}；已降级到东方财富市场广度涨跌幅排序分页统计"
+            if tdx_warning
+            else "市场广度直接使用涨跌幅排序分页统计，未请求名义全 A 主快照"
+        )
         try:
-            return self._fetch_eastmoney_breadth_fallback(
-                as_of,
-                "市场广度直接使用涨跌幅排序分页统计，未请求名义全 A 主快照",
-            )
+            return self._fetch_eastmoney_breadth_fallback(as_of, eastmoney_warning)
         except Exception as exc:
-            primary_warning = f"东方财富市场广度不可用：{exc}"
-        if not self.tdx_fallback_enabled:
-            return self._missing_breadth(as_of, primary_warning, status="failed")
-        try:
-            return self._fetch_tdx_breadth(as_of, [primary_warning])
-        except TDXStockUniverseError as tdx_error:
-            return self._missing_breadth(
-                as_of,
-                f"{primary_warning}；通达信普通 A 股 universe 不足：{tdx_error}",
-                status="failed",
-                source="tdx-daily-package",
-                metadata=tdx_error.classification.metadata(),
-            )
-        except TDXDailyPackageError as tdx_error:
-            return self._missing_breadth(
-                as_of,
-                f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
-                status="failed",
-                source="tdx-daily-package",
-            )
-        except Exception as tdx_error:
-            return self._missing_breadth(
-                as_of,
-                f"{primary_warning}；通达信盘后包不可用：{tdx_error}",
-                status="failed",
-            )
+            eastmoney_error = f"东方财富市场广度不可用：{exc}"
+            warning = f"{tdx_warning}；{eastmoney_error}" if tdx_warning else eastmoney_error
+            return self._missing_breadth(as_of, warning, status="failed")
 
     def fetch_chapter01_active_direction(
         self,

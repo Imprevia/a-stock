@@ -112,7 +112,11 @@ class CollectionCoordinator:
         run = self.store.create_collection_run(run_id, as_of, selected, created_at=current)
         tasks: list[CollectionTaskRecord] = []
         for dataset in selected:
-            cutover_error = self._fuyao_cutover_error(dataset)
+            # Sectors keeps the Eastmoney primary/delayed chain in front of the
+            # independent provider.  Its capability gate is evaluated only
+            # after that chain fails, so an unapproved fallback never prevents
+            # a healthy primary provider from being collected.
+            cutover_error = None if dataset == "sectors" else self._fuyao_cutover_error(dataset)
             if cutover_error is not None:
                 task_id = uuid.uuid4().hex
                 task = self.store.create_collection_task(
@@ -548,6 +552,8 @@ class CollectionCoordinator:
         started: float,
         lease: LeaseToken,
     ) -> CollectionTaskRecord:
+        if task.dataset == "sectors":
+            return self._collect_sector_dataset(task, started, lease)
         provider_started = time.perf_counter()
         fallback_warning: str | None = None
         try:
@@ -622,6 +628,116 @@ class CollectionCoordinator:
             duration_ms=self._milliseconds(started),
             settled=settled,
         )
+
+    def _collect_sector_dataset(
+        self,
+        task: CollectionTaskRecord,
+        started: float,
+        lease: LeaseToken,
+    ) -> CollectionTaskRecord:
+        """Collect sectors from Eastmoney first, then an approved Fuyao fallback."""
+
+        provider_started = time.perf_counter()
+        primary_error: str | None = None
+        try:
+            payload = copy.deepcopy(self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=False))
+            quality = self._validate_payload("sectors", task.as_of, payload)
+            if str(quality.get("status")) not in SUCCESS_STATUSES:
+                primary_error = str(quality.get("warning") or f"东方财富行业排名质量为 {quality.get('status')}")
+        except Exception as exc:
+            primary_error = f"东方财富行业排名不可用：{exc}"
+
+        fallback = primary_error is not None
+        if fallback:
+            if not self._fuyao_is_enabled("sectors"):
+                raise RuntimeError(f"{primary_error}；{self._fuyao_gate_warning('sectors')}")
+            try:
+                payload = copy.deepcopy(self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=True))
+                quality = self._validate_payload("sectors", task.as_of, payload)
+                if str(quality.get("status")) not in SUCCESS_STATUSES:
+                    raise RuntimeError(str(quality.get("warning") or f"扶摇行业结果质量为 {quality.get('status')}"))
+            except Exception as exc:
+                raise RuntimeError(f"{primary_error}；扶摇行业 fallback 不可用：{exc}") from exc
+            warnings = [
+                primary_error,
+                *(str(value) for value in quality.get("warnings") or []),
+                f"扶摇 capability revision: {self._fuyao_revision('sectors')}",
+            ]
+            self._merge_quality_warnings(quality, warnings)
+
+        provider_ms = self._milliseconds(provider_started)
+        source = str(quality.get("source") or quality.get("provider") or "none")
+        observations = int(quality.get("observations") or 0)
+        quality_status = str(quality.get("status"))
+        warning = str(quality.get("warning")) if quality.get("warning") else None
+        if quality_status not in SUCCESS_STATUSES:
+            raise RuntimeError(warning or f"sectors collection returned {quality_status}")
+        settled = self._is_settled(task.as_of)
+        self.store.put(
+            SnapshotRecord(
+                dataset="sectors",
+                as_of=task.as_of,
+                payload=payload,
+                source=source,
+                status=quality_status,
+                observations=observations,
+                warnings=tuple(str(value) for value in quality.get("warnings") or []),
+                fetched_at=self._market_now(),
+                settled=settled,
+            ),
+            lease=lease,
+            now=self._market_now().astimezone(ZoneInfo("UTC")),
+        )
+        timings: dict[str, Any] = {
+            "providerCollectionMs": provider_ms,
+            "fuyaoFallback": fallback,
+            "sourceRevision": quality.get("providerRevision"),
+            "capabilityRevision": self._fuyao_revision("sectors") if fallback else None,
+        }
+        if fallback:
+            timings["eastmoneyFailure"] = primary_error
+        shadow_warning: str | None = None
+        if not fallback and self._fuyao_shadow_enabled("sectors") and self._fuyao_is_enabled("sectors"):
+            try:
+                candidate = self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=True)
+                timings["shadow"] = compare_shadow(
+                    "sectors",
+                    payload,
+                    candidate,
+                    formal_revision=str(quality.get("providerRevision") or source),
+                    shadow_revision=self._fuyao_revision("sectors"),
+                    as_of=task.as_of,
+                )
+                shadow_status = timings["shadow"].get("status")
+                if shadow_status not in {"match", "degraded"}:
+                    shadow_warning = f"扶摇 shadow: {shadow_status}"
+            except Exception as exc:
+                timings["shadow"] = {
+                    "dataset": "sectors",
+                    "status": "insufficient",
+                    "warnings": [str(exc)],
+                }
+                shadow_warning = f"扶摇 shadow 不可用：{exc}"
+        if shadow_warning:
+            warning = "; ".join(value for value in (warning, shadow_warning) if value)
+        return self.store.transition_collection_task(
+            task.task_id,
+            "partial" if quality_status in {"partial", "fallback", "fallback-derived"} else "success",
+            expected_statuses=("collecting",),
+            source=source,
+            observations=observations,
+            warning=warning,
+            timings=timings,
+            completed_at=self._market_now(),
+            duration_ms=self._milliseconds(started),
+            settled=settled,
+        )
+
+    @staticmethod
+    def _merge_quality_warnings(quality: dict[str, Any], warnings: Iterable[str]) -> None:
+        merged = list(dict.fromkeys([*(quality.get("warnings") or []), *(str(value) for value in warnings if value)]))
+        quality["warnings"] = merged
+        quality["warning"] = "; ".join(merged) if merged else None
 
     def _collect_limits(
         self,
@@ -854,16 +970,10 @@ class CollectionCoordinator:
         warnings: list[str] = []
         fuyao_core_results: dict[str, FuyaoMarketResult] = {}
         shadow_core_results: dict[str, FuyaoMarketResult] = {}
-        if self._fuyao_is_enabled("core"):
-            try:
-                fuyao_core_results = self.fuyao_adapter.fetch_core(task.as_of)
-            except Exception as exc:
-                warnings.append(f"扶摇核心指数采集失败，将回退现有 provider：{exc}")
-        elif self._fuyao_shadow_enabled("core"):
-            try:
-                shadow_core_results = self.fuyao_adapter.fetch_core(task.as_of)
-            except Exception as exc:
-                warnings.append(f"扶摇核心指数 shadow 不可用：{exc}")
+        fuyao_core_degraded = False
+        # Fuyao core validation uses an independent quote only for the
+        # currently observable Shanghai session.  Historical collection must
+        # remain provider-free with respect to live quote endpoints.
         try:
             quotes = (
                 self.provider.fetch_quotes(INDEX_SPECS)
@@ -873,6 +983,23 @@ class CollectionCoordinator:
         except Exception as exc:
             quotes = {}
             warnings.append(f"腾讯实时报价不可用：{exc}")
+        if self._fuyao_is_enabled("core"):
+            try:
+                fuyao_core_results = self.fuyao_adapter.fetch_core(
+                    task.as_of,
+                    quotes_by_code=quotes,
+                )
+            except Exception as exc:
+                fuyao_core_degraded = True
+                warnings.append(f"扶摇核心指数采集失败，将回退现有 provider：{exc}")
+        elif self._fuyao_shadow_enabled("core"):
+            try:
+                shadow_core_results = self.fuyao_adapter.fetch_core(
+                    task.as_of,
+                    quotes_by_code=quotes,
+                )
+            except Exception as exc:
+                warnings.append(f"扶摇核心指数 shadow 不可用：{exc}")
 
         analyses: list[dict[str, Any]] = []
         current_successes = 0
@@ -884,8 +1011,15 @@ class CollectionCoordinator:
                 quote = quotes.get(spec.code, {})
                 fuyao_result = fuyao_core_results.get(spec.code)
                 if fuyao_result is not None:
-                    if fuyao_result.status != "ok":
+                    quote_available = quote.get("price") not in (None, "")
+                    current_quote_missing = (
+                        task.as_of == effective_market_date(self._market_now()) and not quote_available
+                    )
+                    if fuyao_result.status != "ok" or current_quote_missing:
+                        fuyao_core_degraded = True
                         reason = "；".join(fuyao_result.warnings) or "扶摇核心指数契约校验失败"
+                        if current_quote_missing:
+                            reason = f"{reason}；当前日期缺少独立腾讯报价校验"
                         result = self.provider.fetch(
                             spec,
                             expected_price=quote.get("price"),
@@ -904,6 +1038,8 @@ class CollectionCoordinator:
                             warning="；".join(fuyao_result.warnings) or None,
                         )
                 else:
+                    if self._fuyao_is_enabled("core"):
+                        fuyao_core_degraded = True
                     result = self.provider.fetch(
                         spec,
                         expected_price=quote.get("price"),
@@ -980,6 +1116,8 @@ class CollectionCoordinator:
         if session_warning:
             warnings.append(session_warning)
         task_status = "success" if current_successes == len(INDEX_SPECS) else "partial"
+        if self._fuyao_is_enabled("core") and fuyao_core_degraded and task_status == "success":
+            task_status = "partial"
         if current_successes == 0:
             task_status = "failed-retained"
         source = ",".join(sorted(set(index_sources)))
@@ -1105,8 +1243,16 @@ class CollectionCoordinator:
         return warning
 
     def _fetch_chapter_dataset(self, dataset: str, as_of: date, *, use_fuyao: bool | None = None) -> dict[str, Any]:
+        # activeDirection remains on the established Eastmoney/TDX chain for
+        # this migration.  Ignore both cutover and shadow requests so an
+        # enabled legacy flag cannot route production collection through the
+        # incomplete Fuyao snapshot contract.
+        if dataset == "activeDirection":
+            use_fuyao = False
         if use_fuyao is None:
-            use_fuyao = self._fuyao_is_enabled(dataset)
+            # Sectors deliberately enters Fuyao only after both Eastmoney
+            # endpoints fail; activeDirection is excluded above.
+            use_fuyao = self._fuyao_is_enabled(dataset) and dataset != "sectors"
         if use_fuyao and dataset != "limits":
             return self._fetch_fuyao_chapter_dataset(dataset, as_of)
         if dataset == "breadth":
@@ -1123,22 +1269,34 @@ class CollectionCoordinator:
         raise ValueError(f"unsupported collection dataset: {dataset}")
 
     def _fuyao_is_enabled(self, dataset: str) -> bool:
+        if dataset == "activeDirection":
+            return False
         if dataset not in self.fuyao_config.datasets:
             return False
         config = self.fuyao_config.for_dataset(dataset)
         if not config.enabled:
             return False
+        if dataset in {"core", "breadth"} and config.approved_revision == "fuyao-market-v1":
+            return False
         report = self.store.get_capability_report("fuyao", dataset, config.approved_revision)
         return bool(report and report.status == "eligible" and report.revision == config.approved_revision)
 
     def _fuyao_cutover_error(self, dataset: str) -> str | None:
-        if dataset == "limits" or dataset not in self.fuyao_config.datasets:
+        if dataset in {"limits", "activeDirection"} or dataset not in self.fuyao_config.datasets:
             return None
         config = self.fuyao_config.for_dataset(dataset)
         if not config.enabled:
             return None
+        if dataset in {"core", "breadth"} and config.approved_revision == "fuyao-market-v1":
+            return f"扶摇 {dataset} 不接受过时 capability revision fuyao-market-v1；需要 fuyao-market-v2"
         report = self.store.get_capability_report("fuyao", dataset, config.approved_revision)
         if report is None:
+            latest = self.store.get_capability_report("fuyao", dataset)
+            if latest is not None:
+                return (
+                    f"扶摇 {dataset} capability revision 不匹配：批准 {config.approved_revision}，"
+                    f"实际 {latest.revision}"
+                )
             return f"扶摇 {dataset} 未通过 capability revision 门禁：缺少批准报告 {config.approved_revision}"
         if report.status != "eligible":
             return f"扶摇 {dataset} 未通过 capability revision 门禁：状态为 {report.status}"
@@ -1146,13 +1304,36 @@ class CollectionCoordinator:
             return f"扶摇 {dataset} capability revision 不匹配：批准 {config.approved_revision}，实际 {report.revision}"
         return None
 
+    def _fuyao_gate_warning(self, dataset: str) -> str:
+        """Explain why an independent provider was not eligible for fallback."""
+
+        config = self.fuyao_config.datasets.get(dataset)
+        if config is None or not config.enabled:
+            return f"扶摇 {dataset} 未启用"
+        report = self.store.get_capability_report("fuyao", dataset, config.approved_revision)
+        if report is None:
+            latest = self.store.get_capability_report("fuyao", dataset)
+            if latest is not None:
+                return (
+                    f"扶摇 {dataset} capability revision 不匹配：批准 {config.approved_revision}，"
+                    f"实际 {latest.revision}"
+                )
+            return f"扶摇 {dataset} 未通过 capability revision 门禁：缺少批准报告 {config.approved_revision}"
+        if report.status != "eligible":
+            return f"扶摇 {dataset} 未通过 capability revision 门禁：状态为 {report.status}"
+        if report.revision != config.approved_revision:
+            return f"扶摇 {dataset} capability revision 不匹配：批准 {config.approved_revision}，实际 {report.revision}"
+        return f"扶摇 {dataset} 未通过 capability revision 门禁"
+
     def _fuyao_shadow_enabled(self, dataset: str) -> bool:
+        if dataset == "activeDirection":
+            return False
         config = self.fuyao_config.datasets.get(dataset)
         return bool(config and config.shadow_enabled)
 
     def _fuyao_revision(self, dataset: str) -> str:
         config = self.fuyao_config.datasets.get(dataset)
-        return (config.approved_revision if config and config.approved_revision else "fuyao-market-v1")
+        return (config.approved_revision if config and config.approved_revision else "fuyao-market-v2")
 
     def _fetch_fuyao_chapter_dataset(self, dataset: str, as_of: date) -> dict[str, Any]:
         if dataset == "breadth":

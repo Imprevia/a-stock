@@ -41,6 +41,8 @@
 | `deploy-tdx-fallback-and-scheduled-collection-20260923` | Codex | completed-final-image-activation-observation-pending | 2026-09-24 |
 | `enable-tdx-derived-active-direction` | Codex | production-deployed-first-natural-job-pending | 2026-09-24 |
 | `fix-tdx-breadth-stock-universe` | Codex | production-repair-complete | 2026-09-25 |
+| `restore-sector-data-via-independent-provider` | Codex | implementation-complete-with-controlled-rollout-pending（默认关闭） | 2026-09-29 |
+| `activate-scheduled-collection-20260929` | 操作发起人 | activated-observation-pending（revision 70） | 2026-09-29 |
 
 ## 说明
 

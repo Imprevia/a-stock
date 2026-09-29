@@ -75,3 +75,28 @@ shadow 运行沿用同一 dataset/date lease，但正式 provider 仍负责快�
 4. 只对通过门槛的数据集设置 opt-in 开关，先保留旧 provider 作为降级路径，验证一段受控交易日窗口后再评估扩大范围。
 5. 发生异常时关闭对应数据集开关并重启采集进程；保留既有快照、任务记录和 capability 报告，不删除表、不跨日期回填。
 
+## v2 Endpoint Contract
+
+The general market adapter uses the documented v2 routes. `core` makes one
+request per index to `/api/a-share-index/prices/historical` with a single
+`thscode`, `interval=1d`, and Shanghai-local millisecond `start/end` bounds.
+It accepts a result only when the last valid OHLC/turnover bar is exactly the
+requested date and the series has at least 280 valid bars. A current-date
+collection additionally requires an independent Tencent quote; historical
+collections never call the live quote endpoint.
+
+`breadth` uses `/api/a-share/prices/snapshot` with `limit/offset`. Every page
+must carry the same `total` and `timestamp`, provide unique standard
+identities, and cover the complete total. The top-level timestamp is accepted
+only as proof of the current Shanghai trading date. A historical request is
+returned as `insufficient` without an external call; exact-date data must come
+from the local snapshot store.
+
+The resulting capability revision is `fuyao-market-v2`; an old
+`fuyao-market-v1` report cannot approve core, breadth, or activeDirection.
+Formal routing is dataset-specific: core uses Fuyao first, then mootdx,
+Baidu, Sina, Tencent, and Eastmoney; breadth uses Fuyao, optional TDX daily
+package, then Eastmoney. Limits remains the existing Fuyao plus Eastmoney
+cross-check path. Sectors keeps Eastmoney as primary and Fuyao as a gated
+fallback. ActiveDirection remains on Eastmoney/TDX and is explicitly
+`unverified` in Fuyao capability output.

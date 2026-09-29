@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from .fuyao_request_gate import FuyaoRequestGate, GLOBAL_FUYAO_REQUEST_GATE
 
 FUYAO_API_KEY_ENV = "MARKET_ENVIRONMENT_FUYAO_API_KEY"
 FUYAO_BASE_URL = "https://fuyao.aicubes.cn"
@@ -89,6 +89,7 @@ class FuyaoClient:
         ticker_cache_ttl_seconds: float = 300.0,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        request_gate: FuyaoRequestGate | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv(FUYAO_API_KEY_ENV, "")).strip()
         self.timeout = timeout
@@ -103,8 +104,15 @@ class FuyaoClient:
         self._monotonic = monotonic
         self._ticker_cache: dict[str, dict[str, Any]] | None = None
         self._ticker_cache_created_at: float | None = None
-        self._request_lock = threading.Lock()
-        self._last_request_started_at: float | None = None
+        self._request_gate = request_gate or (
+            GLOBAL_FUYAO_REQUEST_GATE
+            if sleep is time.sleep and monotonic is time.monotonic
+            else FuyaoRequestGate(
+                min_interval_seconds=self.min_request_interval_seconds,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
+        )
 
     @property
     def configured(self) -> bool:
@@ -285,7 +293,7 @@ class FuyaoClient:
         url = f"{self.base_url}{path}"
         for attempt in range(self.max_retries + 1):
             try:
-                self._wait_for_request_slot()
+                self._request_gate.wait()
                 response = self.session.get(
                     url,
                     params=dict(params or {}),
@@ -335,19 +343,6 @@ class FuyaoClient:
                 raise FuyaoContractError("Fuyao success envelope is missing data")
             return dict(data)
         raise AssertionError("unreachable retry loop")
-
-    def _wait_for_request_slot(self) -> None:
-        if self.min_request_interval_seconds <= 0:
-            return
-        with self._request_lock:
-            now = self._monotonic()
-            if self._last_request_started_at is not None:
-                elapsed = now - self._last_request_started_at
-                delay = self.min_request_interval_seconds - elapsed
-                if delay > 0:
-                    self._sleep(delay)
-                    now = self._monotonic()
-            self._last_request_started_at = now
 
     def _backoff(self, attempt: int, *, slow: bool = False) -> None:
         base = self.slow_backoff_seconds if slow else self.backoff_seconds

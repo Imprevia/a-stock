@@ -871,6 +871,7 @@ def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> N
     values = _load_yaml(CHART_DIR / "values.yaml")
     scheduled = values["marketEnvironment"]["scheduledCollection"]
     limits = values["marketEnvironment"]["limits"]
+    fuyao = values["marketEnvironment"]["fuyao"]
 
     assert chart["kubeVersion"] == ">=1.26.0-0"
     assert values["marketEnvironment"]["timezone"] == "Asia/Shanghai"
@@ -891,6 +892,13 @@ def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> N
             "secretKey": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
         },
     }
+    assert fuyao["existingSecret"] == ""
+    assert fuyao["secretKey"] == "MARKET_ENVIRONMENT_FUYAO_API_KEY"
+    assert fuyao["datasets"]["sectors"] == {
+        "enabled": False,
+        "approvedRevision": "",
+        "shadowEnabled": False,
+    }
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
@@ -904,6 +912,9 @@ def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     assert all(document.get("kind") != "CronJob" for document in documents)
     assert all(document.get("kind") != "Secret" for document in documents)
     assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"] == ""
+    assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED"] == "0"
     assert "MARKET_ENVIRONMENT_FUYAO_API_KEY" not in environment
 
 
@@ -954,6 +965,50 @@ def test_helm_injects_independent_optional_fuyao_secret_into_both_workloads() ->
         assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "1"
         assert environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"] == expected_secret
         assert environment["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_sectors_gate_and_approved_revision_are_explicit_and_secret_backed() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.27.0",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=true",
+        "--set",
+        "marketEnvironment.scheduledCollection.suspend=true",
+        "--set",
+        "marketEnvironment.fuyao.existingSecret=a-stock-market-provider",
+        "--set",
+        "marketEnvironment.fuyao.datasets.sectors.enabled=true",
+        "--set",
+        "marketEnvironment.fuyao.datasets.sectors.approvedRevision=fuyao-ths-sectors-v1",
+        "--set",
+        "marketEnvironment.fuyao.datasets.sectors.shadowEnabled=true",
+    )
+
+    expected_secret = {
+        "secretKeyRef": {
+            "name": "a-stock-market-provider",
+            "key": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
+            "optional": True,
+        }
+    }
+    for document in documents:
+        assert document.get("kind") != "Secret"
+        serialized = yaml.safe_dump(document, sort_keys=True)
+        assert "actual-api-key" not in serialized
+
+    deployment = _resource(documents, "Deployment")
+    cronjob = _resource(documents, "CronJob")
+    for container in (
+        deployment["spec"]["template"]["spec"]["containers"][0],
+        cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0],
+    ):
+        environment = _environment(container)
+        assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"] == "1"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"] == "fuyao-ths-sectors-v1"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED"] == "1"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"] == expected_secret
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")

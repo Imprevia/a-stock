@@ -54,18 +54,19 @@ Codex 通过 MCP stdio 调用五个只读工具：`search_trading_knowledge`、`
 
 | 优先级 | 数据源 | 用途 |
 |---|---|---|
-| 1 | mootdx（通达信 TCP） | 历史日线、均线、区间和成交额 |
-| 2 | 百度股市通 K 线 | mootdx 失败时的历史降级 |
-| 3 | 新浪指数 K 线 | 指数历史成交量；按腾讯实时成交额校准历史成交额 |
-| 4 | 东方财富历史 K 线 | 显式市场 `secid` 降级源；提供指数历史成交额 |
-| 5 | 腾讯历史 K 线 | 最后历史降级；可能没有成交额 |
-| 6 | 腾讯财经实时行情 | 当前报价、涨跌幅、成交额和历史价格交叉校验 |
+| 1 | 扶摇指数历史 K 线（capability-gated） | `core` 显式切换后的主源；逐指数请求并严格校验日期、OHLC、成交额和 280 根最小历史 |
+| 2 | mootdx（通达信 TCP） | 扶摇失败后的首个非东方财富历史降级 |
+| 3 | 百度股市通 K 线 | mootdx 失败时的历史降级 |
+| 4 | 新浪指数 K 线 | 指数历史成交量；按腾讯实时成交额校准历史成交额 |
+| 5 | 腾讯历史 K 线 | 最后的非东方财富历史降级；历史成交额可能不可用 |
+| 6 | 东方财富历史 K 线 | 最终历史降级；显式市场 `secid` 并提供指数历史成交额 |
+| 7 | 腾讯财经实时行情 | 当前报价、涨跌幅、成交额和当前日期 Fuyao 价格交叉校验；历史日期不调用 |
 
-市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度直接使用东方财富 `push2delay` 的涨跌幅排序分页，定位正负边界和有效样本中位数，不再先尝试被上游限制为不完整行数的名义全 A 主快照；容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败或返回无效载荷后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序。涨跌停生态以扶摇日期化三类池为 membership 主源、东方财富为降级和交叉核对源；扶摇分页必须覆盖 `pagination.total`，请求日期先由交易日历确认并记录 `dateEvidence=request-parameter`，两源按规范证券身份取并集，差异行和整日质量标记 `degraded`。扶摇 limits 客户端对交易日历、代码表、三类池和分页请求使用同一实例级最小间隔；HTTP 429、`code=4001` 和 `code=5003` 使用较慢的有界指数退避，并在最终 warning 中保留脱敏业务码、message 和 request_id。该节流与退避只降低重复请求压力，不改变 exact-date、source revision、membership 完整性或失败保留门禁。行业板块排名继续使用东方财富主域到延迟域降级，行业领涨股名称取 `f128`，`f140` 仅为代码。当前快照型 provider 仅允许在上海时区的有效市场日采集；已持久化的精确快照可用于对应历史日期，禁止拿其他日期或今日数据回填。未接入的独立亏钱收益和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
+市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度在批准 v2 revision 并显式启用时先完整分页拉取扶摇最新快照，再按开关进入 TDX 精确日期盘后包，最后才用东方财富 `push2delay` 涨跌幅排序分页；未启用 Fuyao 时仍从既有 TDX/Eastmoney 链开始。容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败或返回无效载荷后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序，必要时才进入独立开关控制的 TDX derived，绝不调用 Fuyao。涨跌停生态以扶摇日期化三类池为 membership 主源、东方财富为降级和交叉核对源；扶摇分页必须覆盖 `pagination.total`，请求日期先由交易日历确认并记录 `dateEvidence=request-parameter`，两源按规范证券身份取并集，差异行和整日质量标记 `degraded`。扶摇 limits 与通用行情客户端共享进程级请求门和最小间隔；HTTP 429、`code=4001` 和 `code=5003` 使用较慢的有界指数退避，并在最终 warning 中保留脱敏业务码、message 和 request_id。该节流与退避只降低重复请求压力，不改变 exact-date、source revision、membership 完整性或失败保留门禁。行业板块排名继续使用东方财富主域到延迟域降级，行业领涨股名称取 `f128`，`f140` 仅为代码。当前快照型 provider 仅允许在上海时区的有效市场日采集；已持久化的精确快照可用于对应历史日期，禁止拿其他日期或今日数据回填。未接入的独立亏钱收益和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
 
-### `breadth` / `activeDirection` 通达信盘后包备用边界（2026-09-24）
+### `breadth` / `activeDirection` 通达信盘后包备用边界（2026-09-29）
 
-当且仅当既有东方财富路径失败时，两个数据集才按 `Eastmoney -> push2delay -> TDX daily package` 顺序尝试通达信官网指定日期盘后包；`sectors`、`limits` 和 `core` 不进入该链路。盘后包客户端只请求 `https://www.tdx.com.cn/products/data/data/g4day/{YYYYMMDD}.zip`，保存请求日期、包内文件推导的源日期、抓取时间、文件完整性和市场行数；运行时不访问 GitHub。解析逻辑是对 `simonlin1212/a-stock-data` Apache-2.0 实现的最小兼容重写，固定 revision `2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7`，具体边界和进度见 [`add-tdx-daily-package-fallback`](exec-plans/active/add-tdx-daily-package-fallback.md)。
+`breadth` 在批准 `fuyao-market-v2` 并显式启用后按 `Fuyao -> TDX daily package -> Eastmoney push2delay` 降级；TDX 必须由 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 显式开启，关闭时扶摇失败直接进入东方财富最后降级。Fuyao `/api/a-share/prices/snapshot` 是 latest-only：必须用 `limit/offset` 拉完 `total`、证明每页 `timestamp` 均可解析且映射到请求的同一上海当前交易日；原始值可按页漂移，但必须保留 exact/date stability 与跨度证据，历史日期只读本地精确快照，不调用该接口。`activeDirection` 不参加本次 Fuyao 切换，仍按 `Eastmoney push2 -> push2delay -> 可选 TDX derived`；`sectors`、`limits` 和 `core` 不进入 breadth 的 TDX 链。盘后包客户端只请求 `https://www.tdx.com.cn/products/data/data/g4day/{YYYYMMDD}.zip`，保存请求日期、包内文件推导的源日期、抓取时间、文件完整性和市场行数；运行时不访问 GitHub。解析逻辑是对 `simonlin1212/a-stock-data` Apache-2.0 实现的最小兼容重写，固定 revision `2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7`，具体边界和进度见 [`add-tdx-daily-package-fallback`](exec-plans/active/add-tdx-daily-package-fallback.md)。
 
 盘后包的日期、证券代码、名称、收盘价、前收、成交额和市场完整性均需通过校验；缺失事实保持 `null` 或拒绝候选，不能用零值、代码字符串、当前行情或其他日期回填。解析器保留有价格的原始包行作为传输事实，但 `breadth` 和 TDX 派生 `activeDirection` 在消费前必须共享 `tdx-stock-universe-v1` 分类策略：按请求日期检查市场和代码号段，只保留可证明的上海主板/科创板、深圳主板/创业板和北京普通股票，基金、债券、指数、权证、B 股、存托凭证及未知身份全部排除。北京 `920` 号段按 2025-10-09 切换边界解释；过滤前、保留、排除、未分类数量、按市场保留统计和排除原因随 quality metadata 保存。分类后的普通股票样本还要单独通过市场覆盖和最小样本门槛，不能把原始全证券行数当作 `observations` 或广度分母。`breadth` 优先使用包内涨跌幅/前收，缺失时只允许通过精确交易日历取得相邻上一交易日包并对同一过滤后 universe 校验身份覆盖率。`activeDirection` 的原有 TDX breadth 开关不再控制派生方向：新开关 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED` 默认关闭，只有 Eastmoney 主域和延迟域都失败时才允许启用 TDX 派生路径；过滤后的普通股票按成交额降序、规范证券身份升序执行本地稳定排序，来源为 `tdx-daily-package-derived`、质量为 `fallback-derived`，并记录 `derived=true`、排序方法、TDX revision、行业映射 revision/覆盖率和前序 warning。它不伪装成 provider-ranked 结果。名称优先使用包内名称，缺失时仅对派生 Top-N 批量请求腾讯名称，腾讯不得提供价格、成交额或日期事实。`MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED` 仍只控制 breadth fallback。包未发布、日期冲突、格式损坏、证券宇宙不足或字段不足仍为 `failed`/`insufficient`，由 collection 层继续执行 `failed-missing`/`failed-retained`；派生成功可写入精确日期快照，但任务和父运行保持 `partial`。普通 GET、状态查询和聚合读取只读本地精确日期证据，不自动重采集、直接改 payload 或跨日期回填。解析逻辑是对 `simonlin1212/a-stock-data` Apache-2.0 实现的最小兼容重写，固定 revision `2e0ae6383c649b2bc5f68d3bc430d357f1c59ae7`，运行时不依赖 GitHub，也不提交真实全市场行业映射或数据快照。
 
@@ -309,5 +310,32 @@ tests/                              公式、服务层和 API 契约测试
 - **删除**：`components/DashboardPlaceholder.vue`（无引用）。`App.vue` 的手写路由、`currentView`、`popstate`、`pushState`、hash 解析、9 章节内联模板、3 个 ECharts 闭包变量与 5 个图表函数全部移除。
 
 验证：19 文件 / 108 tests / 全绿；`npm run build` 通过（单 chunk 警告为 echarts 全量打包，非回归）；`python scripts/check-docs-contract.py --mode=full` 通过。
-- 扶摇市场数据迁移采用独立通用请求层 `src/market_environment/fuyao_market.py`，与已稳定的 limits 专用 `FuyaoClient` 并行存在。`core`、`breadth`、`sectors`、`activeDirection` 通过能力报告、批准 revision 和逐数据集开关控制，默认关闭。
+- 扶摇市场数据迁移采用独立通用请求层 `src/market_environment/fuyao_market.py`，与已稳定的 limits 专用 `FuyaoClient` 并行存在。两个客户端共享 `src/market_environment/fuyao_request_gate.py` 的进程级串行请求门、最小间隔和有界慢退避；最终错误只保留脱敏的 `code`、`message`、`request_id`。`core` 与 `breadth` 的当前契约 revision 为 `fuyao-market-v2`：前者只使用 `/api/a-share-index/prices/historical` 的逐指数 `thscode/start/end/date_ms` 契约，后者只使用 `/api/a-share/prices/snapshot` 的完整 `limit/offset` 分页。旧 `fuyao-market-v1` 不得批准这两个数据集。`sectors` 仍是东方财富主链后的 Fuyao fallback；`activeDirection` 强制保留 Eastmoney/TDX 链且 capability 保持 `unverified`。所有开关默认关闭。
 - shadow 对账结果只进入采集任务 `timings` 元数据，不覆盖正式快照、source 或 checksum；能力报告保存在 `provider_capability_reports`，SQLite/ PostgreSQL 均为加法 schema。
+
+### 行业板块扶摇降级边界（2026-09-29）
+
+`sectors` 的正式来源仍是东方财富 `push2`，失败后才尝试
+`push2delay`；只有两条东方财富路径均失败、
+`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`、扶摇 capability report 为
+`eligible` 且 `MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION` 完全匹配时，
+采集 coordinator 才允许使用扶摇行业 fallback。扶摇基址为
+`https://fuyao.aicubes.cn`，行业契约由三个只读 endpoint 组成：
+
+- `GET /api/a-share/calendar/trading-days`：证明请求日期是上海交易日；
+- `GET /api/a-share-index/catalog/ths-index-list?tag=industry`：读取同花顺行业指数目录；
+- `GET /api/a-share-index/prices/snapshot?thscodes=...`：按目录代码分批读取指数快照。
+
+目录和快照必须绑定同一上海日期、覆盖完整目录（当前探针为 320/320）并按涨跌幅降序、
+代码升序稳定排序。结果只映射行业代码、名称、涨跌幅和成交额；扶摇不提供主力净流入、
+主力净流入比例、上涨/下跌家数或领涨股，这些字段保持 `null`，质量为 fallback/partial
+并附字段 warning。行业快照的 `data.timestamp` 是响应时间戳，分批请求的原始毫秒值可以不同，
+但必须全部映射到同一上海交易日；日期、身份、跨交易日批次时间或覆盖校验失败时 fail closed，不能用最新快照包装
+历史日期，也不能用零值或其他日期补齐。
+
+行业 fallback 继续复用 `SectorRow` 和现有 `fallback`/`partial` 质量语义，并合并两条东方财富
+失败 warning、扶摇 source/revision、字段缺失 warning 和 exact-date 证据。`GET`、status、
+materialized aggregate 与快照读取均 provider-free，只读本地 `(dataset, as_of)` 结果；失败时
+仍按同日期 `failed-retained` / `failed-missing` 处理，不跨日期回填。扶摇 capability 报告只
+保留 endpoint、日期、目录/快照数量、字段覆盖、权限/限流结果等脱敏证据，API key 只由独立
+Secret 注入，绝不进入 values、日志、报告或 API 响应。

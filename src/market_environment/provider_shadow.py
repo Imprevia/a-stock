@@ -132,6 +132,7 @@ def _compare(
         "identityMissing": {"formal": [], "shadow": []},
         "orderingDifferences": [],
         "differences": [],
+        "differenceAttributions": [],
         "tolerances": dict(_DEFAULT_TOLERANCES.get(dataset, {})),
         "warnings": _unique(warnings),
     }
@@ -150,6 +151,7 @@ def _compare(
             {
                 "identity": "dataset",
                 "field": "asOf",
+                "classification": "date-evidence",
                 "formal": formal_date,
                 "shadow": shadow_date,
                 "delta": None,
@@ -174,6 +176,7 @@ def _compare(
         report["status"] = "degraded"
         report["match"] = False
         report["warnings"] = _unique([*report["warnings"], "provider quality is degraded despite comparable values"])
+    _summarize_differences(report)
     return report
 
 
@@ -230,10 +233,30 @@ def _compare_items(report: dict[str, Any], dataset: str, formal: list[dict[str, 
             left_value, right_value = left.get(field), right.get(field)
             if left_value is None or right_value is None:
                 if left_value != right_value:
+                    before = len(report["differences"])
                     _add_difference(report, identity, field, left_value, right_value, report["tolerances"].get(field, 0.0), max_differences=max_differences)
+                    if len(report["differences"]) > before and dataset == "core" and field == "amount":
+                        attribution = _core_amount_attribution(left, right)
+                        if attribution is not None:
+                            report["differences"][-1]["attribution"] = attribution
+                            report["differences"][-1]["classification"] = "provider-basis"
+                            report["differenceAttributions"].append({"identity": identity, "field": field, **attribution})
                 continue
             tolerance = report["tolerances"].get(field, 0.0)
+            before = len(report["differences"])
             _add_difference(report, identity, field, left_value, right_value, tolerance, max_differences=max_differences)
+            if len(report["differences"]) > before and dataset == "core" and field == "amount":
+                attribution = _core_amount_attribution(left, right)
+                if attribution is not None:
+                    report["differences"][-1]["attribution"] = attribution
+                    report["differences"][-1]["classification"] = "provider-basis"
+                    report["differenceAttributions"].append(
+                        {
+                            "identity": identity,
+                            "field": field,
+                            **attribution,
+                        }
+                    )
     if missing_formal or missing_shadow or report["orderingDifferences"] or report["differences"]:
         report["status"] = "mismatch"
         report["match"] = False
@@ -243,6 +266,52 @@ def _compare_items(report: dict[str, Any], dataset: str, formal: list[dict[str, 
     else:
         report["status"] = "match"
         report["match"] = True
+    if report["differenceAttributions"]:
+        report["warnings"] = _unique(
+            [
+                *report["warnings"],
+                "core amount differences compare estimated current-quote-calibrated turnover with direct provider turnover",
+            ]
+        )
+
+
+def _summarize_differences(report: dict[str, Any]) -> None:
+    """Add bounded categories while preserving every reported mismatch."""
+
+    by_field: dict[str, int] = {}
+    by_identity: dict[str, int] = {}
+    by_classification: dict[str, int] = {}
+    for difference in report.get("differences", ()):
+        field = str(difference.get("field") or "unknown")
+        identity = str(difference.get("identity") or "unknown")
+        if field == "asOf":
+            classification = "date-evidence"
+        elif difference.get("attribution"):
+            classification = "provider-basis"
+        elif difference.get("formal") is None or difference.get("shadow") is None:
+            classification = "field-missing"
+        else:
+            classification = "value"
+        difference.setdefault("classification", classification)
+        by_field[field] = by_field.get(field, 0) + 1
+        by_identity[identity] = by_identity.get(identity, 0) + 1
+        by_classification[classification] = by_classification.get(classification, 0) + 1
+    for identity in report.get("identityMissing", {}).get("formal", ()):
+        by_classification["identity-missing"] = by_classification.get("identity-missing", 0) + 1
+        by_identity[str(identity)] = by_identity.get(str(identity), 0) + 1
+    for identity in report.get("identityMissing", {}).get("shadow", ()):
+        by_classification["identity-missing"] = by_classification.get("identity-missing", 0) + 1
+        by_identity[str(identity)] = by_identity.get(str(identity), 0) + 1
+    if report.get("orderingDifferences"):
+        by_classification["ordering"] = len(report["orderingDifferences"])
+    report["differenceSummary"] = {
+        "total": len(report.get("differences", ())),
+        "byField": dict(sorted(by_field.items())),
+        "byIdentity": dict(sorted(by_identity.items())[:_MAX_IDENTITIES]),
+        "byClassification": dict(sorted(by_classification.items())),
+        "formalProviderRevision": report.get("formalProviderRevision"),
+        "shadowProviderRevision": report.get("shadowProviderRevision"),
+    }
 
 
 def _fields_for(dataset: str, left: Mapping[str, Any], right: Mapping[str, Any]) -> tuple[str, ...]:
@@ -254,6 +323,32 @@ def _fields_for(dataset: str, left: Mapping[str, Any], right: Mapping[str, Any])
         return ("name", "changePct", "amount", "mainNet", "mainNetPct", "upCount", "downCount", "leader")
     keys = tuple(sorted((set(left) | set(right)) - {"identity", "rank"}))
     return keys
+
+
+def _core_amount_basis(item: Mapping[str, Any]) -> str | None:
+    basis = item.get("amountBasis")
+    if basis:
+        return str(basis)
+    explicit = item.get("amountEvidence")
+    if explicit:
+        return str(explicit)
+    quality = item.get("dataQuality")
+    if isinstance(quality, Mapping):
+        source = str(quality.get("source") or "")
+        warning = str(quality.get("warning") or "")
+        if "估算" in warning or "calibrat" in warning.lower() or source in {"sina-kline", "tencent-kline"}:
+            return "estimated-current-quote"
+        if source == "fuyao":
+            return "direct-turnover"
+    return None
+
+
+def _core_amount_attribution(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, str] | None:
+    formal_basis = _core_amount_basis(left)
+    shadow_basis = _core_amount_basis(right)
+    if not formal_basis or not shadow_basis or formal_basis == shadow_basis:
+        return None
+    return {"kind": "amount-basis", "formalBasis": formal_basis, "shadowBasis": shadow_basis}
 
 
 def _items(dataset: str, payload: Any) -> list[dict[str, Any]]:
@@ -286,7 +381,14 @@ def _items(dataset: str, payload: Any) -> list[dict[str, Any]]:
                 }
             latest = latest if isinstance(latest, Mapping) else item
             identity = _canonical_core_identity(item.get("code") or item.get("identity"))
-            result.append({"identity": identity, **{key: _safe_value(latest.get(key)) for key in ("close", "open", "high", "low", "amount")}, "changePct": _safe_value(item.get("changePct"))})
+            result.append(
+                {
+                    "identity": identity,
+                    **{key: _safe_value(latest.get(key)) for key in ("close", "open", "high", "low", "amount")},
+                    "changePct": _safe_value(item.get("changePct")),
+                    "amountBasis": _core_amount_basis(item),
+                }
+            )
         return result
     key = "topStocks" if dataset == "activeDirection" else "rows"
     raw = payload.get(key) if isinstance(payload, Mapping) else None

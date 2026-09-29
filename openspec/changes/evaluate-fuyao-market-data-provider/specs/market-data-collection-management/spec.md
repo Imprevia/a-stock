@@ -23,3 +23,23 @@
 #### Scenario: One dataset is rejected during a full run
 - **WHEN** 一键采集包含一个未通过扶摇切换校验的数据集和多个正常数据集
 - **THEN** 被拒绝的数据集记录独立失败原因，其他数据集继续按各自 provider 执行，父批次按现有规则汇总为 `partial` 或相应状态
+
+### Requirement: Dataset routing preserves the v2 fallback boundary
+
+正式采集 SHALL route `core` through Fuyao v2, then the existing non-Eastmoney
+chain (`mootdx`, Baidu, Sina, Tencent) and Eastmoney last, when the core
+capability gate is approved. `breadth` SHALL route Fuyao latest-only snapshot,
+then the explicitly enabled TDX exact-date package, then Eastmoney. `limits`
+keeps its existing Fuyao-primary/Eastmoney cross-check path. `sectors` keeps
+Eastmoney primary with Fuyao only as a capability-gated fallback, and
+`activeDirection` SHALL remain on its existing Eastmoney/TDX chain.
+
+#### Scenario: Historical latest-only dataset is collected
+
+- **WHEN** a breadth task targets a historical date
+- **THEN** neither the Fuyao latest-only endpoint nor a current market quote is called; the task reads an exact local snapshot or ends with the existing failure-retention status
+
+#### Scenario: One Fuyao core index fails
+
+- **WHEN** one of the five v2 index requests fails contract, permission, rate-limit, or transport validation
+- **THEN** the other index requests remain usable, the failed index falls back independently, and the task retains a `partial` warning rather than hiding the Fuyao failure

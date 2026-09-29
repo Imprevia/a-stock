@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -141,6 +142,66 @@ describe('market store — loadCore', () => {
 
     expect(store.data?.asOf).toBe('2026-09-04')
   })
+
+  it.each([
+    ['2026-09-05', '2026-09-04', '周末'],
+    ['2026-10-01', '2026-09-30', '节假日'],
+  ])('normalises a manually selected %s %s before lazy section loads', async (requestedDate, effectiveDate) => {
+    const requests: string[] = []
+    const fetchMock = vi.fn(async (url: string) => {
+      requests.push(url)
+      const parsed = new URL(url, 'http://fixture.local')
+      if (parsed.pathname.endsWith('/core')) {
+        return { ok: true, json: async () => coreResponse(effectiveDate) }
+      }
+      if (parsed.pathname.endsWith('/chapter-01')) {
+        return { ok: true, json: async () => sectionResponse(effectiveDate) }
+      }
+      return { ok: true, json: async () => ({ status: 'pending', requestedAsOf: effectiveDate, deltas: {}, warnings: [] }) }
+    }) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useMarketStore()
+    store.setDate(requestedDate)
+    await flushPromises()
+    await flushPromises()
+
+    expect(store.selectedDate).toBe(effectiveDate)
+    expect(store.data?.asOf).toBe(effectiveDate)
+
+    await store.loadSection('sectors')
+
+    expect(requests).toContain(`/api/market-environment/core?as_of=${requestedDate}`)
+    expect(requests).toContain(`/api/market-environment/chapter-01?as_of=${effectiveDate}&section=sectors`)
+    expect(store.sectionStates.sectors.phase).toBe('ready')
+  })
+
+  it('preserves an explicitly selected historical trading date for core and sections', async () => {
+    const requests: string[] = []
+    const fetchMock = vi.fn(async (url: string) => {
+      requests.push(url)
+      const parsed = new URL(url, 'http://fixture.local')
+      if (parsed.pathname.endsWith('/core')) {
+        return { ok: true, json: async () => coreResponse('2026-09-03') }
+      }
+      if (parsed.pathname.endsWith('/chapter-01')) {
+        return { ok: true, json: async () => sectionResponse('2026-09-03') }
+      }
+      return { ok: true, json: async () => ({ status: 'pending', requestedAsOf: '2026-09-03', deltas: {}, warnings: [] }) }
+    }) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useMarketStore()
+    store.setDate('2026-09-03')
+    await flushPromises()
+    await flushPromises()
+    await store.loadSection('sectors')
+
+    expect(store.selectedDate).toBe('2026-09-03')
+    expect(requests).toContain('/api/market-environment/core?as_of=2026-09-03')
+    expect(requests).toContain('/api/market-environment/chapter-01?as_of=2026-09-03&section=sectors')
+    expect(store.sectionStates.sectors.phase).toBe('ready')
+  })
 })
 
 describe('market store — loadSection', () => {
@@ -221,6 +282,30 @@ describe('market store — loadSection', () => {
     expect(store.sectionStates.limits.phase).toBe('error')
     expect(store.sectionStates.limits.error).toContain('日期与核心数据不一致')
     expect(store.loadedSections).not.toContain('limits')
+  })
+
+  it('rejects a normalized core/section date mismatch instead of merging silently', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requests.push(url)
+      const parsed = new URL(url, 'http://fixture.local')
+      if (parsed.pathname.endsWith('/core')) {
+        return { ok: true, json: async () => coreResponse('2026-09-04') }
+      }
+      return { ok: true, json: async () => limitsSectionResponse('2026-09-05') }
+    }) as unknown as typeof fetch)
+
+    const store = useMarketStore()
+    store.setDate('2026-09-05')
+    await flushPromises()
+    await flushPromises()
+    await store.loadSection('sectors')
+
+    expect(store.selectedDate).toBe('2026-09-04')
+    expect(requests).toContain('/api/market-environment/chapter-01?as_of=2026-09-04&section=sectors')
+    expect(store.sectionStates.sectors.phase).toBe('error')
+    expect(store.sectionStates.sectors.error).toContain('日期与核心数据不一致')
+    expect(store.loadedSections).not.toContain('sectors')
   })
 
   it('drops an old-date section response after a new core request starts', async () => {

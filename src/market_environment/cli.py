@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time as clock_time, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
@@ -16,6 +17,7 @@ from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketClient
 from .provider_capability import ProviderCapabilityReport
 from .date_relabel import relabel_date, rollback_date_relabel
 from .postgres_migration import backup_sqlite, import_sqlite
+from .providers import INDEX_SPECS, MarketDataProvider
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
 from .snapshot_store import SnapshotStore
 from .tdx_daily import TDXDailyPackageClient
@@ -127,27 +129,82 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _capability_report_from_result(dataset: str, result: Any, as_of: date, *, revision: str = "fuyao-market-v1") -> ProviderCapabilityReport:
-    status = "eligible" if getattr(result, "status", "insufficient") == "ok" else "ineligible"
+def _capability_report_from_result(dataset: str, result: Any, as_of: date, *, revision: str = "fuyao-market-v2") -> ProviderCapabilityReport:
     quality = getattr(result, "quality", {}) or {}
+    result_status = str(getattr(result, "status", "insufficient"))
+    report_revision = str(quality.get("providerRevision") or revision)
+    # ``fallback`` is the intentional quality status for the THS sectors
+    # contract: required identity/change/turnover evidence is valid while
+    # optional funds/width/leader fields are unavailable.  It is eligible for
+    # capability approval, but those omissions remain explicit evidence.
+    status = "eligible" if result_status == "ok" or (dataset == "sectors" and result_status == "fallback") else "ineligible"
+    if dataset == "activeDirection":
+        # The v2 migration deliberately leaves this dataset on the existing
+        # Eastmoney/TDX route; a Fuyao probe is evidence only, never a cutover
+        # approval for the stale/latest-only adapter.
+        status = "unverified"
     warnings = tuple(str(item) for item in getattr(result, "warnings", ()) or quality.get("warnings", ()))
-    if status != "eligible" and not warnings:
+    if dataset == "activeDirection":
+        warnings = tuple(dict.fromkeys([*warnings, "activeDirection remains on the existing Eastmoney/TDX route"])
+        )
+    elif status != "eligible" and not warnings:
         warnings = ("fixture contract evidence is incomplete",)
+    endpoints = quality.get("endpoints") if isinstance(quality.get("endpoints"), dict) else {}
+    endpoint = quality.get("endpoint") or endpoints.get("snapshot") or f"fixture:{dataset}"
+    field_coverage = quality.get("fieldCoverage")
+    if not isinstance(field_coverage, dict):
+        field_coverage = {
+            "qualityStatus": result_status,
+            "fields": sorted(result.payload) if hasattr(result, "payload") else [],
+        }
+    elif endpoints:
+        field_coverage = {**field_coverage, "endpoints": dict(endpoints)}
+    date_evidence = quality.get("dateEvidence")
+    if not isinstance(date_evidence, dict):
+        date_evidence = {"requested": as_of.isoformat(), "response": quality.get("asOf")}
+    pagination_evidence = quality.get("paginationEvidence")
+    if not isinstance(pagination_evidence, dict):
+        pagination_evidence = {
+            "proven": dataset in {"breadth", "activeDirection"} and status == "eligible",
+        }
+    if dataset == "sectors":
+        pagination_evidence = {
+            **pagination_evidence,
+            "catalogCount": quality.get("catalogCount"),
+            "snapshotCount": quality.get("snapshotCount"),
+            "snapshotCoverage": quality.get("snapshotCoverage"),
+            "snapshotBatchCount": quality.get("snapshotBatchCount"),
+            "snapshotTimestamps": quality.get("snapshotTimestamps", []),
+        }
+    permission_evidence = quality.get("permissionEvidence")
+    if not isinstance(permission_evidence, dict):
+        permission_evidence = {"configured": False, "mode": "offline-fixture"}
+    rate_limit_evidence = quality.get("rateLimitEvidence")
+    if not isinstance(rate_limit_evidence, dict):
+        rate_limit_evidence = {"requestBudget": 0}
+    unsupported = quality.get("unsupportedFields") or ()
+    missing_evidence = tuple(str(item) for item in unsupported)
+    if status != "eligible":
+        missing_evidence = tuple(dict.fromkeys([*missing_evidence, *warnings]))
     return ProviderCapabilityReport(
         provider="fuyao",
         dataset=dataset,
-        revision=revision,
+        revision=report_revision,
         status=status,
-        endpoint=f"fixture:{dataset}",
-        field_coverage={"qualityStatus": getattr(result, "status", None), "fields": sorted(result.payload) if hasattr(result, "payload") else []},
-        date_evidence={"requested": as_of.isoformat(), "response": quality.get("asOf")},
-        history_window={"proven": dataset == "core" and status == "eligible"},
-        pagination_evidence={"proven": dataset in {"breadth", "activeDirection"} and status == "eligible"},
-        permission_evidence={"configured": False, "mode": "offline-fixture"},
-        rate_limit_evidence={"requestBudget": 0},
+        endpoint=str(endpoint),
+        field_coverage=field_coverage,
+        date_evidence=date_evidence,
+        history_window=(
+            dict(quality["historyWindow"])
+            if isinstance(quality.get("historyWindow"), dict)
+            else {"proven": dataset == "core" and status == "eligible"}
+        ),
+        pagination_evidence=pagination_evidence,
+        permission_evidence=permission_evidence,
+        rate_limit_evidence=rate_limit_evidence,
         sample_count=int(getattr(result, "observations", 0) or 0),
         warnings=warnings,
-        missing_evidence=tuple(warnings) if status != "eligible" else (),
+        missing_evidence=missing_evidence,
         checked_at=datetime.combine(as_of, clock_time(12), tzinfo=timezone.utc),
     ).normalized()
 
@@ -156,12 +213,40 @@ def _run_offline_capability_probe(fixture_path: Path, as_of: date) -> dict[str, 
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     adapter = FuyaoMarketAdapter()
     reports: list[ProviderCapabilityReport] = []
-    core = adapter.normalize_core(fixture.get("core", {}), as_of, min_bars=1)
-    core_result = type("CoreProbe", (), {"status": "ok" if core and all(item.status == "ok" for item in core.values()) else "insufficient", "payload": {"indices": [item.payload for item in core.values()]}, "quality": {"asOf": as_of.isoformat()}, "warnings": (), "observations": sum(item.observations for item in core.values())})()
+    core = adapter.normalize_core(fixture.get("core", {}), as_of, min_bars=280)
+    core_result = type(
+        "CoreProbe",
+        (),
+        {
+            "status": "ok" if len(core) == 5 and all(item.status == "ok" for item in core.values()) else "insufficient",
+            "payload": {"indices": [item.payload for item in core.values()]},
+            "quality": {
+                "asOf": as_of.isoformat(),
+                "providerRevision": adapter.source_revision,
+                "endpoint": "/api/a-share-index/prices/historical",
+                "fieldCoverage": {"indices": len(core), "minimumBars": 280},
+                "dateEvidence": {"requested": as_of.isoformat()},
+            },
+            "warnings": tuple(warning for item in core.values() for warning in item.warnings),
+            "observations": sum(item.observations for item in core.values()),
+        },
+    )()
     reports.append(_capability_report_from_result("core", core_result, as_of))
-    for dataset, method, key in (("breadth", "normalize_breadth", "breadth_pages"), ("activeDirection", "normalize_active_direction", "active_direction"), ("sectors", "normalize_sectors", "sectors")):
+    for dataset, method, key in (("breadth", "normalize_breadth", "breadth_snapshot_pages"), ("activeDirection", "normalize_active_direction", "active_direction"), ("sectors", "normalize_sectors", "sectors")):
         if dataset == "breadth":
-            result = adapter.normalize_breadth(fixture.get(key, ()), as_of)
+            snapshot_pages = fixture.get(key)
+            if not snapshot_pages:
+                result = adapter._result(
+                    "market-breadth",
+                    {"state": "insufficient", "advanceCount": None, "declineCount": None, "flatCount": None, "validCount": None, "advanceRatio": None, "medianReturn": None},
+                    status="insufficient",
+                    as_of=as_of,
+                    observations=0,
+                    warnings=["v2 snapshot fixture is missing; legacy breadth fixture is not capability evidence"],
+                    quality_extra={"endpoint": "/api/a-share/prices/snapshot", "dateCapability": "latest-only"},
+                )
+            else:
+                result = adapter.normalize_breadth(snapshot_pages, as_of)
         elif dataset == "activeDirection":
             result = adapter.normalize_active_direction(fixture.get(key, ()), as_of, ordering_proven=True)
         else:
@@ -286,6 +371,131 @@ def main(
             except Exception as exc:
                 _print_payload({"status": "rejected", "error": str(exc)})
                 return 2
+        if args.fuyao_command == "real-probe":
+            if not args.allow_real:
+                _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
+                return 2
+            if not os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "").strip():
+                _print_payload({"status": "rejected", "error": "MARKET_ENVIRONMENT_FUYAO_API_KEY is required"})
+                return 2
+            try:
+                adapter = FuyaoMarketAdapter(FuyaoMarketClient())
+                # Current-date core evidence must include an independent quote
+                # source; historical probes intentionally remain quote-free.
+                probe_now = _market_now(now)
+                quotes = (
+                    MarketDataProvider().fetch_quotes(INDEX_SPECS)
+                    if args.as_of == effective_market_date(probe_now)
+                    else {}
+                )
+                core_results = (
+                    adapter.fetch_core(args.as_of, quotes_by_code=quotes)
+                    if quotes
+                    else adapter.fetch_core(args.as_of)
+                )
+                market_client = getattr(adapter, "client", None)
+                client_configured = bool(
+                    getattr(market_client, "configured", bool(os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY")))
+                )
+                request_budget = int(getattr(market_client, "request_budget", 0) or 0)
+                request_count = int(getattr(market_client, "request_count", 0) or 0)
+                core_result = SimpleNamespace(
+                    status="ok"
+                    if len(core_results) == 5
+                    and all(item.status == "ok" for item in core_results.values())
+                    else "insufficient",
+                    payload={"indices": [item.payload for item in core_results.values()]},
+                    quality={
+                        "asOf": args.as_of.isoformat(),
+                        "providerRevision": getattr(adapter, "source_revision", "fuyao-market-v2"),
+                        "endpoint": "/api/a-share-index/prices/historical",
+                        "fieldCoverage": {
+                            "indices": len(core_results),
+                            "validIndices": sum(item.status == "ok" for item in core_results.values()),
+                            "minimumBars": 280,
+                            "ohlcTurnover": all(
+                                bool(item.payload.get("bars")) for item in core_results.values()
+                            ),
+                            "independentQuote": {
+                                "provider": "tencent",
+                                "required": args.as_of == effective_market_date(probe_now),
+                                "checked": bool(quotes),
+                                "sampleCount": len(quotes),
+                            },
+                        },
+                        "dateEvidence": {
+                            "requested": args.as_of.isoformat(),
+                            "indices": {
+                                code: item.quality.get("dateEvidence", {})
+                                for code, item in core_results.items()
+                            },
+                        },
+                        "historyWindow": {
+                            "proven": all(item.status == "ok" for item in core_results.values()),
+                            "minimumBars": min(
+                                (
+                                    int(item.quality.get("historyWindow", {}).get("observations", 0))
+                                    for item in core_results.values()
+                                ),
+                                default=0,
+                            ),
+                        },
+                        "permissionEvidence": {
+                            "configured": client_configured,
+                        },
+                        "rateLimitEvidence": {
+                            "requestBudget": request_budget,
+                            "requestsUsed": request_count,
+                        },
+                    },
+                    warnings=tuple(warning for item in core_results.values() for warning in item.warnings),
+                    observations=sum(item.observations for item in core_results.values()),
+                )
+                probe_results = {
+                    "core": core_result,
+                    "breadth": adapter.fetch_breadth(args.as_of),
+                    "activeDirection": adapter.fetch_active_direction(args.as_of),
+                    "sectors": adapter.fetch_sectors(args.as_of),
+                }
+                request_count = int(getattr(market_client, "request_count", request_count) or 0)
+                for dataset, result in tuple(probe_results.items()):
+                    quality = dict(getattr(result, "quality", {}) or {})
+                    quality.setdefault("permissionEvidence", {"configured": client_configured})
+                    quality.setdefault(
+                        "rateLimitEvidence",
+                        {
+                            "requestBudget": request_budget,
+                            "requestsUsed": request_count,
+                        },
+                    )
+                    probe_results[dataset] = SimpleNamespace(
+                        payload=getattr(result, "payload", {}),
+                        quality=quality,
+                        status=getattr(result, "status", "insufficient"),
+                        warnings=getattr(result, "warnings", ()),
+                        observations=getattr(result, "observations", 0),
+                    )
+                results = probe_results
+                payload = {
+                    "provider": "fuyao",
+                    "asOf": args.as_of.isoformat(),
+                    "reports": [
+                        _capability_report_from_result(k, v, args.as_of).redacted_dict()
+                        for k, v in results.items()
+                    ],
+                }
+                Path(args.output).write_text(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+                    encoding="utf-8",
+                )
+                store = SnapshotStore(args.path)
+                for item in payload["reports"]:
+                    store.put_capability_report(ProviderCapabilityReport.from_dict(item))
+                _print_payload(payload)
+                return 0
+            except Exception as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
     if args.command == "tdx" and args.tdx_command == "real-probe":
         if not args.allow_real:
             _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
@@ -301,30 +511,6 @@ def main(
         except Exception as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
             return 2
-        if args.fuyao_command == "real-probe":
-            if not args.allow_real:
-                _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
-                return 2
-            if not os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "").strip():
-                _print_payload({"status": "rejected", "error": "MARKET_ENVIRONMENT_FUYAO_API_KEY is required"})
-                return 2
-            try:
-                adapter = FuyaoMarketAdapter(FuyaoMarketClient())
-                results = {
-                    "breadth": adapter.fetch_breadth(args.as_of),
-                    "activeDirection": adapter.fetch_active_direction(args.as_of),
-                    "sectors": adapter.fetch_sectors(args.as_of),
-                }
-                payload = {"provider": "fuyao", "asOf": args.as_of.isoformat(), "reports": [_capability_report_from_result(k, v, args.as_of).redacted_dict() for k, v in results.items()]}
-                Path(args.output).write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
-                store = SnapshotStore(args.path)
-                for item in payload["reports"]:
-                    store.put_capability_report(ProviderCapabilityReport.from_dict(item))
-                _print_payload(payload)
-                return 0
-            except Exception as exc:
-                _print_payload({"status": "rejected", "error": str(exc)})
-                return 2
     if args.command == "database" and args.database_command == "migrate":
         try:
             source = Path(args.source)

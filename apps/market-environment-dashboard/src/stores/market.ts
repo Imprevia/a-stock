@@ -119,7 +119,6 @@ export const useMarketStore = defineStore('market', () => {
   ) as Record<Chapter01Section, number>
   let nextSessionSequence = 0
   let coreRequestedDate = ''
-  let initialDatePending = true
 
   // ── actions ────────────────────────────────────────────────────────
   async function loadCore(): Promise<void> {
@@ -153,10 +152,12 @@ export const useMarketStore = defineStore('market', () => {
       if (requestId !== coreSequence) return
       data.value = retainLoadedChapterEvidence(previousData, nextData, previousLoadedSections)
       void loadNextSession(nextData.asOf)
-      const normalizeInitialDate = initialDatePending && nextData.asOf !== requestedDate
-      if (normalizeInitialDate) selectedDate.value = nextData.asOf
-      coreRequestedDate = normalizeInitialDate ? nextData.asOf : requestedDate
-      initialDatePending = false
+      // The API may resolve a weekend/holiday request to the latest valid
+      // trading date. Keep both the date picker and lazy section requests on
+      // that effective date so a later section cannot use the rejected input.
+      const normalizeDate = nextData.asOf !== requestedDate
+      if (normalizeDate) selectedDate.value = nextData.asOf
+      coreRequestedDate = nextData.asOf
       if (!data.value.indices.some((item) => item.code === selectedCode.value)) {
  selectedCode.value = data.value.indices[0]?.code ?? ''
       }
@@ -247,7 +248,6 @@ export const useMarketStore = defineStore('market', () => {
   }
 
   function setDate(date: string): void {
-    initialDatePending = false
     selectedDate.value = date
     void loadCore()
   }
@@ -274,7 +274,6 @@ export const useMarketStore = defineStore('market', () => {
     sectionEpoch += 1
     nextSessionSequence += 1
     coreRequestedDate = ''
-    initialDatePending = true
   }
 
   // ── derived getters ────────────────────────────────────────────────

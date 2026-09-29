@@ -28,7 +28,7 @@
 - [x] 4.1 补充指数、全市场、行业和排序响应的脱敏 fixtures，覆盖成功、分页变化、身份重复、字段缺失、日期不一致和超预算场景；验证 fixture 不含凭据
 - [x] 4.2 增加 Fuyao adapter/provider 单元测试和现有 provider 回归测试；执行 `python -m pytest tests/test_market_environment_fuyao.py tests/test_market_environment_providers.py -q`
 - [x] 4.3 增加 collection integration 测试，覆盖未通过能力门禁、shadow match/mismatch、单项失败隔离、同日期失败保留、provider-free status GET 和旧客户端字段兼容
-- [ ] 4.4 在隔离 PostgreSQL 执行一次授权的 capability/shadow smoke，记录日期证据、来源 revision、请求预算、差异和最终质量；确认生产数据库未被访问
+- [x] 4.4 在隔离 PostgreSQL 执行一次授权的 capability/shadow smoke，记录日期证据、来源 revision、请求预算、差异和最终质量；确认生产数据库未被访问
 - [x] 4.5 执行完整离线验证：`python -m pytest tests -q`、`python -m src.trading_system.cli docs sync-check`、`python scripts/check-docs-contract.py --mode=full`，并记录真实 provider 未纳入 PR 门禁
 
 ## 5. 文档与发布边界
@@ -37,3 +37,11 @@
 - [x] 5.2 更新 `docs/runbooks.md`，补充 capability probe、隔离 shadow、Secret 注入、回滚、请求预算和禁止跨日期回填的操作步骤；验证示例命令不含真实凭据
 - [x] 5.3 更新 `docs/product-specs/market-environment-dashboard.md` 与 provider 质量说明，明确正式来源、shadow 状态、`unverified`/`insufficient` 语义和 limits 不变范围
 - [x] 5.4 更新本 change 的 `Status`、`Completion Evidence`、`Remaining Gaps`、`Next Step` 记录；归档前确认默认开关仍关闭，未通过能力验证的数据集没有被宣称为可替换
+
+## 6. Fuyao API v2 契约修正与分数据集切换
+
+- [x] 6.1 将 core 适配器切换到 `/api/a-share-index/prices/historical`，按 `thscode`、`start/end` 和 `date_ms` 做上海时区精确日期校验，保持五指数、OHLC、成交额和最小历史长度门槛
+- [x] 6.2 将 breadth 适配器切换到 `/api/a-share/prices/snapshot` 的 `limit/offset` 分页，校验顶层 `total/timestamp`、完整身份覆盖和当前交易日证据；历史日期只允许读取本地快照
+- [x] 6.3 为通用 Fuyao 请求层补充共享串行请求门、慢退避和脱敏 `code/message/request_id` 错误证据，避免 core/breadth/limits 并发触发限流
+- [x] 6.4 调整正式采集顺序：Fuyao 作为 core/breadth 主源，现有非东方财富路径和东方财富作为最后降级；limits 保持 Fuyao 主源 + 东方财富交叉核对，sectors/activeDirection 不切换
+- [x] 6.5 使用当前文档字段重写离线 fixture、adapter/provider/collection 回归测试，并同步 capability revision、架构、runbook、产品规格和本计划证据

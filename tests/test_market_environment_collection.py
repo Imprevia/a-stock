@@ -6,6 +6,7 @@ import pytest
 from src.market_environment.calculations import Bar
 from src.market_environment.cli import main as cli_main
 from src.market_environment.collection import CollectionCoordinator
+from src.market_environment.fuyao_config import FuyaoCollectionConfig
 from src.market_environment.providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from src.market_environment.refresh import MARKET_TIME_ZONE, effective_market_date
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
@@ -124,6 +125,32 @@ class CollectionProvider:
         return self._chapter("activeDirection", as_of)
 
 
+class QuoteAwareProvider(CollectionProvider):
+    def __init__(self):
+        super().__init__()
+        self.quote_calls = []
+
+    def fetch_quotes(self, specs):
+        self.quote_calls.append(tuple(spec.code for spec in specs))
+        return {spec.code: {"price": 3000.0} for spec in specs}
+
+
+class QuoteAwareCoreAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def fetch_core(self, as_of, *, quotes_by_code=None):
+        self.calls.append((as_of, quotes_by_code))
+        # Return no shadow rows; the established provider supplies the formal
+        # result while this test verifies the Fuyao call contract and routing.
+        return {}
+
+
+class ForbiddenActiveDirectionAdapter:
+    def fetch_active_direction(self, as_of):
+        raise AssertionError("activeDirection must stay on the Eastmoney/TDX chain")
+
+
 def test_full_collection_continues_after_dataset_failure(tmp_path) -> None:
     provider = CollectionProvider(failing_datasets={"sectors"})
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
@@ -142,6 +169,68 @@ def test_full_collection_continues_after_dataset_failure(tmp_path) -> None:
     assert store.get("sectors", AS_OF) is None
     assert all(store.get(name, AS_OF) is not None for name in ("core", "breadth", "limits", "activeDirection"))
     assert rebuilt == [AS_OF, AS_OF, AS_OF, AS_OF]
+
+
+def test_core_fuyao_receives_current_quote_but_history_is_quote_free(tmp_path) -> None:
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED": "1",
+        }
+    )
+
+    current_provider = QuoteAwareProvider()
+    current_adapter = QuoteAwareCoreAdapter()
+    current = CollectionCoordinator(
+        current_provider,
+        SnapshotStore(tmp_path / "current-core.sqlite3"),
+        now=lambda: AFTER_MARKET,
+        rebuild_aggregate=lambda _as_of: None,
+        fuyao_config=config,
+        fuyao_adapter=current_adapter,
+    ).collect(AS_OF, ["core"])
+
+    assert current.run.status == "success"
+    assert current_provider.quote_calls == [tuple(spec.code for spec in INDEX_SPECS)]
+    assert current_adapter.calls[0][0] == AS_OF
+    assert set(current_adapter.calls[0][1]) == {spec.code for spec in INDEX_SPECS}
+
+    historical_provider = QuoteAwareProvider()
+    historical_adapter = QuoteAwareCoreAdapter()
+    historical_date = AS_OF - timedelta(days=1)
+    historical = CollectionCoordinator(
+        historical_provider,
+        SnapshotStore(tmp_path / "historical-core.sqlite3"),
+        now=lambda: AFTER_MARKET,
+        rebuild_aggregate=lambda _as_of: None,
+        fuyao_config=config,
+        fuyao_adapter=historical_adapter,
+    ).collect(historical_date, ["core"])
+
+    assert historical.run.status == "success"
+    assert historical_provider.quote_calls == []
+    assert historical_adapter.calls == [(historical_date, {})]
+
+
+def test_active_direction_never_routes_through_fuyao_even_when_flag_is_enabled(tmp_path) -> None:
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_APPROVED_REVISION": "legacy-r1",
+        }
+    )
+    provider = CollectionProvider()
+    result = CollectionCoordinator(
+        provider,
+        SnapshotStore(tmp_path / "active-direction.sqlite3"),
+        now=lambda: AFTER_MARKET,
+        rebuild_aggregate=lambda _as_of: None,
+        fuyao_config=config,
+        fuyao_adapter=ForbiddenActiveDirectionAdapter(),
+    ).collect(AS_OF, ["activeDirection"])
+
+    assert result.run.status == "success"
+    assert result.tasks[0].source == "fixture"
+    assert provider.calls == ["activeDirection"]
 
 
 def test_failed_dataset_retains_same_date_success_without_rollback(tmp_path) -> None:

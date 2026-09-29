@@ -22,6 +22,24 @@
       ]
     }
   ],
+  "breadth_snapshot_pages": [
+    {
+      "timestamp": 1789660800000,
+      "total": 4,
+      "item": [
+        {"thscode": "600001.SH", "price_change_ratio_pct": 2.5},
+        {"thscode": "000001.SZ", "price_change_ratio_pct": -1.5}
+      ]
+    },
+    {
+      "timestamp": 1789660800000,
+      "total": 4,
+      "item": [
+        {"thscode": "430001.BJ", "price_change_ratio_pct": 0},
+        {"thscode": "600002.SH", "price_change_ratio_pct": 1.0}
+      ]
+    }
+  ],
   "active_direction_row": {
     "date": "2026-09-18", "thscode": "600001.SH", "ticker": "600001", "exchange": "SH", "name": "样本股", "industry": "电子", "change_pct": 3.0, "amount": 30000, "close": 11, "high": 12, "low": 10
   },

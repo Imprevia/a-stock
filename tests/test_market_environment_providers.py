@@ -60,6 +60,50 @@ def test_guarded_shanghai_index_requires_realtime_price():
     assert provider._is_accepted(INDEX_SPECS[0], [], None) is False
 
 
+def test_index_history_prefers_tencent_before_eastmoney(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+    bars = [object()] * 60
+
+    monkeypatch.setattr(provider, "_is_accepted", lambda *_args: True)
+    monkeypatch.setattr(provider, "_fetch_mootdx", lambda *_args: calls.append("mootdx") or [])
+    monkeypatch.setattr(provider, "_fetch_baidu_kline", lambda *_args: calls.append("baidu") or [])
+    monkeypatch.setattr(provider, "_fetch_sina_kline", lambda *_args: calls.append("sina") or [])
+    monkeypatch.setattr(provider, "_fetch_tencent_kline", lambda *_args: calls.append("tencent") or bars)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_kline",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("Eastmoney must follow Tencent")),
+    )
+
+    result = provider.fetch(INDEX_SPECS[0])
+
+    assert calls == ["mootdx", "baidu", "sina", "tencent"]
+    assert result.source == "tencent-kline"
+
+
+def test_index_history_uses_eastmoney_only_after_tencent_fails(monkeypatch):
+    provider = MarketDataProvider()
+    calls = []
+    bars = [object()] * 60
+
+    monkeypatch.setattr(provider, "_is_accepted", lambda *_args: True)
+    monkeypatch.setattr(provider, "_fetch_mootdx", lambda *_args: calls.append("mootdx") or [])
+    monkeypatch.setattr(provider, "_fetch_baidu_kline", lambda *_args: calls.append("baidu") or [])
+    monkeypatch.setattr(provider, "_fetch_sina_kline", lambda *_args: calls.append("sina") or [])
+    monkeypatch.setattr(
+        provider,
+        "_fetch_tencent_kline",
+        lambda *_args: calls.append("tencent") or (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    monkeypatch.setattr(provider, "_fetch_eastmoney_kline", lambda *_args: calls.append("eastmoney") or bars)
+
+    result = provider.fetch(INDEX_SPECS[0])
+
+    assert calls == ["mootdx", "baidu", "sina", "tencent", "eastmoney"]
+    assert result.source == "eastmoney-kline"
+
+
 def test_baidu_kline_passes_explicit_market_for_ambiguous_index(monkeypatch):
     captured = {}
     payload = {
@@ -448,6 +492,119 @@ def test_chapter01_breadth_falls_back_to_sorted_delay_pages(monkeypatch):
     assert breadth["medianReturn"] == 0.0
     assert breadth["quality"]["status"] == "fallback"
     assert breadth["quality"]["source"] == "eastmoney-clist-delay"
+
+
+def test_chapter01_breadth_prefers_tdx_when_enabled(monkeypatch):
+    provider = MarketDataProvider(tdx_fallback_enabled=True)
+    calls = []
+    breadth = provider._breadth_result(
+        2,
+        1,
+        1,
+        1.0,
+        date(2026, 8, 28),
+        source="tdx-daily-package",
+        status="fallback",
+        warnings=["fixture"],
+    )
+
+    def fetch_tdx(as_of, warnings):
+        calls.append(("tdx", as_of, warnings))
+        return breadth
+
+    monkeypatch.setattr(provider, "_fetch_tdx_breadth", fetch_tdx)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_breadth_fallback",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("Eastmoney must follow TDX")),
+    )
+
+    result = provider.fetch_chapter01_breadth(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert calls == [("tdx", date(2026, 8, 28), [])]
+    assert result["quality"]["source"] == "tdx-daily-package"
+
+
+def test_chapter01_breadth_falls_back_to_eastmoney_after_tdx_failure(monkeypatch):
+    provider = MarketDataProvider(tdx_fallback_enabled=True)
+    calls = []
+    breadth = provider._breadth_result(
+        2,
+        1,
+        1,
+        1.0,
+        date(2026, 8, 28),
+        source="eastmoney-clist-delay",
+        status="fallback",
+        warnings=["fixture"],
+    )
+
+    def fail_tdx(as_of, warnings):
+        calls.append("tdx")
+        raise RuntimeError("tdx unavailable")
+
+    def fetch_eastmoney(as_of, warning):
+        calls.append(("eastmoney", warning))
+        return breadth
+
+    monkeypatch.setattr(provider, "_fetch_tdx_breadth", fail_tdx)
+    monkeypatch.setattr(provider, "_fetch_eastmoney_breadth_fallback", fetch_eastmoney)
+
+    result = provider.fetch_chapter01_breadth(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert calls[0] == "tdx"
+    assert calls[1][0] == "eastmoney"
+    assert "通达信盘后包不可用：tdx unavailable" in calls[1][1]
+    assert result["quality"]["source"] == "eastmoney-clist-delay"
+
+
+def test_chapter01_breadth_keeps_eastmoney_only_when_tdx_disabled(monkeypatch):
+    provider = MarketDataProvider(tdx_fallback_enabled=False)
+    calls = []
+    breadth = provider._breadth_result(
+        1,
+        1,
+        0,
+        0.0,
+        date(2026, 8, 28),
+        source="eastmoney-clist-delay",
+        status="fallback",
+        warnings=["fixture"],
+    )
+
+    monkeypatch.setattr(
+        provider,
+        "_fetch_tdx_breadth",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("TDX is disabled")),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_breadth_fallback",
+        lambda *_args: calls.append("eastmoney") or breadth,
+    )
+
+    result = provider.fetch_chapter01_breadth(date(2026, 8, 28), allow_current_snapshot=True)
+
+    assert calls == ["eastmoney"]
+    assert result["quality"]["source"] == "eastmoney-clist-delay"
+
+
+def test_historical_breadth_does_not_call_tdx_or_eastmoney(monkeypatch):
+    provider = MarketDataProvider(tdx_fallback_enabled=True)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_tdx_breadth",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("historical breadth must not call TDX")),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_fetch_eastmoney_breadth_fallback",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("historical breadth must not call Eastmoney")),
+    )
+
+    result = provider.fetch_chapter01_breadth(date(2026, 8, 27), allow_current_snapshot=False)
+
+    assert result["quality"]["status"] == "missing"
 
 
 @pytest.mark.parametrize("invalid_case", ["too-small", "missing-field", "unsorted"])

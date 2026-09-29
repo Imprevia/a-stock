@@ -831,7 +831,9 @@ verify_schedule_runtime_image() {
   python3 "$PACKET_VALIDATOR" verify-runtime-image \
     --release-name "$RELEASE_NAME" --image "$image_ref" --digest "$digest" \
     --deployments "$deployments_file" --replicasets "$replicasets_file" --pods "$pods_file" || return 1
-  remote "sudo -n k3s ctr --namespace k8s.io images info '$image_ref'" \
+  # TrueNAS k3s 1.26 bundles an older ctr without `images info`. Build the
+  # narrow JSON contract from the exact row in the stable `images ls` table.
+  remote "sudo -n k3s ctr --namespace k8s.io images ls | awk -v image='$image_ref' '\$1 == image {printf \"{\\\"Name\\\":\\\"%s\\\",\\\"Target\\\":{\\\"digest\\\":\\\"%s\\\"}}\\n\", \$1, \$3; found=1} END {if (!found) exit 1}'" \
     | python3 "$PACKET_VALIDATOR" verify-containerd-image --image "$image_ref" --digest "$digest"
 }
 
@@ -1480,6 +1482,8 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       fi
       ;;
     server-dry-run|release-suspended|activate-schedule|disable-schedule)
+      [[ "$COMPONENT_SELECTED" == false ]] \
+        || die 'scheduling operations always render the complete Helm release; omit --component'
       if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "$SCHEDULING_OVERLAY_FILE" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}" "${COMPONENT_RENDER_ARGS[@]}")"; then
         die 'final merged Helm values are invalid'
       fi

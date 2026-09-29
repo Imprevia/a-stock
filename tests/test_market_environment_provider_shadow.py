@@ -191,3 +191,74 @@ def test_core_adapter_mapping_shape_is_supported():
     result = compare_shadow("core", formal, shadow)
     assert result["status"] == "match"
     assert result["comparedCount"] == 1
+
+
+def test_core_amount_difference_is_attributed_without_hiding_mismatch():
+    formal = {
+        "asOf": AS_OF.isoformat(),
+        "indices": [
+            {
+                "code": "sh000001",
+                "changePct": 3.0,
+                "history": [
+                    {
+                        "date": AS_OF.isoformat(),
+                        "open": 101.0,
+                        "close": 103.0,
+                        "high": 104.0,
+                        "low": 100.0,
+                        "amount": 1000.0,
+                    }
+                ],
+                "dataQuality": {
+                    "source": "sina-kline",
+                    "warning": "成交额按腾讯实时成交额校准估算",
+                },
+            }
+        ],
+        "quality": quality(observations=1),
+    }
+    adapter_result = type(
+        "Result",
+        (),
+        {
+            "payload": {
+                "code": "sh000001",
+                "identity": "000001.SH",
+                "bars": [
+                    {"date": AS_OF.isoformat(), "open": 101.0, "close": 103.0, "high": 104.0, "low": 100.0, "amount": 1200.0}
+                ],
+                "changePct": 3.0,
+                "amountEvidence": "direct-turnover",
+            },
+            "quality": quality(source="fuyao"),
+        },
+    )()
+
+    result = compare_shadow(
+        "core",
+        formal,
+        {"sh000001": adapter_result},
+        formal_revision="sina-kline",
+        shadow_revision="fuyao-market-v2",
+        as_of=AS_OF,
+    )
+
+    assert result["status"] == "mismatch"
+    assert {item["field"] for item in result["differences"]} == {"amount"}
+    assert result["differences"][0]["attribution"] == {
+        "kind": "amount-basis",
+        "formalBasis": "estimated-current-quote",
+        "shadowBasis": "direct-turnover",
+    }
+    assert result["differences"][0]["classification"] == "provider-basis"
+    assert result["differenceAttributions"][0]["kind"] == "amount-basis"
+    assert result["differenceSummary"] == {
+        "total": 1,
+        "byField": {"amount": 1},
+        "byIdentity": {"sh000001": 1},
+        "byClassification": {"provider-basis": 1},
+        "formalProviderRevision": "sina-kline",
+        "shadowProviderRevision": "fuyao-market-v2",
+    }
+    assert any("estimated current-quote-calibrated" in warning for warning in result["warnings"])

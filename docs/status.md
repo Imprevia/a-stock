@@ -14,7 +14,7 @@
 - `docs/trading-system-quantified-directory.md` 已记录量化版完整目录和维护规则；所有经验阈值当前均为 `needs-backtest`，没有规则被宣称为 `validated`。
 - 市场环境分析看板：`src/market_environment/` + `apps/market-environment-dashboard/`。
   - 已接入 5 个指数、MA5/10/20/60、20/60 日区间位置、成交额比值、趋势/量价状态。
-  - 已实现 mootdx → 百度 → 腾讯历史降级、腾讯实时交叉校验、指数进程内短缓存、非交易日回退和错误质量标记。
+  - 已实现 Fuyao v2 capability-gated core 主源及 mootdx → 百度 → 新浪 → 腾讯 → 东方财富历史降级、当前日期腾讯实时交叉校验、指数进程内短缓存、非交易日回退和错误质量标记；默认开关仍关闭。
   - 已新增一级导航 `如何判断市场环境` 与 01 至 09 二级文档视图，覆盖指数、市场广度、涨跌停生态、行业主线、容量方向、事件边界和综合判断。
   - 已通过可选 `chapter01` 契约接入精确市场广度、日期化涨停/跌停/炸板池、行业排名和成交额 Top-N 股票；历史日期不复用今日快照。
   - 已覆盖计算、provider、服务层和 API 契约测试，并通过前端生产构建与桌面/移动浏览器检查。
@@ -47,6 +47,9 @@
 
 ## 进行中
 
+- `evaluate-fuyao-market-data-provider` 已完成 Fuyao v2 core/breadth 契约、共享请求门、分数据集路由、activeDirection 保持 Eastmoney/TDX、离线 fixture/回归和架构/runbook/产品规格同步；真实 probe、core shadow 差异归因、breadth/sectors 日期与字段完整性修复，以及隔离 PostgreSQL capability/shadow smoke 均已完成并记录在 active plan。所有新开关保持关闭，未批准生产 revision；全量测试本轮 735 passed、3 skipped，另有 2 个既有性能阈值抖动失败（非本变更逻辑）。
+- `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当前 `fuyao-market-v2` fallback 证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。`FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0` 保持关闭，未写入正式 sectors 主源快照。
+- `activate-scheduled-collection-20260929` 已完成受控生产激活：revision `68` 收敛完整 database/service ownership，revision `69` 发布 suspended CronJob，revision `70` 于 2026-09-29 12:18:34（Asia/Shanghai）通过 `next-schedule` 激活。当前 `a-stock-data-collection` 为 Helm-owned、工作日上海 16:30、`suspend=false`、无 active/last schedule；Dashboard/PostgreSQL `1/1` Ready、两个 PVC Bound、namespace 无 Job、`/api/health` 返回 200。冻结镜像 containerd manifest digest 为 `sha256:923b17bf8fbdcb787ec695a0f9e8e11f6c780bfa886cf7ff48ae2ffdf2f9f82d`，`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0` 保持关闭；首个自然触发后的五类质量和 `collection_runs` 观察待完成。
 - `restore-limit-ecosystem-data-availability` 正在接入扶摇三类池和交易日历，拆分 membership 与高级分层质量，补齐六日回填、证券明细以及第 03/04 页真实 limits 数据消费；生产部署和生产写入不在范围内。
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
 
@@ -73,6 +76,7 @@
 
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
+- 扶摇行业 fallback 虽已确认 320/320 目录和快照覆盖，但其接口不提供资金流、市场宽度和领涨股；即使正式开关获批，行业结果也只能解释为带 warning 的降级指数排名，不能冒充完整行业事实。
 - 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 PostgreSQL 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按现场捕获的 pre-release 网络与 release 基线回退。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - 当前 PostgreSQL 为单主实例；事务 lease/fencing 可支持 Dashboard 与 CronJob 并发访问，但多主/跨节点 HA、复制和自动故障切换仍不在本次范围。
@@ -83,8 +87,9 @@
 
 ## 下一步
 
+- 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集已在 2026-09-22 通过专用 `--activate-schedule` 激活（revision 26，`suspend=false`）；下一检查点是首个自然工作日 16:30 的 Job/Pod、五类数据质量、`collection_runs` 和 exact-date API 观察。回退仍必须由本次操作责任人书面确认并通过 `--disable-schedule`，禁止裸 `kubectl patch`。
+- 定时采集的历史 revision 26 记录已由 2026-09-29 revision 70 取代；下一检查点是首个自然工作日 16:30 的 Job/Pod、五类数据质量、`collection_runs` 和 exact-date API 观察。回退仍必须由本次操作责任人书面确认并通过 `--disable-schedule`，禁止裸 `kubectl patch`。
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
@@ -95,4 +100,4 @@
 
 ## 最后更新
 
-2026-09-25
+2026-09-29

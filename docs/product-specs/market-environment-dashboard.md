@@ -32,6 +32,10 @@
 - 当前交易日的全 A 上涨/下跌/平盘数量、上涨占比和涨跌幅中位数。
 - 日期化涨停、跌停、炸板与最高连板生态。
 - 行业排名和大成交额个股方向线索。
+- 行业主线允许在东方财富 `push2` 与 `push2delay` 均失败后使用经过 capability 门禁的扶摇同花顺行业指数 fallback。扶摇只提供行业指数代码、名称、涨跌幅和成交额；主力净流入、主力净流入比例、上涨/下跌家数和领涨股保持 `null`，并显示 `fallback`/`partial` 质量与字段 warning，不得冒充完整行业资金流或宽度事实。
+- `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。
+- `breadth` 的 Fuyao v2 主源只允许当前上海交易日的 `/api/a-share/prices/snapshot` 完整分页；所有页的 `total`、`timestamp` 和规范证券身份必须稳定，涨跌家数、平盘和中位数由 `price_change_ratio_pct` 派生。Fuyao 失败后才按显式开关使用 TDX 精确日期包，最终回退东方财富；历史日期只能读取本地精确快照，不能用 latest-only 响应回填。
+- `activeDirection` 本阶段不由 Fuyao 替换，继续使用现有东方财富/TDX 语义；Fuyao capability 仅记录为 `unverified`，不得把旧 `fuyao-market-v1` 报告当成切换批准。limits 继续使用扶摇主源与东方财富交叉核对/降级。
 - 01 至 09 文档导航、桌面与移动布局、数据加载和错误状态。
 - `chapter01` 作为原 `indices` / `summary` 契约的可选向后兼容扩展。
 - 完整聚合接口继续兼容既有调用；网页使用核心接口和章节按需接口渐进展示数据。
@@ -42,6 +46,7 @@
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
 - 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 PostgreSQL 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。两条 Eastmoney 路径均失败后，只有 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才允许使用精确日期 TDX 包本地派生容量方向，质量显示为 `fallback-derived`，记录本地成交额排序、TDX revision、行业映射覆盖率和前序 warning；该开关独立于 breadth 的 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED`，默认关闭。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
+- 行业扶摇 fallback 仅允许使用 `https://fuyao.aicubes.cn/api/a-share/calendar/trading-days`、`/api/a-share-index/catalog/ths-index-list?tag=industry` 和 `/api/a-share-index/prices/snapshot?thscodes=...`。目录、快照批次和交易日历必须共同证明请求日期；目录/快照覆盖不足、身份重复、批次时间不一致或日期不可证明时 fail closed，不把最新快照包装为历史日期。正式启用要求 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`、capability report `eligible` 和完全匹配的 approved revision；默认关闭，失败时保留同日期 `failed-retained`/`failed-missing`。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
 - 盘后定时采集使用与 Dashboard 相同镜像并通过同一 PostgreSQL Service/Secret 访问运行时状态，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
@@ -122,5 +127,5 @@
 - 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过专用调度入口恢复 active schedule。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
-- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；其余四个数据集只有在 capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in。默认状态为 `unverified`/关闭。
+- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；sectors 仍是东方财富主链后的 fallback，activeDirection 继续既有 Eastmoney/TDX。默认状态为 `unverified`/关闭。
 - shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。

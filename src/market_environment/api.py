@@ -359,6 +359,7 @@ def market_environment_collection_status(
                     "completedAt": attempt.completed_at,
                     "durationMs": attempt.duration_ms,
                     "settled": attempt.settled,
+                    "timings": attempt.timings or {},
                     "sampleAsOf": detail.get("sampleAsOf") if detail else None,
                     "previousAsOf": detail.get("previousAsOf") if detail else None,
                     "excludedCount": detail.get("excludedCount") if detail else None,

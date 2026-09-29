@@ -63,3 +63,34 @@
 #### Scenario: Pull request runs provider tests
 - **WHEN** CI 或本地离线门禁执行扶摇相关测试
 - **THEN** 测试只使用脱敏 fixture 和固定响应，不访问真实 provider，不写生产或共享运行时数据库
+
+### Requirement: v2 market endpoints and dataset-specific routing
+
+`core` and `breadth` SHALL use the documented `fuyao-market-v2` contracts when
+their capability-gated switches are enabled. `core` MUST request each of the
+five configured indices from `/api/a-share-index/prices/historical` with one
+`thscode`, `interval=1d`, and millisecond Shanghai-local bounds, and MUST
+reject a series whose last valid OHLC/turnover bar is not the requested
+`as_of` or whose valid history is shorter than 280 bars. Current-date core
+collection MUST cross-check an independent quote; historical collection MUST
+not call a live quote endpoint.
+
+`breadth` MUST paginate `/api/a-share/prices/snapshot` with `limit/offset` and
+accept success only when every page has stable `total` and `timestamp`, unique
+standard identities, complete coverage, and a timestamp proving the current
+Shanghai trading date. Historical breadth requests MUST return
+`insufficient`/local-snapshot evidence without calling the latest-only
+endpoint. The old `fuyao-market-v1` revision MUST NOT approve core, breadth or
+activeDirection. ActiveDirection remains on the existing Eastmoney/TDX route;
+sectors remains Eastmoney-primary with a gated Fuyao fallback; limits keeps
+its existing Fuyao-primary plus Eastmoney cross-check behavior.
+
+#### Scenario: v2 core response is date-complete
+
+- **WHEN** all five historical index responses contain at least 280 valid bars and each last valid `date_ms` maps to the requested Shanghai date
+- **THEN** core may be accepted, subject to the current-date quote check, and its quality records the v2 endpoint and date evidence
+
+#### Scenario: latest-only breadth is requested for a historical date
+
+- **WHEN** a collection asks Fuyao breadth for a date other than the current Shanghai trading date
+- **THEN** no external snapshot request is made and the result remains `insufficient` until an exact local snapshot is available

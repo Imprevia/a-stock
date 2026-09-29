@@ -373,12 +373,12 @@ describe('research dashboard default trading date', () => {
     expect(wrapper.find('input[type="date"]').element.value).toBe('2026-09-03')
   })
 
-  it('does not overwrite a manually selected date', async () => {
+  it('normalizes a manually selected date to the core effective date', async () => {
     const wrapper = await mountScenario(synchronizationAssessment())
     const dateInput = wrapper.find('input[type="date"]')
     await dateInput.setValue('2026-09-05')
     await flushPromises()
-    expect((dateInput.element as HTMLInputElement).value).toBe('2026-09-05')
+    expect((dateInput.element as HTMLInputElement).value).toBe('2026-09-03')
   })
 })
 

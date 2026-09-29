@@ -17,18 +17,22 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
 from .calculations import Bar
+from .fuyao_request_gate import FuyaoRequestGate, GLOBAL_FUYAO_REQUEST_GATE
 
 FUYAO_MARKET_API_KEY_ENV = "MARKET_ENVIRONMENT_FUYAO_API_KEY"
 FUYAO_MARKET_BASE_URL = "https://fuyao.aicubes.cn"
 
 _IDENTITY_RE = re.compile(r"^(?P<ticker>\d{6})\.(?P<exchange>SH|SZ|BJ)$")
+_THS_INDEX_RE = re.compile(r"^\d{6}\.TI$")
+_SHANGHAI_ZONE = ZoneInfo("Asia/Shanghai")
 _CODE_TO_IDENTITY = {
     "sh000001": "000001.SH",
     "sz399001": "399001.SZ",
@@ -95,6 +99,7 @@ class FuyaoMarketClient:
     """
 
     _RETRYABLE_CODES = frozenset({4001, 5001, 5002, 5003})
+    _SLOW_RETRY_CODES = frozenset({4001, 5003})
     _PERMISSION_CODES = frozenset({2001, 2003})
 
     def __init__(
@@ -106,8 +111,12 @@ class FuyaoMarketClient:
         base_url: str = FUYAO_MARKET_BASE_URL,
         max_retries: int = 2,
         backoff_seconds: float = 0.2,
-        request_budget: int = 30,
+        slow_backoff_seconds: float = 2.0,
+        min_request_interval_seconds: float = 0.5,
+        request_budget: int = 80,
         sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        request_gate: FuyaoRequestGate | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv(FUYAO_MARKET_API_KEY_ENV, "")).strip()
         self.timeout = max(0.1, float(timeout))
@@ -115,9 +124,20 @@ class FuyaoMarketClient:
         self.base_url = base_url.rstrip("/")
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
+        self.slow_backoff_seconds = max(self.backoff_seconds, float(slow_backoff_seconds))
+        self.min_request_interval_seconds = max(0.0, float(min_request_interval_seconds))
         self.request_budget = max(1, int(request_budget))
         self._request_count = 0
         self._sleep = sleep
+        self._request_gate = request_gate or (
+            GLOBAL_FUYAO_REQUEST_GATE
+            if sleep is time.sleep and monotonic is time.monotonic
+            else FuyaoRequestGate(
+                min_interval_seconds=self.min_request_interval_seconds,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
+        )
 
     @property
     def configured(self) -> bool:
@@ -141,6 +161,7 @@ class FuyaoMarketClient:
                 raise FuyaoMarketRateLimitError("Fuyao request budget exceeded")
             self._request_count += 1
             try:
+                self._request_gate.wait()
                 response = self.session.get(
                     url,
                     params=dict(params or {}),
@@ -156,16 +177,23 @@ class FuyaoMarketClient:
             status = int(getattr(response, "status_code", 0))
             if status == 429:
                 if attempt < self.max_retries:
-                    self._backoff(attempt)
+                    self._backoff(attempt, slow=True)
                     continue
-                raise FuyaoMarketRateLimitError("Fuyao HTTP 429 after retries")
+                raise FuyaoMarketRateLimitError(
+                    f"Fuyao HTTP {self._http_error_detail(response, status)} after retries"
+                )
             if 500 <= status < 600:
                 if attempt < self.max_retries:
                     self._backoff(attempt)
                     continue
-                raise FuyaoMarketTransportError(f"Fuyao HTTP {status} after retries")
+                raise FuyaoMarketTransportError(
+                    f"Fuyao {self._http_error_detail(response, status)} after retries"
+                )
             if status < 200 or status >= 300:
-                raise FuyaoMarketTransportError(f"Fuyao HTTP {status}")
+                detail = self._http_error_detail(response, status)
+                if status in {401, 403}:
+                    raise FuyaoMarketPermissionError(f"Fuyao authentication or permission denied ({detail})")
+                raise FuyaoMarketTransportError(f"Fuyao {detail}")
             try:
                 envelope = response.json()
             except (TypeError, ValueError) as exc:
@@ -178,21 +206,66 @@ class FuyaoMarketClient:
                 raise FuyaoMarketContractError("Fuyao response envelope has no valid code") from exc
             if code in self._RETRYABLE_CODES:
                 if attempt < self.max_retries:
-                    self._backoff(attempt)
+                    self._backoff(attempt, slow=code in self._SLOW_RETRY_CODES)
                     continue
-                raise FuyaoMarketTransportError(f"Fuyao response code {code} after retries")
+                raise FuyaoMarketTransportError(
+                    f"Fuyao response {self._envelope_error_detail(envelope, code)} after retries"
+                )
             if code in self._PERMISSION_CODES:
-                raise FuyaoMarketPermissionError(f"Fuyao authentication or permission denied (code={code})")
+                raise FuyaoMarketPermissionError(
+                    f"Fuyao authentication or permission denied ({self._envelope_error_detail(envelope, code)})"
+                )
             if code not in {0, 200}:
-                raise FuyaoMarketError(f"Fuyao request rejected (code={code})")
+                raise FuyaoMarketError(f"Fuyao request rejected ({self._envelope_error_detail(envelope, code)})")
             data = envelope.get("data", envelope.get("result"))
             if not isinstance(data, Mapping):
                 raise FuyaoMarketContractError("Fuyao success envelope is missing data")
             return FuyaoMarketResponse(dict(data), status, self._request_count)
         raise AssertionError("unreachable retry loop")
 
-    def _backoff(self, attempt: int) -> None:
-        self._sleep(self.backoff_seconds * (2**attempt))
+    def _backoff(self, attempt: int, *, slow: bool = False) -> None:
+        base = self.slow_backoff_seconds if slow else self.backoff_seconds
+        self._sleep(base * (2**attempt))
+
+    def _safe_text(self, value: Any, *, max_length: int = 160) -> str | None:
+        if value in (None, ""):
+            return None
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        if self.api_key:
+            text = text.replace(self.api_key, "<redacted>")
+        if len(text) > max_length:
+            text = f"{text[:max_length]}..."
+        return text or None
+
+    def _envelope_error_detail(self, payload: Mapping[str, Any], code: int) -> str:
+        parts = [f"code={code}"]
+        message = self._safe_text(payload.get("message"))
+        request_id = self._safe_text(payload.get("request_id"), max_length=80)
+        if message:
+            parts.append(f"message={message}")
+        if request_id:
+            parts.append(f"request_id={request_id}")
+        return ", ".join(parts)
+
+    def _http_error_detail(self, response: Any, status: int) -> str:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return f"HTTP {status}"
+        if not isinstance(payload, Mapping):
+            return f"HTTP {status}"
+        try:
+            code = int(payload.get("code"))
+        except (TypeError, ValueError):
+            parts = [f"HTTP {status}"]
+            message = self._safe_text(payload.get("message"))
+            request_id = self._safe_text(payload.get("request_id"), max_length=80)
+            if message:
+                parts.append(f"message={message}")
+            if request_id:
+                parts.append(f"request_id={request_id}")
+            return f"HTTP {status} ({', '.join(parts[1:])})" if len(parts) > 1 else parts[0]
+        return f"HTTP {status} ({self._envelope_error_detail(payload, code)})"
 
 
 class FuyaoMarketAdapter:
@@ -200,7 +273,7 @@ class FuyaoMarketAdapter:
 
     INDEX_CODES = dict(_CODE_TO_IDENTITY)
 
-    def __init__(self, client: FuyaoMarketClient | None = None, *, source_revision: str = "fuyao-market-v1") -> None:
+    def __init__(self, client: FuyaoMarketClient | None = None, *, source_revision: str = "fuyao-market-v2") -> None:
         self.client = client or FuyaoMarketClient()
         self.source_revision = source_revision
 
@@ -251,12 +324,15 @@ class FuyaoMarketAdapter:
             number = float(text)
             if number > 10_000_000_000:
                 number /= 1000
-            return datetime.fromtimestamp(number, timezone.utc).date()
+            return datetime.fromtimestamp(number, _SHANGHAI_ZONE).date()
         except (TypeError, ValueError, OSError, OverflowError):
             return None
 
     @classmethod
     def _row_date(cls, row: Mapping[str, Any]) -> date | None:
+        timestamp = cls._value(row, "date_ms", "dateMs")
+        if timestamp is not None:
+            return cls._timestamp_date(timestamp)
         return cls._parse_date(cls._value(row, "date", "trade_date", "tradeDate", "as_of", "asOf", "timestamp"))
 
     @classmethod
@@ -279,7 +355,7 @@ class FuyaoMarketAdapter:
         observations: int,
         as_of: date,
         warnings: Sequence[str],
-        provider_revision: str = "fuyao-market-v1",
+        provider_revision: str = "fuyao-market-v2",
     ) -> dict[str, Any]:
         warning_list = list(dict.fromkeys(str(item) for item in warnings if item))
         return {
@@ -295,8 +371,21 @@ class FuyaoMarketAdapter:
         }
 
     @classmethod
-    def _result(cls, dataset: str, payload: dict[str, Any], *, status: str, as_of: date, observations: int, warnings: Sequence[str] = ()) -> FuyaoMarketResult:
-        quality = cls._quality(dataset, status, observations, as_of, warnings)
+    def _result(
+        cls,
+        dataset: str,
+        payload: dict[str, Any],
+        *,
+        status: str,
+        as_of: date,
+        observations: int,
+        warnings: Sequence[str] = (),
+        provider_revision: str = "fuyao-market-v2",
+        quality_extra: Mapping[str, Any] | None = None,
+    ) -> FuyaoMarketResult:
+        quality = cls._quality(dataset, status, observations, as_of, warnings, provider_revision)
+        if quality_extra:
+            quality.update(dict(quality_extra))
         return FuyaoMarketResult(payload, quality, status, as_of, observations, tuple(quality["warnings"]))
 
     @classmethod
@@ -324,7 +413,7 @@ class FuyaoMarketAdapter:
         as_of: date,
         *,
         quotes_by_code: Mapping[str, Mapping[str, Any]] | None = None,
-        min_bars: int = 60,
+        min_bars: int = 280,
     ) -> dict[str, FuyaoMarketResult]:
         result: dict[str, FuyaoMarketResult] = {}
         for code, rows in rows_by_code.items():
@@ -332,8 +421,6 @@ class FuyaoMarketAdapter:
             expected_identity = self.INDEX_CODES.get(canonical, canonical.upper())
             bars: list[Bar] = []
             warnings: list[str] = []
-            date_ok, date_warnings = self._date_guard(rows[-1:], as_of)
-            warnings.extend(date_warnings)
             response_identities = {
                 identity
                 for row in rows
@@ -358,6 +445,21 @@ class FuyaoMarketAdapter:
                 seen_dates.add(day)
                 bars.append(Bar(day, opened, close, high, low, amount))
             bars.sort(key=lambda item: item.date)
+            valid_dates = {bar.date for bar in bars}
+            date_warnings: list[str] = []
+            if not valid_dates:
+                date_ok = False
+                date_warnings.append("response does not prove an exact asOf date with a complete OHLC/turnover bar")
+            else:
+                latest_date = max(valid_dates)
+                date_ok = latest_date == as_of and not any(day > as_of for day in valid_dates)
+                if latest_date != as_of:
+                    date_warnings.append(
+                        f"response date mismatch: requested {as_of.isoformat()}, observed latest valid {latest_date.isoformat()}"
+                    )
+                if any(day > as_of for day in valid_dates):
+                    date_warnings.append("response contains valid bars after requested asOf")
+            warnings.extend(date_warnings)
             quote = (quotes_by_code or {}).get(canonical)
             quote_price = self._float(quote, "price", "close", "last") if quote else None
             if quote is not None and quote_price is None:
@@ -377,26 +479,119 @@ class FuyaoMarketAdapter:
                 warnings.append(f"index {expected_identity} returned {len(bars)} bars; {min_bars} required")
             else:
                 status = "ok"
+            # The historical contract does not expose a separate percentage
+            # change field.  Derive it from the final two validated closes so
+            # shadow comparison can use the same date-local fact as the
+            # formal provider without consulting a live quote endpoint.
+            change_pct = None
+            if len(bars) >= 2 and bars[-2].close:
+                change_pct = round((bars[-1].close / bars[-2].close - 1.0) * 100.0, 2)
             result[canonical] = self._result(
                 "core",
-                {"code": canonical, "identity": expected_identity, "bars": bars},
+                {
+                    "code": canonical,
+                    "identity": expected_identity,
+                    "bars": bars,
+                    "changePct": change_pct,
+                    # Fuyao reports turnover directly.  Keep this evidence
+                    # explicit because the Sina fallback estimates historical
+                    # turnover from a current Tencent quote.
+                    "amountEvidence": "direct-turnover",
+                },
                 status=status,
                 as_of=as_of,
                 observations=len(bars),
                 warnings=warnings,
+                provider_revision=self.source_revision,
+                quality_extra={
+                    "endpoint": "/api/a-share-index/prices/historical",
+                    "dateEvidence": {
+                        "requested": as_of.isoformat(),
+                        "validBars": sorted(day.isoformat() for day in valid_dates),
+                        "lastValid": max(valid_dates).isoformat() if valid_dates else None,
+                    },
+                    "historyWindow": {"observations": len(bars), "minimum": min_bars},
+                    "amountEvidence": "direct-turnover",
+                },
             )
         return result
 
-    def fetch_core(self, as_of: date, *, codes: Sequence[str] | None = None, limit: int = 280) -> dict[str, FuyaoMarketResult]:
+    def fetch_core(
+        self,
+        as_of: date,
+        *,
+        codes: Sequence[str] | None = None,
+        limit: int = 280,
+        quotes_by_code: Mapping[str, Mapping[str, Any]] | None = None,
+        lookback_days: int = 730,
+    ) -> dict[str, FuyaoMarketResult]:
         selected = tuple(codes or self.INDEX_CODES)
+        required_bars = max(280, int(limit))
         rows: dict[str, list[dict[str, Any]]] = {}
+        end = int(datetime.combine(as_of, datetime.min.time(), _SHANGHAI_ZONE).timestamp() * 1000)
+        start_date = as_of - timedelta(days=max(lookback_days, 400))
+        start = int(datetime.combine(start_date, datetime.min.time(), _SHANGHAI_ZONE).timestamp() * 1000)
         for code in selected:
-            response = self.client.request("/api/a-share/index/history", params={"code": self.INDEX_CODES.get(code, code), "limit": limit})
-            rows[code] = self._rows(response.data)
-        return self.normalize_core(rows, as_of)
+            identity = self.INDEX_CODES.get(code, code)
+            try:
+                response = self.client.request(
+                    "/api/a-share-index/prices/historical",
+                    params={"thscode": identity, "interval": "1d", "start": start, "end": end},
+                )
+                response_identity = self._text(response.data, "thscode", "identity")
+                if response_identity and response_identity.upper() != identity.upper():
+                    raise FuyaoMarketContractError(
+                        f"index response identity mismatch: requested {identity}, observed {response_identity}"
+                    )
+                rows[code] = self._rows(response.data)
+            except FuyaoMarketError as exc:
+                # Keep the other four index requests useful.  Collection can
+                # then fall back only for this index and retain the warning.
+                rows[code] = []
+                result = self._result(
+                    "core",
+                    {"code": str(code).lower(), "identity": identity, "bars": []},
+                    status="insufficient",
+                    as_of=as_of,
+                    observations=0,
+                    warnings=[str(exc)],
+                    provider_revision=self.source_revision,
+                    quality_extra={
+                        "endpoint": "/api/a-share-index/prices/historical",
+                        "dateEvidence": {"requested": as_of.isoformat(), "lastValid": None},
+                        "historyWindow": {"observations": 0, "minimum": required_bars},
+                    },
+                )
+                # Store a sentinel row outside normalize_core's input shape;
+                # it is replaced below after all requests complete.
+                rows[code] = [{"__fuyao_error_result__": result}]
+        normalized = self.normalize_core(
+            {
+                code: [row for row in values if "__fuyao_error_result__" not in row]
+                for code, values in rows.items()
+            },
+            as_of,
+            quotes_by_code=quotes_by_code,
+            min_bars=required_bars,
+        )
+        for code, values in rows.items():
+            for row in values:
+                error_result = row.get("__fuyao_error_result__")
+                if isinstance(error_result, FuyaoMarketResult):
+                    normalized[code] = error_result
+                    break
+        return normalized
 
     # ---- breadth ---------------------------------------------------------
-    def normalize_breadth(self, pages: Sequence[Mapping[str, Any]], as_of: date, *, expected_total: int | None = None) -> FuyaoMarketResult:
+    def normalize_breadth(
+        self,
+        pages: Sequence[Mapping[str, Any]],
+        as_of: date,
+        *,
+        expected_total: int | None = None,
+    ) -> FuyaoMarketResult:
+        if pages and not any(isinstance(page, Mapping) and "pagination" in page for page in pages):
+            return self._normalize_snapshot_breadth(pages, as_of, expected_total=expected_total)
         rows: list[dict[str, Any]] = []
         totals: set[int] = set()
         identities: set[str] = set()
@@ -447,10 +642,200 @@ class FuyaoMarketAdapter:
         }
         return self._result("market-breadth", payload, status=status, as_of=as_of, observations=len(valid), warnings=warnings)
 
-    def fetch_breadth(self, as_of: date, *, pages: Sequence[Mapping[str, Any]] | None = None) -> FuyaoMarketResult:
+    def _normalize_snapshot_breadth(
+        self,
+        pages: Sequence[Mapping[str, Any]],
+        as_of: date,
+        *,
+        expected_total: int | None = None,
+    ) -> FuyaoMarketResult:
+        rows: list[dict[str, Any]] = []
+        totals: set[int] = set()
+        timestamps: set[int] = set()
+        invalid_total_pages = 0
+        invalid_timestamp_pages = 0
+        identities: set[str] = set()
+        warnings: list[str] = []
+        for page in pages:
+            if not isinstance(page, Mapping):
+                warnings.append("snapshot page is malformed")
+                continue
+            try:
+                total = int(page["total"])
+            except (KeyError, TypeError, ValueError):
+                total = -1
+            if total >= 0:
+                totals.add(total)
+            else:
+                invalid_total_pages += 1
+            raw_timestamp = page.get("timestamp")
+            try:
+                timestamp = int(raw_timestamp)
+            except (TypeError, ValueError):
+                timestamp = 0
+            if timestamp > 0:
+                timestamps.add(timestamp)
+            else:
+                invalid_timestamp_pages += 1
+            page_rows = self._rows(page)
+            for row in page_rows:
+                identity = self._identity(row)
+                if identity is None:
+                    warnings.append("snapshot row lacks a valid standard security identity")
+                    continue
+                if identity in identities:
+                    warnings.append(f"snapshot contains duplicate identity {identity}")
+                    continue
+                identities.add(identity)
+                rows.append(row)
+
+        total = expected_total if expected_total is not None else (next(iter(totals)) if len(totals) == 1 else None)
+        timestamp_dates = {self._timestamp_date(value) for value in timestamps}
+        timestamp_dates.discard(None)
+        if not timestamps:
+            warnings.append("snapshot has no usable timestamp date evidence")
+        elif timestamp_dates != {as_of}:
+            warnings.append(
+                f"snapshot date mismatch: requested {as_of.isoformat()}, observed "
+                f"{sorted(value.isoformat() for value in timestamp_dates) or ['missing']}"
+            )
+        if len(totals) > 1:
+            warnings.append("snapshot total changed between pages")
+        if len(timestamps) > 1:
+            # Fuyao documents ``timestamp`` as the latest upstream-valid
+            # time for each page.  Pages can therefore legitimately differ
+            # by a few seconds while still proving the same Shanghai trading
+            # date.  Preserve that drift as evidence, but reject a date drift
+            # below rather than treating a page-local timestamp as a global
+            # snapshot timestamp.
+            warnings.append("snapshot timestamps differ between pages; Shanghai date evidence is stable")
+        if invalid_total_pages:
+            warnings.append("snapshot page is missing a valid total")
+        if invalid_timestamp_pages:
+            warnings.append("snapshot page is missing a valid timestamp")
+        if total is None or len(rows) != total:
+            warnings.append("full market pagination is not proven")
+        returns = [self._float(row, "price_change_ratio_pct", "change_pct", "changePct") for row in rows]
+        valid = [value for value in returns if value is not None and math.isfinite(value)]
+        missing_change_pct = len(rows) - len(valid)
+        if missing_change_pct:
+            warnings.append(
+                f"snapshot rows missing valid price_change_ratio_pct: {missing_change_pct}"
+            )
+        advance = sum(value > 0 for value in valid)
+        decline = sum(value < 0 for value in valid)
+        flat = sum(value == 0 for value in valid)
+        middle = float(median(valid)) if valid else None
+        exact = (
+            timestamp_dates == {as_of}
+            and len(totals) == 1
+            and bool(timestamps)
+            and invalid_total_pages == 0
+            and invalid_timestamp_pages == 0
+            and total is not None
+            and len(rows) == total
+        )
+        status = "ok" if exact and valid and missing_change_pct == 0 else (
+            "partial" if exact and valid else "insufficient"
+        )
+        if not valid:
+            warnings.append("snapshot has no valid price_change_ratio_pct values")
+        payload = {
+            "advanceCount": advance if valid else None,
+            "declineCount": decline if valid else None,
+            "flatCount": flat if valid else None,
+            "validCount": len(valid) if valid else None,
+            "advanceRatio": round(advance / len(valid), 4) if valid else None,
+            "medianReturn": round(middle, 4) if middle is not None else None,
+            "state": "多数上涨" if valid and advance / len(valid) > 0.5 and middle > 0 else "多数下跌" if valid and advance / len(valid) < 0.5 and middle < 0 else "涨跌分化" if valid else "insufficient",
+        }
+        return self._result(
+            "market-breadth",
+            payload,
+            status=status,
+            as_of=as_of,
+            observations=len(valid),
+            warnings=warnings,
+            provider_revision=self.source_revision,
+            quality_extra={
+                "endpoint": "/api/a-share/prices/snapshot",
+                "dateCapability": "latest-only",
+                "pagination": {"total": total, "pages": len(pages), "observed": len(rows)},
+                "timestamps": sorted(timestamps),
+                "rawTimestamps": sorted(timestamps),
+                "minTimestamp": min(timestamps) if timestamps else None,
+                "maxTimestamp": max(timestamps) if timestamps else None,
+                "timestampStable": bool(timestamps) and invalid_timestamp_pages == 0 and timestamp_dates == {as_of},
+                "timestampExactStable": len(timestamps) == 1 and invalid_timestamp_pages == 0,
+                "timestampDateStable": timestamp_dates == {as_of} and invalid_timestamp_pages == 0,
+                "timestampDateConsistent": timestamp_dates == {as_of} and invalid_timestamp_pages == 0,
+                "timestampSpanMs": (
+                    max(self._timestamp_millis(value) for value in timestamps)
+                    - min(self._timestamp_millis(value) for value in timestamps)
+                    if timestamps
+                    else None
+                ),
+                "fieldCoverage": {
+                    "rows": len(rows),
+                    "priceChangeRatioPct": len(valid),
+                    "missingPriceChangeRatioPct": missing_change_pct,
+                },
+            },
+        )
+
+    def fetch_breadth(
+        self,
+        as_of: date,
+        *,
+        pages: Sequence[Mapping[str, Any]] | None = None,
+        page_size: int = 500,
+        max_pages: int = 50,
+    ) -> FuyaoMarketResult:
         if pages is None:
-            response = self.client.request("/api/a-share/market/snapshot", params={"page": 1, "size": 1000})
-            pages = (response.data,)
+            today = datetime.now(_SHANGHAI_ZONE).date()
+            if as_of != today:
+                return self._result(
+                    "market-breadth",
+                    {"state": "insufficient", "advanceCount": None, "declineCount": None, "flatCount": None, "validCount": None, "advanceRatio": None, "medianReturn": None},
+                    status="insufficient",
+                    as_of=as_of,
+                    observations=0,
+                    warnings=["Fuyao prices snapshot is latest-only; historical dates require a local exact-date snapshot"],
+                    provider_revision=self.source_revision,
+                    quality_extra={
+                        "endpoint": "/api/a-share/prices/snapshot",
+                        "dateCapability": "latest-only",
+                    },
+                )
+            page_size = max(1, int(page_size))
+            pages_list: list[Mapping[str, Any]] = []
+            offset = 0
+            expected_total: int | None = None
+            for _ in range(max(1, int(max_pages))):
+                response = self.client.request(
+                    "/api/a-share/prices/snapshot",
+                    params={"limit": page_size, "offset": offset},
+                )
+                data = response.data
+                pages_list.append(data)
+                try:
+                    total = int(data["total"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise FuyaoMarketContractError("snapshot response is missing a valid total") from exc
+                if expected_total is None:
+                    expected_total = total
+                elif total != expected_total:
+                    raise FuyaoMarketContractError("snapshot total changed while fetching pages")
+                items = self._rows(data)
+                if offset + len(items) < total:
+                    if not items:
+                        raise FuyaoMarketContractError("snapshot pagination stopped before total coverage")
+                    offset += len(items)
+                    continue
+                break
+            else:
+                raise FuyaoMarketContractError("Fuyao snapshot pagination exceeded the safety bound")
+            pages = tuple(pages_list)
         return self.normalize_breadth(pages, as_of)
 
     # ---- active direction -----------------------------------------------
@@ -516,8 +901,20 @@ class FuyaoMarketAdapter:
         full_market_proven: bool = False,
     ) -> FuyaoMarketResult:
         if rows is None:
-            response = self.client.request("/api/a-share/market/snapshot", params={"page": 1, "size": 100})
-            rows = self._rows(response.data)
+            # The documented v2 snapshot has no server-side turnover ordering
+            # or stock-name fields required by this dataset.  Keep the
+            # normalizer available for offline evidence, but never call the
+            # retired v1 endpoint or present it as a cutover candidate.
+            return self._result(
+                "active-direction",
+                {"state": "unverified", "summary": "activeDirection remains on the Eastmoney/TDX route", "topStocks": []},
+                status="ineligible",
+                as_of=as_of,
+                observations=0,
+                warnings=["Fuyao activeDirection endpoint is not part of the v2 cutover; existing Eastmoney/TDX route remains authoritative"],
+                provider_revision=self.source_revision,
+                quality_extra={"dateCapability": "not-selected", "cutover": False},
+            )
         return self.normalize_active_direction(
             rows,
             as_of,
@@ -526,10 +923,320 @@ class FuyaoMarketAdapter:
         )
 
     # ---- sectors ---------------------------------------------------------
+    SECTOR_CALENDAR_ENDPOINT = "/api/a-share/calendar/trading-days"
+    SECTOR_CATALOG_ENDPOINT = "/api/a-share-index/catalog/ths-index-list"
+    SECTOR_SNAPSHOT_ENDPOINT = "/api/a-share-index/prices/snapshot"
+    SECTOR_SNAPSHOT_BATCH_SIZE = 80
+    SECTOR_UNSUPPORTED_FIELDS = ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
+
+    @staticmethod
+    def _timestamp_date(value: Any) -> date | None:
+        """Convert a provider millisecond/second timestamp to Shanghai date."""
+
+        if value in (None, "", "-"):
+            return None
+        try:
+            number = float(value)
+            if number > 10_000_000_000:
+                number /= 1000
+            return datetime.fromtimestamp(number, _SHANGHAI_ZONE).date()
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+
+    @staticmethod
+    def _timestamp_millis(value: Any) -> int:
+        """Normalize provider seconds/milliseconds for drift evidence."""
+
+        number = float(value)
+        if abs(number) < 10_000_000_000:
+            number *= 1000
+        return int(number)
+
+    @classmethod
+    def _calendar_dates(cls, calendar: Mapping[str, Any]) -> tuple[set[date], list[str]]:
+        dates: set[date] = set()
+        warnings: list[str] = []
+        for row in cls._rows(calendar):
+            parsed = cls._parse_date(cls._value(row, "date", "trade_date", "tradeDate"))
+            if parsed is None:
+                parsed = cls._timestamp_date(cls._value(row, "date_ms", "dateMs", "timestamp"))
+            if parsed is not None:
+                dates.add(parsed)
+        if not dates:
+            warnings.append("sector trading calendar has no usable dates")
+        return dates, warnings
+
+    @classmethod
+    def _sector_catalog(
+        cls,
+        catalog: Mapping[str, Any],
+    ) -> tuple[dict[str, str], list[str]]:
+        """Return a unique THS index identity -> display name mapping."""
+
+        names: dict[str, str] = {}
+        warnings: list[str] = []
+        for row in cls._rows(catalog):
+            code = cls._text(row, "thscode", "ths_code", "code")
+            name = cls._text(row, "name", "index_name", "industry_name")
+            if not code or not _THS_INDEX_RE.fullmatch(code.upper()) or not name:
+                warnings.append("sector catalog row lacks a valid thscode or name")
+                continue
+            code = code.upper()
+            if code in names:
+                warnings.append(f"sector catalog contains duplicate identity {code}")
+                continue
+            names[code] = name
+        if not names:
+            warnings.append("sector catalog is empty")
+        return names, warnings
+
+    @classmethod
+    def _snapshot_batches(
+        cls,
+        batches: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], set[Any], list[str], int]:
+        """Flatten snapshot batches while retaining date-bearing evidence.
+
+        Fuyao documents ``data.timestamp`` as the response/data timestamp.
+        Separate requests therefore commonly have different millisecond
+        values even when they belong to the same Shanghai trading date.  Keep
+        the raw values for audit, but validate date consistency separately.
+        The returned count lets callers reject a batch that omitted its
+        timestamp instead of treating the remaining pages as sufficient
+        evidence.
+        """
+
+        if isinstance(batches, Mapping):
+            # A single ``data`` object is convenient for fixture callers.
+            batches = (batches,)
+        rows: list[dict[str, Any]] = []
+        timestamps: set[Any] = set()
+        warnings: list[str] = []
+        timestamp_count = 0
+        for batch in batches:
+            if not isinstance(batch, Mapping):
+                warnings.append("sector snapshot batch is malformed")
+                continue
+            timestamp = batch.get("timestamp")
+            if timestamp in (None, "", "-"):
+                warnings.append("sector snapshot batch has no timestamp")
+            else:
+                # Keep the raw value for exact batch consistency while still
+                # allowing numeric strings from JSON fixtures.  Validation
+                # below compares Shanghai dates, not raw response times.
+                try:
+                    timestamps.add(int(float(timestamp)))
+                except (TypeError, ValueError):
+                    timestamps.add(str(timestamp))
+                timestamp_count += 1
+            rows.extend(cls._rows(batch))
+        if not rows:
+            warnings.append("sector snapshot is empty")
+        return rows, timestamps, warnings, timestamp_count
+
+    def normalize_sector_index_data(
+        self,
+        calendar: Mapping[str, Any],
+        catalog: Mapping[str, Any],
+        snapshots: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+        as_of: date,
+    ) -> FuyaoMarketResult:
+        """Validate and normalize the documented THS industry API combination.
+
+        The provider exposes only index identity, name (from the catalog),
+        percentage change and turnover.  Unsupported ``SectorRow`` fields are
+        deliberately kept as ``None`` rather than inferred from constituents.
+        """
+
+        warnings: list[str] = []
+        calendar_dates, calendar_warnings = self._calendar_dates(calendar)
+        warnings.extend(calendar_warnings)
+        if as_of not in calendar_dates:
+            warnings.append(f"sector requested date {as_of.isoformat()} is not a Shanghai trading day")
+
+        catalog_by_code, catalog_warnings = self._sector_catalog(catalog)
+        warnings.extend(catalog_warnings)
+        catalog_integrity = not any(
+            "catalog row lacks" in warning or "catalog contains duplicate" in warning
+            for warning in catalog_warnings
+        )
+        snapshot_rows, timestamps, snapshot_warnings, timestamp_count = self._snapshot_batches(snapshots)
+        warnings.extend(snapshot_warnings)
+
+        timestamp_dates = {self._timestamp_date(value) for value in timestamps}
+        timestamp_dates.discard(None)
+        if not timestamps:
+            warnings.append("sector snapshot date evidence is missing")
+        batch_count = len(snapshots) if isinstance(snapshots, Sequence) and not isinstance(snapshots, Mapping) else 1
+        if timestamp_count != batch_count:
+            warnings.append(
+                f"sector snapshot timestamp missing for {batch_count - timestamp_count} batch(es)"
+            )
+        elif len(timestamp_dates) > 1:
+            warnings.append("sector snapshot batch timestamps map to different Shanghai dates")
+        if timestamp_dates != {as_of}:
+            observed = ", ".join(sorted(value.isoformat() for value in timestamp_dates)) or "missing"
+            warnings.append(
+                f"sector snapshot timestamp date mismatch: requested {as_of.isoformat()}, observed {observed}"
+            )
+
+        snapshot_by_code: dict[str, dict[str, Any]] = {}
+        duplicate_snapshot = False
+        for row in snapshot_rows:
+            code = self._text(row, "thscode", "ths_code", "code")
+            if not code or not _THS_INDEX_RE.fullmatch(code.upper()):
+                warnings.append("sector snapshot row lacks a valid thscode")
+                continue
+            code = code.upper()
+            if code in snapshot_by_code:
+                duplicate_snapshot = True
+                continue
+            snapshot_by_code[code] = row
+        if duplicate_snapshot:
+            warnings.append("sector snapshot contains duplicate thscode identities")
+
+        missing_codes = sorted(set(catalog_by_code) - set(snapshot_by_code))
+        extra_codes = sorted(set(snapshot_by_code) - set(catalog_by_code))
+        if missing_codes:
+            warnings.append(
+                f"sector snapshot coverage is incomplete: {len(missing_codes)} of {len(catalog_by_code)} catalog identities missing"
+            )
+        if extra_codes:
+            warnings.append(f"sector snapshot contains {len(extra_codes)} identities absent from catalog")
+
+        normalized: list[dict[str, Any]] = []
+        missing_required = 0
+        for code, name in catalog_by_code.items():
+            row = snapshot_by_code.get(code)
+            if row is None:
+                continue
+            change = self._float(row, "price_change_ratio_pct", "change_pct", "changePct", "f3")
+            amount = self._float(row, "turnover", "amount", "f6")
+            if (
+                change is None
+                or amount is None
+                or not math.isfinite(change)
+                or not math.isfinite(amount)
+            ):
+                missing_required += 1
+                continue
+            normalized.append(
+                {
+                    "rank": 0,
+                    "code": code,
+                    "name": name,
+                    "changePct": change,
+                    "amount": amount,
+                    "mainNet": None,
+                    "mainNetPct": None,
+                    "upCount": None,
+                    "downCount": None,
+                    "leader": None,
+                }
+            )
+        valid_snapshot_rows = len(normalized)
+        if missing_required:
+            warnings.append(
+                f"sector snapshot rows missing required changePct or amount fields: {missing_required}"
+            )
+        normalized.sort(key=lambda row: (-float(row["changePct"]), str(row["code"])))
+        normalized = normalized[:10]
+        for rank, row in enumerate(normalized, start=1):
+            row["rank"] = rank
+        if normalized:
+            warnings.append(
+                "sector provider fields unavailable: " + ", ".join(self.SECTOR_UNSUPPORTED_FIELDS)
+            )
+
+        # ``timestamp`` is response-time evidence, so raw values may differ
+        # across batches.  Exact-date acceptance requires every batch to carry
+        # a timestamp and all timestamps to map to the requested Shanghai
+        # trading date.
+        exact_date = (
+            as_of in calendar_dates
+            and timestamp_count == batch_count
+            and timestamp_dates == {as_of}
+        )
+        complete_coverage = (
+            bool(catalog_by_code)
+            and catalog_integrity
+            and not missing_codes
+            and not extra_codes
+            and not duplicate_snapshot
+        )
+        complete_fields = bool(normalized) and missing_required == 0
+        status = "fallback" if exact_date and complete_coverage and complete_fields else "insufficient"
+        if not catalog_by_code or not normalized:
+            status = "insufficient"
+        quality_extra = {
+            # ``endpoint`` remains a compact capability-report field; the
+            # complete route set is retained under ``endpoints`` below.
+            "endpoint": self.SECTOR_SNAPSHOT_ENDPOINT,
+            "endpoints": {
+                "calendar": self.SECTOR_CALENDAR_ENDPOINT,
+                "catalog": self.SECTOR_CATALOG_ENDPOINT,
+                "snapshot": self.SECTOR_SNAPSHOT_ENDPOINT,
+            },
+            "fieldCoverage": {
+                "code": valid_snapshot_rows,
+                "name": valid_snapshot_rows,
+                "changePct": valid_snapshot_rows,
+                "amount": valid_snapshot_rows,
+                **{field: 0 for field in self.SECTOR_UNSUPPORTED_FIELDS},
+            },
+            "calendarCount": len(calendar_dates),
+            "catalogCount": len(catalog_by_code),
+            "snapshotCount": len(snapshot_by_code),
+            "snapshotCoverage": (len(snapshot_by_code) / len(catalog_by_code)) if catalog_by_code else 0.0,
+            "snapshotBatchCount": len(snapshots) if isinstance(snapshots, Sequence) and not isinstance(snapshots, Mapping) else 1,
+            "snapshotTimestamps": sorted(str(value) for value in timestamps),
+            "snapshotTimestampSemantics": "response-time; validated by Shanghai trading date",
+            "snapshotTimestampDateConsistent": timestamp_count == batch_count and timestamp_dates == {as_of},
+            "permissionEvidence": {"configured": bool(self.client.configured)},
+            "rateLimitEvidence": {
+                "requestBudget": int(self.client.request_budget),
+                "requestsUsed": int(self.client.request_count),
+            },
+            "dateEvidence": {
+                "requested": as_of.isoformat(),
+                "calendar": as_of.isoformat() if as_of in calendar_dates else None,
+                "snapshot": sorted(value.isoformat() for value in timestamp_dates),
+            },
+            "unsupportedFields": list(self.SECTOR_UNSUPPORTED_FIELDS),
+            "fieldCompleteness": {
+                "required": ["code", "name", "changePct", "amount"],
+                "requiredComplete": complete_fields,
+                "unsupported": list(self.SECTOR_UNSUPPORTED_FIELDS),
+                "unsupportedAreNull": True,
+            },
+        }
+        return self._result(
+            "industry-ranking",
+            {"rows": normalized, "state": "当日排名已观测" if normalized else "insufficient"},
+            status=status,
+            as_of=as_of,
+            observations=len(normalized),
+            warnings=warnings,
+            provider_revision=self.source_revision,
+            quality_extra=quality_extra,
+        )
+
+    # A descriptive alias makes the three-response contract easy to discover
+    # for callers that do not use the implementation-oriented method name.
+    normalize_sectors_from_sources = normalize_sector_index_data
+
     def normalize_sectors(self, rows: Sequence[Mapping[str, Any]], as_of: date) -> FuyaoMarketResult:
+        """Normalize the legacy ranking fixture/API shape.
+
+        Existing offline fixtures contain date-bearing rows and the richer
+        Eastmoney-compatible fields.  Keep that contract for compatibility;
+        the documented THS path is validated by
+        :meth:`normalize_sector_index_data` and :meth:`fetch_sectors`.
+        """
+
         date_ok, warnings = self._date_guard(rows, as_of)
         normalized: list[dict[str, Any]] = []
-        for rank, row in enumerate(rows[:10], start=1):
+        for row in rows:
             name = self._text(row, "name", "industry_name", "f14")
             leader = self._text(row, "leader", "leader_name", "f128")
             if not name:
@@ -538,7 +1245,29 @@ class FuyaoMarketAdapter:
             if not leader or _IDENTITY_RE.fullmatch(leader.upper()):
                 warnings.append("sector row lacks a real leader name")
                 leader = None
-            normalized.append({"rank": rank, "code": self._text(row, "code", "industry_code", "f12"), "name": name, "changePct": self._float(row, "change_pct", "changePct", "f3"), "amount": self._float(row, "amount", "turnover", "f6"), "mainNet": self._float(row, "main_net", "mainNet", "f62"), "mainNetPct": self._float(row, "main_net_pct", "mainNetPct", "f184"), "upCount": self._int(row, "up_count", "upCount", "f104"), "downCount": self._int(row, "down_count", "downCount", "f105"), "leader": leader})
+            normalized.append(
+                {
+                    "rank": 0,
+                    "code": self._text(row, "code", "industry_code", "f12"),
+                    "name": name,
+                    "changePct": self._float(row, "change_pct", "changePct", "f3"),
+                    "amount": self._float(row, "amount", "turnover", "f6"),
+                    "mainNet": self._float(row, "main_net", "mainNet", "f62"),
+                    "mainNetPct": self._float(row, "main_net_pct", "mainNetPct", "f184"),
+                    "upCount": self._int(row, "up_count", "upCount", "f104"),
+                    "downCount": self._int(row, "down_count", "downCount", "f105"),
+                    "leader": leader,
+                }
+            )
+        normalized.sort(
+            key=lambda row: (
+                -(float(row["changePct"])) if row["changePct"] is not None else math.inf,
+                str(row["code"] or ""),
+            )
+        )
+        normalized = normalized[:10]
+        for rank, row in enumerate(normalized, start=1):
+            row["rank"] = rank
         required = ("changePct", "amount", "mainNet", "mainNetPct", "upCount", "downCount")
         complete = all(all(row.get(key) is not None for key in required) for row in normalized) and bool(normalized)
         if not date_ok:
@@ -548,13 +1277,45 @@ class FuyaoMarketAdapter:
             warnings.append("sector response is missing one or more required fields")
         else:
             status = "ok"
-        return self._result("industry-ranking", {"rows": normalized, "state": "当日排名已观测" if normalized else "insufficient"}, status=status, as_of=as_of, observations=len(normalized), warnings=warnings)
+        return self._result(
+            "industry-ranking",
+            {"rows": normalized, "state": "当日排名已观测" if normalized else "insufficient"},
+            status=status,
+            as_of=as_of,
+            observations=len(normalized),
+            warnings=warnings,
+            provider_revision=self.source_revision,
+        )
 
-    def fetch_sectors(self, as_of: date, *, rows: Sequence[Mapping[str, Any]] | None = None) -> FuyaoMarketResult:
-        if rows is None:
-            response = self.client.request("/api/a-share/industry/ranking", params={"page": 1, "size": 100})
-            rows = self._rows(response.data)
-        return self.normalize_sectors(rows, as_of)
+    def fetch_sectors(
+        self,
+        as_of: date,
+        *,
+        rows: Sequence[Mapping[str, Any]] | None = None,
+        batch_size: int | None = None,
+    ) -> FuyaoMarketResult:
+        """Fetch and validate the official calendar/catalog/snapshot contract."""
+
+        if rows is not None:
+            return self.normalize_sectors(rows, as_of)
+        calendar = self.client.request(self.SECTOR_CALENDAR_ENDPOINT).data
+        catalog = self.client.request(self.SECTOR_CATALOG_ENDPOINT, params={"tag": "industry"}).data
+        catalog_rows, catalog_warnings = self._sector_catalog(catalog)
+        if catalog_warnings and not catalog_rows:
+            # Keep an auditable insufficient result instead of making a
+            # meaningless snapshot request with an empty thscodes parameter.
+            return self.normalize_sector_index_data(calendar, catalog, (), as_of)
+        selected_batch_size = max(1, int(batch_size or self.SECTOR_SNAPSHOT_BATCH_SIZE))
+        codes = tuple(catalog_rows)
+        batches: list[Mapping[str, Any]] = []
+        for offset in range(0, len(codes), selected_batch_size):
+            batch = codes[offset : offset + selected_batch_size]
+            response = self.client.request(
+                self.SECTOR_SNAPSHOT_ENDPOINT,
+                params={"thscodes": ",".join(batch)},
+            )
+            batches.append(response.data)
+        return self.normalize_sector_index_data(calendar, catalog, batches, as_of)
 
 
 __all__ = [
