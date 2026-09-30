@@ -129,3 +129,8 @@
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
 - 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；sectors 仍是东方财富主链后的 fallback，activeDirection 继续既有 Eastmoney/TDX。默认状态为 `unverified`/关闭。
 - shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
+
+## Provider 请求可靠性边界（2026-09-29，实施中）
+
+- 所有 provider 的 HTTP 访问共享按 host 的请求门、最小间隔、抖动和有限请求预算；连接/读取错误、408、429、5xx 才允许有界退避重试并尊重 `Retry-After`，401/403、其他 4xx 和响应契约错误快速失败。每个 host 的 session 固定一个现代浏览器 UA，重建 session 或熔断恢复时重新选择，不伪造 Cookie、认证信息、TLS 指纹或代理来源。
+- 相同请求并发时只允许一个实际请求；实时成功结果可短时复用（默认约 10 秒），历史数据和 TDX 盘后包的缓存键必须包含完整参数和目标日期，禁止跨日期命中。连续可重试失败触发短暂冷却，冷却结束只执行一次受控探测；失败仍保留 `failed`、`degraded`、`insufficient` 或同日期失败留存质量，不得用零值或其他日期补齐。该传输层不得改变 Eastmoney/Fuyao 的既有降级顺序、错误类型或 feature flag 默认值。

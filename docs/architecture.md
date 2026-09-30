@@ -339,3 +339,11 @@ materialized aggregate 与快照读取均 provider-free，只读本地 `(dataset
 仍按同日期 `failed-retained` / `failed-missing` 处理，不跨日期回填。扶摇 capability 报告只
 保留 endpoint、日期、目录/快照数量、字段覆盖、权限/限流结果等脱敏证据，API key 只由独立
 Secret 注入，绝不进入 values、日志、报告或 API 响应。
+
+### 统一 provider 请求层边界（2026-09-29，实施中）
+
+所有腾讯、百度、新浪、TDX 及后续 provider 的 HTTP 访问统一经过共享请求层；该层只负责传输可靠性和请求压力控制，不改变 provider 的字段契约、日期证据、降级顺序或 feature flag。每个 host 使用可复用 session 和现代浏览器 UA；UA 在同一 host 的 session 生命周期内保持稳定，session 重建或熔断恢复时重新选择，不伪造 Cookie、认证信息、TLS 指纹或代理来源。
+
+请求层按 host 执行最小间隔、抖动和并发门。连接/读取异常、408、429、5xx 只允许有界退避重试，并优先遵守响应中的 `Retry-After`；401/403、其他 4xx 和响应契约错误快速失败，403 不进入盲目重试循环。相同请求并发时使用 single-flight 合并；成功结果可短时缓存，实时数据默认约 10 秒，历史数据和 TDX 盘后包的缓存键必须包含完整参数和请求日期，禁止跨日期命中。
+
+连续可重试失败达到阈值后，host 进入短暂冷却，采集任务使用既有 provider 降级链；冷却结束只执行一次受控探测，探测失败继续冷却。请求预算、重试次数、最终错误类别、实际来源和耗时写入脱敏质量/采集证据，失败仍由上层输出 `failed`、`degraded`、`insufficient`、`failed-retained` 或 `failed-missing`，不得用零值或其他日期替代。Eastmoney/Fuyao 已有请求门、错误类型和开关继续有效，避免重复限流或改变已批准的质量语义。

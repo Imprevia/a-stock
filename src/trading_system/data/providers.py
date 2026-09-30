@@ -11,8 +11,8 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from .provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
 
 _GLOBAL_EASTMONEY_LIMITER: "SerialRateLimiter | None" = None
 
@@ -91,6 +91,7 @@ class EastmoneyClient:
         session: requests.Session | None = None,
         retry_total: int = 2,
         retry_backoff: float = 0.6,
+        transport: ProviderHttpClient | None = None,
     ) -> None:
         global _GLOBAL_EASTMONEY_LIMITER
         self.timeout = timeout
@@ -98,37 +99,33 @@ class EastmoneyClient:
             _GLOBAL_EASTMONEY_LIMITER = SerialRateLimiter()
         self.limiter = limiter or _GLOBAL_EASTMONEY_LIMITER
         self.session = session or requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
-        mount = getattr(self.session, "mount", None)
-        if callable(mount):
-            retry = Retry(
-                total=retry_total,
-                connect=retry_total,
-                read=retry_total,
-                status=retry_total,
-                backoff_factor=retry_backoff,
-                status_forcelist=(429, 500, 502, 503, 504),
-                allowed_methods=frozenset({"GET"}),
-                raise_on_status=False,
-                respect_retry_after_header=True,
-            )
-            adapter = HTTPAdapter(max_retries=retry)
-            mount("https://", adapter)
-            mount("http://", adapter)
+        self.transport = transport or ProviderHttpClient(
+            session=self.session,
+            default_policy=HostPolicy(
+                minimum_interval=0.0,
+                jitter=(0.0, 0.0),
+                timeout=timeout,
+                max_retries=retry_total,
+                retry_backoff=retry_backoff,
+                cache_ttl_seconds=0.0,
+            ),
+        )
 
     def get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = self.limiter.run(lambda: self.session.get(url, params=params, timeout=self.timeout))
-        except requests.RequestException as exc:
-            raise ProviderFailure(str(exc), retryable=True) from exc
-        status_code = getattr(response, "status_code", 200)
-        if status_code == 403:
-            raise ProviderFailure("Eastmoney returned HTTP 403", status_code=403, retryable=False)
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            retryable = status_code == 429 or status_code >= 500
-            raise ProviderFailure(str(exc), status_code=status_code, retryable=retryable) from exc
+            response = self.transport.get(
+                url,
+                params=params,
+                timeout=self.timeout,
+                cache_ttl=0.0,
+                gate=self.limiter.run,
+            )
+        except ProviderHttpError as exc:
+            raise ProviderFailure(
+                str(exc),
+                status_code=exc.status_code,
+                retryable=exc.retryable,
+            ) from exc
         return response.json()
 
 

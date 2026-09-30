@@ -136,6 +136,14 @@ warning、前序 Eastmoney warning 和 status/API；扶摇只提供行业指数�
 PVC、不跨日期回填、不手工 SQL 写入快照。Secret 仍只由 existingSecret 引用，回滚时不得把
 凭据写进 values 或日志。
 
+### 统一 provider 请求层排错（2026-09-29，实施中）
+
+provider 失败排查先区分传输层和契约层：检查 host、请求日期、最终来源、错误类别、重试次数、退避等待、熔断状态和 `Retry-After` 处理结果；不要仅凭一次 429/5xx 直接扩大采集并发。连接/读取异常、408、429、5xx 属于有界重试范围；401/403、其他 4xx 或响应字段/日期校验失败应快速失败并沿既有降级链继续，403 不得通过循环重试规避限制。
+
+同一 host 的 UA 应在 session 生命周期内保持一致。若日志显示同一请求被重复发起，先确认 single-flight、按 host 请求门和成功短缓存是否命中；实时数据的短缓存约为 10 秒，历史数据和 TDX 盘后包必须按完整参数及目标日期隔离。缓存命中不能掩盖陈旧状态，响应仍须展示抓取时间、实际日期、来源和质量 warning。
+
+连续可重试失败后，host 会进入短暂冷却并触发既有 provider 降级；冷却结束只允许一次受控探测。排错时记录冷却开始/结束、探测结果和请求预算消耗，不手工清除缓存、绕过请求门、伪造 Cookie/UA、配置代理池或把其他日期响应写入当前日期。真实 provider probe 仍只能在盘后、显式授权的隔离环境执行；普通 GET、status 和 provider-free 读取不得触发探测。
+
 ### Helm Chart 与受控发布入口
 
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；仓库没有通用 uninstall 入口，退役必须另建受审 exact-resource 操作包。先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：

@@ -14,13 +14,16 @@ import re
 import struct
 import zipfile
 import zlib
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from threading import RLock
 from typing import Any
 
 import requests
 
+from src.trading_system.data.provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
 from src.trading_system.data.providers import ProviderFailure
 
 
@@ -568,9 +571,23 @@ class TDXDailyPackageClient:
         stock_universe_required_markets: Iterable[str] = TDX_MARKETS,
         stock_universe_max_unclassified_ratio: float = TDX_STOCK_UNIVERSE_MAX_UNCLASSIFIED_RATIO,
         now: Callable[[], datetime] | None = None,
+        http_client: ProviderHttpClient | None = None,
+        package_cache_size: int = 2,
     ) -> None:
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.http = http_client or ProviderHttpClient(
+            session=self.session,
+            default_policy=HostPolicy(
+                minimum_interval=1.0,
+                jitter=(0.05, 0.25),
+                timeout=(10.0, timeout),
+                max_retries=2,
+                retry_backoff=1.0,
+                request_budget=20,
+                cache_ttl_seconds=0.0,
+            ),
+        )
         self.max_bytes = max(1024, int(max_bytes))
         self.minimum_market_rows = dict(minimum_market_rows or TDX_MIN_PRICED)
         self.stock_universe_minimums = dict(
@@ -580,13 +597,33 @@ class TDXDailyPackageClient:
         self.stock_universe_required_markets = tuple(stock_universe_required_markets)
         self.stock_universe_max_unclassified_ratio = float(stock_universe_max_unclassified_ratio)
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self._package_cache: OrderedDict[date, TDXDailyPackage] = OrderedDict()
+        self._package_cache_size = max(1, int(package_cache_size))
+        self._package_cache_lock = RLock()
 
     def fetch(self, requested_date: date | str) -> TDXDailyPackage:
         expected = _as_date(requested_date, field="requested date")
+        with self._package_cache_lock:
+            cached = self._package_cache.get(expected)
+            if cached is not None:
+                self._package_cache.move_to_end(expected)
+                return cached
         ymd = expected.strftime("%Y%m%d")
         url = TDX_PACKAGE_URL.format(ymd=ymd)
         try:
-            response = self.session.get(url, timeout=(10, self.timeout))
+            response = self.http.get(
+                url,
+                timeout=(10, self.timeout),
+                cache_ttl=0.0,
+                requested_date=expected.isoformat(),
+            )
+        except ProviderHttpError as exc:
+            if exc.status_code == 404:
+                raise TDXDailyPackageUnavailable("TDX package is unavailable or not published") from exc
+            raise TDXDailyPackageError(
+                f"TDX package HTTP status {exc.status_code or 'request failure'}",
+                status_code=exc.status_code,
+            ) from exc
         except requests.RequestException as exc:
             raise TDXDailyPackageError("TDX package HTTP request failed") from exc
         status_code = int(getattr(response, "status_code", 200) or 200)
@@ -603,19 +640,29 @@ class TDXDailyPackageClient:
             raise TDXDailyPackageError("TDX package exceeds the download safety bound")
         if not content:
             raise TDXDailyPackageError("TDX package response is empty")
-        try:
-            return parse_tdx_daily_package(
-                content,
-                expected,
-                package_date=expected,
-                minimum_market_rows=self.minimum_market_rows,
-                source_url=url,
-                fetched_at=self.now(),
-            )
-        except TDXDailyPackageError:
-            raise
-        except Exception as exc:
-            raise TDXDailyPackageError("TDX package response cannot be normalized") from exc
+        with self._package_cache_lock:
+            cached = self._package_cache.get(expected)
+            if cached is not None:
+                self._package_cache.move_to_end(expected)
+                return cached
+            try:
+                package = parse_tdx_daily_package(
+                    content,
+                    expected,
+                    package_date=expected,
+                    minimum_market_rows=self.minimum_market_rows,
+                    source_url=url,
+                    fetched_at=self.now(),
+                )
+                self._package_cache[expected] = package
+                self._package_cache.move_to_end(expected)
+                while len(self._package_cache) > self._package_cache_size:
+                    self._package_cache.popitem(last=False)
+                return package
+            except TDXDailyPackageError:
+                raise
+            except Exception as exc:
+                raise TDXDailyPackageError("TDX package response cannot be normalized") from exc
 
 
 __all__ = [

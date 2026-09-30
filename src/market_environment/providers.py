@@ -16,6 +16,7 @@ from typing import Any
 
 import requests
 
+from src.trading_system.data.provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
 from src.trading_system.data.providers import EastmoneyClient
 
 from .calculations import Bar
@@ -127,8 +128,27 @@ class MarketDataProvider:
     ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
-        self.eastmoney = EastmoneyClient(timeout=timeout, session=self.session)
+        self.http = ProviderHttpClient(
+            session=self.session,
+            default_policy=HostPolicy(
+                timeout=timeout,
+                max_retries=2,
+                retry_backoff=0.5,
+                cache_ttl_seconds=10.0,
+            ),
+            policies={
+                "www.tdx.com.cn": HostPolicy(
+                    minimum_interval=1.0,
+                    jitter=(0.05, 0.25),
+                    timeout=(10.0, max(timeout, 30.0)),
+                    max_retries=2,
+                    retry_backoff=1.0,
+                    request_budget=20,
+                    cache_ttl_seconds=0.0,
+                )
+            },
+        )
+        self.eastmoney = EastmoneyClient(timeout=timeout, session=self.session, transport=self.http)
         self.fuyao = fuyao or FuyaoClient(timeout=timeout)
         self.require_fuyao_for_limits = (
             os.getenv("MARKET_ENVIRONMENT_LIMITS_V1_ENABLED", "0").strip().lower()
@@ -139,6 +159,7 @@ class MarketDataProvider:
         self.tdx_daily_package = tdx_daily_package or TDXDailyPackageClient(
             timeout=max(timeout, 30.0),
             session=self.session,
+            http_client=self.http,
         )
         tdx_config = TDXDailyPackageConfig.from_environment()
         self.tdx_fallback_enabled = (
@@ -270,8 +291,12 @@ class MarketDataProvider:
     def fetch_quotes(self, specs: tuple[IndexSpec, ...]) -> dict[str, dict[str, Any]]:
         query = ",".join(spec.code for spec in specs)
         url = f"https://qt.gtimg.cn/q={query}"
-        response = self.session.get(url, timeout=self.timeout)
-        response.raise_for_status()
+        response = self.http.get(
+            url,
+            timeout=self.timeout,
+            cache_ttl=10.0,
+            validator=self._valid_quote_response,
+        )
         text = response.content.decode("gbk", errors="replace")
         result: dict[str, dict[str, Any]] = {}
         for line in text.split(";"):
@@ -634,10 +659,14 @@ class MarketDataProvider:
             return {}
         url = f"https://qt.gtimg.cn/q={','.join(symbols)}"
         try:
-            response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()
+            response = self.http.get(
+                url,
+                timeout=self.timeout,
+                cache_ttl=10.0,
+                validator=self._valid_quote_response,
+            )
             content = response.content.decode("gbk", errors="strict")
-        except (requests.RequestException, UnicodeDecodeError) as exc:
+        except (ProviderHttpError, requests.RequestException, UnicodeDecodeError) as exc:
             raise TDXDailyPackageError("Tencent name lookup failed") from exc
         result: dict[str, str] = {}
         for line in content.split(";"):
@@ -2317,8 +2346,13 @@ class MarketDataProvider:
             "market": "sh" if spec.code.startswith("sh") else "sz",
             "ktype": "1",
         }
-        response = self.session.get(url, params=params, timeout=self.timeout)
-        response.raise_for_status()
+        response = self.http.get(
+            url,
+            params=params,
+            timeout=self.timeout,
+            cache_ttl=10.0,
+            validator=self._valid_baidu_response,
+        )
         payload = response.json()
         market_data = payload.get("Result", {}).get("newMarketData", {})
         keys = market_data.get("keys", [])
@@ -2401,8 +2435,13 @@ class MarketDataProvider:
         """
         url = f"https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_{spec.code}_klines=/CN_MarketData.getKLineData"
         params = {"symbol": spec.code, "scale": "240", "ma": "no", "datalen": str(max(limit, 280))}
-        response = self.session.get(url, params=params, timeout=self.timeout)
-        response.raise_for_status()
+        response = self.http.get(
+            url,
+            params=params,
+            timeout=self.timeout,
+            cache_ttl=10.0,
+            validator=self._valid_sina_response,
+        )
         text = response.text
         start, end = text.find("["), text.rfind("]")
         if start < 0 or end <= start:
@@ -2441,8 +2480,12 @@ class MarketDataProvider:
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
             f"?param={spec.code},day,,,{limit},qfq"
         )
-        response = self.session.get(url, timeout=self.timeout)
-        response.raise_for_status()
+        response = self.http.get(
+            url,
+            timeout=self.timeout,
+            cache_ttl=10.0,
+            validator=lambda item, code=spec.code: self._valid_tencent_kline_response(item, code),
+        )
         payload = response.json()
         data = payload.get("data", {}).get(spec.code, {})
         rows = data.get("qfqday") or data.get("day") or []
@@ -2465,6 +2508,50 @@ class MarketDataProvider:
                 )
             )
         return sorted((bar for bar in result if bar.close > 0), key=lambda bar: bar.date)
+
+    @staticmethod
+    def _valid_quote_response(response: Any) -> bool:
+        content = bytes(getattr(response, "content", b""))
+        for line in content.decode("gbk", errors="replace").split(";"):
+            if "=" not in line or '"' not in line:
+                continue
+            values = line.split('"', 2)
+            if len(values) == 3 and len(values[1].split("~")) >= 50:
+                return True
+        return False
+
+    @staticmethod
+    def _valid_baidu_response(response: Any) -> bool:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return False
+        market_data = payload.get("Result", {}).get("newMarketData", {}) if isinstance(payload, dict) else {}
+        return (
+            isinstance(market_data, dict)
+            and isinstance(market_data.get("keys"), list)
+            and isinstance(market_data.get("marketData"), str)
+        )
+
+    @staticmethod
+    def _valid_sina_response(response: Any) -> bool:
+        text = str(getattr(response, "text", ""))
+        start, end = text.find("["), text.rfind("]")
+        if start < 0 or end <= start:
+            return False
+        try:
+            return isinstance(json.loads(text[start : end + 1]), list)
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _valid_tencent_kline_response(response: Any, code: str) -> bool:
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return False
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        return isinstance(data, dict) and isinstance(data.get(code), dict)
 
     @staticmethod
     def _number(values: list[str], index: int) -> float:
