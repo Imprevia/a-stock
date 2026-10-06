@@ -2,12 +2,16 @@ from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from src.market_environment import api
+from src.market_environment.bootstrap.app import create_app
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.service import MarketEnvironmentService
 from src.market_environment.schemas import CollectionTaskResponse
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
+from tests.market_environment_api_support import (
+    FakeCollectionCommands,
+    build_test_app,
+)
 from tests.test_market_environment_collection import AS_OF, CollectionProvider
 
 
@@ -72,23 +76,89 @@ class StubService:
         }
 
 
+def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
+    schema = create_app().openapi()["paths"]
+    expected = {
+        ("/api/health", "get"): ("200", None),
+        ("/api/market-environment", "get"): ("200", "MarketEnvironmentResponse"),
+        ("/api/market-environment/core", "get"): ("200", "MarketEnvironmentResponse"),
+        ("/api/market-environment/next-session", "get"): (
+            "200",
+            "NextSessionComparisonResponse",
+        ),
+        ("/api/market-environment/chapter-01", "get"): ("200", "Chapter01Response"),
+        ("/api/market-environment/data-collection", "get"): (
+            "200",
+            "CollectionStatusResponse",
+        ),
+        ("/api/market-environment/collection-runs", "post"): (
+            "202",
+            "CollectionRunResponse",
+        ),
+        ("/api/market-environment/collection-runs/{run_id}", "get"): (
+            "200",
+            "CollectionRunResponse",
+        ),
+        ("/api/preferences/timezone", "get"): ("200", "TimezonePreferencesResponse"),
+        ("/api/preferences/timezone", "put"): ("200", "TimezonePreferencesResponse"),
+    }
+
+    assert {
+        (path, method)
+        for path, methods in schema.items()
+        for method in methods
+        if path.startswith("/api/")
+    } == set(expected)
+    for (path, method), (status_code, model) in expected.items():
+        operation = schema[path][method]
+        assert status_code in operation["responses"]
+        response_schema = operation["responses"][status_code].get("content", {}).get(
+            "application/json", {}
+        ).get("schema", {})
+        if model is not None:
+            assert response_schema["$ref"] == f"#/components/schemas/{model}"
+
+
+def test_api_entrypoint_has_no_mutable_runtime_singletons() -> None:
+    from src.market_environment import api
+
+    assert api.app is not None
+    assert not hasattr(api, "service")
+    assert not hasattr(api, "collection_coordinator")
+    assert not hasattr(api, "collection_executor")
+    assert not hasattr(api, "timezone_preference_store")
+
+
 def test_api_rejects_invalid_and_future_dates() -> None:
-    client = TestClient(api.app)
+    client = TestClient(
+        build_test_app(
+            market_queries=StubService(),
+            effective_date=date.today(),
+        )
+    )
     assert client.get("/api/market-environment?as_of=not-a-date").status_code == 422
     future = date.today().replace(year=date.today().year + 1).isoformat()
     assert client.get(f"/api/market-environment?as_of={future}").status_code == 422
 
 
 def test_api_returns_503_for_provider_failure(monkeypatch) -> None:
-    monkeypatch.setattr(api, "service", StubService(RuntimeError("全部指数数据源不可用")))
-    response = TestClient(api.app).get("/api/market-environment?as_of=2026-08-28")
+    response = TestClient(
+        build_test_app(
+            market_queries=StubService(RuntimeError("全部指数数据源不可用")),
+            effective_date=date(2026, 9, 14),
+        )
+    ).get("/api/market-environment?as_of=2026-08-28")
     assert response.status_code == 503
     assert "全部指数数据源不可用" in response.json()["detail"]
 
 
 def test_api_returns_schema_payload(monkeypatch) -> None:
-    monkeypatch.setattr(api, "service", StubService())
-    response = TestClient(api.app).get("/api/market-environment?as_of=2026-08-28")
+    response = TestClient(
+        build_test_app(
+            market_queries=StubService(),
+            effective_date=date(2026, 9, 14),
+        )
+    ).get("/api/market-environment?as_of=2026-08-28")
     assert response.status_code == 200
     assert response.json()["asOf"] == "2026-08-28"
 
@@ -96,10 +166,12 @@ def test_api_returns_schema_payload(monkeypatch) -> None:
 def test_api_omitted_date_is_resolved_at_request_time(monkeypatch) -> None:
     """The default date must follow the Shanghai pre-open effective day."""
 
-    monkeypatch.setattr(api, "market_today", lambda: date(2026, 9, 14))
-    monkeypatch.setattr(api, "service", StubService())
-
-    response = TestClient(api.app).get("/api/market-environment")
+    response = TestClient(
+        build_test_app(
+            market_queries=StubService(),
+            effective_date=date(2026, 9, 14),
+        )
+    ).get("/api/market-environment")
 
     assert response.status_code == 200
     assert response.json()["asOf"] == "2026-09-14"
@@ -107,8 +179,12 @@ def test_api_omitted_date_is_resolved_at_request_time(monkeypatch) -> None:
 
 def test_api_exposes_core_and_section_endpoints(monkeypatch) -> None:
     service = StubService()
-    monkeypatch.setattr(api, "service", service)
-    client = TestClient(api.app)
+    client = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=date(2026, 9, 14),
+        )
+    )
 
     core = client.get("/api/market-environment/core?as_of=2026-08-28")
     chapter = client.get("/api/market-environment/chapter-01?as_of=2026-08-28&section=breadth")
@@ -121,9 +197,12 @@ def test_api_exposes_core_and_section_endpoints(monkeypatch) -> None:
 
 def test_api_exposes_provider_free_next_session_endpoint(monkeypatch) -> None:
     service = StubService()
-    monkeypatch.setattr(api, "service", service)
-
-    response = TestClient(api.app).get("/api/market-environment/next-session?as_of=2026-08-28")
+    response = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=date(2026, 9, 14),
+        )
+    ).get("/api/market-environment/next-session?as_of=2026-08-28")
 
     assert response.status_code == 200
     assert response.json()["status"] == "insufficient"
@@ -133,9 +212,12 @@ def test_api_exposes_provider_free_next_session_endpoint(monkeypatch) -> None:
 
 def test_api_rejects_unknown_chapter_section(monkeypatch) -> None:
     service = StubService()
-    monkeypatch.setattr(api, "service", service)
-
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=date(2026, 9, 14),
+        )
+    ).get(
         "/api/market-environment/chapter-01?as_of=2026-08-28&section=unknown"
     )
 
@@ -164,9 +246,15 @@ def collection_coordinator(tmp_path, provider=None) -> CollectionCoordinator:
 
 def test_collection_post_can_be_explicitly_disabled(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "0")
-    monkeypatch.setattr(api, "collection_coordinator", collection_coordinator(tmp_path))
+    coordinator = collection_coordinator(tmp_path)
 
-    response = TestClient(api.app).post(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            collection_commands=FakeCollectionCommands(coordinator, NoopExecutor()),
+            effective_date=AS_OF,
+        )
+    ).post(
         "/api/market-environment/collection-runs",
         json={"asOf": AS_OF.isoformat(), "datasets": ["breadth"]},
     )
@@ -180,9 +268,13 @@ def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, 
     coordinator = collection_coordinator(tmp_path, provider)
     coordinator.collect(AS_OF, ["breadth"])
     provider.calls.clear()
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
 
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=AS_OF,
+        )
+    ).get(
         f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
     )
 
@@ -233,9 +325,12 @@ def test_collection_status_exposes_stored_sector_enrichment_without_provider_cal
             settled=True,
         )
     )
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=AS_OF,
+        )
+    ).get(
         f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
     )
 
@@ -256,9 +351,12 @@ def test_collection_status_exposes_attempt_timings(monkeypatch, tmp_path) -> Non
         expected_statuses=(task.status,),
         timings={"shadow": {"status": "match"}, "providerCollectionMs": 1.25},
     )
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=AS_OF,
+        )
+    ).get(
         f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
     )
 
@@ -295,9 +393,12 @@ def test_collection_status_exposes_derived_quality_from_local_snapshot(monkeypat
             settled=True,
         )
     )
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=AS_OF,
+        )
+    ).get(
         f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
     )
 
@@ -311,9 +412,13 @@ def test_collection_status_exposes_derived_quality_from_local_snapshot(monkeypat
 def test_collection_single_run_is_enabled_by_default_and_can_be_polled(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", raising=False)
     coordinator = collection_coordinator(tmp_path)
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-    monkeypatch.setattr(api, "collection_executor", ImmediateExecutor())
-    client = TestClient(api.app)
+    client = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            collection_commands=FakeCollectionCommands(coordinator, ImmediateExecutor()),
+            effective_date=AS_OF,
+        )
+    )
 
     started = client.post(
         "/api/market-environment/collection-runs",
@@ -371,9 +476,13 @@ def test_collection_full_run_reports_partial_and_keeps_successes(monkeypatch, tm
         tmp_path,
         CollectionProvider(failing_datasets={"sectors"}),
     )
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-    monkeypatch.setattr(api, "collection_executor", ImmediateExecutor())
-    client = TestClient(api.app)
+    client = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            collection_commands=FakeCollectionCommands(coordinator, ImmediateExecutor()),
+            effective_date=AS_OF,
+        )
+    )
 
     started = client.post(
         "/api/market-environment/collection-runs",
@@ -393,9 +502,13 @@ def test_collection_duplicate_post_reports_busy_without_provider_call(monkeypatc
     monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1")
     provider = CollectionProvider()
     coordinator = collection_coordinator(tmp_path, provider)
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
-    monkeypatch.setattr(api, "collection_executor", NoopExecutor())
-    client = TestClient(api.app)
+    client = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            collection_commands=FakeCollectionCommands(coordinator, NoopExecutor()),
+            effective_date=AS_OF,
+        )
+    )
     request = {"asOf": AS_OF.isoformat(), "datasets": ["breadth"]}
 
     first = client.post("/api/market-environment/collection-runs", json=request)
@@ -409,9 +522,15 @@ def test_collection_duplicate_post_reports_busy_without_provider_call(monkeypatc
 
 def test_collection_rejects_historical_latest_only_dataset(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1")
-    monkeypatch.setattr(api, "collection_coordinator", collection_coordinator(tmp_path))
+    coordinator = collection_coordinator(tmp_path)
 
-    response = TestClient(api.app).post(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            collection_commands=FakeCollectionCommands(coordinator, NoopExecutor()),
+            effective_date=AS_OF,
+        )
+    ).post(
         "/api/market-environment/collection-runs",
         json={
             "asOf": (AS_OF - timedelta(days=1)).isoformat(),
@@ -428,9 +547,13 @@ def test_collection_poll_recovers_task_after_expired_lease(monkeypatch, tmp_path
     started = coordinator.start_run(AS_OF, ["breadth"])
     task = started.tasks[0]
     coordinator.store.release_lease("breadth", AS_OF, task.task_id)
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
 
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=AS_OF,
+        )
+    ).get(
         f"/api/market-environment/collection-runs/{started.run.run_id}"
     )
 

@@ -87,6 +87,7 @@ class MarketEnvironmentService:
         now: Callable[[], datetime] | None = None,
         cold_wait_seconds: float = 30.0,
         local_reads_only: bool | None = None,
+        refresh_executor: Any | None = None,
     ) -> None:
         provider_was_injected = provider is not None
         self.provider = provider or MarketDataProvider()
@@ -106,13 +107,27 @@ class MarketEnvironmentService:
         )
         self.snapshot_ttl_seconds = snapshot_ttl_seconds
         self.cold_wait_seconds = cold_wait_seconds
-        self._refresh_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-snapshot")
+        self._refresh_executor = refresh_executor or ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="market-snapshot",
+        )
         self._core_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._chapter_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         self._lock = Lock()
         self._core_load_lock = Lock()
         self._chapter_load_lock = Lock()
         self._limit_response_cache: dict[tuple[str, bool, str, str], dict[str, Any]] = {}
+
+    def close(self) -> None:
+        """Release the refresh executor owned by the composition container."""
+
+        shutdown = getattr(self._refresh_executor, "shutdown", None)
+        if shutdown is None:
+            return
+        try:
+            shutdown(wait=True, cancel_futures=True)
+        except TypeError:
+            shutdown(wait=True)
 
     def get(self, as_of: date) -> dict:
         """Return the legacy complete aggregate response."""

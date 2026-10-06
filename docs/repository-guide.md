@@ -23,7 +23,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/trading_knowledge/` | 本地交易知识源解析、SQLite FTS5 索引、只读查询和 MCP stdio 服务 | 修改知识源边界、引用契约或工具 schema 时同步产品规格、架构和 runbook |
 | `evidence/` | 可入库的验证清单和月度 SHA-256 摘要 | 不提交大体积输入快照和 trace |
 | `.github/workflows/` | 离线 PR 门禁和盘后证据运行 | PR workflow 禁止依赖外部行情网络 |
-| `src/market_environment/` | 市场环境分析 API、行情适配、指标计算和响应模型 | 修改数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
+| `src/market_environment/` | 分层模块化市场环境后端：composition、HTTP/CLI、use case、领域计算、PostgreSQL 与 provider collector | 修改分层、数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/`、`deploy/k3s-native-scheduled/` | 市场环境看板的 Dashboard-only k3s Kustomize base，以及受 Kubernetes 1.27+ 检查的 native scheduled overlay | 修改镜像、端口、探针、存储、资源、调度或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart；`component` 控制 database/service/schedule/all 资源集合 | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
@@ -41,6 +41,24 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 - 交易系统机器规则库：`trading-rules/`；YAML 是执行事实源，`coverage.yaml` 覆盖全部文档规则 ID。
 - 交易知识 MCP：`src/trading_knowledge/`；消费上述 Git 事实源，索引放在被忽略的 `.artifacts/knowledge-base/`，不进入市场环境 API 或生产数据库。
 - 交易系统目录索引：`docs/trading-system-directory.md` 与 `docs/trading-system-quantified-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
+
+### 市场环境后端内部地图
+
+| 路径 | 事实职责 | 允许依赖 |
+|------|----------|----------|
+| `src/market_environment/bootstrap/` | 配置、composition container、FastAPI app factory、lifespan 和 CLI composition | 可引用 interfaces/application/infrastructure；是唯一具体装配位置 |
+| `src/market_environment/interfaces/http/` | router、依赖获取、身份/时区上下文、DTO mapper 和 HTTP 错误映射 | application/domain；不得直接构造 provider、repository、executor |
+| `src/market_environment/interfaces/cli/` | CLI 参数到 application command/query 的适配 | application/domain；具体实现由 bootstrap 注入 |
+| `src/market_environment/application/ports/` | repository、unit-of-work、collector、executor 协议 | domain 与标准库，不依赖具体基础设施 |
+| `src/market_environment/application/queries/` | provider-free 精确日期读取、状态和 next-session | 只读 ports、domain；不得导入 collector/provider |
+| `src/market_environment/application/commands/` | collection run、刷新和 materialization command | 写 ports、collector registry、executor、domain |
+| `src/market_environment/domain/` | 领域值、日期/质量/留存策略与纯分析 | 标准库/Pydantic 边界外的纯模块；不依赖 FastAPI、SQLAlchemy、requests |
+| `src/market_environment/infrastructure/persistence/postgres/` | PostgreSQL repository、unit of work、lease/fencing 和 aggregate CAS | application ports/domain/SQLAlchemy |
+| `src/market_environment/infrastructure/persistence/sqlite_import/` | 测试或停写迁移 SQLite 适配器 | application ports/domain；不得成为生产静默回退 |
+| `src/market_environment/infrastructure/providers/` | vendor client 复用、五类 dataset collector 与降级链 | application collector port、domain、共享 transport |
+| `src/market_environment/infrastructure/execution/` | 有界进程内 task executor | application executor port |
+
+稳定兼容入口保留 `src/market_environment/api.py` 与 `src/market_environment/cli.py`；它们只转发到 bootstrap/interfaces。迁移期 facade 只能委托，完成前应删除，不作为新增业务逻辑位置。
 
 ## 安全修改区
 
@@ -60,6 +78,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | 代码区 | 必需文档更新 | 门禁级别 |
 |--------|-------------|----------|
 | `src/**`（未来） | `docs/architecture.md` | fail |
+| `src/market_environment/**` | `docs/architecture.md`, `docs/repository-guide.md`, `docs/runbooks.md`, active plan | fail |
 | `src/trading_system/**` / `trading-rules/**` | `docs/product-specs/trading-rule-engineering.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `src/trading_knowledge/**` | `docs/product-specs/trading-knowledge-mcp.md`, `docs/architecture.md`, `docs/runbooks.md` | fail |
 | `.github/workflows/**` | `docs/runbooks.md`, active plan | fail |

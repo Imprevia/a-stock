@@ -8,7 +8,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.market_environment import api
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.limit_facts import normalize_limit_pools
 from src.market_environment.limit_promotion import build_limit_promotion, limit_v1_enabled
@@ -16,6 +15,7 @@ from src.market_environment.providers import LimitProviderDatasetResult, MarketD
 from src.market_environment.schemas import MarketEnvironmentResponse, PROMOTION_RULE_VERSION
 from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore, TradingSessionRecord
+from tests.market_environment_api_support import build_test_app
 from tests.test_market_environment_service import SectionProvider, make_bars
 
 
@@ -333,8 +333,11 @@ def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destru
     assert service.get(CURRENT)["chapter01"]["limits"]["promotionRatio"] == 0.4
     assert provider.calls == calls_before_get
 
-    monkeypatch.setattr(api, "service", service)
-    response = TestClient(api.app).get(
+    app = build_test_app(
+        market_queries=service,
+        effective_date=CURRENT,
+    )
+    response = TestClient(app).get(
         "/api/market-environment/chapter-01",
         params={"as_of": CURRENT.isoformat(), "section": "limits"},
     )
@@ -355,7 +358,7 @@ def test_paired_collection_materializes_strict_20_of_8_and_rolls_back_non_destru
     assert store.get_limit_security_dataset(CURRENT)["dataset_checksum"] == first_checksum
     assert len(store.get_limit_security_facts(CURRENT)) > 0
 
-    response = TestClient(api.app).get(
+    response = TestClient(app).get(
         "/api/market-environment/chapter-01",
         params={"as_of": CURRENT.isoformat(), "section": "limits"},
     )
@@ -462,8 +465,12 @@ def test_malformed_limit_rows_persist_partial_bundle_and_api_is_insufficient(tmp
     assert facts[0].invalid_reason == "malformed-row"
     assert facts[0].row_checksum == malformed.normalization.rows[0].row_checksum
 
-    monkeypatch.setattr(api, "service", service)
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=CURRENT,
+        )
+    ).get(
         "/api/market-environment/chapter-01",
         params={"as_of": CURRENT.isoformat(), "section": "limits"},
     )
@@ -528,8 +535,12 @@ def test_malformed_refresh_retains_same_date_complete_bundle_and_degrades_api(tm
     assert retained_fact_checksums == original_fact_checksums
     assert "malformed-row" in (retained_snapshot.refresh_warning or "")
 
-    monkeypatch.setattr(api, "service", service)
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=CURRENT,
+        )
+    ).get(
         "/api/market-environment/chapter-01",
         params={"as_of": CURRENT.isoformat(), "section": "limits"},
     )
@@ -914,9 +925,13 @@ def test_collection_status_limits_detail_is_provider_free_and_contract_complete(
     )
     coordinator.collect(CURRENT, ["limits"])
     provider.calls.clear()
-    monkeypatch.setattr(api, "collection_coordinator", coordinator)
 
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            collection_queries=coordinator,
+            effective_date=CURRENT,
+        )
+    ).get(
         "/api/market-environment/data-collection",
         params={"as_of": CURRENT.isoformat()},
     )

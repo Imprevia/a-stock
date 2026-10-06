@@ -7,11 +7,13 @@ import json
 import os
 import time
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from datetime import date, datetime, time as clock_time, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from .bootstrap.container import LegacyContainerAdapters
 from .collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
 from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketClient
 from .provider_capability import ProviderCapabilityReport
@@ -20,7 +22,9 @@ from .postgres_migration import backup_sqlite, import_sqlite
 from .providers import INDEX_SPECS, MarketDataProvider
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
 from .snapshot_store import SnapshotStore
+from .infrastructure.persistence.sqlite_import import LegacySqliteSnapshotStore
 from .tdx_daily import TDXDailyPackageClient
+from .interfaces.cli.container import build_cli_container
 
 
 def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
@@ -349,6 +353,151 @@ def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def _collection_coordinator_scope(
+    injected: CollectionCoordinator | None,
+    *,
+    clock: Callable[[], datetime] | None = None,
+):
+    if injected is not None:
+        yield injected
+        return
+    adapters = LegacyContainerAdapters(clock=clock) if clock is not None else None
+    container = build_cli_container(adapters=adapters)
+    try:
+        yield container.coordinator
+    finally:
+        container.close()
+
+
+def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> int:
+    if args.history_sessions > 1:
+        selected = tuple(dict.fromkeys(args.datasets or ()))
+        if selected != ("limits",):
+            _print_payload(
+                {
+                    "status": "rejected",
+                    "error": "--history-sessions above 1 requires exactly --dataset limits",
+                }
+            )
+            return 2
+        try:
+            sessions = active_coordinator.prepare_limit_history_sessions(
+                args.as_of,
+                args.history_sessions,
+            )
+        except Exception as exc:
+            _print_payload({"status": "rejected", "error": str(exc)})
+            return 2
+        results = []
+        for session in sessions:
+            try:
+                results.append(
+                    active_coordinator.collect(
+                        session,
+                        ("limits",),
+                        fetch_previous_limit_details=False,
+                    )
+                )
+            except Exception as exc:
+                results.append(exc)
+        run_statuses = [
+            result.run.status for result in results if not isinstance(result, Exception)
+        ]
+        failures = [
+            result
+            for result in results
+            if isinstance(result, Exception) or result.run.status == "failed"
+        ]
+        if len(failures) == len(results):
+            status = "failed"
+        elif failures or any(value != "success" for value in run_statuses):
+            status = "partial"
+        else:
+            status = "success"
+        _print_payload(
+            {
+                "asOf": args.as_of.isoformat(),
+                "status": status,
+                "forced": args.force,
+                "historySessions": args.history_sessions,
+                "sessions": [
+                    {
+                        "asOf": session.isoformat(),
+                        "status": "failed" if isinstance(result, Exception) else result.run.status,
+                        "error": str(result) if isinstance(result, Exception) else None,
+                        "datasets": []
+                        if isinstance(result, Exception)
+                        else _collection_payload(result)["datasets"],
+                    }
+                    for session, result in zip(sessions, results)
+                ],
+            }
+        )
+        return 2 if failures else 0
+    try:
+        if args.force:
+            result = active_coordinator.collect(
+                args.as_of,
+                args.datasets,
+                allow_historical_latest_only=True,
+            )
+        else:
+            result = active_coordinator.collect(args.as_of, args.datasets)
+    except ValueError as exc:
+        _print_payload({"status": "rejected", "error": str(exc)})
+        return 2
+    payload = _collection_payload(result, forced=args.force)
+    _print_payload(payload)
+    return 0 if result.run.status == "success" else 2
+
+
+def _run_scheduled_refresh(
+    args,
+    injected_coordinator: CollectionCoordinator | None,
+    now: Callable[[], datetime] | None,
+) -> int:
+    current = _market_now(now)
+    calendar_date = current.date()
+    selected = tuple(args.datasets or SUPPORTED_COLLECTION_DATASETS)
+
+    if current.weekday() >= 5:
+        _print_payload(
+            {
+                "trigger": "scheduled",
+                "asOf": calendar_date.isoformat(),
+                "status": "skipped",
+                "reason": "weekend",
+                "datasets": [],
+            }
+        )
+        return 0
+
+    as_of = effective_market_date(current)
+    try:
+        if current.time().replace(tzinfo=None) < settlement_time():
+            raise ValueError("scheduled refresh is only allowed after the configured settlement time")
+        with _collection_coordinator_scope(
+            injected_coordinator,
+            clock=lambda: current,
+        ) as active_coordinator:
+            result = active_coordinator.collect(as_of, selected)
+    except ValueError as exc:
+        _print_payload(
+            {
+                "trigger": "scheduled",
+                "asOf": as_of.isoformat(),
+                "status": "rejected",
+                "error": str(exc),
+                "datasets": [],
+            }
+        )
+        return 2
+
+    _print_payload(_collection_payload(result, trigger="scheduled"))
+    return 0 if result.run.status == "success" else 2
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -361,7 +510,7 @@ def main(
             try:
                 payload = _run_offline_capability_probe(Path(args.fixture), args.as_of)
                 if args.path:
-                    store = SnapshotStore(args.path)
+                    store = LegacySqliteSnapshotStore(args.path)
                     for item in payload["reports"]:
                         store.put_capability_report(ProviderCapabilityReport.from_dict(item))
                 if args.output:
@@ -488,7 +637,7 @@ def main(
                     json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
                     encoding="utf-8",
                 )
-                store = SnapshotStore(args.path)
+                store = LegacySqliteSnapshotStore(args.path)
                 for item in payload["reports"]:
                     store.put_capability_report(ProviderCapabilityReport.from_dict(item))
                 _print_payload(payload)
@@ -536,125 +685,10 @@ def main(
         _print_payload(result)
         return 0
     if args.command == "snapshots" and args.snapshot_command == "refresh":
-        active_coordinator = coordinator or CollectionCoordinator()
-        if args.history_sessions > 1:
-            selected = tuple(dict.fromkeys(args.datasets or ()))
-            if selected != ("limits",):
-                _print_payload(
-                    {
-                        "status": "rejected",
-                        "error": "--history-sessions above 1 requires exactly --dataset limits",
-                    }
-                )
-                return 2
-            try:
-                sessions = active_coordinator.prepare_limit_history_sessions(
-                    args.as_of,
-                    args.history_sessions,
-                )
-            except Exception as exc:
-                _print_payload({"status": "rejected", "error": str(exc)})
-                return 2
-            results = []
-            for session in sessions:
-                try:
-                    results.append(
-                        active_coordinator.collect(
-                            session,
-                            ("limits",),
-                            fetch_previous_limit_details=False,
-                        )
-                    )
-                except Exception as exc:
-                    results.append(exc)
-            run_statuses = [
-                result.run.status for result in results if not isinstance(result, Exception)
-            ]
-            failures = [
-                result
-                for result in results
-                if isinstance(result, Exception) or result.run.status == "failed"
-            ]
-            if len(failures) == len(results):
-                status = "failed"
-            elif failures or any(value != "success" for value in run_statuses):
-                status = "partial"
-            else:
-                status = "success"
-            _print_payload(
-                {
-                    "asOf": args.as_of.isoformat(),
-                    "status": status,
-                    "forced": args.force,
-                    "historySessions": args.history_sessions,
-                    "sessions": [
-                        {
-                            "asOf": session.isoformat(),
-                            "status": "failed" if isinstance(result, Exception) else result.run.status,
-                            "error": str(result) if isinstance(result, Exception) else None,
-                            "datasets": []
-                            if isinstance(result, Exception)
-                            else _collection_payload(result)["datasets"],
-                        }
-                        for session, result in zip(sessions, results)
-                    ],
-                }
-            )
-            return 2 if failures else 0
-        try:
-            if args.force:
-                result = active_coordinator.collect(
-                    args.as_of,
-                    args.datasets,
-                    allow_historical_latest_only=True,
-                )
-            else:
-                result = active_coordinator.collect(args.as_of, args.datasets)
-        except ValueError as exc:
-            _print_payload({"status": "rejected", "error": str(exc)})
-            return 2
-        payload = _collection_payload(result, forced=args.force)
-        _print_payload(payload)
-        return 0 if result.run.status == "success" else 2
+        with _collection_coordinator_scope(coordinator) as active_coordinator:
+            return _run_snapshot_refresh(args, active_coordinator)
     if args.command == "snapshots" and args.snapshot_command == "scheduled-refresh":
-        current = _market_now(now)
-        calendar_date = current.date()
-        selected = tuple(args.datasets or SUPPORTED_COLLECTION_DATASETS)
-
-        # Weekend invocations are harmless no-ops; weekday holidays remain auditable provider failures.
-        if current.weekday() >= 5:
-            _print_payload(
-                {
-                    "trigger": "scheduled",
-                    "asOf": calendar_date.isoformat(),
-                    "status": "skipped",
-                    "reason": "weekend",
-                    "datasets": [],
-                }
-            )
-            return 0
-
-        as_of = effective_market_date(current)
-
-        try:
-            if current.time().replace(tzinfo=None) < settlement_time():
-                raise ValueError("scheduled refresh is only allowed after the configured settlement time")
-            active_coordinator = coordinator or CollectionCoordinator(now=lambda: current)
-            result = active_coordinator.collect(as_of, selected)
-        except ValueError as exc:
-            _print_payload(
-                {
-                    "trigger": "scheduled",
-                    "asOf": as_of.isoformat(),
-                    "status": "rejected",
-                    "error": str(exc),
-                    "datasets": [],
-                }
-            )
-            return 2
-
-        _print_payload(_collection_payload(result, trigger="scheduled"))
-        return 0 if result.run.status == "success" else 2
+        return _run_scheduled_refresh(args, coordinator, now)
     if args.command == "snapshots" and args.snapshot_command in {"relabel-date", "relabel", "migrate-date", "date-relabel", "migrate"}:
         # Date relabels must always select their backend explicitly.  In
         # particular, never fall back to MARKET_ENVIRONMENT_SNAPSHOT_PATH:
@@ -663,7 +697,7 @@ def main(
             _print_payload({"status": "rejected", "error": "exactly one of --path or --database-url is required"})
             return 2
         try:
-            store = SnapshotStore(args.path) if args.path else SnapshotStore(database_url=args.database_url)
+            store = LegacySqliteSnapshotStore(args.path) if args.path else SnapshotStore(database_url=args.database_url)
             result = relabel_date(
                 store,
                 args.source_as_of,
@@ -682,7 +716,7 @@ def main(
             _print_payload({"status": "rejected", "error": "exactly one of --path or --database-url is required"})
             return 2
         try:
-            store = SnapshotStore(args.path) if args.path else SnapshotStore(database_url=args.database_url)
+            store = LegacySqliteSnapshotStore(args.path) if args.path else SnapshotStore(database_url=args.database_url)
             result = rollback_date_relabel(store, args.audit_id, apply=bool(args.apply and not args.dry_run))
         except Exception as exc:
             _print_payload({"status": "rejected", "error": str(exc)})

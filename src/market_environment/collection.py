@@ -70,6 +70,7 @@ class CollectionCoordinator:
         limits_v1_enabled: bool | None = None,
         fuyao_config: FuyaoCollectionConfig | None = None,
         fuyao_adapter: FuyaoMarketAdapter | None = None,
+        analysis_service: MarketEnvironmentService | None = None,
     ) -> None:
         self.provider = provider or MarketDataProvider()
         self.store = store or SnapshotStore()
@@ -79,7 +80,7 @@ class CollectionCoordinator:
         self._limits_v1_override = limits_v1_enabled
         self.fuyao_config = fuyao_config or FuyaoCollectionConfig.from_environment()
         self.fuyao_adapter = fuyao_adapter or FuyaoMarketAdapter()
-        self._analysis_service = MarketEnvironmentService(
+        self._analysis_service = analysis_service or MarketEnvironmentService(
             provider=self.provider,
             persistent_cache=False,
             now=self._now,

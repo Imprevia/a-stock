@@ -79,11 +79,36 @@ Codex 通过 MCP stdio 调用五个只读工具：`search_trading_knowledge`、`
 
 指数代码始终使用 `sh000001`、`sz399001` 等显式前缀。对百度/mootdx 存在沪市代码歧义的指数，必须有腾讯价格交叉校验，否则拒绝该源，避免股票数据静默冒充指数。
 
+## 市场环境后端分层边界（2026-10-07）
+
+`src/market_environment/` 保持单体进程和单镜像部署，但内部依赖改为可执行的单向分层，不再由扁平模块互相构造具体实现：
+
+```text
+interfaces/http ----> application ----> domain
+       |                   ^               ^
+       |                   |               |
+       +---- bootstrap ----+               |
+                    |                      |
+                    +---- infrastructure --+
+```
+
+- `bootstrap/` 是唯一 composition root：读取不可变配置、装配 PostgreSQL repository、provider collector、查询/命令 use case 和有界 executor，并由 FastAPI lifespan 负责资源关闭。稳定入口 `src.market_environment.api:app` 只创建应用对象，不在模块导入时连接数据库、建表、请求 provider 或提交后台任务。
+- `interfaces/http/` 只处理 FastAPI router、身份/时区上下文、输入输出 DTO 和错误映射；router 通过 typed dependency 获取 use case，不直接构造 store、provider、coordinator 或 executor。CLI 使用独立 composition builder，复用 application/infrastructure，但不创建 FastAPI。
+- `application/` 按 query、command、collection 和 port 分组。query 仅依赖只读 repository 与纯分析服务，不能获得 collector/provider；command 才可持有 collector registry、写 repository 和 task executor。因此普通 GET、collection status 与 next-session 的 provider-free 边界由构造关系保证。
+- `domain/` 保存精确日期、质量/缓存、collection outcome、run/task 状态等领域值，以及指数、广度、同步性和涨跌停生态纯计算；不得导入 FastAPI、SQLAlchemy、requests 或 infrastructure。
+- `infrastructure/` 实现 PostgreSQL persistence、SQLite 停写迁移/测试适配器、外部 provider、collector 和进程内 executor。共享 HTTP transport、Fuyao request gate、TDX 包客户端等保持基础设施复用，不向 application 暴露具体 vendor client。
+
+采集侧固定由 stable dataset id 映射到五个 collector：`core`、`breadth`、`limits`、`sectors`、`activeDirection`。每个 collector 独占本数据集的 provider 优先级、日期能力、验证、质量与 warning 组装；collection coordinator 只负责请求验证、run/task 生命周期、lease/fencing、collector 调用、成功提交/失败留存、聚合重建触发和父状态归并。移动代码时不得同时改变算法或降级顺序。
+
+持久化按 snapshot、collection run/task、lease、trading session、materialized aggregate、provider capability、limits fact/detail 和 timezone preference 拆分 repository；需要原子性的操作继续共享 PostgreSQL unit of work，不能因为接口拆分而拆散 fenced write、limits manifest/fact 或 aggregate CAS 事务。PostgreSQL 是 Dashboard/CronJob 唯一正式运行时；运行时只校验连接和 Alembic schema 兼容性，不调用 `create_schema`。SQLite 仅允许作为测试适配器或停写的一次性导入源，配置 PostgreSQL 的运行时不得静默回退。
+
+迁移期间允许旧 `api.py`、CLI 路径和少量 facade 保持导入兼容，但 facade 只能委托、不能新增业务逻辑；除稳定入口外必须在重构完成前移除。仓库使用 AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施及 bootstrap 之外的具体实现装配。
+
 ## 运行时流
 
-普通读取流为：浏览器 → Vite `/api` 代理 → FastAPI `src/market_environment/api.py` → `MarketEnvironmentService` → PostgreSQL materialized aggregate / snapshot store。`/api/market-environment`、`/core` 和 `/chapter-01` 优先读取精确日期本地结果，缺失、陈旧或活动采集不得在普通 GET 中启动外部 provider。
+普通读取流为：浏览器 → Vite `/api` 代理 → FastAPI `src/market_environment/api.py` 稳定入口 → HTTP router → provider-free query use case → PostgreSQL materialized aggregate / read repository。`/api/market-environment`、`/core`、`/chapter-01`、`/next-session` 和 collection status 只读取精确日期本地结果；缺失、陈旧或活动采集不得在普通 GET 中启动外部 provider。
 
-手工采集流为：`/data-collection` → collection run API → 有界进程内 executor → collection coordinator → 五个独立 dataset task → provider 适配层 → 成功快照 → 聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，单项失败不停止后续任务，也不覆盖同日期成功快照。不同 task 可以由 executor 调度，但共享东方财富请求门保证供应商调用不并发；CLI 与 HTTP 复用同一 coordinator，不通过 shell 启动子进程。TDX 备用只在采集 task 内按上述 feature flag 和精确日期触发，普通 GET、状态查询和 provider-free 读取绝不触发外部盘后包。
+手工采集流为：`/data-collection` → collection command use case → `TaskExecutor` 端口的有界进程内实现 → collection coordinator → 五个独立 dataset task → dataset collector → vendor adapter → 成功快照 → 聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，单项失败不停止后续任务，也不覆盖同日期成功快照。不同 task 可以由 executor 调度，但共享东方财富请求门保证供应商调用不并发；CLI 与 HTTP 复用同一 application command，不通过 shell 启动子进程。TDX 备用只在 collector 内按上述 feature flag 和精确日期触发，普通 GET、状态查询和 provider-free 读取绝不触发外部盘后包。
 
 盘后定时采集流为：k3s/Helm CronJob → `python -m src.market_environment.cli snapshots scheduled-refresh` → collection coordinator → 同一组五类独立 task → PostgreSQL Service。CLI 在 Python 内按 `Asia/Shanghai` 解析日期，周末无 provider 调用并返回 skipped，结算边界前拒绝执行；CronJob 使用显式 timezone strategy：Kubernetes 1.27+ 的 native strategy 才输出 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 controller strategy 省略该字段且只允许经验证的 `Etc/UTC` 或 `Asia/Shanghai` 映射。CronJob 默认业务目标为工作日 16:30、`concurrencyPolicy: Forbid` 且不对 `partial` 自动整批重试；controller strategy 在获授权 no-provider canary 证明之前必须保持 suspend。CronJob 与人工触发并发时由 PostgreSQL dataset/date lease 作为最终去重边界。第一版不维护交易所节假日日历，工作日节假日可能留下 failed/partial 记录，但精确日期校验禁止把其他交易日数据写成当天。
 
@@ -161,7 +186,7 @@ limits provider 将 membership、streak 和 enrichment 分层校验：交易日�
 
 旧版 SQLite/PVC 文字仅代表迁移前历史，不再描述当前运行时。Dashboard Deployment 与 CronJob 通过同一 PostgreSQL ClusterIP Service 和 Secret 连接配置访问共享状态；只有 PostgreSQL StatefulSet 挂载 Retain RWO PVC。应用工作负载不挂载 SQLite 或 PostgreSQL PVC，`MARKET_ENVIRONMENT_SNAPSHOT_PATH` 仅允许一次性导入工具使用。迁移 Job 按 `postgresql -> schema migration -> service -> schedule` 顺序执行；首次 PostgreSQL 写入后不回切过期 SQLite。
 
-前端仅消费固定 JSON 契约，不直接访问行情源。计算逻辑集中在 `calculations.py`，数据源差异封装在 `providers.py`，持久化快照、collection 状态与 lease 由 snapshot store 模块负责，采集编排和聚合重建由 collection coordinator 负责，CLI、CronJob 与 HTTP 共用该边界，HTTP 错误映射在 `api.py`。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认开启，可设置为 `0` 显式关闭。TrueNAS NodePort 是已接受的匿名写入口而非授权机制；CORS、前端按钮、lease 与 provider 串行化均不能阻止可路由客户端依次发起有效请求。出现异常调用、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长时，先关闭手工写入并按现场捕获的 release/network baseline 处置；首次 PostgreSQL 写入后不得回切过期 SQLite。内部 CronJob 直接执行 CLI，不依赖该 HTTP 写开关；其调度回滚优先使用 reviewed suspend/off overlay，且不得修改 Deployment、PVC 或手工写入设置。
+前端仅消费固定 JSON 契约，不直接访问行情源。纯计算归属 `domain/analysis` 与 `domain/policies`，application query/command 只通过 ports 读取或写入；数据源差异和五类 collector 位于 `infrastructure/providers`，PostgreSQL repositories/unit of work 位于 `infrastructure/persistence/postgres`，HTTP 错误映射位于 `interfaces/http`，具体装配只在 `bootstrap`。CLI、CronJob 与 HTTP 共用 application command/query 边界。手工采集通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 默认开启，可设置为 `0` 显式关闭。TrueNAS NodePort 是已接受的匿名写入口而非授权机制；CORS、前端按钮、lease 与 provider 串行化均不能阻止可路由客户端依次发起有效请求。出现异常调用、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长时，先关闭手工写入并按现场捕获的 release/network baseline 处置；首次 PostgreSQL 写入后不得回切过期 SQLite。内部 CronJob 直接执行 CLI，不依赖该 HTTP 写开关；其调度回滚优先使用 reviewed suspend/off overlay，且不得修改 Deployment、PVC 或手工写入设置。
 
 ## 已知约束（已定，不可绕过）
 
@@ -178,7 +203,11 @@ limits provider 将 membership、streak 和 enrichment 分层校验：交易日�
 
 ```text
 apps/market-environment-dashboard/  Vue 3 + Vite + TypeScript + ECharts
-src/market_environment/             FastAPI、provider、计算、PostgreSQL 快照、迁移 CLI 与响应模型
+src/market_environment/bootstrap/   FastAPI/CLI composition root、配置与资源生命周期
+src/market_environment/interfaces/  HTTP router、DTO、错误映射与 CLI 入口适配
+src/market_environment/application/ query/command、collection 编排与抽象 ports
+src/market_environment/domain/      领域值、精确日期/质量策略与纯市场分析
+src/market_environment/infrastructure/ PostgreSQL、迁移 SQLite、provider collector 与 executor
 deploy/k3s/                          k3s Kustomize、Traefik Ingress、持久卷与工作负载配置
 deploy/helm/a-stock/                 等价的可参数化 Helm Chart
 trading-rules/                       机器规则、schema 与覆盖清单

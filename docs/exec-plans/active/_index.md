@@ -45,6 +45,7 @@
 | `enrich-fuyao-sector-fields-from-eastmoney-dataapi` | Codex | in-progress | 2026-09-30 |
 | `activate-scheduled-collection-20260929` | 操作发起人 | activated-observation-pending（revision 70） | 2026-09-29 |
 | `activate-scheduled-collection-20260930` | 操作发起人 | activated-observation-complete-with-partial-quality | 2026-09-30 |
+| `refactor-market-environment-backend-architecture` | Codex | in-progress | 2026-10-07 |
 
 ## 说明
 

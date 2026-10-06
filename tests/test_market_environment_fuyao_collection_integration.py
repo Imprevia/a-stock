@@ -451,7 +451,11 @@ def test_sectors_fallback_failure_retains_only_same_date_snapshot(tmp_path):
     assert "扶摇行业 fallback 不可用" in (result.tasks[0].warning or "")
 
 
-def test_offline_capability_probe_uses_fixture_only(tmp_path, capsys):
+def test_offline_capability_probe_uses_fixture_only(monkeypatch, tmp_path, capsys):
+    def fail_builder(*args, **kwargs):
+        raise AssertionError("offline capability fixture must not construct runtime dependencies")
+
+    monkeypatch.setattr(market_cli, "build_cli_container", fail_builder)
     fixture = "tests/fixtures/market-environment/fuyao-market-data.json"
     output = tmp_path / "capability.json"
     assert cli_main(["fuyao", "capability-probe", "--fixture", fixture, "--as-of", AS_OF.isoformat(), "--output", str(output)]) == 0

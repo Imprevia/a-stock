@@ -1,4 +1,6 @@
+import ast
 from datetime import date, datetime, timedelta, timezone
+import inspect
 import sqlite3
 
 import pytest
@@ -13,10 +15,49 @@ from src.market_environment.snapshot_store import (
     cache_state,
     payload_checksum,
 )
+from src.market_environment.infrastructure.persistence.sqlite_import import (
+    LegacySqliteSnapshotStore,
+)
 
 
 AS_OF = date(2026, 9, 2)
 NOW = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+
+
+def test_snapshot_store_public_facade_is_delegation_only() -> None:
+    class FakeBackend:
+        def get(self, dataset, as_of):
+            return dataset, as_of
+
+    facade = SnapshotStore.from_backend(FakeBackend())
+    assert facade.get("core", AS_OF) == ("core", AS_OF)
+
+    class_node = next(
+        node
+        for node in ast.parse(inspect.getsource(SnapshotStore)).body
+        if isinstance(node, ast.ClassDef)
+    )
+    literals = {
+        node.value.lower()
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert not any(
+        keyword in value
+        for value in literals
+        for keyword in ("select ", "insert ", "update ", "delete ")
+    )
+
+
+def test_sqlite_requires_explicit_legacy_adapter(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MARKET_ENVIRONMENT_DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match="requires PostgreSQL configuration"):
+        SnapshotStore()
+
+    path = tmp_path / "legacy.sqlite3"
+    store = LegacySqliteSnapshotStore(path)
+    store.put(record())
+    assert LegacySqliteSnapshotStore(path).get("breadth", AS_OF) is not None
 
 
 def record(*, dataset: str = "breadth", as_of: date = AS_OF, settled: bool = False) -> SnapshotRecord:

@@ -10,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
-from src.market_environment import api
 from src.market_environment.schemas import (
     EvidenceQuality,
     LimitEvidence,
@@ -18,6 +17,7 @@ from src.market_environment.schemas import (
     PROMOTION_SAMPLE_RULE,
 )
 from src.market_environment.service import MarketEnvironmentService
+from tests.market_environment_api_support import build_test_app
 
 
 FIXTURE_PATH = (
@@ -296,9 +296,12 @@ def test_fixed_cases_pass_production_fastapi_response_model(
     case_name: str,
 ) -> None:
     source = CASES[case_name]
-    monkeypatch.setattr(api, "service", ContractService(source))
-
-    response = TestClient(api.app).get(
+    response = TestClient(
+        build_test_app(
+            market_queries=ContractService(source),
+            effective_date=date(2026, 9, 4),
+        )
+    ).get(
         "/api/market-environment/chapter-01?as_of=2026-09-04&section=limits"
     )
 

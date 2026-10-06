@@ -269,7 +269,13 @@ class MaterializedAggregateRecord:
         )
 
 
-class SnapshotStore:
+class LegacySnapshotStoreAdapter:
+    """Transitional mixed persistence implementation behind ``SnapshotStore``.
+
+    New application code must depend on narrow repository ports.  This adapter
+    remains temporarily available for SQLite fixtures, migration commands and
+    callers not yet moved to the split repositories.
+    """
     def __init__(self, path: Path | str | None = None, *, database_url: str | None = None) -> None:
         # Explicit paths remain available to the isolated SQLite migration
         # tool and legacy unit fixtures.  Normal application construction uses
@@ -2624,9 +2630,9 @@ class SnapshotStore:
             observations=int(row["observations"]),
             warning=row["warning"],
             timings=_json_value(row["timings_json"], {}),
-            queued_at=SnapshotStore._parse_datetime(row["queued_at"]),
-            started_at=SnapshotStore._parse_datetime(row["started_at"]),
-            completed_at=SnapshotStore._parse_datetime(row["completed_at"]),
+            queued_at=LegacySnapshotStoreAdapter._parse_datetime(row["queued_at"]),
+            started_at=LegacySnapshotStoreAdapter._parse_datetime(row["started_at"]),
+            completed_at=LegacySnapshotStoreAdapter._parse_datetime(row["completed_at"]),
             duration_ms=float(row["duration_ms"]) if row["duration_ms"] is not None else None,
             settled=bool(row["settled"]),
         )
@@ -2879,6 +2885,46 @@ class SnapshotStore:
     # migration rather than a relabel.
     migrate_snapshot_date = relabel_date
     migrate_date = relabel_date
+
+
+class SnapshotStore:
+    """Delegation-only compatibility facade for legacy public callers.
+
+    Runtime composition may supply a repository-backed implementation through
+    ``backend``.  The implicit adapter remains only while the following
+    persistence migration tasks move SQLite and remaining compatibility paths
+    behind explicit construction.
+    """
+
+    def __init__(
+        self,
+        path: Path | str | None = None,
+        *,
+        database_url: str | None = None,
+        backend: Any | None = None,
+    ) -> None:
+        if (
+            backend is None
+            and path is None
+            and database_url is None
+            and not os.getenv("MARKET_ENVIRONMENT_DATABASE_URL")
+        ):
+            raise ValueError(
+                "SnapshotStore runtime requires PostgreSQL configuration; "
+                "use LegacySqliteSnapshotStore(path) for explicit test or migration input"
+            )
+        self._backend = (
+            backend
+            if backend is not None
+            else LegacySnapshotStoreAdapter(path, database_url=database_url)
+        )
+
+    @classmethod
+    def from_backend(cls, backend: Any) -> "SnapshotStore":
+        return cls(backend=backend)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
 
 
 def cache_state(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sqlalchemy import Engine, create_engine, event, text
@@ -29,8 +30,14 @@ class DatabaseSettings:
             raise DatabaseConfigurationError("database URL must use PostgreSQL/psycopg")
 
     @classmethod
-    def from_environment(cls, *, required: bool = True) -> "DatabaseSettings | None":
-        value = os.getenv("MARKET_ENVIRONMENT_DATABASE_URL", "").strip()
+    def from_environment(
+        cls,
+        *,
+        required: bool = True,
+        environ: Mapping[str, str] | None = None,
+    ) -> "DatabaseSettings | None":
+        env = os.environ if environ is None else environ
+        value = env.get("MARKET_ENVIRONMENT_DATABASE_URL", "").strip()
         if not value:
             if required:
                 raise DatabaseConfigurationError(
@@ -41,17 +48,33 @@ class DatabaseSettings:
             raise DatabaseConfigurationError("database URL must use PostgreSQL/psycopg")
         return cls(
             url=value,
-            pool_size=_int_env("MARKET_ENVIRONMENT_DB_POOL_SIZE", 5, minimum=1),
-            max_overflow=_int_env("MARKET_ENVIRONMENT_DB_MAX_OVERFLOW", 5, minimum=0),
-            pool_timeout=_int_env("MARKET_ENVIRONMENT_DB_POOL_TIMEOUT", 10, minimum=1),
+            pool_size=_int_env(
+                "MARKET_ENVIRONMENT_DB_POOL_SIZE", 5, minimum=1, environ=env
+            ),
+            max_overflow=_int_env(
+                "MARKET_ENVIRONMENT_DB_MAX_OVERFLOW", 5, minimum=0, environ=env
+            ),
+            pool_timeout=_int_env(
+                "MARKET_ENVIRONMENT_DB_POOL_TIMEOUT", 10, minimum=1, environ=env
+            ),
             statement_timeout_ms=_int_env(
-                "MARKET_ENVIRONMENT_DB_STATEMENT_TIMEOUT_MS", 30000, minimum=100
+                "MARKET_ENVIRONMENT_DB_STATEMENT_TIMEOUT_MS",
+                30000,
+                minimum=100,
+                environ=env,
             ),
         )
 
 
-def _int_env(name: str, default: int, *, minimum: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
+def _int_env(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    env = os.environ if environ is None else environ
+    raw = env.get(name, str(default)).strip()
     try:
         value = int(raw)
     except ValueError as exc:

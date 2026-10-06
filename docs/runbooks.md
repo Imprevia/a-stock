@@ -186,7 +186,7 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先创建绑定到受控节点目录的静态 PV/PVC，再通过 `persistence.existingClaim` 引用；目录需允许容器的 UID/GID 10001 写入。
+Chart 可安装在 Kubernetes 1.26+。盘后 CronJob 的 native `spec.timeZone` 要求 Kubernetes 1.27+；1.26 只能在单 controller 的时区证据、固定上海 16:30 映射和后续授权 canary 均已验证时，使用 Helm `controller` strategy 省略该字段。没有 Ingress Controller 时可设置 `ingress.enabled=false`、`service.type=NodePort` 和 `service.nodePort=<未占用端口>`。没有动态 StorageClass 时，应由运维人员先为 PostgreSQL StatefulSet 创建可由 `database.persistence.storageClass` 选择和绑定的静态 PV/PVC；只有 PostgreSQL 容器需要数据库卷写权限，Dashboard/CronJob 不得通过旧 `persistence.existingClaim` 或其他应用卷重新挂载 SQLite/数据库目录。
 
 TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manual-collection.yaml`：固定 `NodePort:32001`、关闭 Ingress/CronJob，并仅保留一个 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`。该 values 必须引用部署前创建的 `database.existingSecret`（至少 `DATABASE_URL`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`）；Dashboard 只通过 PostgreSQL ClusterIP Service 访问数据库，不挂载 SQLite 或 PostgreSQL PVC。匿名 NodePort 写入口是负责人显式接受的例外；任何能路由到节点端口的客户端都能触发 provider 调用和 PostgreSQL 写入。NodePort 不提供身份认证、客户端授权或子网隔离，禁止公网端口映射，发布前必须核对数据库 Secret、PostgreSQL claim、镜像 tag、集群版本和实际网络边界。
 
