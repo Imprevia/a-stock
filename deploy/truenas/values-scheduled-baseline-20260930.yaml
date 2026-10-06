@@ -1,0 +1,54 @@
+# Reviewed full-release baseline for the 2026-09-30 scheduling rollout.
+# The image matches Helm revision 80 and is overridden by the same frozen
+# repository/tag at the controlled scheduling entry point.
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20260930-115139-40c3498
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  persistentCache: true
+  settlementTime: "15:10"
+  tdx:
+    derivedActiveDirectionEnabled: true
+  limits:
+    v1Enabled: true
+    fuyao:
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  scheduledCollection:
+    enabled: true
+    suspend: true
+    timezoneStrategy: controller
+    timeZone: Asia/Shanghai
+    schedule: "30 16 * * 1-5"
+    controllerTimeZone: Asia/Shanghai
+    controllerTimeZoneVerified: true
+    controllerCanaryVerified: true
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
+    value: "1"

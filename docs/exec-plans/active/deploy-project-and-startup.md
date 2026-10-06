@@ -24,11 +24,14 @@ completed
 - 节点恢复 `Ready` 后重新执行 `--component service` 成功：Helm revision 13、Deployment `1/1`、Pod `Running`。
 - `http://192.168.1.20:32001/api/health` 返回 HTTP 200 `{"status":"ok"}`，首页返回 HTTP 200。
 - `systemctl is-enabled k3s=enabled` 且 `systemctl is-active k3s=active`。
+- 2026-09-30 按受控入口完成最新 `main`（`40c3498`）发布：先以 `--disable-schedule` 完成 Helm revision 77 的暂停 CronJob exact-resource 清理，再执行 `--component all`，依次完成 database revision 78、service revision 79 和完整清单收敛 revision 80。
+- 本次镜像为 `localhost/a-stock-market-environment:20260930-115139-40c3498`，目标 containerd manifest digest 为 `sha256:53c1219db808acd6860286725fa77ebda7da40f8dbcbf8e66e001056cfe05883`；Deployment `1/1`、应用与 PostgreSQL Pod 均 `Running`/0 重启，两个 PVC 均 `Bound`，`a-stock-data-collection` 已确认不存在。
+- `http://192.168.1.20:32001/api/health` 返回 HTTP 200 `{"status":"ok"}`；调度保持 disabled，未创建 Job、未触发 provider 采集。
 
 ## Remaining Gaps
 
-- 无部署阻断项。后续如节点再次出现 `NetworkPluginNotReady`，应先按 runbook 恢复 TrueNAS CNI，再执行 service 发布。
+- 无部署阻断项。当前调度保持 disabled；后续如需恢复采集，必须单独完成 suspended release/canary 审核并使用受控调度入口。节点如再次出现 `NetworkPluginNotReady`，应先按 runbook 恢复 TrueNAS CNI，再执行发布。
 
 ## Next Step
 
-保持 k3s systemd 自启和当前安全基线；后续版本继续使用受控 service 发布入口。
+保持 k3s systemd 自启和当前安全基线；后续版本继续使用受控 `--component all`/`--component service` 发布入口，调度变更单独审阅。

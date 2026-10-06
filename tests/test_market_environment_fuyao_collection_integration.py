@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import copy
 import json
 
 import pytest
@@ -48,6 +49,63 @@ class FailingSectorProvider(ChapterProvider):
     def fetch_chapter01_sectors(self, as_of, *, allow_current_snapshot):
         self.sector_calls += 1
         raise RuntimeError("Eastmoney primary disconnected; delayed unavailable")
+
+
+class EnrichingSectorProvider(FailingSectorProvider):
+    def __init__(self, *, fail_enrichment: bool = False):
+        super().__init__()
+        self.fail_enrichment = fail_enrichment
+        self.enrichment_calls = []
+
+    def enrich_fuyao_sectors(self, payload, as_of, *, eligible):
+        self.enrichment_calls.append((as_of, eligible))
+        if self.fail_enrichment:
+            raise RuntimeError("fixture dataapi unavailable")
+        result = copy.deepcopy(payload)
+        result["rows"][0].update(
+            {
+                "mainNet": 88.0,
+                "mainNetPct": 1.25,
+                "upCount": 8,
+                "downCount": 2,
+                "leader": "样本股",
+            }
+        )
+        result["quality"]["sectorEnrichment"] = {
+            "status": "complete",
+            "source": "eastmoney-dataapi",
+            "provider": "eastmoney",
+            "sameVendor": True,
+            "endpoint": "https://data.eastmoney.com/dataapi/bkzj/getbkzj",
+            "requestedFields": ["f3", "f6", "f62", "f104", "f105", "f128", "f184"],
+            "mappingRevision": "fixture-map-v1",
+            "matchMethod": "normalized-name",
+            "sourceRows": 1,
+            "baseRows": 1,
+            "matchedRows": 1,
+            "unmatchedRows": 0,
+            "identityCoverage": 1.0,
+            "fieldCoverage": {
+                "mainNet": 1.0,
+                "mainNetPct": 1.0,
+                "upCount": 1.0,
+                "downCount": 1.0,
+                "leader": 1.0,
+            },
+            "dateEvidence": {
+                "requested": as_of.isoformat(),
+                "current": as_of.isoformat(),
+                "eligible": True,
+                "settled": True,
+                "reason": "current Shanghai market date after settlement",
+            },
+            "warnings": ["东方财富同供应商字段补充，不构成独立 provider 交叉确认"],
+        }
+        result["quality"]["warnings"] = [
+            *result["quality"].get("warnings", []),
+            *result["quality"]["sectorEnrichment"]["warnings"],
+        ]
+        return result
 
 
 class FuyaoSectorAdapter:
@@ -209,6 +267,101 @@ def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
     assert "东方财富行业排名不可用" in (result.tasks[0].warning or "")
     assert "capability revision: r1" in (result.tasks[0].warning or "")
     assert result.tasks[0].timings["sourceRevision"] == "r1"
+
+
+def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put_capability_report(eligible_report("sectors"))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+        }
+    )
+    provider = EnrichingSectorProvider()
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: NOW,
+        fuyao_config=config,
+        fuyao_adapter=FuyaoSectorAdapter(),
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors"])
+    snapshot = store.get("sectors", AS_OF)
+
+    assert result.tasks[0].status == "partial"
+    assert provider.enrichment_calls == [(AS_OF, True)]
+    assert snapshot is not None
+    assert snapshot.source == "fuyao"
+    assert snapshot.payload["rows"][0]["mainNet"] == 88.0
+    assert snapshot.payload["rows"][0]["leader"] == "样本股"
+    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert enrichment["sameVendor"] is True
+    assert enrichment["matchedRows"] == 1
+    assert enrichment["identityCoverage"] == 1.0
+    assert result.tasks[0].timings["sectorEnrichment"] == enrichment
+
+
+def test_sector_enrichment_failure_commits_fuyao_base_and_does_not_fail_siblings(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put_capability_report(eligible_report("sectors"))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+        }
+    )
+    provider = EnrichingSectorProvider(fail_enrichment=True)
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: NOW,
+        fuyao_config=config,
+        fuyao_adapter=FuyaoSectorAdapter(),
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors", "breadth"])
+    tasks = {task.dataset: task for task in result.tasks}
+    snapshot = store.get("sectors", AS_OF)
+
+    assert result.run.status == "partial"
+    assert tasks["sectors"].status == "partial"
+    assert tasks["breadth"].status == "success"
+    assert snapshot is not None
+    assert snapshot.payload["rows"][0]["mainNet"] is None
+    assert snapshot.payload["quality"]["sectorEnrichment"]["status"] == "failed"
+    assert "fixture dataapi unavailable" in (tasks["sectors"].warning or "")
+
+
+def test_sector_enrichment_is_skipped_before_settlement_without_provider_call(tmp_path):
+    before_settlement = datetime(2026, 9, 18, 14, 30, tzinfo=MARKET_TIME_ZONE)
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put_capability_report(eligible_report("sectors"))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+        }
+    )
+    provider = EnrichingSectorProvider()
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: before_settlement,
+        fuyao_config=config,
+        fuyao_adapter=FuyaoSectorAdapter(),
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors"])
+    snapshot = store.get("sectors", AS_OF)
+
+    assert result.tasks[0].status == "partial"
+    assert provider.enrichment_calls == []
+    assert snapshot is not None
+    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert enrichment["status"] == "skipped"
+    assert enrichment["dateEvidence"]["eligible"] is False
 
 
 def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):

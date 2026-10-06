@@ -584,6 +584,64 @@ def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path
             settled=True,
         )
     )
+    store.put(
+        SnapshotRecord(
+            dataset="sectors",
+            as_of=selected,
+            payload={
+                "rows": [
+                    {
+                        "rank": 1,
+                        "code": "881101.TI",
+                        "name": "电子",
+                        "changePct": 2.5,
+                        "amount": 1000.0,
+                        "mainNet": 88.0,
+                        "mainNetPct": 1.25,
+                        "upCount": 8,
+                        "downCount": 2,
+                        "leader": "样本股",
+                    }
+                ],
+                "state": "当日排名已观测",
+                "quality": {
+                    **evidence_quality("industry-ranking", selected),
+                    "status": "fallback",
+                    "source": "fuyao",
+                    "provider": "fuyao",
+                    "sectorEnrichment": {
+                        "status": "partial",
+                        "source": "eastmoney-dataapi",
+                        "provider": "eastmoney",
+                        "sameVendor": True,
+                        "requestedFields": ["f3", "f6", "f62", "f104", "f105", "f128", "f184"],
+                        "mappingRevision": "fixture-map-v1",
+                        "matchMethod": "normalized-name",
+                        "sourceRows": 1,
+                        "baseRows": 1,
+                        "matchedRows": 1,
+                        "unmatchedRows": 0,
+                        "identityCoverage": 1.0,
+                        "fieldCoverage": {"mainNet": 1.0, "leader": 1.0},
+                        "dateEvidence": {
+                            "requested": selected.isoformat(),
+                            "current": selected.isoformat(),
+                            "eligible": True,
+                            "settled": True,
+                            "reason": "fixture",
+                        },
+                        "warnings": ["fixture supplemental lineage"],
+                    },
+                },
+            },
+            source="fuyao",
+            status="fallback",
+            observations=1,
+            warnings=("fixture supplemental lineage",),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
     revision = store.materialization_revision(selected)
     composed = service._compose_materialized_aggregate(selected, revision)
     assert composed is not None
@@ -602,6 +660,8 @@ def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path
     assert provider.fetch_calls == 0
     assert provider.chapter_calls == []
     assert payload["chapter01"]["breadth"]["advanceCount"] == 2
+    assert payload["chapter01"]["sectors"]["quality"]["sectorEnrichment"]["matchedRows"] == 1
+    assert payload["chapter01"]["sectors"]["rows"][0]["leader"] == "样本股"
     MarketEnvironmentResponse.model_validate(payload)
 
 

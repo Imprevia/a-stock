@@ -11,12 +11,29 @@ import { computed } from 'vue'
 
 import { useDocumentContext } from '../../composables/useDocumentContext'
 import { useMarketStore } from '../../stores/market'
+import {
+  sectorEnrichmentCoverage,
+  sectorEnrichmentDateLabel,
+  sectorEnrichmentFromQuality,
+  sectorEnrichmentSourceLabel,
+  sectorEnrichmentStatusLabel,
+  sectorEnrichmentWarnings,
+} from '../../sector-enrichment'
 
 const market = useMarketStore()
 const ctx = useDocumentContext()
 
 const sectors = computed(() => market.chapter?.sectors)
 const rows = computed(() => sectors.value?.rows ?? [])
+const enrichment = computed(() => sectorEnrichmentFromQuality(sectors.value?.quality))
+const enrichmentCoverage = computed(() => sectorEnrichmentCoverage(enrichment.value))
+const enrichmentDate = computed(() => sectorEnrichmentDateLabel(enrichment.value))
+const enrichmentWarnings = computed(() => sectorEnrichmentWarnings(enrichment.value))
+const qualityWarnings = computed(() => [...new Set([
+  sectors.value?.quality.warning,
+  ...(sectors.value?.quality.warnings ?? []),
+  ...enrichmentWarnings.value,
+].filter((warning): warning is string => Boolean(warning)))])
 
 function formatCount(value: number | null | undefined): string {
   return value == null ? '--' : value.toLocaleString('zh-CN')
@@ -46,6 +63,20 @@ function formatPct(value: number | null | undefined): string {
       <div><span class="panel-kicker">行业轮动</span><h2>{{ sectors?.state || '板块证据' }}</h2></div>
       <span class="quality-badge" :class="ctx.qualityTone(sectors?.quality)">{{ ctx.qualityLabel(sectors?.quality) }}</span>
     </div>
+    <div v-if="enrichment" class="sector-enrichment-band" aria-label="行业字段补充质量">
+      <div class="sector-enrichment-heading">
+        <strong>字段补充 · {{ sectorEnrichmentStatusLabel(enrichment.status) }}</strong>
+        <span>{{ sectorEnrichmentSourceLabel(enrichment) }}</span>
+      </div>
+      <div v-if="enrichmentCoverage.length || enrichment.mappingRevision || enrichmentDate" class="sector-enrichment-meta">
+        <span v-for="item in enrichmentCoverage" :key="item">{{ item }}</span>
+        <span v-if="enrichment.mappingRevision">映射版本 {{ enrichment.mappingRevision }}</span>
+        <span v-if="enrichmentDate">{{ enrichmentDate }}</span>
+      </div>
+      <ul v-if="enrichmentWarnings.length" class="sector-enrichment-warnings">
+        <li v-for="warning in enrichmentWarnings" :key="warning">{{ warning }}</li>
+      </ul>
+    </div>
     <div v-if="rows.length" class="table-scroll">
       <table class="sector-table">
         <thead><tr><th>板块</th><th>涨跌幅</th><th>上涨 / 下跌</th><th>主力净额</th><th>领涨股</th></tr></thead>
@@ -63,7 +94,7 @@ function formatPct(value: number | null | undefined): string {
     <div v-else class="empty-evidence">
       <BarChart3 :size="24" />
       <strong>板块数据不足</strong>
-      <p>{{ sectors?.quality.warning || '行业相对强度、成交持续性、板块宽度和集中度尚未返回。' }}</p>
+      <p>{{ qualityWarnings.join('；') || '行业相对强度、成交持续性、板块宽度和集中度尚未返回。' }}</p>
     </div>
   </section>
 </template>

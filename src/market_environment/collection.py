@@ -49,6 +49,7 @@ SUCCESSFUL_TASK_STATUSES = frozenset({"success", "partial"})
 TERMINAL_TASK_STATUSES = frozenset(
     {"success", "partial", "failed-retained", "failed-missing", "busy"}
 )
+SECTOR_ENRICHMENT_FIELDS = ("f3", "f6", "f62", "f104", "f105", "f128", "f184")
 
 
 @dataclass(frozen=True)
@@ -665,6 +666,21 @@ class CollectionCoordinator:
             ]
             self._merge_quality_warnings(quality, warnings)
 
+            # The dataapi request is an optional same-vendor enrichment.  It
+            # runs only after the accepted Fuyao base result and inside this
+            # task's existing dataset/date lease.  Historical and pre-settlement
+            # requests are recorded as skipped without invoking a provider.
+            enrichment_eligible = (
+                task.as_of == effective_market_date(self._market_now())
+                and self._is_settled(task.as_of)
+            )
+            payload, quality = self._enrich_sector_payload(
+                payload,
+                quality,
+                task.as_of,
+                eligible=enrichment_eligible,
+            )
+
         provider_ms = self._milliseconds(provider_started)
         source = str(quality.get("source") or quality.get("provider") or "none")
         observations = int(quality.get("observations") or 0)
@@ -694,6 +710,8 @@ class CollectionCoordinator:
             "sourceRevision": quality.get("providerRevision"),
             "capabilityRevision": self._fuyao_revision("sectors") if fallback else None,
         }
+        if fallback:
+            timings["sectorEnrichment"] = copy.deepcopy(quality.get("sectorEnrichment") or {})
         if fallback:
             timings["eastmoneyFailure"] = primary_error
         shadow_warning: str | None = None
@@ -732,6 +750,130 @@ class CollectionCoordinator:
             duration_ms=self._milliseconds(started),
             settled=settled,
         )
+
+    def _enrich_sector_payload(
+        self,
+        payload: dict[str, Any],
+        quality: dict[str, Any],
+        as_of: date,
+        *,
+        eligible: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Apply the optional provider enrichment without invalidating Fuyao.
+
+        The provider-facing method is intentionally duck-typed so existing
+        test providers and deployments remain compatible while the dataapi
+        adapter is rolled out.  A malformed result or raised exception keeps
+        the accepted four-field Fuyao payload and records a bounded summary.
+        """
+
+        current_as_of = effective_market_date(self._market_now())
+        base_rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+        base_quality = copy.deepcopy(quality)
+        base_status = str(base_quality.get("status") or "fallback")
+        enrich = getattr(self.provider, "enrich_fuyao_sectors", None)
+        if not eligible:
+            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
+                status="skipped",
+                as_of=as_of,
+                current_as_of=current_as_of,
+                eligible=False,
+                base_rows=len(base_rows),
+                warning="东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用",
+            )
+            payload["quality"] = base_quality
+            return payload, base_quality
+        if not callable(enrich):
+            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
+                status="disabled",
+                as_of=as_of,
+                current_as_of=current_as_of,
+                eligible=True,
+                base_rows=len(base_rows),
+                warning="当前 provider 未启用东方财富 dataapi 行业字段补充",
+            )
+            payload["quality"] = base_quality
+            return payload, base_quality
+        try:
+            candidate = enrich(
+                copy.deepcopy(payload),
+                as_of,
+                eligible=True,
+            )
+            if not isinstance(candidate, dict):
+                raise ValueError("sector enrichment returned a non-object payload")
+            candidate_quality = self._validate_payload("sectors", as_of, candidate)
+            if str(candidate_quality.get("status")) not in SUCCESS_STATUSES:
+                raise ValueError(
+                    str(candidate_quality.get("warning") or "sector enrichment returned an unusable quality status")
+                )
+            # Fuyao remains the accepted base source and quality status.  The
+            # candidate may only add row fields and additive metadata.
+            candidate_quality["status"] = base_status
+            candidate_quality["source"] = base_quality.get("source", candidate_quality.get("source"))
+            candidate_quality["provider"] = base_quality.get("provider", candidate_quality.get("provider"))
+            candidate_quality["warnings"] = list(
+                dict.fromkeys(
+                    [
+                        *(base_quality.get("warnings") or []),
+                        *(candidate_quality.get("warnings") or []),
+                    ]
+                )
+            )
+            candidate_quality["warning"] = (
+                "; ".join(str(value) for value in candidate_quality["warnings"])
+                if candidate_quality["warnings"]
+                else None
+            )
+            return candidate, candidate_quality
+        except Exception as exc:
+            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
+                status="failed",
+                as_of=as_of,
+                current_as_of=current_as_of,
+                eligible=True,
+                base_rows=len(base_rows),
+                warning=f"东方财富 dataapi 行业字段补充失败：{exc}",
+            )
+            self._merge_quality_warnings(base_quality, [base_quality["sectorEnrichment"]["warnings"][0]])
+            payload["quality"] = base_quality
+            return payload, base_quality
+
+    @staticmethod
+    def _sector_enrichment_summary(
+        *,
+        status: str,
+        as_of: date,
+        current_as_of: date,
+        eligible: bool,
+        base_rows: int,
+        warning: str | None = None,
+    ) -> dict[str, Any]:
+        warnings = [warning] if warning else []
+        return {
+            "status": status,
+            "source": "eastmoney-dataapi",
+            "provider": "eastmoney",
+            "sameVendor": True,
+            "endpoint": "https://data.eastmoney.com/dataapi/bkzj/getbkzj",
+            "requestedFields": list(SECTOR_ENRICHMENT_FIELDS),
+            "mappingRevision": None,
+            "matchMethod": None,
+            "sourceRows": 0,
+            "baseRows": base_rows,
+            "matchedRows": 0,
+            "unmatchedRows": base_rows,
+            "identityCoverage": 0.0 if base_rows else None,
+            "fieldCoverage": {},
+            "dateEvidence": {
+                "requested": as_of.isoformat(),
+                "current": current_as_of.isoformat(),
+                "eligible": eligible,
+                "settled": eligible,
+                "reason": warning or "未请求东方财富 dataapi 行业字段补充",
+            },
+            "warnings": warnings,
+        }
 
     @staticmethod
     def _merge_quality_warnings(quality: dict[str, Any], warnings: Iterable[str]) -> None:

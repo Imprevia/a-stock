@@ -916,6 +916,12 @@ def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"] == ""
     assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED"] == "0"
     assert "MARKET_ENVIRONMENT_FUYAO_API_KEY" not in environment
+    # The optional same-vendor enrichment is fail-closed in application code
+    # when this env var is absent; the chart must not enable it implicitly.
+    assert "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED" not in environment
+    rendered = yaml.safe_dump_all(documents, sort_keys=True)
+    assert "TUSHARE_TOKEN" not in rendered
+    assert "getbkzj" not in rendered
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")

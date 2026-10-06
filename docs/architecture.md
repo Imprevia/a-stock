@@ -340,6 +340,22 @@ materialized aggregate 与快照读取均 provider-free，只读本地 `(dataset
 保留 endpoint、日期、目录/快照数量、字段覆盖、权限/限流结果等脱敏证据，API key 只由独立
 Secret 注入，绝不进入 values、日志、报告或 API 响应。
 
+扶摇行业结果通过上述门禁后，才允许在显式开关
+`MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=1` 下调用同供应商
+`https://data.eastmoney.com/dataapi/bkzj/getbkzj`。请求固定使用
+`key=f3,f6,f62,f104,f105,f128,f184` 和 `code=m:90+s:4`，经共享 `data.eastmoney.com`
+host policy、单飞、短缓存、有限重试和按上海市场日隔离的缓存键。该接口没有可靠业务日期且使用
+东方财富 `BK` 分类；只允许版本化映射或唯一严格规范化名称匹配，不能把 `BK` 代码当作 THS 代码，
+也不能按排名或模糊名称连接。`f3`/`f184` 的整数化百分比必须先通过基准涨跌幅证据归一化，
+口径不明、数值无效、重复名称或变动/成交额冲突时保持 `null`。
+
+补充只填扶摇结果中原本为空的 `mainNet`、`mainNetPct`、`upCount`、`downCount` 和 `leader`，
+不覆盖扶摇的代码、名称、涨跌幅或成交额；成功、部分匹配、跳过和失败都在 `quality.sectorEnrichment`
+保留同供应商来源、请求字段、映射 revision、匹配/字段覆盖、百分比 scale、日期证据和 warning。
+历史日期、上海结算前或缺少当前日期证据时零次 dataapi 调用。补充失败只降低质量并保留有效扶摇基础快照，
+不改变正式 Eastmoney → Fuyao 回退顺序，不构成独立 provider 交叉确认；Tushare 当前 token 无相关
+行业资金流/指数接口权限，因此不进入运行时路径。
+
 ### 统一 provider 请求层边界（2026-09-29，实施中）
 
 所有腾讯、百度、新浪、TDX 及后续 provider 的 HTTP 访问统一经过共享请求层；该层只负责传输可靠性和请求压力控制，不改变 provider 的字段契约、日期证据、降级顺序或 feature flag。每个 host 使用可复用 session 和现代浏览器 UA；UA 在同一 host 的 session 生命周期内保持稳定，session 重建或熔断恢复时重新选择，不伪造 Cookie、认证信息、TLS 指纹或代理来源。

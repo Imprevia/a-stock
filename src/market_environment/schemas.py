@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 from .timezone_preferences import validate_timezone
 
@@ -82,6 +82,54 @@ class DataQuality(BaseModel):
 class DataGap(BaseModel):
     field: str
     reason: Literal["insufficient-history", "missing-today", "provider-failed", "not-computable"]
+
+
+class SectorEnrichmentDateEvidence(BaseModel):
+    """Date gate evidence for the undated same-vendor sector enrichment."""
+
+    requestedAsOf: str = Field(validation_alias=AliasChoices("requestedAsOf", "requested"))
+    latestOnly: bool = True
+    eligible: bool
+    reason: str
+    currentAsOf: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("currentAsOf", "current"),
+    )
+    settled: bool | None = None
+
+    @field_validator("requestedAsOf", "currentAsOf")
+    @classmethod
+    def validate_enrichment_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+
+class SectorEnrichmentQuality(BaseModel):
+    """Auditable metadata for optional Eastmoney sector field enrichment.
+
+    The model is additive to ``EvidenceQuality``.  It deliberately carries
+    lineage and coverage rather than treating same-vendor dataapi evidence as
+    an independent provider or changing the canonical Fuyao row identity.
+    """
+
+    status: Literal["disabled", "skipped", "enriched", "partial", "complete", "failed"]
+    source: str = "eastmoney-dataapi"
+    provider: str = "eastmoney"
+    sameVendor: bool = True
+    endpoint: str | None = None
+    requestedFields: list[str] = Field(default_factory=list)
+    mappingRevision: str | None = None
+    matchMethod: str | None = None
+    sourceRows: int = Field(default=0, ge=0)
+    baseRows: int = Field(default=0, ge=0)
+    matchedRows: int = Field(default=0, ge=0)
+    unmatchedRows: int = Field(default=0, ge=0)
+    identityCoverage: float | None = Field(default=None, ge=0, le=1)
+    fieldCoverage: dict[str, float] = Field(default_factory=dict)
+    fieldMatched: dict[str, int] = Field(default_factory=dict)
+    fieldFilled: dict[str, int] = Field(default_factory=dict)
+    percentageScale: float | None = None
+    dateEvidence: SectorEnrichmentDateEvidence | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SyncPattern(BaseModel):
@@ -233,6 +281,7 @@ class EvidenceQuality(BaseModel):
     stockUniverseRetainedByMarket: dict[str, int] | None = None
     stockUniverseExcludedByReason: dict[str, int] | None = None
     stockUniverseUnclassifiedByReason: dict[str, int] | None = None
+    sectorEnrichment: SectorEnrichmentQuality | None = None
 
 
 def _validate_iso_date(value: str | None) -> str | None:

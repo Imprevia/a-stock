@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -22,6 +23,13 @@ from src.trading_system.data.providers import EastmoneyClient
 from .calculations import Bar
 from .fuyao import FuyaoClient, FuyaoLimitDataset, FuyaoNonTradingDayError
 from .industry_mapping import IndustryMappingResult, VersionedIndustryMapper, normalized_identity
+from .sector_enrichment import (
+    ENRICHMENT_MAPPING_REVISION,
+    ENRICHMENT_MATCH_METHOD,
+    SUPPLEMENTAL_FIELDS,
+    SectorIdentityMatcher,
+    normalize_sector_name,
+)
 from .tdx_config import TDXDailyPackageConfig
 from .tdx_daily import (
     TDXDailyPackage,
@@ -39,6 +47,10 @@ from .tdx_daily import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,10 @@ class MarketDataProvider:
     _ACTIVE_DIRECTION_MIN_ROWS = 30
     _LIMIT_POOL_PRIMARY_HOST = "https://push2ex.eastmoney.com"
     _LIMIT_POOL_FALLBACK_HOST = "https://push2delay.eastmoney.com"
+    _SECTOR_DATAAPI_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
+    _SECTOR_DATAAPI_FIELDS = "f3,f6,f62,f104,f105,f128,f184"
+    _SECTOR_DATAAPI_FILTER = "m:90+s:4"
+    _SECTOR_ENRICHMENT_ENABLED_ENV = "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED"
 
     def __init__(
         self,
@@ -125,6 +141,9 @@ class MarketDataProvider:
         tdx_stock_universe_minimum_total: int | None = None,
         tdx_stock_universe_required_markets: Iterable[str] | None = None,
         tdx_stock_universe_max_unclassified_ratio: float | None = None,
+        sector_enrichment_enabled: bool | None = None,
+        sector_identity_mapping: Mapping[str, str] | None = None,
+        sector_enrichment_now: Callable[[], datetime] | None = None,
     ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
@@ -145,7 +164,16 @@ class MarketDataProvider:
                     retry_backoff=1.0,
                     request_budget=20,
                     cache_ttl_seconds=0.0,
-                )
+                ),
+                "data.eastmoney.com": HostPolicy(
+                    minimum_interval=1.0,
+                    jitter=(0.05, 0.25),
+                    timeout=(8.0, max(timeout, 15.0)),
+                    max_retries=2,
+                    retry_backoff=0.8,
+                    request_budget=20,
+                    cache_ttl_seconds=10.0,
+                ),
             },
         )
         self.eastmoney = EastmoneyClient(timeout=timeout, session=self.session, transport=self.http)
@@ -216,6 +244,15 @@ class MarketDataProvider:
         )
         self.tdx_industry_mapper = tdx_industry_mapper
         self._tdx_trading_days = tdx_trading_days
+        self.sector_enrichment_enabled = (
+            _env_enabled(self._SECTOR_ENRICHMENT_ENABLED_ENV)
+            if sector_enrichment_enabled is None
+            else bool(sector_enrichment_enabled)
+        )
+        self.sector_identity_matcher = SectorIdentityMatcher(sector_identity_mapping)
+        self._sector_enrichment_now = sector_enrichment_now or (
+            lambda: datetime.now(ZoneInfo("Asia/Shanghai"))
+        )
 
     def fetch(
         self,
@@ -1391,6 +1428,250 @@ class MarketDataProvider:
             return self._build_sectors(rows, as_of, source=source, status=status, warnings=warnings)
         except Exception as exc:
             return self._missing_sectors(as_of, f"东方财富行业排名不可用：{exc}", status="failed")
+
+    def enrich_fuyao_sectors(
+        self,
+        payload: Mapping[str, Any],
+        as_of: date,
+        *,
+        eligible: bool,
+    ) -> dict[str, Any]:
+        """Fill missing Fuyao sector fields from the same-vendor dataapi.
+
+        This is intentionally an opt-in, latest-only operation.  The caller's
+        eligibility decision is required, and this method applies a second
+        current-date/settlement check before issuing any supplemental request.
+        All failures retain the accepted Fuyao payload and are represented in
+        additive quality metadata.
+        """
+
+        result = copy.deepcopy(dict(payload))
+        quality = dict(result.get("quality") or {})
+        rows = result.get("rows")
+        base_rows = [row for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
+        metadata = self._sector_enrichment_metadata(as_of, base_rows)
+        quality["sectorEnrichment"] = metadata
+        result["quality"] = quality
+
+        if not self.sector_enrichment_enabled:
+            metadata.update({"status": "disabled", "dateEvidence": {**metadata["dateEvidence"], "reason": "feature-disabled"}})
+            return result
+        if not eligible:
+            metadata.update({"status": "skipped", "dateEvidence": {**metadata["dateEvidence"], "reason": "caller-not-eligible"}})
+            return result
+        if str(quality.get("status")) not in {"fallback", "partial"} or not base_rows:
+            metadata.update({"status": "skipped", "dateEvidence": {**metadata["dateEvidence"], "reason": "fuyao-base-not-accepted"}})
+            return result
+
+        now = self._sector_enrichment_now()
+        current_date = now.astimezone(ZoneInfo("Asia/Shanghai")).date() if now.tzinfo else now.date()
+        settled = self._sector_enrichment_is_settled(now)
+        metadata["dateEvidence"].update({"current": current_date.isoformat(), "settled": settled})
+        if current_date != as_of:
+            metadata.update({"status": "skipped", "dateEvidence": {**metadata["dateEvidence"], "reason": "not-current-shanghai-date"}})
+            return result
+        if not settled:
+            metadata.update({"status": "skipped", "dateEvidence": {**metadata["dateEvidence"], "reason": "before-settlement"}})
+            return result
+
+        metadata["status"] = "failed"
+        metadata["dateEvidence"]["eligible"] = True
+        metadata["dateEvidence"]["reason"] = "request-attempted"
+        try:
+            source_rows = self._fetch_sector_dataapi_rows(as_of)
+            normalized_rows, scale, normalization_warnings = self._normalize_sector_dataapi_rows(
+                source_rows,
+                base_rows,
+            )
+            metadata["percentageScale"] = scale
+            metadata["warnings"].extend(normalization_warnings)
+            matching = self.sector_identity_matcher.match(base_rows, normalized_rows)
+            metadata.update(
+                {
+                    "mappingRevision": matching.mapping_revision,
+                    "matchMethod": ENRICHMENT_MATCH_METHOD,
+                    "sourceRows": len(normalized_rows),
+                    "matchedRows": matching.matched_rows,
+                    "unmatchedRows": len(matching.unmatched_base),
+                    "identityCoverage": matching.matched_rows / len(base_rows) if base_rows else 0.0,
+                }
+            )
+            metadata["warnings"].extend(matching.warnings)
+            field_counts = {field: 0 for field in SUPPLEMENTAL_FIELDS}
+            filled_counts = {field: 0 for field in SUPPLEMENTAL_FIELDS}
+            merged_rows = [dict(row) for row in base_rows]
+            for match in matching.matches:
+                base = merged_rows[match.base_index]
+                source = normalized_rows[match.source_index]
+                for field in SUPPLEMENTAL_FIELDS:
+                    if source.get(field) is not None:
+                        field_counts[field] += 1
+                        if base.get(field) is None:
+                            base[field] = source[field]
+                            filled_counts[field] += 1
+            result["rows"] = merged_rows
+            metadata["fieldCoverage"] = {
+                field: field_counts[field] / len(base_rows) if base_rows else 0.0
+                for field in SUPPLEMENTAL_FIELDS
+            }
+            metadata["fieldMatched"] = field_counts
+            metadata["fieldFilled"] = filled_counts
+            metadata["status"] = (
+                "enriched"
+                if matching.matched_rows
+                and not matching.unmatched_base
+                and all(value == 1.0 for value in metadata["fieldCoverage"].values())
+                else "partial"
+            )
+            self._merge_sector_enrichment_quality(quality, metadata)
+        except Exception as exc:
+            warning = f"东方财富 dataapi 行业字段补充失败（{as_of.isoformat()}）：{exc}"
+            metadata["warnings"].append(warning)
+            self._merge_sector_enrichment_quality(quality, metadata)
+        quality["sectorEnrichment"] = metadata
+        quality["warnings"] = list(dict.fromkeys([*(quality.get("warnings") or []), *metadata["warnings"]]))
+        quality["warning"] = "；".join(quality["warnings"]) if quality["warnings"] else None
+        result["quality"] = quality
+        return result
+
+    def _fetch_sector_dataapi_rows(self, as_of: date) -> list[dict[str, Any]]:
+        response = self.http.get_json(
+            self._SECTOR_DATAAPI_URL,
+            params={
+                "key": self._SECTOR_DATAAPI_FIELDS,
+                "code": self._SECTOR_DATAAPI_FILTER,
+                "pn": "1",
+                "pz": "500",
+            },
+            requested_date=as_of.isoformat(),
+            cache_ttl=10.0,
+        )
+        if not isinstance(response, Mapping):
+            raise ValueError("dataapi response envelope is invalid")
+        data = response.get("data")
+        if not isinstance(data, Mapping):
+            raise ValueError("dataapi response lacks data envelope")
+        rows = data.get("diff")
+        if isinstance(rows, Mapping):
+            rows = list(rows.values())
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("dataapi response lacks rows")
+        if not all(isinstance(row, Mapping) for row in rows):
+            raise ValueError("dataapi response contains malformed rows")
+        return [dict(row) for row in rows]
+
+    def _normalize_sector_dataapi_rows(
+        self,
+        rows: list[dict[str, Any]],
+        base_rows: list[Mapping[str, Any]],
+    ) -> tuple[list[dict[str, Any]], float, list[str]]:
+        normalized: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for index, row in enumerate(rows):
+            code = self._optional_text(row.get("f12") or row.get("code"))
+            name = self._optional_text(row.get("f14") or row.get("name"))
+            if not code or not name:
+                raise ValueError(f"dataapi row {index} lacks code/name")
+            for field in ("f3", "f6"):
+                raw = row.get(field)
+                if raw in (None, "", "-", "--") or self._optional_float(raw) is None:
+                    raise ValueError(f"dataapi row {index} has invalid {field}")
+            for field in ("f62", "f104", "f105", "f184"):
+                raw = row.get(field)
+                if raw not in (None, "", "-", "--") and self._optional_float(raw) is None:
+                    raise ValueError(f"dataapi row {index} has invalid {field}")
+            for field in ("f104", "f105"):
+                value = self._optional_float(row.get(field))
+                if value is not None and (value < 0 or int(value) != value):
+                    raise ValueError(f"dataapi row {index} has invalid {field} count")
+            leader = self._optional_text(row.get("f128"))
+            if leader and leader.upper() == code.upper():
+                warnings.append(f"dataapi row {index} leader name is a code")
+                leader = None
+            normalized.append(
+                {
+                    "f12": code,
+                    "f14": name,
+                    "f3": self._optional_float(row.get("f3")),
+                    "f6": self._optional_float(row.get("f6")),
+                    "mainNet": self._optional_float(row.get("f62")),
+                    "mainNetPctRaw": self._optional_float(row.get("f184")),
+                    "upCount": self._optional_int(row.get("f104")),
+                    "downCount": self._optional_int(row.get("f105")),
+                    "leader": leader,
+                }
+            )
+        scale = self._infer_sector_percentage_scale(normalized, base_rows)
+        for row in normalized:
+            raw = row.pop("mainNetPctRaw")
+            row["mainNetPct"] = round(raw * scale, 8) if raw is not None else None
+            if row["mainNetPct"] is not None and abs(row["mainNetPct"]) > 100:
+                raise ValueError("dataapi f184 percentage is outside canonical scale")
+        return normalized, scale, warnings
+
+    @staticmethod
+    def _infer_sector_percentage_scale(rows: list[dict[str, Any]], base_rows: list[Mapping[str, Any]]) -> float:
+        base_by_name = {
+            normalize_sector_name(row.get("name")): row
+            for row in base_rows
+            if normalize_sector_name(row.get("name"))
+        }
+        observed: set[float] = set()
+        for row in rows:
+            base = base_by_name.get(normalize_sector_name(row.get("f14")))
+            raw = row.get("f3")
+            reference = MarketDataProvider._optional_float(base.get("changePct")) if base else None
+            if raw is None or reference is None or abs(raw) < 1e-12:
+                continue
+            candidates = [scale for scale in (1.0, 0.01) if abs(raw * scale - reference) <= 1.0]
+            if len(candidates) != 1:
+                raise ValueError("dataapi percentage scale is ambiguous")
+            observed.add(candidates[0])
+        if len(observed) != 1:
+            if not observed:
+                raise ValueError("dataapi percentage scale lacks canonical change evidence")
+            raise ValueError("dataapi percentage scale is inconsistent")
+        return next(iter(observed))
+
+    @staticmethod
+    def _merge_sector_enrichment_quality(quality: dict[str, Any], metadata: dict[str, Any]) -> None:
+        quality["sectorEnrichment"] = metadata
+
+    def _sector_enrichment_metadata(self, as_of: date, base_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+        return {
+            "status": "skipped",
+            "source": "eastmoney-dataapi",
+            "provider": "eastmoney",
+            "sameVendor": True,
+            "endpoint": self._SECTOR_DATAAPI_URL,
+            "requestedFields": self._SECTOR_DATAAPI_FIELDS.split(","),
+            "mappingRevision": ENRICHMENT_MAPPING_REVISION,
+            "matchMethod": ENRICHMENT_MATCH_METHOD,
+            "sourceRows": 0,
+            "baseRows": len(base_rows),
+            "matchedRows": 0,
+            "unmatchedRows": len(base_rows),
+            "identityCoverage": 0.0,
+            "fieldCoverage": {field: 0.0 for field in SUPPLEMENTAL_FIELDS},
+            "fieldMatched": {field: 0 for field in SUPPLEMENTAL_FIELDS},
+            "dateEvidence": {
+                "requested": as_of.isoformat(),
+                "current": None,
+                "eligible": False,
+                "settled": False,
+                "reason": "not-evaluated",
+            },
+            "warnings": [],
+        }
+
+    @staticmethod
+    def _sector_enrichment_is_settled(now: datetime) -> bool:
+        raw = os.getenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
+        try:
+            hour, minute = (int(part) for part in raw.split(":", 1))
+            return now.time().replace(tzinfo=None) >= datetime.min.time().replace(hour=hour, minute=minute)
+        except (TypeError, ValueError):
+            return False
 
     def _fetch_eastmoney_stock_snapshot(self) -> list[dict[str, Any]]:
         params = {

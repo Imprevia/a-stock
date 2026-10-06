@@ -29,7 +29,7 @@
 | `activate-scheduled-collection-20260922` | 操作发起人 | completed-activation-observation-pending | 2026-09-22 |
 | `reactivate-fuyao-scheduled-collection-20260922` | Codex | completed-with-backfill-provider-failure | 2026-09-22 |
 | `fix-fuyao-5003-retry-budget-20260922` | Codex | completed-without-production-write | 2026-09-22 |
-| `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-15 |
+| `deploy-project-and-startup` | 资深后端工程师 | completed | 2026-09-30 |
 | `fix-market-collection-effective-date-and-timezone` | Codex | completed-with-production-write-code-deploy-pending | 2026-09-15 |
 | `fix-limit-and-active-direction-collection` | Codex | completed-without-real-provider-smoke | 2026-09-15 |
 | `repair-and-deploy-market-services-20260915` | Codex | in-progress | 2026-09-15 |
@@ -42,7 +42,9 @@
 | `enable-tdx-derived-active-direction` | Codex | production-deployed-first-natural-job-pending | 2026-09-24 |
 | `fix-tdx-breadth-stock-universe` | Codex | production-repair-complete | 2026-09-25 |
 | `restore-sector-data-via-independent-provider` | Codex | implementation-complete-with-controlled-rollout-pending（默认关闭） | 2026-09-29 |
+| `enrich-fuyao-sector-fields-from-eastmoney-dataapi` | Codex | in-progress | 2026-09-30 |
 | `activate-scheduled-collection-20260929` | 操作发起人 | activated-observation-pending（revision 70） | 2026-09-29 |
+| `activate-scheduled-collection-20260930` | 操作发起人 | activated-observation-complete-with-partial-quality | 2026-09-30 |
 
 ## 说明
 

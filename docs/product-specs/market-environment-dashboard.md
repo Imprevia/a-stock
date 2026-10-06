@@ -33,6 +33,7 @@
 - 日期化涨停、跌停、炸板与最高连板生态。
 - 行业排名和大成交额个股方向线索。
 - 行业主线允许在东方财富 `push2` 与 `push2delay` 均失败后使用经过 capability 门禁的扶摇同花顺行业指数 fallback。扶摇只提供行业指数代码、名称、涨跌幅和成交额；主力净流入、主力净流入比例、上涨/下跌家数和领涨股保持 `null`，并显示 `fallback`/`partial` 质量与字段 warning，不得冒充完整行业资金流或宽度事实。
+- 扶摇行业基础结果接受后，可在 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=1` 下使用东方财富 `data.eastmoney.com/dataapi/bkzj/getbkzj` 做同供应商字段补充。该接口固定请求 `key=f3,f6,f62,f104,f105,f128,f184` 与 `m:90+s:4`，仅允许当前上海市场日结算后调用；历史日期、日期证据不足、百分比 scale 不明确、身份冲突或未匹配行业继续保持 `null`。页面和采集状态展示 source、same-vendor、mapping revision、行/字段覆盖与 warning，不能将其显示为独立 provider；扶摇四个基础字段始终权威，补充失败不使基础快照失效。
 - `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。
 - `breadth` 的 Fuyao v2 主源只允许当前上海交易日的 `/api/a-share/prices/snapshot` 完整分页；所有页的 `total`、`timestamp` 和规范证券身份必须稳定，涨跌家数、平盘和中位数由 `price_change_ratio_pct` 派生。Fuyao 失败后才按显式开关使用 TDX 精确日期包，最终回退东方财富；历史日期只能读取本地精确快照，不能用 latest-only 响应回填。
 - `activeDirection` 本阶段不由 Fuyao 替换，继续使用现有东方财富/TDX 语义；Fuyao capability 仅记录为 `unverified`，不得把旧 `fuyao-market-v1` 报告当成切换批准。limits 继续使用扶摇主源与东方财富交叉核对/降级。

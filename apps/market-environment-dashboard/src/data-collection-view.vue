@@ -32,6 +32,14 @@ import {
   toggleCoreExpansion,
 } from './collection-view-model'
 import { formatLocalDate } from './date-util'
+import {
+  sectorEnrichmentCoverage,
+  sectorEnrichmentDateLabel,
+  sectorEnrichmentFromQuality,
+  sectorEnrichmentSourceLabel,
+  sectorEnrichmentStatusLabel,
+  sectorEnrichmentWarnings,
+} from './sector-enrichment'
 import { formatDateTime, formatDateTimeTitle, MARKET_TIME_ZONE } from './timezone'
 
 const DATASET_LABELS: Record<CollectionDataset, string> = {
@@ -135,11 +143,32 @@ function qualityLabel(value?: string | null) {
 
 function collectionQuality(item: DatasetCollectionStatus) {
   const quality = item.quality as { status?: string; rankingMethod?: string; industryMappingCoverage?: number } | null | undefined
-  if (!quality || item.dataset !== 'activeDirection') return null
+  if (!quality) return null
+  if (item.dataset === 'sectors') {
+    const enrichment = sectorEnrichmentFromQuality(quality)
+    if (!enrichment) return null
+    const details = [`字段补充 ${sectorEnrichmentStatusLabel(enrichment.status)}`]
+    const source = sectorEnrichmentSourceLabel(enrichment)
+    if (source) details.push(source)
+    details.push(...sectorEnrichmentCoverage(enrichment))
+    if (enrichment.mappingRevision) details.push(`映射版本 ${enrichment.mappingRevision}`)
+    const date = sectorEnrichmentDateLabel(enrichment)
+    if (date) details.push(date)
+    return details.join(' · ')
+  }
+  if (item.dataset !== 'activeDirection') return null
   const details = [quality.status ? qualityLabel(quality.status) : null]
   if (quality.rankingMethod) details.push('本地成交额排序')
   if (quality.industryMappingCoverage != null) details.push(`行业映射 ${(quality.industryMappingCoverage * 100).toFixed(0)}%`)
   return details.filter(Boolean).join(' · ')
+}
+
+function collectionWarning(item: DatasetCollectionStatus) {
+  const warnings = [item.latestAttempt?.warning, item.refreshWarning, item.restriction]
+  if (item.dataset === 'sectors') {
+    warnings.push(...sectorEnrichmentWarnings(sectorEnrichmentFromQuality(item.quality)))
+  }
+  return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))].join('；')
 }
 
 onMounted(loadStatus)
@@ -214,7 +243,7 @@ onMounted(loadStatus)
                 <td data-label="来源 / 样本"><strong>{{ item.source === 'none' ? '--' : item.source }}</strong><span>{{ item.observations.toLocaleString('zh-CN') }} 条</span><small v-if="collectionQuality(item)">{{ collectionQuality(item) }}</small></td>
                 <td data-label="最近成功"><span :title="formatDateTimeTitle(item.lastSuccessAt)">{{ formatDateTime(item.lastSuccessAt, { precision: 'second', timeZone: MARKET_TIME_ZONE }) }}</span></td>
                 <td data-label="耗时">{{ formatDuration(item.latestAttempt?.durationMs) }}</td>
-                <td data-label="提示" class="collection-warning"><span class="collection-warning-text" :title="item.latestAttempt?.warning || item.refreshWarning || item.restriction || undefined">{{ item.latestAttempt?.warning || item.refreshWarning || item.restriction || '--' }}</span></td>
+                <td data-label="提示" class="collection-warning"><span class="collection-warning-text" :title="collectionWarning(item) || undefined">{{ collectionWarning(item) || '--' }}</span></td>
                 <td data-label="操作">
                   <button
                     class="retry-button"

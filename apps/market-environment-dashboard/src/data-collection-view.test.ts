@@ -7,11 +7,11 @@ import DataCollectionView from './data-collection-view.vue'
 
 let wrapper: VueWrapper | null = null
 
-function dataset(dataset: string, detail?: Record<string, unknown>) {
+function dataset(dataset: string, detail?: Record<string, unknown>, qualityOverride?: Record<string, unknown> | null) {
   return {
     dataset, available: dataset === 'limits' || dataset === 'activeDirection', source: dataset === 'activeDirection' ? 'tdx-daily-package-derived' : 'fixture', observations: dataset === 'limits' ? 64 : dataset === 'activeDirection' ? 30 : 0,
     lastSuccessAt: '2026-09-10T16:00:00+08:00', settled: true, refreshWarning: null,
-    quality: dataset === 'activeDirection' ? { status: 'fallback-derived', rankingMethod: 'local-turnover-desc-identity-asc', industryMappingCoverage: 0.5 } : null,
+    quality: qualityOverride ?? (dataset === 'activeDirection' ? { status: 'fallback-derived', rankingMethod: 'local-turnover-desc-identity-asc', industryMappingCoverage: 0.5 } : null),
     latestAttempt: dataset === 'limits' ? {
       taskId: 'task-limits', runId: 'run-1', status: 'failed-retained', source: 'fixture', observations: 64,
       warning: '上次刷新失败，保留旧值', queuedAt: null, startedAt: null, completedAt: null, durationMs: 100, settled: true,
@@ -73,5 +73,36 @@ describe('data collection limits detail', () => {
 
     expect(wrapper.text()).toContain('tdx-daily-package-derived')
     expect(wrapper.text()).toContain('本地派生降级 · 本地成交额排序 · 行业映射 50%')
+  })
+
+  it('shows same-vendor sector enrichment lineage and warnings in collection status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+      asOf: '2026-09-15', manualRefreshEnabled: true,
+      datasets: [
+        dataset('core'),
+        dataset('breadth'),
+        dataset('limits'),
+        dataset('sectors', undefined, {
+          status: 'fallback',
+          sectorEnrichment: {
+            status: 'partial',
+            source: 'eastmoney-dataapi',
+            sameVendor: true,
+            matchedRows: 128,
+            unmatchedRows: 192,
+            identityCoverage: 0.4,
+            warnings: ['仅部分行业完成字段补充'],
+          },
+        }),
+        dataset('activeDirection'),
+      ],
+    }) })))
+    wrapper = mount(DataCollectionView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('字段补充 部分补充 · 同供应商字段补充：东方财富 dataapi')
+    expect(wrapper.text()).toContain('身份匹配 40%')
+    expect(wrapper.text()).toContain('匹配 128 行 · 未匹配 192 行')
+    expect(wrapper.text()).toContain('仅部分行业完成字段补充')
   })
 })

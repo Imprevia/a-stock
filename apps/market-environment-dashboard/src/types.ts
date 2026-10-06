@@ -167,6 +167,20 @@ export interface DataSetQuality {
   industryMappingCoverage?: number | null
   industryMappingCovered?: number | null
   industryMappingTotal?: number | null
+  sectorEnrichment?: SectorEnrichmentQuality | null
+}
+
+export interface SectorEnrichmentQuality {
+  status?: string | null
+  source?: string | null
+  sameVendor?: boolean | null
+  mappingRevision?: string | null
+  matchedRows?: number | null
+  unmatchedRows?: number | null
+  identityCoverage?: number | null
+  fieldCoverage?: Record<string, unknown> | null
+  dateEvidence?: string | Record<string, unknown> | null
+  warnings?: string[]
 }
 
 export type MetricQualityStatus = 'ok' | 'insufficient' | 'degraded' | 'failed' | string

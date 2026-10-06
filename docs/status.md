@@ -50,7 +50,8 @@
 - `unify-provider-http-collection` 已完成统一 provider 传输边界：腾讯、百度、新浪、TDX 和 Eastmoney 通过共享 host policy，具备现代 session UA、请求门与抖动、连接/读取/408/429/5xx 有界重试、`Retry-After`、single-flight、短成功缓存、日期隔离、请求预算和失败冷却探测；Fuyao 保留专用 API-key 请求门与错误语义。focused transport/provider 回归为 105 passed，OpenSpec strict、docs-contract full 和规则门禁通过；全量 pytest 的 4 个失败是本机缺少 `mcp` 依赖及 Windows bash 路径兼容问题。默认不引入代理池、Cookie 伪造或 TLS 指纹模拟，真实网络 smoke 仍需授权的盘后隔离环境。
 - `evaluate-fuyao-market-data-provider` 已完成 Fuyao v2 core/breadth 契约、共享请求门、分数据集路由、activeDirection 保持 Eastmoney/TDX、离线 fixture/回归和架构/runbook/产品规格同步；真实 probe、core shadow 差异归因、breadth/sectors 日期与字段完整性修复，以及隔离 PostgreSQL capability/shadow smoke 均已完成并记录在 active plan。所有新开关保持关闭，未批准生产 revision；全量测试本轮 735 passed、3 skipped，另有 2 个既有性能阈值抖动失败（非本变更逻辑）。
 - `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当前 `fuyao-market-v2` fallback 证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。`FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0` 保持关闭，未写入正式 sectors 主源快照。
-- `activate-scheduled-collection-20260929` 已完成受控生产激活：revision `68` 收敛完整 database/service ownership，revision `69` 发布 suspended CronJob，revision `70` 于 2026-09-29 12:18:34（Asia/Shanghai）通过 `next-schedule` 激活。当前 `a-stock-data-collection` 为 Helm-owned、工作日上海 16:30、`suspend=false`、无 active/last schedule；Dashboard/PostgreSQL `1/1` Ready、两个 PVC Bound、namespace 无 Job、`/api/health` 返回 200。冻结镜像 containerd manifest digest 为 `sha256:923b17bf8fbdcb787ec695a0f9e8e11f6c780bfa886cf7ff48ae2ffdf2f9f82d`，`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0` 保持关闭；首个自然触发后的五类质量和 `collection_runs` 观察待完成。
+- `enrich-fuyao-sector-fields-from-eastmoney-dataapi` 已完成离线实现：扶摇行业成功后可选调用东方财富 `dataapi/bkzj/getbkzj`，固定字段为 `f3,f6,f62,f104,f105,f128,f184`、过滤为 `m:90+s:4`；共享 host policy、latest-only/结算后门禁、严格身份匹配、百分比归一、fill-only 合并和 same-vendor lineage 已通过 focused 测试。默认 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`，尚未执行真实 probe 或正式快照写入。
+- `activate-scheduled-collection-20260929` 的历史 revision 70 已被 2026-09-30 应用发布取代；当前激活与首个自然触发证据统一记录在 `activate-scheduled-collection-20260930`，包括五类质量和 `collection_runs`。
 - `restore-limit-ecosystem-data-availability` 正在接入扶摇三类池和交易日历，拆分 membership 与高级分层质量，补齐六日回填、证券明细以及第 03/04 页真实 limits 数据消费；生产部署和生产写入不在范围内。
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
 
@@ -58,6 +59,7 @@
 
 - `consolidate-helm-managed-scheduling`（2026-09-17）完成仓库与生产验收；随后 2026-09-21 恢复到 Helm revision 25 的 suspended 基线，并于 2026-09-22 通过受控 `--activate-schedule` 升至 revision 26。当前唯一 `a-stock-data-collection` 为 Helm-owned、`suspend=false`、工作日上海 16:30，Dashboard/PostgreSQL 均 Ready；首次自然触发和数据质量观察仍待完成。`manual-local` 因仍承载共享 PV 保留。
 - `fix-tdx-breadth-stock-universe`（2026-09-25）完成 TDX 普通 A 股 universe 过滤、生产部署、只读 real probe、2026-09-23/24 精确日期重采集、provider/collection/API 契约、文档更新和离线门禁；生产 CronJob 按 fail-closed 规则保持 absent。
+- 2026-09-30 使用受控 TrueNAS k3s 入口部署 `main`（`40c3498`）：先清理暂停的 Helm-owned CronJob（revision 77），再以 `--component all` 完成 database/service/完整清单收敛（revisions 78/79/80）。镜像 `localhost/a-stock-market-environment:20260930-115139-40c3498` 已导入目标 containerd，digest 为 `sha256:53c1219db808acd6860286725fa77ebda7da40f8dbcbf8e66e001056cfe05883`；Deployment 与两个 Pod Ready/Running，两个 PVC Bound，CronJob absent，NodePort `/api/health` 返回 200。调度保持 disabled，未创建 Job 或触发 provider 采集。
 - 2026-09-17 完成 TrueNAS PostgreSQL 生产切换与 SQLite 历史导入：生产 dry-run 发现并修复 migration Job `fsGroup`、只读 WAL `immutable=1` 和 revision trigger 冲突；隔离 PostgreSQL 16.4 集成测试 11 项通过，正式导入 `snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`，最新历史日 API 200。
 - `fix-market-collection-effective-date-and-timezone`（2026-09-15）已完成代码、离线验证及生产 15→14 覆盖迁移：API、采集协调器、刷新 CLI 统一使用上海有效市场日；09:30 前回退上一工作日并拒绝未来日期；提供 SQLite 迁移输入的 `relabel-date` dry-run/apply/rollback 审计迁移；采集页“最近尝试/最近成功”固定按北京时间显示。PostgreSQL 生产切换和包含修复的镜像重新部署仍未执行。
 - Operator override 临时绕过路径已退役：2026-09-13 的 controller `Asia/Shanghai`、`30 16 * * 1-5` 与 PostgreSQL Service/Secret 证据保留在 completed plan；新的 schedule 资源统一由 Helm release `a-stock` 管理。仓库不再提供非 Helm-owned CronJob 清单或修正脚本。
@@ -78,6 +80,7 @@
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
 - 扶摇行业 fallback 虽已确认 320/320 目录和快照覆盖，但其接口不提供资金流、市场宽度和领涨股；即使正式开关获批，行业结果也只能解释为带 warning 的降级指数排名，不能冒充完整行业事实。
+- 东方财富 dataapi 行业补充为 latest-only、同供应商且仅观测到 128 行；扶摇 THS 与东方财富 BK 分类不同，必须保守匹配并显示覆盖缺口，不能将补充结果解释为独立 provider 或历史数据证据。
 - 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 PostgreSQL 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按现场捕获的 pre-release 网络与 release 基线回退。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - 当前 PostgreSQL 为单主实例；事务 lease/fencing 可支持 Dashboard 与 CronJob 并发访问，但多主/跨节点 HA、复制和自动故障切换仍不在本次范围。
@@ -94,11 +97,17 @@
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
-- 后续盘后观察新日期的 TDX universe 审计；若需恢复定时采集，先完成独立 suspended release/canary 审核，不直接激活 CronJob。
+- 后续盘后继续观察新日期的 TDX universe 与五类质量；当前 CronJob 已按 `activate-scheduled-collection-20260930` active，若需停止必须由责任人授权并使用 `--disable-schedule`，禁止直接修改 CronJob。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。
 - 积累 500–750 个交易日快照，回测市场环境阈值与分类稳定性。
 - 后续按覆盖清单逐章实现第 02 至 11 章 evaluator。
 
 ## 最后更新
+
+2026-09-30
+  - **TrueNAS k3s 生产发布**：`main=40c3498` 通过受控 `--disable-schedule` + `--component all` 发布到 `192.168.1.20`；Helm revisions 77/78/79/80，镜像和 containerd digest、Deployment/PVC/NodePort/CronJob 后置条件见 `deploy-project-and-startup` plan。
+  - 调度保持 disabled，未创建 Job 或触发 provider 采集；工作区 `main` 与 `origin/main` 同步且干净。
+  - **定时采集激活**：按 `activate-scheduled-collection-20260930` 计划通过受控 `--release-suspended`（revision 81）和 `--activate-schedule`（revision 82）激活 `a-stock-data-collection`；`30 16 * * 1-5`、controller `Asia/Shanghai`、`suspend=false`，未启用扶摇数据集开关。
+  - 16:30 首个自然 Job `a-stock-data-collection-29845950` 已执行并保留真实 `partial` 结果：core/breadth success，limits/activeDirection partial，sectors failed-missing；`runId=8a3a60fb61d347d8b3930c9ae7318273`，exact-date API 与五类质量记录均已读回。Job exit code 2 是质量状态的真实非零结果，不作为调度发布失败；后续继续观察 provider 恢复。
 
 2026-09-29

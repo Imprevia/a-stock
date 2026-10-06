@@ -194,6 +194,58 @@ def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, 
     assert rows["core"]["available"] is False
 
 
+def test_collection_status_exposes_stored_sector_enrichment_without_provider_call(monkeypatch, tmp_path) -> None:
+    provider = CollectionProvider()
+    coordinator = collection_coordinator(tmp_path, provider)
+    enrichment = {
+        "status": "partial",
+        "source": "eastmoney-dataapi",
+        "provider": "eastmoney",
+        "sameVendor": True,
+        "matchedRows": 1,
+        "unmatchedRows": 2,
+        "identityCoverage": 0.3333,
+        "warnings": ["fixture supplemental lineage"],
+    }
+    coordinator.store.put(
+        SnapshotRecord(
+            dataset="sectors",
+            as_of=AS_OF,
+            payload={
+                "rows": [],
+                "state": "当日排名已观测",
+                "quality": {
+                    "dataset": "industry-ranking",
+                    "source": "fuyao",
+                    "provider": "fuyao",
+                    "status": "fallback",
+                    "observations": 0,
+                    "asOf": AS_OF.isoformat(),
+                    "warnings": [],
+                    "sectorEnrichment": enrichment,
+                },
+            },
+            source="fuyao",
+            status="fallback",
+            observations=0,
+            warnings=(),
+            fetched_at=datetime(2026, 9, 3, 16, tzinfo=MARKET_TIME_ZONE),
+            settled=True,
+        )
+    )
+    monkeypatch.setattr(api, "collection_coordinator", coordinator)
+
+    response = TestClient(api.app).get(
+        f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}"
+    )
+
+    assert response.status_code == 200
+    sectors = next(item for item in response.json()["datasets"] if item["dataset"] == "sectors")
+    assert sectors["quality"]["sectorEnrichment"]["source"] == "eastmoney-dataapi"
+    assert sectors["quality"]["sectorEnrichment"]["matchedRows"] == 1
+    assert provider.calls == []
+
+
 def test_collection_status_exposes_attempt_timings(monkeypatch, tmp_path) -> None:
     coordinator = collection_coordinator(tmp_path)
     result = coordinator.collect(AS_OF, ["breadth"])
@@ -292,6 +344,13 @@ def test_collection_task_timings_accept_fallback_metadata() -> None:
             "sourceRevision": "fuyao-market-v1",
             "capabilityRevision": "fuyao-market-v1",
             "eastmoneyFailure": "controlled outage",
+            "sectorEnrichment": {
+                "status": "partial",
+                "source": "eastmoney-dataapi",
+                "sameVendor": True,
+                "matchedRows": 1,
+                "unmatchedRows": 2,
+            },
         },
         queuedAt=None,
         startedAt=None,
@@ -303,6 +362,7 @@ def test_collection_task_timings_accept_fallback_metadata() -> None:
     assert response.timings["providerCollectionMs"] == 12.5
     assert response.timings["sourceRevision"] == "fuyao-market-v1"
     assert response.timings["eastmoneyFailure"] == "controlled outage"
+    assert response.timings["sectorEnrichment"]["sameVendor"] is True
 
 
 def test_collection_full_run_reports_partial_and_keeps_successes(monkeypatch, tmp_path) -> None:

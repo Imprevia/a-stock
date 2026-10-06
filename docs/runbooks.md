@@ -136,6 +136,38 @@ warning、前序 Eastmoney warning 和 status/API；扶摇只提供行业指数�
 PVC、不跨日期回填、不手工 SQL 写入快照。Secret 仍只由 existingSecret 引用，回滚时不得把
 凭据写进 values 或日志。
 
+### 扶摇行业字段补充（东方财富同供应商 dataapi）
+
+该能力不是新的行业 provider，也不改变 `push2` → `push2delay` → capability-gated 扶摇的正式顺序。
+只有扶摇行业基础结果已被接受后，且明确设置
+`MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=1`，才允许调用：
+
+```text
+GET https://data.eastmoney.com/dataapi/bkzj/getbkzj
+  ?key=f3,f6,f62,f104,f105,f128,f184
+  &code=m:90+s:4
+```
+
+接口为 latest-only、没有可靠业务日期；因此只允许当前上海市场日且达到
+`MARKET_ENVIRONMENT_SETTLEMENT_TIME` 后调用，历史日期、结算前或日期证据不足时必须为零次补充请求。
+dataapi 的东方财富 `BK` 代码不能直接当作扶摇 THS 代码。映射 revision
+`fuyao-eastmoney-sector-map-v1` 只允许审阅后的显式映射，其他行只能通过唯一的严格规范化名称匹配；
+重复名称、分类冲突、变动/成交额 sanity check 失败均保持未匹配。
+
+`f62`、`f104`、`f105`、`f128` 和 `f184` 先校验原始类型；`f3`/`f184` 的整数化百分比只有在与扶摇
+涨跌幅一致时才按确认的 scale 归一化，无法判定时拒绝。合并是 fill-only，扶摇代码、名称、涨跌幅、成交额
+永远权威，未匹配或无效值继续为 `null`。快照和 collection task 的
+`quality.sectorEnrichment`/`timings.sectorEnrichment` 保留 source、sameVendor、mapping revision、
+匹配/字段覆盖、`fieldMatched`/`fieldFilled`、日期证据和 warnings；部分匹配保持 `fallback`/`partial`，
+补充失败保留扶摇基础快照，不改成 `failed-missing`，也不跨日期留存。
+
+默认开关为 `0`，代码缺少该环境变量时 fail closed。回滚只需关闭该开关并重启/重新发布应用，保留已有
+快照、PVC、任务审计和 provider-free GET；禁止删除快照、PVC 或用其他日期响应修复。普通 status、run、
+materialized aggregate 和 chapter-01 GET 只能读取已存 metadata，不得触发任何 Eastmoney、Fuyao 或
+Tushare 请求。当前 Tushare token 已检查但无 `moneyflow_ind_ths`、`moneyflow_ind_dc`、`ths_index`、
+`ths_daily`、`dc_index`、`dc_member`、`index_member`、`index_dailybasic` 权限；`index_daily` 不含所需行业
+资金流/宽度/领涨股字段，本变更不引入 Tushare 运行时依赖。
+
 ### 统一 provider 请求层排错（2026-09-29，实施中）
 
 provider 失败排查先区分传输层和契约层：检查 host、请求日期、最终来源、错误类别、重试次数、退避等待、熔断状态和 `Retry-After` 处理结果；不要仅凭一次 429/5xx 直接扩大采集并发。连接/读取异常、408、429、5xx 属于有界重试范围；401/403、其他 4xx 或响应字段/日期校验失败应快速失败并沿既有降级链继续，403 不得通过循环重试规避限制。
@@ -540,6 +572,7 @@ pg_restore --clean --if-exists --no-owner \
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0`：行业扶摇 fallback 的数据集开关，默认关闭；只有 Eastmoney 两端点失败、capability report 为 `eligible` 且批准 revision 完全匹配时才可设为 `1`。
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION`：显式绑定脱敏 capability report 的批准 revision；为空、未知或不匹配时 fail closed。该值不是 Secret，也不能替代 real probe/shadow 审批。
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED=0`：仅启用隔离 shadow 对账观测；shadow 失败只降低质量/可观测性，不得阻断已通过 capability 门禁的正式 fallback，也不得写入凭据。
+- `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`：扶摇行业基础结果的东方财富 dataapi 同供应商字段补充开关，默认关闭；开启仍需满足当前上海市场日、结算后、扶摇结果已接受和严格身份/口径门禁，不引入新 Secret。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard/CronJob 作为共享协调边界。
 
