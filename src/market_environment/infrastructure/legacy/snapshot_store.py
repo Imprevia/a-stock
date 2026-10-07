@@ -15,16 +15,16 @@ from typing import Any, Callable, Literal
 from sqlalchemy import Engine
 
 from ...database import DatabaseSettings, create_database_engine
-from ...postgres_compat import PostgresConnection
+from ..persistence.postgres.compat import PostgresConnection
 from ...postgres_schema import create_schema
 
-from ...limit_facts import (
+from ...domain.policies.limit_facts import (
     LIMIT_FACT_SCHEMA_VERSION,
     LimitSecurityFactRecord,
     fact_row_checksum,
     limit_dataset_checksum,
 )
-from ...provider_capability import ProviderCapabilityReport
+from ..providers.capability import ProviderCapabilityReport
 
 SNAPSHOT_SCHEMA_VERSION = 1
 TRADING_SESSION_SCHEMA_VERSION = 2
@@ -2857,27 +2857,27 @@ class LegacySnapshotStoreAdapter:
     # collection path remains unchanged.  These facade methods are part of the
     # SnapshotStore API and import lazily to avoid a module import cycle.
     def plan_date_relabel(self, source_as_of: date, target_as_of: date, **kwargs: Any) -> Any:
-        from ...date_relabel import plan_date_relabel
+        from ..persistence.sqlite_import.date_relabel import plan_date_relabel
 
         return plan_date_relabel(self, source_as_of, target_as_of, **kwargs)
 
     def relabel_date(self, source_as_of: date, target_as_of: date, **kwargs: Any) -> Any:
-        from ...date_relabel import relabel_date
+        from ..persistence.sqlite_import.date_relabel import relabel_date
 
         return relabel_date(self, source_as_of, target_as_of, **kwargs)
 
     def rollback_date_relabel(self, audit_id: str, **kwargs: Any) -> Any:
-        from ...date_relabel import rollback_date_relabel
+        from ..persistence.sqlite_import.date_relabel import rollback_date_relabel
 
         return rollback_date_relabel(self, audit_id, **kwargs)
 
     def get_date_relabel_audit(self, audit_id: str) -> Any:
-        from ...date_relabel import get_date_relabel_audit
+        from ..persistence.sqlite_import.date_relabel import get_date_relabel_audit
 
         return get_date_relabel_audit(self, audit_id)
 
     def list_date_relabel_audits(self) -> tuple[dict[str, Any], ...]:
-        from ...date_relabel import list_date_relabel_audits
+        from ..persistence.sqlite_import.date_relabel import list_date_relabel_audits
 
         return list_date_relabel_audits(self)
 

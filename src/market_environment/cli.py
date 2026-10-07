@@ -14,16 +14,16 @@ from types import SimpleNamespace
 from typing import Any
 
 from .bootstrap.container import ContainerAdapters
-from .collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
-from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketClient
-from .provider_capability import ProviderCapabilityReport
-from .date_relabel import relabel_date, rollback_date_relabel
-from .postgres_migration import backup_sqlite, import_sqlite
+from .infrastructure.collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
+from .infrastructure.providers.fuyao.market import FuyaoMarketAdapter, FuyaoMarketClient
+from .infrastructure.providers.capability import ProviderCapabilityReport
+from .infrastructure.persistence.sqlite_import.date_relabel import relabel_date, rollback_date_relabel
+from .infrastructure.persistence.sqlite_import.migration import backup_sqlite, import_sqlite
 from .providers import INDEX_SPECS, MarketDataProvider
-from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
+from .infrastructure.collection.refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
 from .snapshot_store import SnapshotStore
 from .infrastructure.persistence.sqlite_import import LegacySqliteSnapshotStore
-from .tdx_daily import TDXDailyPackageClient
+from .infrastructure.providers.tdx.daily_package import TDXDailyPackageClient
 from .interfaces.cli.container import build_cli_container
 
 

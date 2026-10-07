@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from ....collection import manual_refresh_enabled
-from ....schemas import (
+from ..schemas.models import (
     CollectionRunRequest,
     CollectionRunResponse,
     CollectionStatusResponse,

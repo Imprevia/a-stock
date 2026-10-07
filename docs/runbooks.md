@@ -621,6 +621,8 @@ python scripts/check_market_environment_architecture.py
 python scripts/install-hooks.py
 ```
 
+`src/market_environment/AGENTS.md` 是该目录的导航文档，记录分层职责、稳定入口、legacy 兼容面、根级 shim 退役矩阵和“是否仍被运行时传递使用”的判断；它不能替代本文件中的生产操作边界。实现文件已按 `domain/analysis|policies`、`interfaces/http/schemas`、`infrastructure/persistence`、`infrastructure/providers/fuyao|tdx` 和 `infrastructure/collection` 归类，根级旧名仅用于明确登记的兼容导入。删除或迁移目录内大文件前，先按该文件的调用链清单执行 `rg` 检查，并建立或更新对应 active plan；不得把目录重构验证替换成真实 provider、生产数据库、Helm、Kubernetes 或调度写操作。
+
 交易规则平台离线命令：
 
 ```bash

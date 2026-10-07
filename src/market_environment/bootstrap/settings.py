@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import time
 
 from ..database import DatabaseSettings
-from ..fuyao_config import FuyaoCollectionConfig
-from ..tdx_config import TDXDailyPackageConfig
+from ..infrastructure.providers.fuyao.config import FuyaoCollectionConfig
+from ..infrastructure.providers.tdx.config import TDXDailyPackageConfig
 
 
 class SettingsConfigurationError(ValueError):

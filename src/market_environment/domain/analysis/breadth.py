@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from ...calculations import breadth_index_consistency, breadth_momentum, breadth_width_label
+from .calculations import breadth_index_consistency, breadth_momentum, breadth_width_label
 
 
 @dataclass(frozen=True, slots=True)

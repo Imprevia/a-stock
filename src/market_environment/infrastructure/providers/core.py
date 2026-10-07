@@ -9,11 +9,11 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ...fuyao_market import FuyaoMarketAdapter, FuyaoMarketResult
+from .fuyao.market import FuyaoMarketAdapter, FuyaoMarketResult
 from ...domain.analysis import analyze_index, build_collected_core_summary
-from ...provider_shadow import compare_shadow
+from .shadow import compare_shadow
 from ...providers import INDEX_SPECS, MarketDataProvider, ProviderResult
-from ...refresh import effective_market_date
+from ..collection.refresh import effective_market_date
 from ...snapshot_store import (
     CollectionTaskRecord,
     CoreIndexResultRecord,

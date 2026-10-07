@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import Connection, text
 
-from ....limit_facts import (
+from ....domain.policies.limit_facts import (
     LIMIT_FACT_SCHEMA_VERSION,
     LimitSecurityFactRecord,
     fact_row_checksum,

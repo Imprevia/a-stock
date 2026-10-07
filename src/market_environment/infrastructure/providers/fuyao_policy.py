@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...fuyao_config import FuyaoCollectionConfig
+from .fuyao.config import FuyaoCollectionConfig
 
 
 class FuyaoCollectionPolicy:

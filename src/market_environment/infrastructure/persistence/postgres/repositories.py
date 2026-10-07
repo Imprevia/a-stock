@@ -11,7 +11,7 @@ from sqlalchemy import Connection, text
 
 from ....application.mappers import candidate_to_snapshot_fields, snapshot_to_candidate
 from ....domain.models import CollectionCandidate, DatasetDate
-from ....provider_capability import ProviderCapabilityReport
+from ...providers.capability import ProviderCapabilityReport
 from ....snapshot_store import (
     SNAPSHOT_SCHEMA_VERSION,
     TRADING_SESSION_SCHEMA_VERSION,

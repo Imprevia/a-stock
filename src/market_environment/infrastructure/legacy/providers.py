@@ -20,18 +20,22 @@ import requests
 from src.trading_system.data.provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
 from src.trading_system.data.providers import EastmoneyClient
 
-from ...calculations import Bar
-from ...fuyao import FuyaoClient, FuyaoLimitDataset, FuyaoNonTradingDayError
-from ...industry_mapping import IndustryMappingResult, VersionedIndustryMapper, normalized_identity
-from ...sector_enrichment import (
+from ...domain.analysis.calculations import Bar
+from ..providers.fuyao.limits_client import (
+    FuyaoClient,
+    FuyaoLimitDataset,
+    FuyaoNonTradingDayError,
+)
+from ..providers.industry_mapping import IndustryMappingResult, VersionedIndustryMapper, normalized_identity
+from ..providers.sector_enrichment import (
     ENRICHMENT_MAPPING_REVISION,
     ENRICHMENT_MATCH_METHOD,
     SUPPLEMENTAL_FIELDS,
     SectorIdentityMatcher,
     normalize_sector_name,
 )
-from ...tdx_config import TDXDailyPackageConfig
-from ...tdx_daily import (
+from ..providers.tdx.config import TDXDailyPackageConfig
+from ..providers.tdx.daily_package import (
     TDXDailyPackage,
     TDXDailyPackageClient,
     TDXDailyPackageError,
@@ -1380,7 +1384,7 @@ class MarketDataProvider:
     ):
         """Normalize provider rows without inferring missing security facts."""
 
-        from ...limit_facts import normalize_limit_rows
+        from ...domain.policies.limit_facts import normalize_limit_rows
 
         return normalize_limit_rows(
             rows,
@@ -1405,7 +1409,7 @@ class MarketDataProvider:
         streak_complete: bool | None = None,
         pool_quality: Mapping[str, Any] | None = None,
     ):
-        from ...limit_facts import normalize_limit_pools
+        from ...domain.policies.limit_facts import normalize_limit_pools
 
         return normalize_limit_pools(
             pools,

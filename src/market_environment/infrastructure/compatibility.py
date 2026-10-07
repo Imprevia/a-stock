@@ -30,8 +30,8 @@ from ..application.queries import (
     GetNextSessionComparisonQuery,
     GetTimezonePreferenceQuery,
 )
-from ..calculations import build_market_review_evidence
-from ..collection import CollectionCoordinator
+from ..domain.analysis.calculations import build_market_review_evidence
+from .collection import CollectionCoordinator
 from ..domain.models import (
     DATASET_IDS,
     CollectionCandidate,

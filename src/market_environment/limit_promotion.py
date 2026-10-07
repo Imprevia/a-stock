@@ -8,7 +8,7 @@ from datetime import date
 from time import perf_counter
 from typing import Any
 
-from .schemas import PROMOTION_RULE_VERSION, PROMOTION_SAMPLE_RULE
+from .interfaces.http.schemas.models import PROMOTION_RULE_VERSION, PROMOTION_SAMPLE_RULE
 from .snapshot_store import LIMIT_DETAIL_CHECKSUM_KEY
 from .trading_sessions import TradingDayResolver
 

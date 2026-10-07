@@ -14,9 +14,9 @@ from ..application.ports import (
     CollectionQueryPort,
     MarketEnvironmentQueryPort,
 )
-from ..collection import CollectionCoordinator
-from ..fuyao_market import FuyaoMarketAdapter
-from ..refresh import MARKET_TIME_ZONE
+from ..infrastructure.collection import CollectionCoordinator
+from ..infrastructure.providers.fuyao.market import FuyaoMarketAdapter
+from ..infrastructure.collection.refresh import MARKET_TIME_ZONE
 from ..infrastructure.materialized_aggregate_factory import build_composer, build_rebuilder
 from ..infrastructure.materialization_support import MaterializationSupport
 from ..timezone_preferences import TimezonePreferenceStore

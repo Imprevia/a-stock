@@ -11,9 +11,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ...limit_promotion import limit_v1_enabled
-from ...provider_shadow import compare_shadow
+from .shadow import compare_shadow
 from ...providers import MarketDataProvider
-from ...refresh import SUCCESS_STATUSES
+from ..collection.refresh import SUCCESS_STATUSES
 from ...schemas import PROMOTION_RULE_VERSION
 from ...snapshot_store import (
     CollectionTaskRecord,

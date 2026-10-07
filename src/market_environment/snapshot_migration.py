@@ -1,6 +1,6 @@
 """Backward-compatible import surface for local snapshot migrations."""
 
-from .date_relabel import (
+from .infrastructure.persistence.sqlite_import.date_relabel import (
     ConflictPolicy,
     DateRelabelConflict,
     DateRelabelEntry,

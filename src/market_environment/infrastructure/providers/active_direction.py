@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ...providers import MarketDataProvider
-from ...refresh import SUCCESS_STATUSES
+from ..collection.refresh import SUCCESS_STATUSES
 from ...snapshot_store import (
     CollectionTaskRecord,
     LeaseToken,

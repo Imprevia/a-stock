@@ -18,7 +18,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from .database import DatabaseSettings, create_database_engine
-from .postgres_compat import PostgresConnection
+from .infrastructure.persistence.postgres.compat import PostgresConnection
 from .postgres_schema import create_schema
 
 TimezoneScope = Literal["personal", "workspace"]

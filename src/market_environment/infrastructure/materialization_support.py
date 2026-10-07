@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from ..application.queries.breadth_analysis import BreadthHistoryReader
 from ..application.queries.limit_ecosystem import LimitEcosystemComposer
-from ..calculations import (
+from ..domain.analysis.calculations import (
     build_market_review_evidence,
     build_review_sentence,
     build_summary_sentence,

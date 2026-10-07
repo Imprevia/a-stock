@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 
-from ....schemas import (
+from ..schemas.models import (
     Chapter01Response,
     MarketEnvironmentResponse,
     NextSessionComparisonResponse,
