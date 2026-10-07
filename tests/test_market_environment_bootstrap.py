@@ -17,7 +17,7 @@ from src.market_environment.bootstrap.settings import (
     SettingsConfigurationError,
 )
 from src.market_environment.bootstrap.container import (
-    LegacyContainerAdapters,
+    ContainerAdapters,
     build_container,
 )
 
@@ -176,7 +176,7 @@ def test_container_builds_from_fake_repository_collector_clock_and_executors() -
 
     container = build_container(
         settings,
-        adapters=LegacyContainerAdapters(
+        adapters=ContainerAdapters(
             repository=repository,
             collector=collector,
             clock=lambda: current,
@@ -189,8 +189,7 @@ def test_container_builds_from_fake_repository_collector_clock_and_executors() -
     )
 
     assert container.reads.clock() == current
-    assert container.reads.market_environment.service.provider is collector
-    assert container.reads.market_environment.service.snapshot_store is repository
+    assert container.reads.market_environment.store is repository
     assert container.reads.collection.coordinator.provider is collector
     assert container.commands.collection.executor is task_executor
     assert not hasattr(container.reads, "task_executor")
@@ -310,7 +309,7 @@ def test_create_app_lifespan_owns_container_shutdown() -> None:
         MarketEnvironmentSettings.from_environment(
             {"MARKET_ENVIRONMENT_PERSISTENT_CACHE": "0"}
         ),
-        adapters=LegacyContainerAdapters(
+        adapters=ContainerAdapters(
             repository=repository,
             collector=collector,
             task_executor=task_executor,
@@ -355,7 +354,7 @@ def test_create_app_shutdown_disposes_database_engine() -> None:
         MarketEnvironmentSettings.from_environment(
             {"MARKET_ENVIRONMENT_PERSISTENT_CACHE": "0"}
         ),
-        adapters=LegacyContainerAdapters(
+        adapters=ContainerAdapters(
             repository=repository,
             collector=_FakeCollector(),
             task_executor=task_executor,

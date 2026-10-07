@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .bootstrap.container import LegacyContainerAdapters
+from .bootstrap.container import ContainerAdapters
 from .collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
 from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketClient
 from .provider_capability import ProviderCapabilityReport
@@ -25,6 +25,9 @@ from .snapshot_store import SnapshotStore
 from .infrastructure.persistence.sqlite_import import LegacySqliteSnapshotStore
 from .tdx_daily import TDXDailyPackageClient
 from .interfaces.cli.container import build_cli_container
+
+
+_DEFAULT_COLLECTION_COORDINATOR_CLASS = CollectionCoordinator
 
 
 def _add_dataset_arguments(parser: argparse.ArgumentParser) -> None:
@@ -362,7 +365,13 @@ def _collection_coordinator_scope(
     if injected is not None:
         yield injected
         return
-    adapters = LegacyContainerAdapters(clock=clock) if clock is not None else None
+    # Preserve the historical module-level test seam for callers that replace
+    # the coordinator class explicitly. Normal runtime composition still goes
+    # through the shared CLI container below.
+    if CollectionCoordinator is not _DEFAULT_COLLECTION_COORDINATOR_CLASS:
+        yield CollectionCoordinator()
+        return
+    adapters = ContainerAdapters(clock=clock) if clock is not None else None
     container = build_cli_container(adapters=adapters)
     try:
         yield container.coordinator

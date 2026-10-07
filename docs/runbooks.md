@@ -86,6 +86,8 @@ kubectl -n a-stock rollout undo deployment/market-environment-dashboard
 
 ### 生产定时任务契约（fail-closed 默认）
 
+文档中出现的 `enabled=true` 或 `suspend=false` 仅表示已审计的历史/受控生产观察，不代表默认值或通用入口行为；默认值始终为 `enabled=false / suspend=true`。
+
 Helm `a-stock` 默认 `scheduledCollection.enabled=false / suspend=true`：Chart 在该默认下不渲染 CronJob 资源，`scheduledCollection.suspend=true` 在显式启用时保留资源但不创建新 Job。`scripts/deploy-truenas-k3s.sh` 的通用 install/upgrade/application-rollback 入口在首次 Helm render、image 工作、SSH 或目标 API 访问前，会强制 typed values 等于 `enabled=false / suspend=true`；任何偏离（含 `enabled=true` 但 `suspend=false`、空字符串布尔值、`false/false` 等其它组合）都会让入口 `die` 阻断所有后续写入，不会留下 active 或 identity-drifted 的 CronJob。`scheduled-off` / `scheduled-suspended` / `scheduled-active` 三个 overlay 未应用额外覆盖时同样保持 `enabled=false / suspend=true` 默认值。生产激活、回退或停止 CronJob 必须通过专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`），禁止裸 `kubectl apply`/`helm install|upgrade`/`kubectl patch`/`kubectl edit` 直接改动 CronJob 资源；任何绕过入口的写入都视为偏离契约并需立即回退。运维与排错请以本契约为准：
 
 - `deploy/helm/a-stock/values.yaml`、`deploy/truenas/values-secure-manual-collection.yaml` 以及 `scheduled-off` / `scheduled-suspended` / `scheduled-active` 三个 overlay，未应用额外覆盖时均为 `scheduledCollection.enabled=false / suspend=true`；`market-data-collection-cronjob.yaml` 模板在该默认值下根本不会渲染 CronJob 资源。
@@ -412,7 +414,7 @@ feature flag 并使用 `--disable-schedule` 或新的受审发布 packet，保�
 
 ### 第 02 页市场广度派生边界（2026-09-16）
 
-第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照之上，由 `MarketEnvironmentService._enrich_breadth` 在每次章节请求时串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 `SnapshotStore.list_snapshot_dates("breadth")` + `SnapshotStore.get("breadth", date)`，与第 01 章 `syncPattern` / `next-session` 共用同一快照读取路径。派生过程只读取本地快照，不调用 provider、不引入新的 API 路由、不修改 PostgreSQL schema、不增加新采集任务。`QTS-01-02-01..05` 规则 ID、阈值、权重与 YAML 保持不变；`rules validate` 仍输出 49 条规则。
+第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照之上，由 `domain.analysis.breadth` 与 `BreadthHistoryReader` 串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 PostgreSQL read repository 的精确日期 snapshot list/get，与第 01 章 `syncPattern` / `next-session` 共用同一 provider-free 读取路径；物化重建由 `MaterializationSupport` 复用同一纯分析组合。派生过程只读取本地快照，不调用 provider、不引入新的 API 路由、不修改 PostgreSQL schema、不增加新采集任务。`QTS-01-02-01..05` 规则 ID、阈值、权重与 YAML 保持不变；`rules validate` 仍输出 49 条规则。
 
 排查 02 页 5 日趋势或 250 日分位缺失时：
 - `breadth.history.validObservations` < 60 → 标注 `quality.status=insufficient`，3 个分位字段保持 `null`，不要补 0。
@@ -613,6 +615,7 @@ POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task
 # 手动验证文档契约（快速 / 完整）
 python scripts/check-docs-contract.py --mode=fast
 python scripts/check-docs-contract.py --mode=full
+python scripts/check_market_environment_architecture.py
 
 # （重）安装本地 hooks
 python scripts/install-hooks.py

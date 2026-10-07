@@ -56,19 +56,19 @@
 - [x] 6.3 Extract breadth history, percentile, momentum, index-consistency and width-label analysis behind explicit repository inputs, and verify exact previous-date and insufficient-history tests retain their outputs.
 - [x] 6.4 Extract limit ecosystem composition and promotion policies from query orchestration while preserving quality layering and missing evidence rules, and verify the focused limit ecosystem/promotion suites pass.
 - [x] 6.5 Move API response assembly into boundary mappers that consume typed application results and existing Pydantic DTOs, and verify golden success/partial/missing/degraded/failed-retained responses remain compatible.
-- [ ] 6.6 Switch all query and materialization paths away from `MarketEnvironmentService`, reduce any temporary service facade to delegation only, and verify ordinary GET/status/next-session paths have zero provider calls and warm local reads remain under the existing 500 ms threshold.
+- [x] 6.6 Switch all query and materialization paths away from `MarketEnvironmentService`, reduce any temporary service facade to delegation only, and verify ordinary GET/status/next-session paths have zero provider calls and warm local reads remain under the existing 500 ms threshold.
 
 ## 7. Architecture enforcement and compatibility cleanup
 
-- [ ] 7.1 Add a repository-native AST/import architecture check enforcing the documented layer rules, query/provider separation, bootstrap-only concrete assembly and thin `api.py` entry point, and verify it fails against representative forbidden-import fixtures and passes the refactored package.
-- [ ] 7.2 Remove runtime use of `SnapshotStore`, `MarketDataProvider`, `MarketEnvironmentService` and old coordinator compatibility facades, migrate remaining tests/imports, and delete dead delegation code while retaining only intentionally stable API/CLI entry modules.
-- [ ] 7.3 Verify the refactored package no longer has the original giant mixed-responsibility modules, record new module-size/import-coupling metrics, and confirm dataset/provider/persistence responsibilities can be located through `docs/repository-guide.md`.
-- [ ] 7.4 Run the complete compatibility matrix for API schemas, provider fixtures, exact-date reads, failure retention, lease/fencing, materialized aggregate, scheduling render and import-without-I/O behavior, and record the results in the active plan.
+- [x] 7.1 Add a repository-native AST/import architecture check enforcing the documented layer rules, query/provider separation, bootstrap-only concrete assembly and thin `api.py` entry point, and verify it fails against representative forbidden-import fixtures and passes the refactored package.
+- [x] 7.2 Remove runtime use of `SnapshotStore`, `MarketDataProvider`, `MarketEnvironmentService` and old coordinator compatibility facades, migrate remaining tests/imports, and delete dead delegation code while retaining only intentionally stable API/CLI entry modules.
+- [x] 7.3 Verify the refactored package no longer has the original giant mixed-responsibility modules, record new module-size/import-coupling metrics, and confirm dataset/provider/persistence responsibilities can be located through `docs/repository-guide.md`.
+- [x] 7.4 Run the complete compatibility matrix for API schemas, provider fixtures, exact-date reads, failure retention, lease/fencing, materialized aggregate, scheduling render and import-without-I/O behavior, and record the results in the active plan.
 
 ## 8. Documentation and final verification
 
-- [ ] 8.1 Update `docs/architecture.md`, `docs/repository-guide.md`, `docs/runbooks.md`, `docs/product-specs/market-environment-dashboard.md` and `docs/status.md` to the implemented structure and verified operational paths, and verify no documentation claims a runtime SQLite fallback or default-active schedule.
-- [ ] 8.2 Run focused market-environment, provider HTTP, deployment manifest and architecture tests; record exact commands/results and any intentionally unrun checks in the active plan.
-- [ ] 8.3 Run `python -m pytest tests -q` and resolve all regressions attributable to the refactor without weakening exact-date, quality, provider-free or safety assertions.
-- [ ] 8.4 Run `openspec validate refactor-market-environment-backend-architecture --type change --strict --no-interactive` and `python scripts/check-docs-contract.py --mode=full`, and verify both complete successfully.
-- [ ] 8.5 Update the active plan's Status, Completion Evidence, Remaining Gaps and Next Step, confirm `git diff --check` and a clean scope review, and explicitly record that no real provider, production database, Kubernetes write, schedule activation or feature-flag rollout was performed.
+- [x] 8.1 Update `docs/architecture.md`, `docs/repository-guide.md`, `docs/runbooks.md`, `docs/product-specs/market-environment-dashboard.md` and `docs/status.md` to the implemented structure and verified operational paths, and verify no documentation claims a runtime SQLite fallback or default-active schedule.
+- [x] 8.2 Run focused market-environment, provider HTTP, deployment manifest and architecture tests; record exact commands/results and any intentionally unrun checks in the active plan.
+- [x] 8.3 Run `python -m pytest tests -q` and resolve all regressions attributable to the refactor without weakening exact-date, quality, provider-free or safety assertions.
+- [x] 8.4 Run `openspec validate refactor-market-environment-backend-architecture --type change --strict --no-interactive` and `python scripts/check-docs-contract.py --mode=full`, and verify both complete successfully.
+- [x] 8.5 Update the active plan's Status, Completion Evidence, Remaining Gaps and Next Step, confirm `git diff --check` and a clean scope review, and explicitly record that no real provider, production database, Kubernetes write, schedule activation or feature-flag rollout was performed.

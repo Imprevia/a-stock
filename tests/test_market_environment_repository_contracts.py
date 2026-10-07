@@ -20,7 +20,7 @@ from src.market_environment.domain.models import (
     QualityMetadata,
 )
 from src.market_environment.infrastructure.compatibility import (
-    LegacySnapshotRepositoryAdapter,
+    SnapshotRepositoryAdapter,
 )
 from src.market_environment.infrastructure.persistence.postgres import (
     PostgresSnapshotRepository,
@@ -82,7 +82,7 @@ def _candidate(as_of: date, *, settled: bool) -> CollectionCandidate:
 def snapshot_repository_harness(request, tmp_path):
     if request.param == "legacy-sqlite":
         path = Path(tmp_path) / "repository-contract.sqlite3"
-        repository = LegacySnapshotRepositoryAdapter(
+        repository = SnapshotRepositoryAdapter(
             LegacySqliteSnapshotStore(path),
             now=lambda: FETCHED_AT,
         )

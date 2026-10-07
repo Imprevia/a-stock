@@ -2,11 +2,11 @@
 
 ## Stage
 
-Stage 6/8 — query、aggregate 与 analysis 拆分；Stage 5 五类 dataset collector 抽取及 coordinator registry 接线已完成。
+Stage 7/8 — query/materialization runtime 已切换到 application boundary，旧 service/provider/store 物理实现已隔离到 `infrastructure/legacy`，架构 AST/import 门禁已加入，完整兼容矩阵已通过；Stage 5/6 迁移保持完成。
 
 ## Status
 
-in-progress（OpenSpec apply 41/51；任务 6.5 已完成，下一步执行 6.6 移除 query/materialization 对 MarketEnvironmentService 的运行时依赖）
+completed（OpenSpec apply 51/51；代码、文档、focused/full pytest、strict OpenSpec、docs-contract full 与 scope review 均完成）
 
 ## Scope
 
@@ -106,16 +106,26 @@ in-progress（OpenSpec apply 41/51；任务 6.5 已完成，下一步执行 6.6 
 - Stage 6 breadth analysis：新增 application `BreadthHistoryReader`，通过显式 repository 精确读取 previous breadth 与 5/250 日 payload，并在完整性失败时返回 insufficient；新增纯 `domain.analysis.breadth` 计算 decline/spread、momentum、250 日 percentile、index consistency、width label 与 history coverage。service 只保留 DTO history mapping 和兼容委托；focused/calculation/query/application/bootstrap 回归为 `93 passed in 3.70s`，测试确认 exact previous date 不会用更旧快照替代且少于 60 条历史继续输出 `insufficient`。
 - Stage 6 limits composition/policy：新增 application `LimitEcosystemComposer`，迁入 limits V1 gate、禁用字段清理、payload checksum + materialization revision cache、facts/membership ecosystem composition、Pydantic validation 与 bounded cache；新增纯 domain `apply_promotion_quality_layer`，保持 promotion degraded 向 dataset quality 叠加 warnings/status，而 missing/insufficient evidence 不伪造成功。limit contract/fixture/matrix/facts/promotion/performance/service 回归为 `129 passed in 6.04s`，application/bootstrap/API 回归为 `38 passed in 3.96s`。
 - Stage 6 API response boundary mappers：新增 interfaces.http.schemas.mappers，提供 map_market_environment/map_chapter01/map_next_session/map_timezone_preferences/map_collection_run/map_collection_status 六个纯函数，修正 from ……schemas （4 级点）相对路径，不再持有 coordinator/store/CollectionTaskRecord/CoreIndexResultRecord 直接耦合；routers 在 boundary 内将对象投影为 dict 后再交给 mapper。market_environment、core、next-session、chapter-01、data-collection、collection-runs POST/GET、preferences/timezone GET/PUT、attach_timezone_context 全部走 mapper 验证；unwrap_collection_coordinator 已从 dependencies.py 移除。golden 验证为 40 passed in 4.13s（API/characterization/bootstrap/status queries），market_environment focused/compatible 集为 506 passed, 6 skipped, 1 deselected in 19.90s；git diff --check 通过；未访问真实 provider、生产 PostgreSQL 或 Kubernetes。
-- 待完成：10 项 apply 任务、service facade 收缩与架构门禁、docs-contract full 与最终 scope review。
+- Stage 6.6 provider-free runtime：`bootstrap.container` 不再构造 `MarketEnvironmentService`；普通查询继续通过 `RepositoryMarketEnvironmentQueryAdapter` 读取 exact-date materialized/snapshot/query ports；物化组合改由独立 `MaterializationSupport` 提供本地分析与 response assembly。新增 support 与 legacy composer 排序 JSON 等价测试，query/bootstrap/compatibility focused 为 `21 passed`，未触发 provider。
+- Stage 7.1 architecture gate：新增 `scripts/check_market_environment_architecture.py` 与 `tests/test_market_environment_architecture.py`，AST 校验 domain/application 反向依赖、query/provider 分离、router concrete construction、thin `api.py` 与 runtime `create_schema` 调用；代表性 forbidden-import fixture 会失败，当前包检查输出 `market-environment architecture: OK`，focused architecture/application/query 集为 `20 passed`。
+- Stage 7.2 facade cleanup：runtime composition 改用 `ContainerAdapters`、`RepositoryMarketEnvironmentQueryAdapter`、`CoordinatorCollectionQuery/CommandAdapter`、`RebuilderAggregateCommandAdapter` 和显式 `PostgresRuntimeStore`/`CollectorProviderRuntime`；`service.py`、`providers.py`、`snapshot_store.py` 仅为稳定导入 shim，旧实现移到 `infrastructure/legacy/`，删除 coordinator `Legacy*` alias 并迁移离线测试导入。bootstrap/CLI/compatibility/repository/collector focused 为 `28 passed`，collection/API 回归为 `60 passed`。
+- Stage 7.3 package metrics：根 compatibility shim 行数为 `snapshot_store.py=3`、`providers.py=3`、`service.py=8`；`collection.py=567`，新 application query/materialization/support 模块为 `24–451` 行；旧实现明确隔离为 `infrastructure/legacy/{snapshot_store.py=2944,providers.py=2863,service.py=1234}`，不进入普通 query/materialization runtime。当前直接导入者统计为 `service` 1、`providers` 10、`snapshot_store` 22、`collection` 4；职责地图已同步 `docs/repository-guide.md`，并标注 legacy 与 runtime adapter 边界。
+- Stage 7.4 完整兼容矩阵：`.venv\\Scripts\\python.exe -m pytest tests/test_market_environment_api.py tests/test_market_environment_api_characterization.py tests/test_provider_http.py tests/test_market_environment_providers.py tests/test_market_environment_snapshot_store.py tests/test_market_environment_date_relabel.py tests/test_market_environment_collection.py tests/test_market_environment_postgres_lease_repository.py tests/test_market_environment_postgres_aggregate_repository.py tests/test_market_environment_architecture.py tests/test_market_environment_bootstrap.py tests/test_market_environment_cli_bootstrap.py tests/test_market_environment_application_ports.py tests/test_market_environment_queries.py tests/test_market_environment_status_queries.py tests/test_market_environment_next_session.py -q` 为 `152 passed, 2 skipped`；覆盖 API schema/golden、provider fixture、exact-date、failure retention、lease/fencing、aggregate CAS、import-without-I/O 与 provider-free status/next-session。期间修复 legacy snapshot adapter 的 date-relabel 相对导入，未改变算法或存储格式。
+- Stage 7.4 调度/部署兼容矩阵：在 Windows 使用本地解释器 shim 验证脚本内 `python3` 入口，`.venv\\Scripts\\python.exe -m pytest tests/test_deployment_manifests.py tests/test_truenas_scheduling_guard.py tests/test_scheduling_packet_validator.py -q` 为 `206 passed, 100 skipped`；补齐调度测试的当前解释器/平台路径拼接，并让部署脚本仅在检测到 `cygpath` 时转换 Git Bash 基线路径，Linux/TrueNAS 路径保持不变。100 个 skip 均为缺少 Helm 或显式 PostgreSQL/目标环境的安全门控，未执行真实部署或集群写入。
+- Stage 8.1 文档同步：`docs/architecture.md`、`docs/repository-guide.md`、`docs/runbooks.md`、`docs/product-specs/market-environment-dashboard.md` 与 `docs/status.md` 已描述 provider-free query、PostgreSQL runtime、legacy/test SQLite 边界、显式 runtime adapters 和 fail-closed scheduling；补充说明历史 active 观察不等于默认值。
+- Stage 8.2 focused 验证：`.venv\\Scripts\\python.exe -m pytest tests/test_market_environment_architecture.py tests/test_market_environment_bootstrap.py tests/test_market_environment_application_ports.py tests/test_market_environment_queries.py tests/test_market_environment_status_queries.py tests/test_provider_http.py tests/test_deployment_manifests.py -q` 为 `166 passed, 59 skipped`；调度/部署完整矩阵另为 `206 passed, 100 skipped`。
+- Stage 8.3 全量验证：`.venv\\Scripts\\python.exe -m pytest tests -q` 为 `764 passed, 106 skipped, 228 warnings`。warnings 为 Python 3.14 SQLite 日期/时间适配弃用提示；无失败。
+- Stage 8.4 门禁：`openspec validate refactor-market-environment-backend-architecture --type change --strict --no-interactive` 输出 `Change ... is valid`；`.venv\\Scripts\\python.exe scripts/check-docs-contract.py --mode=full` 输出 `docs-contract: 通过（代码 55 / 文档 7 / plan 2）`；`check_market_environment_architecture.py` 输出 `market-environment architecture: OK`。
+- Stage 8.5 scope review：`git diff --check` 退出码 0（仅 Git 报告现有 LF→CRLF 提示）；变更范围仅限 market-environment 分层、调度脚本/测试兼容、docs-contract 本地工作树识别和对应 docs/OpenSpec 证据。未访问真实 provider、生产 PostgreSQL、Kubernetes/Helm 写入口，未激活 CronJob、未打开 feature flag、未修改远端分支。
+- 所有 51 项 apply 任务已完成；本计划保持在 `active/` 供审计，后续如需归档应单独执行 openspec archive 流程。
 
 ## Remaining Gaps
 
-- compatibility adapters 仍委托 `SnapshotStore`、`MarketEnvironmentService` 与 `CollectionCoordinator`；正常 collection runtime 已通过完整 registry 调用五类 collector，但 5.1 的 legacy provider registry adapter 仍保留给迁移期测试，需在任务 7.2 随旧 facade 一并移除。
-- application container 的正常路径已要求 PostgreSQL，但仍通过过渡 facade 构造旧 PostgreSQL backend；新 connection factory/UoW 的完整 runtime wiring 与 `create_schema` 移除仍待后续 facade cleanup，不能视为最终生产装配完成。
+- legacy provider/store/service implementations remain under `infrastructure/legacy` for explicit test/migration compatibility; normal query/materialization composition does not construct them directly. The explicit `PostgresRuntimeStore` and `CollectorProviderRuntime` adapters retain existing behavior while the split PostgreSQL repository/UoW runtime wiring remains a later operational rollout concern.
 - Alembic `0003_provider_capability_reports` 与 shared repository contracts 已实现；真实 PostgreSQL transaction/concurrency/fencing integration 仅在显式隔离 test URL 下运行，本机未配置该 URL，因此相关 3 个 integration case 本轮按安全门控跳过。
-- `snapshot_store.py`、`providers.py` 与 `service.py` 仍为迁移期混合职责模块；`collection.py` 已移除 dataset provider/fallback 算法，但 query/status compatibility 与 concrete assembly 仍待 Stage 6–7 继续收缩。
-- 当前仅有 ports/query 局部 AST 约束，完整分层、bootstrap-only assembly 与 thin entry-point 架构门禁尚待任务 7.1。
+- `infrastructure/legacy` 中的三份大文件仍保留旧算法，作为显式隔离的测试/迁移实现；新的 root modules 是薄 shim，普通 runtime 与 query/materialization 不再依赖旧 service facade。
+- 本机未配置显式隔离 PostgreSQL test URL，真实 transaction/concurrency/fencing integration 继续按安全门控跳过；必须在获授权隔离环境中另行运行，不得把本地 SQLite contract 结果解释为生产 PostgreSQL smoke。
 
 ## Next Step
 
-实施任务 6.6：把 query 与 materialization 路径切换到 application ports，将 service facade 收缩为 delegation only，并验证普通 GET/status/next-session 路径 provider 调用数为 0 且 warm local read 维持既有 500ms 门槛。
+本变更实现已完成。下一步仅可在独立受审计划中执行 OpenSpec archive，或在获授权隔离环境中补跑真实 PostgreSQL transaction/concurrency/fencing integration；不得据此自动执行生产部署、调度激活或 provider smoke。

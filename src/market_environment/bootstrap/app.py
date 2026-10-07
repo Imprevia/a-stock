@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .container import (
     ApplicationContainer,
-    LegacyContainerAdapters,
+    ContainerAdapters,
     build_container,
 )
 from .settings import MarketEnvironmentSettings
@@ -25,7 +25,7 @@ ContainerFactory = Callable[[], ApplicationContainer]
 
 def create_app(
     settings: MarketEnvironmentSettings | None = None,
-    overrides: ApplicationContainer | LegacyContainerAdapters | ContainerFactory | None = None,
+    overrides: ApplicationContainer | ContainerAdapters | ContainerFactory | None = None,
     *,
     router: APIRouter | None = None,
     http_middleware: Iterable[Callable[..., Any]] = (),
@@ -85,11 +85,11 @@ def get_app_container(app: FastAPI) -> ApplicationContainer:
 
 def _container_factory(
     settings: MarketEnvironmentSettings | None,
-    overrides: ApplicationContainer | LegacyContainerAdapters | ContainerFactory | None,
+    overrides: ApplicationContainer | ContainerAdapters | ContainerFactory | None,
 ) -> ContainerFactory:
     if isinstance(overrides, ApplicationContainer):
         return lambda: overrides
-    if callable(overrides) and not isinstance(overrides, LegacyContainerAdapters):
+    if callable(overrides) and not isinstance(overrides, ContainerAdapters):
         return overrides
     return lambda: build_container(settings, adapters=overrides)
 

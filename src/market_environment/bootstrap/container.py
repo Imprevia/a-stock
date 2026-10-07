@@ -16,20 +16,21 @@ from ..application.ports import (
 )
 from ..collection import CollectionCoordinator
 from ..fuyao_market import FuyaoMarketAdapter
-from ..providers import MarketDataProvider
 from ..refresh import MARKET_TIME_ZONE
-from ..service import MarketEnvironmentService
-from ..snapshot_store import SnapshotStore
+from ..infrastructure.materialized_aggregate_factory import build_composer, build_rebuilder
+from ..infrastructure.materialization_support import MaterializationSupport
 from ..timezone_preferences import TimezonePreferenceStore
 from ..infrastructure.compatibility import (
-    LegacyAggregateCommandAdapter,
-    LegacyCollectionCommandAdapter,
-    LegacyCollectionQueryAdapter,
-    LegacyMarketEnvironmentQueryAdapter,
-    LegacyTimezoneCommandAdapter,
-    LegacyTimezoneQueryAdapter,
+    CoordinatorCollectionCommandAdapter,
+    CoordinatorCollectionQueryAdapter,
+    RebuilderAggregateCommandAdapter,
+    RepositoryMarketEnvironmentQueryAdapter,
+    TimezoneCommandAdapter,
+    TimezoneQueryAdapter,
 )
 from ..infrastructure.execution import BoundedTaskExecutor
+from ..infrastructure.persistence.postgres.runtime_store import PostgresRuntimeStore
+from ..infrastructure.providers.runtime import CollectorProviderRuntime
 from .settings import MarketEnvironmentSettings, SettingsConfigurationError
 
 
@@ -37,20 +38,20 @@ from .settings import MarketEnvironmentSettings, SettingsConfigurationError
 class ReadDependencies:
     market_environment: MarketEnvironmentQueryPort
     collection: CollectionQueryPort
-    timezone_preferences: LegacyTimezoneQueryAdapter
+    timezone_preferences: TimezoneQueryAdapter
     clock: Callable[[], datetime]
 
 
 @dataclass(frozen=True, slots=True)
 class CommandDependencies:
     collection: CollectionCommandPort
-    aggregate: LegacyAggregateCommandAdapter
-    timezone_preferences: LegacyTimezoneCommandAdapter
+    aggregate: RebuilderAggregateCommandAdapter
+    timezone_preferences: TimezoneCommandAdapter
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyContainerAdapters:
-    """Injectable seams used while concrete application ports are introduced."""
+class ContainerAdapters:
+    """Injectable composition seams for offline tests and local commands."""
 
     repository: Any | None = None
     collector: Any | None = None
@@ -86,11 +87,11 @@ class ApplicationContainer:
 def build_container(
     settings: MarketEnvironmentSettings | None = None,
     *,
-    adapters: LegacyContainerAdapters | None = None,
+    adapters: ContainerAdapters | None = None,
 ) -> ApplicationContainer:
     """Build the modular-monolith container at an explicit runtime boundary."""
 
-    adapters = adapters or LegacyContainerAdapters()
+    adapters = adapters or ContainerAdapters()
     settings = settings or MarketEnvironmentSettings.from_environment(
         require_database=adapters.repository is None
     )
@@ -107,25 +108,31 @@ def build_container(
         max_workers=settings.collection_workers,
         thread_name_prefix="market-snapshot",
     )
-    service = MarketEnvironmentService(
-        provider=collector,
-        clock=adapters.monotonic_clock,
-        snapshot_store=repository,
-        persistent_cache=settings.persistent_cache_enabled,
-        local_reads_only=settings.persistent_cache_enabled,
+    materialization_support = MaterializationSupport(
+        repository,
         now=clock,
-        refresh_executor=refresh_executor,
+        snapshot_ttl_seconds=30,
+    )
+    composer = build_composer(
+        support=materialization_support,
+        repository=repository,
+        market_now_callable=materialization_support.market_now,
+        snapshot_ttl_seconds=materialization_support.snapshot_ttl_seconds,
+    )
+    rebuilder = build_rebuilder(
+        repository=repository,
+        composer=composer,
+        market_now_callable=materialization_support.market_now,
     )
     fuyao_adapter = adapters.fuyao_adapter or FuyaoMarketAdapter()
     coordinator = CollectionCoordinator(
         collector,
         repository,
         now=clock,
-        rebuild_aggregate=service.rebuild_materialized_aggregate,
+        rebuild_aggregate=rebuilder.rebuild,
         limits_v1_enabled=settings.limits_v1_enabled,
         fuyao_config=settings.fuyao,
         fuyao_adapter=fuyao_adapter,
-        analysis_service=service,
     )
     task_executor = adapters.task_executor or BoundedTaskExecutor(
         max_workers=settings.collection_workers,
@@ -137,15 +144,15 @@ def build_container(
     )
 
     reads = ReadDependencies(
-        market_environment=LegacyMarketEnvironmentQueryAdapter(service),
-        collection=LegacyCollectionQueryAdapter(coordinator),
-        timezone_preferences=LegacyTimezoneQueryAdapter(timezone_repository),
+        market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
+        collection=CoordinatorCollectionQueryAdapter(coordinator),
+        timezone_preferences=TimezoneQueryAdapter(timezone_repository),
         clock=clock,
     )
     commands = CommandDependencies(
-        collection=LegacyCollectionCommandAdapter(coordinator, task_executor),
-        aggregate=LegacyAggregateCommandAdapter(service),
-        timezone_preferences=LegacyTimezoneCommandAdapter(timezone_repository),
+        collection=CoordinatorCollectionCommandAdapter(coordinator, task_executor),
+        aggregate=RebuilderAggregateCommandAdapter(rebuilder),
+        timezone_preferences=TimezoneCommandAdapter(timezone_repository),
     )
     return ApplicationContainer(
         settings=settings,
@@ -156,23 +163,23 @@ def build_container(
             timezone_repository,
             collector,
             fuyao_adapter,
-            service,
+            refresh_executor,
             task_executor,
         ),
     )
 
 
-def _build_repository(settings: MarketEnvironmentSettings) -> SnapshotStore:
+def _build_repository(settings: MarketEnvironmentSettings) -> PostgresRuntimeStore:
     if settings.database is None:
         raise SettingsConfigurationError(
             "normal market-environment runtime requires "
             "MARKET_ENVIRONMENT_DATABASE_URL"
         )
-    return SnapshotStore(database_url=settings.database.url)
+    return PostgresRuntimeStore(settings.database.url)
 
 
-def _build_collector(settings: MarketEnvironmentSettings) -> MarketDataProvider:
-    return MarketDataProvider(
+def _build_collector(settings: MarketEnvironmentSettings) -> CollectorProviderRuntime:
+    return CollectorProviderRuntime(
         require_fuyao_for_limits=settings.limits_v1_enabled,
         tdx_fallback_enabled=settings.tdx.fallback_enabled,
         tdx_active_direction_derived_enabled=(
@@ -212,7 +219,7 @@ def _close_resource(resource: Any) -> None:
 __all__ = [
     "ApplicationContainer",
     "CommandDependencies",
-    "LegacyContainerAdapters",
+    "ContainerAdapters",
     "ReadDependencies",
     "build_container",
 ]

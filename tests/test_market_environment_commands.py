@@ -17,7 +17,7 @@ from src.market_environment.application.commands import (
 from src.market_environment.application.ports import TaskExecutor
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.infrastructure.compatibility import (
-    LegacyCollectionCommandAdapter,
+    CoordinatorCollectionCommandAdapter,
 )
 from src.market_environment.infrastructure.execution import BoundedTaskExecutor
 from src.market_environment.refresh import MARKET_TIME_ZONE
@@ -192,7 +192,7 @@ def test_http_post_returns_202_before_noop_executor_runs_provider(tmp_path) -> N
         SnapshotStore(tmp_path / "commands.sqlite3"),
         now=lambda: NOW,
     )
-    legacy = LegacyCollectionCommandAdapter(coordinator, NoopExecutor())
+    legacy = CoordinatorCollectionCommandAdapter(coordinator, NoopExecutor())
     execute = ExecuteCollectionRunCommand(legacy)
     noop = NoopExecutor()
     commands = HttpCommandUseCases(

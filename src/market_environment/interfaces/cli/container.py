@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ...bootstrap.container import (
     ApplicationContainer,
-    LegacyContainerAdapters,
+    ContainerAdapters,
     build_container,
 )
 from ...bootstrap.settings import MarketEnvironmentSettings
@@ -31,7 +31,7 @@ class CliContainer:
 def build_cli_container(
     settings: MarketEnvironmentSettings | None = None,
     *,
-    adapters: LegacyContainerAdapters | None = None,
+    adapters: ContainerAdapters | None = None,
 ) -> CliContainer:
     """Build CLI dependencies without importing or constructing FastAPI."""
 

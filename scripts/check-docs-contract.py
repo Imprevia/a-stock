@@ -110,15 +110,21 @@ def try_git(args: list[str]) -> str:
 
 
 def changed_files() -> list[str]:
-    """返回当前变更集文件列表。fast=staged；full=upstream...HEAD（逐级回退）。"""
+    """返回当前变更集文件列表。
+
+    ``full`` is used before a commit as well as in CI. Include both the
+    committed branch diff and the current worktree/untracked diff so a local
+    verification cannot miss documentation edits that are still unstaged.
+    """
     if MODE == "fast":
         raw = try_git(["diff", "--name-only", "--cached"])
     else:
-        raw = try_git(["diff", "--name-only", "@{u}...HEAD"])
-        if not raw:
-            raw = try_git(["diff", "--name-only", "origin/main...HEAD"])
-        if not raw:
-            raw = try_git(["diff", "--name-only", "HEAD"])
+        chunks = [
+            try_git(["diff", "--name-only", "@{u}...HEAD"]),
+            try_git(["diff", "--name-only", "HEAD"]),
+            try_git(["ls-files", "--others", "--exclude-standard"]),
+        ]
+        raw = "\n".join(chunk for chunk in chunks if chunk)
     files = []
     for line in raw.splitlines():
         name = line.strip().strip('"')

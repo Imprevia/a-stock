@@ -12,6 +12,8 @@ from src.market_environment.providers import INDEX_SPECS, ProviderResult
 from src.market_environment.schemas import Chapter01Response, MarketEnvironmentResponse
 from src.market_environment.service import MARKET_TIME_ZONE, MarketEnvironmentService, market_today
 from src.market_environment.snapshot_store import MaterializedAggregateRecord, SnapshotRecord, SnapshotStore
+from src.market_environment.infrastructure.materialization_support import MaterializationSupport
+from src.market_environment.infrastructure.materialized_aggregate_factory import build_composer
 
 
 def make_bars(count: int = 130) -> list[Bar]:
@@ -711,6 +713,63 @@ def test_extracted_materialized_rebuilder_preserves_logical_payload_bytes(tmp_pa
         default=str,
     )
     assert serialize(actual) == serialize(composed[0])
+
+
+def test_materialization_support_composes_without_legacy_service(tmp_path) -> None:
+    selected = market_today()
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    market_now = datetime.combine(
+        effective,
+        datetime.min.time(),
+        tzinfo=MARKET_TIME_ZONE,
+    ).replace(hour=16)
+    store = SnapshotStore(tmp_path / "materialization-support.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=effective,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=5,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    support = MaterializationSupport(
+        store,
+        now=lambda: market_now,
+        snapshot_ttl_seconds=30,
+    )
+    composer = build_composer(
+        support=support,
+        repository=store,
+        market_now_callable=support.market_now,
+        snapshot_ttl_seconds=support.snapshot_ttl_seconds,
+    )
+    revision = store.materialization_revision(effective)
+    composed = composer.compose(effective, revision)
+    legacy_service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    legacy = legacy_service._materialized_aggregate_composer.compose(effective, revision)
+    assert composed is not None
+    assert legacy is not None
+    serialize = lambda payload: json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    assert serialize(composed[0]) == serialize(legacy[0])
 
 
 def test_failed_refresh_rebuilds_aggregate_with_retained_warning(tmp_path) -> None:

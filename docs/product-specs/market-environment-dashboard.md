@@ -4,6 +4,8 @@
 
 `active` · 版本 `0.12`
 
+后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
+
 ## 目标
 
 把 `搭建交易系统/01-如何判断市场环境/` 与量化版对应文档中的盘后判断拆成可重复读取、带数据质量说明且可追溯到规则范围的网页证据，避免把主观描述或缺失数据包装成确定结论。

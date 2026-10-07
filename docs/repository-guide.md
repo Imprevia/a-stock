@@ -58,13 +58,18 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/market_environment/infrastructure/persistence/sqlite_import/` | 测试或停写迁移 SQLite 适配器 | application ports/domain；不得成为生产静默回退 |
 | `src/market_environment/infrastructure/providers/` | vendor client 复用、五类 dataset collector 与降级链 | application collector port、domain、共享 transport |
 | `src/market_environment/infrastructure/execution/` | 有界进程内 task executor | application executor port |
+| `src/market_environment/infrastructure/legacy/` | 明确隔离的旧 provider、SQLite/PostgreSQL 混合存储和 service 实现；仅供迁移、测试或稳定兼容 shim 使用 | 不得进入普通 query/materialization runtime composition |
 
-稳定兼容入口保留 `src/market_environment/api.py` 与 `src/market_environment/cli.py`；它们只转发到 bootstrap/interfaces。迁移期 facade 只能委托，完成前应删除，不作为新增业务逻辑位置。
+稳定兼容入口保留 `src/market_environment/api.py`、`src/market_environment/cli.py` 以及
+`src/market_environment/{service,providers,snapshot_store}.py` 的导入 shim；前两者转发到 bootstrap/interfaces，后三者
+只转发到 `infrastructure/legacy/`。普通 query/materialization runtime 使用 application query/command、
+`MaterializationSupport` 和明确命名的 runtime adapters，不再构造旧 service 或 coordinator `Legacy*` facade。
 
 ## 安全修改区
 
 - `docs/**`：自由修改，保持链接有效。
 - `scripts/**`、`.githooks/**`：改动后必须跑 `python scripts/check-docs-contract.py --mode=full` 验证。
+- `scripts/check_market_environment_architecture.py`：离线 AST/import 门禁；改动分层或入口时同步运行并记录结果。
 
 ## 不安全修改区（改前必须有 active plan）
 

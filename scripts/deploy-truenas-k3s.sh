@@ -15,6 +15,10 @@ die() {
   exit 1
 }
 
+is_absolute_path() {
+  [[ "$1" == /* || "$1" =~ ^[[:alpha:]]:[/\\].*$ ]]
+}
+
 usage() {
   cat <<'USAGE'
 Usage: bash scripts/deploy-truenas-k3s.sh [--env-file PATH]
@@ -51,6 +55,12 @@ COMPONENT_NAME="all"
 COMPONENT_SELECTED=false
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 COMPONENT_BASELINE_FILE="${COMPONENT_BASELINE_FILE:-$SCRIPT_DIR/../tests/fixtures/truenas_component_baseline.yaml}"
+# Git Bash exposes repository paths as /<drive>/..., while native Windows
+# Python resolves drive-letter paths. Normalize only when cygpath exists;
+# Linux/TrueNAS execution keeps the original POSIX path unchanged.
+if command -v cygpath >/dev/null 2>&1; then
+  COMPONENT_BASELINE_FILE="$(cygpath -w "$COMPONENT_BASELINE_FILE")"
+fi
 COMPONENT_BASELINE_RELEASE=""
 COMPONENT_BASELINE_NAMESPACE=""
 COMPONENT_BASELINE_CLAIM=""
@@ -1226,13 +1236,13 @@ if [[ "$OPERATION" == deploy ]]; then
 fi
 
 cd "$REPO_DIR"
-if [[ -n "$HELM_VALUES_FILE" && "$HELM_VALUES_FILE" != /* ]]; then
+if [[ -n "$HELM_VALUES_FILE" ]] && ! is_absolute_path "$HELM_VALUES_FILE"; then
   HELM_VALUES_FILE="$REPO_DIR/$HELM_VALUES_FILE"
 fi
 if [[ -n "$HELM_VALUES_FILE" ]]; then
   [[ -f "$HELM_VALUES_FILE" ]] || die "HELM_VALUES_FILE does not exist: $HELM_VALUES_FILE"
 fi
-if [[ -n "$SCHEDULING_OVERLAY_FILE" && "$SCHEDULING_OVERLAY_FILE" != /* ]]; then
+if [[ -n "$SCHEDULING_OVERLAY_FILE" ]] && ! is_absolute_path "$SCHEDULING_OVERLAY_FILE"; then
   SCHEDULING_OVERLAY_FILE="$REPO_DIR/$SCHEDULING_OVERLAY_FILE"
 fi
 if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then

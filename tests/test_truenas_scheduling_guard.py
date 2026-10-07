@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,12 +42,19 @@ def _write_native_overlay(path: Path, *, schedule: str = "30 16 * * 1-5") -> Non
 
 def _run_validator(command: str, payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(VALIDATOR), command, *arguments],
+        [sys.executable, str(VALIDATOR), command, *arguments],
         input=payload,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def _bash_path(path: Path) -> str:
+    """Write a path into a sourced Bash env file without Windows escapes."""
+    if os.name == "nt":
+        return str(path).replace("\\", "/")
+    return str(path)
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
@@ -185,14 +193,14 @@ def _write_target_spies(tmp_path: Path) -> tuple[Path, Path]:
 
 def _write_env(path: Path, repo: Path, baseline: Path, overlay: Path | None) -> None:
     lines = [
-        f"REPO_DIR={repo}",
+        f"REPO_DIR={_bash_path(repo)}",
         "TRUENAS_HOST=192.0.2.10",
         "TRUENAS_SSH_USER=tester",
-        f"HELM_VALUES_FILE={baseline}",
+        f"HELM_VALUES_FILE={_bash_path(baseline)}",
         "REMOTE_IMAGE_DIR=/unreachable",
     ]
     if overlay is not None:
-        lines.append(f"SCHEDULING_OVERLAY_FILE={overlay}")
+        lines.append(f"SCHEDULING_OVERLAY_FILE={_bash_path(overlay)}")
     path.write_text("\n".join([*lines, ""]), encoding="utf-8")
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -210,7 +218,7 @@ def test_active_packet_is_rejected_before_server_dry_run_target_access(tmp_path:
             "--kube-version",
             "1.26.6",
         ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -236,7 +244,7 @@ def test_ordinary_deploy_rejects_enabled_schedule_before_target_access(tmp_path:
     _write_env(env_file, ROOT, active_values, None)
     completed = subprocess.run(
         ["bash", str(SCRIPT), "--env-file", str(env_file)],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -269,7 +277,7 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_values_before_render_or_ac
 
     completed = subprocess.run(
         ["bash", str(SCRIPT), "--env-file", str(env_file)],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -292,7 +300,7 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_acces
     helm.chmod(0o755)
     env_file = tmp_path / "deploy.env"
     env_file.write_text(
-        f"REPO_DIR={ROOT}\n"
+        f"REPO_DIR={_bash_path(ROOT)}\n"
         "TRUENAS_HOST=192.0.2.10\n"
         "TRUENAS_SSH_USER=tester\n"
         "HELM_VALUES_FILE=\n"
@@ -304,7 +312,7 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_acces
 
     completed = subprocess.run(
         ["bash", str(SCRIPT), "--env-file", str(env_file)],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -342,7 +350,7 @@ def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
         ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -538,7 +546,7 @@ def test_git_update_is_rejected_before_any_target_or_update_command(tmp_path: Pa
 
     completed = subprocess.run(
         ["bash", str(SCRIPT), "--env-file", str(env_file)],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -564,7 +572,7 @@ def test_invalid_kubernetes_semver_is_rejected_before_target_access(tmp_path: Pa
             "--kube-version",
             "1.26.6-.",
         ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -593,7 +601,7 @@ def test_native_kubernetes_prerelease_is_rejected_before_target_access(tmp_path:
             "--kube-version",
             "1.27.0-rc.1",
         ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -815,7 +823,7 @@ def _run_generic_deploy(
         ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM or "helm",
             "GENERIC_UPGRADE_OUTCOME": outcome,
             "GENERIC_RELEASE_PRESENT": str(release_present).lower(),
@@ -1048,7 +1056,7 @@ def test_read_only_discovery_uses_live_version_without_render_hash(tmp_path: Pat
             "--namespace",
             "a-stock",
         ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -1307,7 +1315,7 @@ def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> 
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1406,7 +1414,7 @@ def test_component_deploy_routes_around_image_work_without_target_access(
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1456,7 +1464,7 @@ def test_component_schedule_rejects_missing_frozen_image_without_target_access(
             "--component",
             "schedule",
         ],
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
@@ -1701,7 +1709,7 @@ def test_component_schedule_deploy_preflight_renders_with_frozen_image(
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1756,7 +1764,7 @@ def test_component_schedule_deploy_rejects_baseline_image_when_frozen_required(
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1805,7 +1813,7 @@ def test_component_service_deploy_preflight_uses_component_value(
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1851,7 +1859,7 @@ def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,
@@ -1904,7 +1912,7 @@ def test_all_components_ordered_database_service_schedule_in_preflight(
         ],
         env={
             **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM,
         },
         capture_output=True,

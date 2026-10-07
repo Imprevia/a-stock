@@ -47,6 +47,8 @@
 
 ## 进行中
 
+- `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
+
 - `unify-provider-http-collection` 已完成统一 provider 传输边界：腾讯、百度、新浪、TDX 和 Eastmoney 通过共享 host policy，具备现代 session UA、请求门与抖动、连接/读取/408/429/5xx 有界重试、`Retry-After`、single-flight、短成功缓存、日期隔离、请求预算和失败冷却探测；Fuyao 保留专用 API-key 请求门与错误语义。focused transport/provider 回归为 105 passed，OpenSpec strict、docs-contract full 和规则门禁通过；全量 pytest 的 4 个失败是本机缺少 `mcp` 依赖及 Windows bash 路径兼容问题。默认不引入代理池、Cookie 伪造或 TLS 指纹模拟，真实网络 smoke 仍需授权的盘后隔离环境。
 - `evaluate-fuyao-market-data-provider` 已完成 Fuyao v2 core/breadth 契约、共享请求门、分数据集路由、activeDirection 保持 Eastmoney/TDX、离线 fixture/回归和架构/runbook/产品规格同步；真实 probe、core shadow 差异归因、breadth/sectors 日期与字段完整性修复，以及隔离 PostgreSQL capability/shadow smoke 均已完成并记录在 active plan。所有新开关保持关闭，未批准生产 revision；全量测试本轮 735 passed、3 skipped，另有 2 个既有性能阈值抖动失败（非本变更逻辑）。
 - `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当前 `fuyao-market-v2` fallback 证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。`FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0` 保持关闭，未写入正式 sectors 主源快照。

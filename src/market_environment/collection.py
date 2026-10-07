@@ -23,13 +23,10 @@ from .infrastructure.providers import (
     LimitsCollector,
     SectorsCollector,
 )
-from .providers import MarketDataProvider
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
-from .service import MarketEnvironmentService
 from .snapshot_store import (
     CollectionRunRecord,
     CollectionTaskRecord,
-    SnapshotStore,
     LeaseFenceError,
     LeaseToken,
 )
@@ -55,8 +52,8 @@ class CollectionStartResult:
 class CollectionCoordinator:
     def __init__(
         self,
-        provider: MarketDataProvider | None = None,
-        store: SnapshotStore | None = None,
+        provider: Any | None = None,
+        store: Any | None = None,
         *,
         now: Callable[[], datetime] | None = None,
         lease_seconds: float = 600.0,
@@ -65,7 +62,6 @@ class CollectionCoordinator:
         fuyao_config: FuyaoCollectionConfig | None = None,
         fuyao_adapter: FuyaoMarketAdapter | None = None,
         fuyao_policy: FuyaoCollectionPolicy | None = None,
-        analysis_service: MarketEnvironmentService | None = None,
         core_collector: CoreCollector | None = None,
         breadth_collector: BreadthCollector | None = None,
         active_direction_collector: ActiveDirectionCollector | None = None,
@@ -73,8 +69,12 @@ class CollectionCoordinator:
         limits_collector: LimitsCollector | None = None,
         collector_registry: DatasetCollectorRegistry | None = None,
     ) -> None:
-        self.provider = provider or MarketDataProvider()
-        self.store = store or SnapshotStore()
+        if provider is None:
+            raise ValueError("CollectionCoordinator requires an explicit collector provider")
+        if store is None:
+            raise ValueError("CollectionCoordinator requires an explicit repository")
+        self.provider = provider
+        self.store = store
         self._now = now or (lambda: datetime.now(MARKET_TIME_ZONE))
         self.lease_seconds = lease_seconds
         self.rebuild_aggregate = rebuild_aggregate
@@ -84,11 +84,6 @@ class CollectionCoordinator:
         self.fuyao_policy = fuyao_policy or FuyaoCollectionPolicy(
             self.fuyao_config,
             self.store,
-        )
-        self._analysis_service = analysis_service or MarketEnvironmentService(
-            provider=self.provider,
-            persistent_cache=False,
-            now=self._now,
         )
         if collector_registry is None:
             core_collector = core_collector or CoreCollector(
@@ -153,15 +148,6 @@ class CollectionCoordinator:
                 )
             )
         self.collector_registry = collector_registry
-        if self.rebuild_aggregate is None:
-            aggregate_service = MarketEnvironmentService(
-                provider=self.provider,
-                snapshot_store=self.store,
-                persistent_cache=True,
-                local_reads_only=True,
-                now=self._now,
-            )
-            self.rebuild_aggregate = aggregate_service.rebuild_materialized_aggregate
 
     def start_run(
         self,

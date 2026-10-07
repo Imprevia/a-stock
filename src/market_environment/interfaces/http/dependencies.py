@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from fastapi import Request
@@ -60,9 +60,9 @@ def get_timezone_commands(request: Request) -> TimezonePreferenceCommands:
 
 
 def get_effective_market_date() -> date:
-    from ...service import market_today
+    from ...refresh import effective_market_date
 
-    return market_today()
+    return effective_market_date(datetime.now())
 
 
 def _request_container(request: Request):

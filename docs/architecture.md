@@ -102,7 +102,7 @@ interfaces/http ----> application ----> domain
 
 持久化按 snapshot、collection run/task、lease、trading session、materialized aggregate、provider capability、limits fact/detail 和 timezone preference 拆分 repository；需要原子性的操作继续共享 PostgreSQL unit of work，不能因为接口拆分而拆散 fenced write、limits manifest/fact 或 aggregate CAS 事务。PostgreSQL 是 Dashboard/CronJob 唯一正式运行时；运行时只校验连接和 Alembic schema 兼容性，不调用 `create_schema`。Alembic `0003_provider_capability_reports` 以非破坏方式创建 runtime 已要求的 capability table/index 并登记 schema version 6，不改写既有市场表、payload 或 checksum。SQLite 仅允许作为测试适配器或停写的一次性导入源，配置 PostgreSQL 的运行时不得静默回退。
 
-迁移期间允许旧 `api.py`、CLI 路径和少量 facade 保持导入兼容，但 facade 只能委托、不能新增业务逻辑；除稳定入口外必须在重构完成前移除。仓库使用 AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施及 bootstrap 之外的具体实现装配。
+迁移期间允许旧 `api.py`、CLI 路径和 `service.py`、`providers.py`、`snapshot_store.py` 导入 shim 保持兼容；shim 只转发到 `infrastructure/legacy/`，不新增业务逻辑。普通 runtime 使用明确命名的 PostgreSQL store/provider adapter、application query/command 和 `MaterializationSupport`，不构造旧 service 或 `Legacy*` coordinator facade。仓库使用 `scripts/check_market_environment_architecture.py` AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施及 bootstrap 之外的具体实现装配。
 
 ## 运行时流
 

@@ -14,7 +14,7 @@ from src.market_environment.domain.models import (
     DatasetDate,
 )
 from src.market_environment.infrastructure.compatibility import (
-    build_legacy_provider_collector_registry,
+    build_provider_collector_registry,
 )
 from src.market_environment.infrastructure.persistence.sqlite_import import (
     LegacySqliteSnapshotStore,
@@ -100,7 +100,7 @@ def test_legacy_provider_adapter_builds_complete_registry_without_algorithm_move
 ) -> None:
     provider = CollectionProvider()
     store = LegacySqliteSnapshotStore(tmp_path / "collector-registry.sqlite3")
-    registry = build_legacy_provider_collector_registry(
+    registry = build_provider_collector_registry(
         provider,
         store,
         now=lambda: AFTER_MARKET,

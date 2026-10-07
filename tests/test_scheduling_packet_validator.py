@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,7 +20,7 @@ LABELS = {"app.kubernetes.io/instance": "a-stock", "app.kubernetes.io/name": "a-
 
 def _run(command: str, payload: str = "", *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(VALIDATOR), command, *arguments],
+        [sys.executable, str(VALIDATOR), command, *arguments],
         input=payload,
         capture_output=True,
         text=True,

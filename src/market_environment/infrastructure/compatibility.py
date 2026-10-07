@@ -40,12 +40,11 @@ from ..domain.models import (
     DatasetDate,
     MaterializationRevision,
 )
-from ..service import MarketEnvironmentService
 from ..snapshot_store import SnapshotRecord, SnapshotStore
 
 
 @dataclass(frozen=True, slots=True)
-class LegacySnapshotRepositoryAdapter:
+class SnapshotRepositoryAdapter:
     store: SnapshotStore
     now: Callable[[], datetime]
 
@@ -75,7 +74,7 @@ class LegacySnapshotRepositoryAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyMaterializedAggregateReaderAdapter:
+class MaterializedAggregateReaderAdapter:
     store: SnapshotStore
 
     def get_aggregate(self, as_of: date):
@@ -87,7 +86,7 @@ class LegacyMaterializedAggregateReaderAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyTradingSessionReaderAdapter:
+class TradingSessionReaderAdapter:
     store: SnapshotStore
 
     def get_session(self, as_of: date):
@@ -101,84 +100,37 @@ class LegacyTradingSessionReaderAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class _LegacyServiceAggregateReader:
-    service: Any
-    section: str | None = None
-
-    def get_aggregate(self, as_of: date):
-        if self.section is None:
-            return self.service.get(as_of)
-        return self.service.get_chapter01(as_of, self.section)
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyServiceCoreReader:
-    service: Any
-
-    def get(self, identity: DatasetDate) -> CollectionCandidate | None:
-        payload = self.service.get_core(identity.as_of)
-        actual_value = payload.get("asOf") if isinstance(payload, dict) else None
-        actual_as_of = (
-            date.fromisoformat(actual_value)
-            if isinstance(actual_value, str)
-            else identity.as_of
-        )
-        summary = payload.get("summary") if isinstance(payload, dict) else None
-        warnings = (
-            tuple(str(value) for value in summary.get("warnings") or ())
-            if isinstance(summary, dict)
-            else ()
-        )
-        indices = payload.get("indices") if isinstance(payload, dict) else None
-        return CollectionCandidate(
-            identity=identity,
-            payload=copy.deepcopy(payload),
-            source="legacy-service",
-            status="ok",
-            observations=len(indices) if isinstance(indices, list) else 0,
-            warnings=warnings,
-            settled=True,
-            actual_as_of=actual_as_of,
-        )
-
-    def list_dates(self, dataset: str):
-        store = getattr(self.service, "snapshot_store", None)
-        if store is None:
-            return ()
-        return store.list_snapshot_dates(dataset)
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyMarketEnvironmentQueryAdapter:
-    service: MarketEnvironmentService
+class RepositoryMarketEnvironmentQueryAdapter:
+    store: SnapshotStore
 
     def get(self, as_of: date) -> dict:
         return GetMarketEnvironmentQuery(
-            _LegacyServiceAggregateReader(self.service)
+            MaterializedAggregateReaderAdapter(self.store)
         ).execute(as_of)
 
     def get_core(self, as_of: date) -> dict:
-        return GetCoreQuery(_LegacyServiceCoreReader(self.service)).execute(as_of)
+        return GetCoreQuery(
+            SnapshotRepositoryAdapter(
+                self.store,
+                now=lambda: datetime.now(timezone.utc),
+            )
+        ).execute(as_of)
 
     def get_chapter01(self, as_of: date, section: str) -> dict:
         return GetChapter01Query(
-            _LegacyServiceAggregateReader(self.service, section)
+            MaterializedAggregateReaderAdapter(self.store)
         ).execute(as_of, section)
 
     def get_next_session_comparison(self, as_of: date) -> dict:
-        store = getattr(self.service, "snapshot_store", None)
-        if store is None:
-            return self.service.get_next_session_comparison(as_of)
         return GetNextSessionComparisonQuery(
-            LegacySnapshotRepositoryAdapter(
-                store,
+            SnapshotRepositoryAdapter(
+                self.store,
                 now=lambda: datetime.now(timezone.utc),
             ),
-            LegacyMaterializedAggregateReaderAdapter(store),
-            LegacyTradingSessionReaderAdapter(store),
+            MaterializedAggregateReaderAdapter(self.store),
+            TradingSessionReaderAdapter(self.store),
             build_market_review_evidence,
         ).execute(as_of)
-
 
 @dataclass(frozen=True, slots=True)
 class _LegacyCoordinatorStatusReader:
@@ -192,7 +144,7 @@ class _LegacyCoordinatorStatusReader:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyCollectionQueryAdapter:
+class CoordinatorCollectionQueryAdapter:
     coordinator: CollectionCoordinator
 
     def collection_status(self, as_of: date) -> dict[str, Any]:
@@ -236,7 +188,7 @@ class _LegacyCoordinatorCommands:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyCollectionCommandAdapter:
+class CoordinatorCollectionCommandAdapter:
     coordinator: CollectionCoordinator
     executor: Any
 
@@ -291,25 +243,25 @@ class LegacyCollectionCommandAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class _LegacyAggregateCommands:
-    service: Any
+class _RebuilderAggregateCommand:
+    rebuilder: Any
 
     def rebuild(self, as_of: date):
-        return self.service.rebuild_materialized_aggregate(as_of)
+        return self.rebuilder.rebuild(as_of)
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyAggregateCommandAdapter:
-    service: MarketEnvironmentService
+class RebuilderAggregateCommandAdapter:
+    rebuilder: Any
 
     def rebuild(self, as_of: date):
         return RebuildAggregateCommand(
-            _LegacyAggregateCommands(self.service)
+            _RebuilderAggregateCommand(self.rebuilder)
         ).execute(as_of)
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyTimezoneQueryAdapter:
+class TimezoneQueryAdapter:
     repository: Any
 
     def get(self, *args, **kwargs):
@@ -317,7 +269,7 @@ class LegacyTimezoneQueryAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyTimezoneCommandAdapter:
+class TimezoneCommandAdapter:
     repository: Any
 
     def set(self, *args, **kwargs):
@@ -325,7 +277,7 @@ class LegacyTimezoneCommandAdapter:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyDatasetCollectorAdapter:
+class CoordinatorDatasetCollectorAdapter:
     """Expose one existing provider/coordinator dataset chain as a collector."""
 
     dataset_id: str
@@ -341,7 +293,7 @@ class LegacyDatasetCollectorAdapter:
         now: Callable[[], datetime],
         rebuild_aggregate: Callable[..., Any] | None = None,
         **coordinator_options: Any,
-    ) -> "LegacyDatasetCollectorAdapter":
+    ) -> "CoordinatorDatasetCollectorAdapter":
         return cls(
             dataset_id,
             CollectionCoordinator(
@@ -371,7 +323,7 @@ class LegacyDatasetCollectorAdapter:
         )
 
 
-def build_legacy_provider_collector_registry(
+def build_provider_collector_registry(
     provider: Any,
     store: SnapshotStore,
     *,
@@ -382,7 +334,7 @@ def build_legacy_provider_collector_registry(
     """Expose existing provider/coordinator paths through all stable collectors."""
 
     return DatasetCollectorRegistry.complete(
-        LegacyDatasetCollectorAdapter.from_provider(
+        CoordinatorDatasetCollectorAdapter.from_provider(
             dataset_id,
             provider,
             store,
@@ -395,15 +347,15 @@ def build_legacy_provider_collector_registry(
 
 
 __all__ = [
-    "LegacyAggregateCommandAdapter",
-    "LegacyCollectionCommandAdapter",
-    "LegacyCollectionQueryAdapter",
-    "LegacyDatasetCollectorAdapter",
-    "LegacyMaterializedAggregateReaderAdapter",
-    "LegacyMarketEnvironmentQueryAdapter",
-    "LegacySnapshotRepositoryAdapter",
-    "LegacyTimezoneCommandAdapter",
-    "LegacyTimezoneQueryAdapter",
-    "LegacyTradingSessionReaderAdapter",
-    "build_legacy_provider_collector_registry",
+    "CoordinatorCollectionCommandAdapter",
+    "CoordinatorCollectionQueryAdapter",
+    "CoordinatorDatasetCollectorAdapter",
+    "MaterializedAggregateReaderAdapter",
+    "RebuilderAggregateCommandAdapter",
+    "RepositoryMarketEnvironmentQueryAdapter",
+    "SnapshotRepositoryAdapter",
+    "TimezoneCommandAdapter",
+    "TimezoneQueryAdapter",
+    "TradingSessionReaderAdapter",
+    "build_provider_collector_registry",
 ]
