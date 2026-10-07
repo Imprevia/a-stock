@@ -12,7 +12,7 @@
 - 将单体 `SnapshotStore` 渐进拆分为快照、采集任务、lease、交易日、物化聚合和 provider capability repository，同时保留迁移期间的兼容 facade。
 - 按 `core`、`breadth`、`limits`、`sectors`、`activeDirection` 拆分 dataset collector；`CollectionCoordinator` 只保留运行编排、任务状态、lease/fencing、失败隔离和提交职责。
 - 将查询、物化聚合及核心/广度/涨跌停分析从 `MarketEnvironmentService` 拆成独立应用用例和领域服务，并逐步用明确类型替代跨层 `dict[str, Any]`。
-- 将 PostgreSQL 固定为正式运行时持久化适配器；SQLite 仅保留为测试或停写迁移输入，运行时 schema 变更继续由 Alembic 管理。
+- 将 PostgreSQL 固定为正式运行时持久化适配器；SQLite 仅保留为测试或停写迁移输入，运行时 schema 变更继续由 Alembic 管理；补充一个非破坏性的兼容 migration，显式创建既有 runtime 已要求的 provider capability 表和索引并登记 schema version 6。
 - 增加架构依赖门禁、兼容性测试和 provider-free read 验证，防止重构后重新形成反向依赖或普通 GET 联网。
 - 校准与本次架构边界冲突的文档描述，特别是 PostgreSQL 运行时和调度 fail-closed 默认值；不改变现有业务能力、API 路径或部署授权流程。
 - 不引入微服务、Celery、Kafka、额外网络服务或新的市场数据源，不在本变更中调整指标公式、provider 优先级或 feature flag 默认值。
@@ -35,4 +35,5 @@
 - 测试将从替换模块全局变量迁移为通过应用工厂、端口 fake 和 repository contract fixture 注入依赖；现有 API、采集、provider、快照和性能测试继续作为回归基线。
 - 需要同步 `docs/architecture.md`、`docs/repository-guide.md`、`docs/runbooks.md`、相关产品规格、active exec plan 和状态记录，并修复已发现的 OpenSpec 调度存储/默认值陈旧描述。
 - API 路径、JSON 现有字段、PostgreSQL 数据、checksum、lease/fencing、精确日期、同日期失败留存、质量状态和 provider 降级顺序保持兼容。
+- 数据库影响仅限新增 Alembic `0003` compatibility migration；它不重写已有表或 payload、不改变 checksum 算法，也不删除或回填生产市场数据。
 - 重构期间不执行真实 provider smoke、生产部署、CronJob 激活、PostgreSQL 生产写入或 feature flag 启用；这些仍属于各自已授权的变更和 runbook。

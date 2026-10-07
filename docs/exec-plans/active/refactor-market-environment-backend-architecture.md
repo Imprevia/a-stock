@@ -2,11 +2,11 @@
 
 ## Stage
 
-Stage 4/8 — PostgreSQL repository 与 unit-of-work 拆分；Stage 3 typed application boundaries 与读写 wiring 已完成。
+Stage 5/8 — dataset collector 抽取；Stage 4 PostgreSQL repository、unit-of-work 与 Alembic compatibility migration 已完成。
 
 ## Status
 
-paused-at-design-decision（OpenSpec apply 28/51；任务 4.10 的“无需 migration”假设与现有 Alembic/runtime schema 事实冲突）
+in-progress（OpenSpec apply 34/51；任务 5.5 已完成，下一步抽取 5.6 LimitsCollector）
 
 ## Scope
 
@@ -15,7 +15,7 @@ paused-at-design-decision（OpenSpec apply 28/51；任务 4.10 的“无需 migr
 - 普通 GET、状态和 next-session 查询继续只读本地精确日期证据，禁止触发 provider。
 - 将五类采集拆为独立 collector，同时保持 provider 顺序、日期能力、质量状态、warning、失败留存和兄弟任务隔离。
 - 将快照、任务、lease、交易日、聚合、能力报告、limits fact 和时区偏好拆为 repository，但原子操作继续共用 PostgreSQL unit of work。
-- PostgreSQL 是唯一正式运行时存储；SQLite 仅作为测试或停写迁移输入；运行时 schema 继续由 Alembic 管理。
+- PostgreSQL 是唯一正式运行时存储；SQLite 仅作为测试或停写迁移输入；运行时 schema 继续由 Alembic 管理，并通过非破坏性 `0003_provider_capability_reports` 明确 version 6/provider capability schema 所有权。
 - 同步校准调度默认 `enabled=false`、`suspend=true` 及 Dashboard/CronJob 共用 PostgreSQL 的文档和 OpenSpec 事实。
 - 不引入微服务、Celery、Kafka、新 provider、新业务指标或破坏性数据库迁移。
 - 本计划不授权真实 provider smoke、生产 PostgreSQL 写入、TrueNAS/k3s/Helm 写操作、CronJob 激活、feature flag 启用或远端分支变更。
@@ -39,7 +39,7 @@ paused-at-design-decision（OpenSpec apply 28/51；任务 4.10 的“无需 migr
 - 普通 GET、collection status 和 next-session provider 调用数为 0，warm local read 维持小于 500ms 的既有门槛。
 - 五类 collector 的来源、fallback、日期证据、质量状态、warning、observations、失败留存和 partial 行为与基线一致。
 - PostgreSQL lease/fencing、checksum、task transition、materialized aggregate CAS 和 limits fact 事务边界通过回归。
-- 运行时不调用 `create_schema`，不静默回退 SQLite；Alembic 表和 revision 无需新增迁移。
+- 运行时不调用 `create_schema`，不静默回退 SQLite；Alembic `0003_provider_capability_reports` 可从现有 head 前向升级到 schema version 6，且不重写既有表、payload 或 checksum。
 - 架构门禁可阻止 domain/application 反向依赖、router 直接装配基础设施及 query 导入 provider。
 - 后端全量 pytest、OpenSpec strict、docs-contract full 和 `git diff --check` 通过。
 - 未访问真实 provider、生产数据库或 Kubernetes 写入口，未修改生产调度和 feature flag。
@@ -93,16 +93,22 @@ paused-at-design-decision（OpenSpec apply 28/51；任务 4.10 的“无需 migr
 - Stage 4 SQLite/runtime boundary：新增惰性加载的 `infrastructure.persistence.sqlite_import.LegacySqliteSnapshotStore`，CLI 显式 `--path` 分支改用该 adapter；无参 `SnapshotStore` 和无 database/adapters 的正常 container 均 fail closed，PostgreSQL 与 sqlite_import package exports 改为惰性加载以保持骨架导入无 legacy 副作用。bootstrap/CLI/snapshot/API/date-relabel/database 回归为 `70 passed, 3 skipped in 5.78s`。
 - Stage 4 repository-contract audit：任务 4.10 的 schema 核对发现 Alembic head 仅有 `0001_postgresql_initial` 与 `0002_limit_membership_details`，其中 `0002` 只登记 schema version 5；runtime `PostgresConnectionFactory` 明确要求 version 6 和 `provider_capability_reports`，而 version 6/table 目前仅由可变的 `create_schema` helper 补齐。该事实不能证明“无需 migration”，也与 Alembic authoritative/runtime 不执行 DDL 的目标冲突，因此 4.10 未勾选。
 - 暂停前自检：全部新 PostgreSQL repository/UoW/port 测试为 `28 passed, 1 skipped in 0.69s`，skip 为未配置显式 PostgreSQL concurrency URL；`git diff --check` 退出码 0（仅 LF→CRLF 提示）；docs-contract fast 退出码 0，但因大量新增文件尚未跟踪而报告“无变更”，不作为最终门禁证据。
-- 待完成：23 项 apply 任务、repository contracts、collector/query decomposition、focused/full tests、完整架构门禁、docs-contract full 和最终 scope review。
+- Stage 4 Alembic/repository contracts：新增非破坏性 `0003_provider_capability_reports`，Alembic runtime 删除 `create_schema` bootstrap；migration contract 固定 revision 链、capability table/column/primary-key/index、schema version 6 ledger、无 ALTER/DROP/UPDATE/DELETE/TRUNCATE 及非破坏性 downgrade。共享 snapshot repository contract 同时覆盖显式 legacy SQLite adapter 与 PostgreSQL repository 的 exact-date put/get、missing、date list、payload/source/status/observations/warnings/settled/quality round-trip 和 checksum 篡改识别；另新增仅由 `MARKET_ENVIRONMENT_TEST_DATABASE_URL` 启用的真实 PostgreSQL commit/rollback 与 stale fencing 验证。focused 结果为 `21 passed, 3 skipped in 1.28s`，完整 repository 回归为 `35 passed, 3 skipped in 1.03s`；3 个 skip 均因未配置显式隔离 PostgreSQL test URL，未访问生产数据库。
+- Stage 5 collector registry：新增 application `DatasetCollectorRegistry`，按 `core`、`breadth`、`limits`、`sectors`、`activeDirection` 稳定顺序解析 collector；unsupported、duplicate、incomplete 和 unknown lookup 都以确定消息 fail closed。`build_legacy_provider_collector_registry` 将既有 provider/coordinator 路径装入完整 registry，不改 fallback 算法；registry/compatibility/ports/current collection 回归为 `36 passed in 5.01s`。
+- Stage 5 CoreCollector：将五指数采集、当前日独立报价校验、Fuyao formal/shadow 与既有 provider 回退、逐指数 sub-result 审计、同日期 retained、session evidence 和 snapshot/task 结果组装机械迁入 `infrastructure.providers.CoreCollector`；`CollectionCoordinator._collect_core` 收缩为单行委托并保留注入 seam。core/index/quote/history focused 为 `15 passed, 56 deselected in 2.07s`，完整 provider/Fuyao/collection/registry/compatibility 回归为 `77 passed in 5.48s`。
+- Stage 5 BreadthCollector：将 Fuyao formal/shadow gate、既有 provider 的 TDX daily package/stock-universe/Eastmoney fallback 调用、exact-date quality 校验、missing/insufficient 处理及 snapshot/task 组装迁入 `infrastructure.providers.BreadthCollector`；coordinator 不再含 breadth provider 分支。breadth/TDX/universe focused 为 `44 passed, 66 deselected in 5.11s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.78s`。
+- Stage 5 ActiveDirectionCollector：将既有 provider 内 Eastmoney primary/delay 与独立 capability gate 的 TDX-derived fallback 调用、ranking metadata、`fallback-derived`→partial 映射、exact-date quality 与 snapshot/task 组装迁入 `infrastructure.providers.ActiveDirectionCollector`；未引入 Fuyao 路由。focused 为 `18 passed, 92 deselected in 0.82s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.42s`。
+- Stage 5 SectorsCollector：将 Eastmoney primary/delay、capability-gated Fuyao fallback、当前上海交易日且结算后的可选 dataapi enrichment、lineage/timing 与 shadow 迁入 `infrastructure.providers.SectorsCollector`；coordinator 删除原 sector/enrichment 方法。focused 为 `15 passed, 56 deselected in 1.06s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.24s`。
+- 待完成：17 项 apply 任务、limits collector/coordinator 收缩与 query decomposition、focused/full tests、完整架构门禁、docs-contract full 和最终 scope review。
 
 ## Remaining Gaps
 
-- compatibility adapters 仍委托 `SnapshotStore`、`MarketEnvironmentService` 与 `CollectionCoordinator`；这些旧 facade 要在 repository/collector/analysis 拆分完成后移除。
+- compatibility adapters 仍委托 `SnapshotStore`、`MarketEnvironmentService` 与 `CollectionCoordinator`；core 算法已进入独立 collector，但 registry 仍通过 legacy adapter 调用 coordinator，需由任务 5.3–5.7 继续替换并最终移除旧 facade。
 - application container 的正常路径已要求 PostgreSQL，但仍通过过渡 facade 构造旧 PostgreSQL backend；新 connection factory/UoW 的完整 runtime wiring 与 `create_schema` 移除仍待后续 facade cleanup，不能视为最终生产装配完成。
-- Alembic migration chain 没有独立表达 schema version 6/provider capability table。继续前需决定：新增可审计的 `0003` migration 并更新 OpenSpec 的“无需 migration”约束，或把 runtime 最低版本/必需表回退到 Alembic head 已保证的范围；后者会削弱已实现的 capability repository 合同，不建议。
+- Alembic `0003_provider_capability_reports` 与 shared repository contracts 已实现；真实 PostgreSQL transaction/concurrency/fencing integration 仅在显式隔离 test URL 下运行，本机未配置该 URL，因此相关 3 个 integration case 本轮按安全门控跳过。
 - `snapshot_store.py`、`providers.py`、`service.py`、`collection.py` 仍为迁移期混合职责模块，Stage 4–6 需按 repository、collector 与 analysis 边界拆分。
 - 当前仅有 ports/query 局部 AST 约束，完整分层、bootstrap-only assembly 与 thin entry-point 架构门禁尚待任务 7.1。
 
 ## Next Step
 
-等待 4.10 schema 决策。建议更新 OpenSpec，允许新增非破坏性 `0003_provider_capability_reports` migration（创建缺失表、登记 version 6，不改已有数据形状），随后继续 shared repository contracts 与 PostgreSQL-only transaction/fencing 验证。
+实施任务 5.6：最后抽取 `LimitsCollector`，保持 Fuyao/Eastmoney membership merge、日期证据、normalization、facts、promotion dependency、失败留存和 transactional detail writes。

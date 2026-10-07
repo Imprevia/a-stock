@@ -31,7 +31,7 @@ The repository currently has more than 340 focused market-environment tests. The
 - No microservices, distributed queue, new daemon, new network boundary or second deployment unit.
 - No change to API routes, JSON naming, market formulas, provider priority, quality semantics or feature flag defaults.
 - No asynchronous rewrite of synchronous provider clients.
-- No database redesign, destructive migration or production SQLite fallback.
+- No database redesign, destructive migration, existing-table rewrite or production SQLite fallback. One additive compatibility migration may create a missing runtime table/index and advance the schema ledger without changing persisted market payloads.
 - No real-provider smoke, production deployment, schedule activation or production database write.
 - No requirement that every private helper become a class; pure calculations remain functions where appropriate.
 
@@ -160,6 +160,8 @@ The existing `SnapshotStore` becomes a temporary facade delegating to these repo
 
 PostgreSQL runtime construction validates connectivity and schema compatibility but does not call `create_schema`. Alembic remains authoritative for runtime schema migration. SQLite support moves to a clearly named legacy/test adapter and one-time import path; it is never selected as a silent production fallback when `MARKET_ENVIRONMENT_DATABASE_URL` is required.
 
+The repository's runtime contract already requires schema version 6 and `provider_capability_reports`, while the existing explicit Alembic chain ends at `0002`/schema version 5. Add `0003_provider_capability_reports` with `down_revision = "0002_limit_membership_details"` as a non-destructive compatibility migration. It creates the existing provider capability table and indexes with `IF NOT EXISTS` semantics and records schema version 6. It does not alter existing market tables, rewrite payloads or change checksum calculation. Runtime composition continues to fail closed until Alembic has applied this revision and must not substitute `create_schema` for migration execution.
+
 Alternative considered: retain one universal repository because it simplifies transactions. Rejected because its interface exposes unrelated persistence concerns to every caller; the unit of work preserves transactions without preserving the giant surface.
 
 ### 6. Replace `MarketDataProvider` dataset methods with a collector registry
@@ -252,13 +254,13 @@ The accompanying delta spec corrects the durable scheduling capability to Postgr
 1. Create the mandatory active exec plan and update architecture/document maps before code changes. Record baseline file metrics, API payload fixtures, provider-free GET behavior, warm-read performance and focused test results.
 2. Add settings, container interfaces, application factory and lifespan management while retaining legacy services behind adapters. Keep `api:app` and all routes unchanged.
 3. Introduce application ports and typed cross-layer results. Adapt the existing `SnapshotStore`, `MarketDataProvider`, service and coordinator to those ports without moving algorithms yet.
-4. Split PostgreSQL repositories and unit of work behind the `SnapshotStore` facade. Move SQLite to the explicit legacy/test/migration adapter and remove runtime `create_schema` calls.
+4. Split PostgreSQL repositories and unit of work behind the `SnapshotStore` facade. Move SQLite to the explicit legacy/test/migration adapter, add the non-destructive `0003_provider_capability_reports` compatibility migration, and remove runtime `create_schema` calls.
 5. Extract dataset collectors in low-risk order: `core`, `breadth`, `activeDirection`, `sectors`, then `limits`. Run the corresponding provider and collection tests after each extraction; `limits` is last because it has the largest membership/fact transaction surface.
 6. Split provider-free queries, aggregate composition and domain analysis from `MarketEnvironmentService`; switch routers and CLI to the new use cases.
 7. Remove runtime use of legacy facades, migrate remaining tests/imports, then delete dead delegation code while keeping the stable entry-point modules.
 8. Add architecture gates, update all mapped documentation and active plan evidence, run OpenSpec validation, focused tests, full pytest and docs-contract full.
 
-No database schema or persisted payload migration is expected. Rollback is stage-local: restore the previous composition/facade wiring for the failed stage while leaving PostgreSQL data untouched. Because this change performs no production deployment or write, operational rollback is not part of apply; a later production rollout requires its own reviewed plan and authorization.
+No existing table or persisted payload shape migration is expected. The one additive `0003_provider_capability_reports` revision only makes the already-required runtime capability schema explicit in Alembic and advances the schema ledger to version 6. Rollback is stage-local: restore the previous composition/facade wiring for the failed stage while leaving PostgreSQL data untouched. Because this change performs no production deployment or write, operational rollback is not part of apply; a later production rollout requires its own reviewed plan and authorization.
 
 ## Open Questions
 

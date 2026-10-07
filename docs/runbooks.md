@@ -530,6 +530,8 @@ PostgreSQL StatefulSet/ClusterIP Service ready
   -> suspended CronJob render/deploy
 ```
 
+当前 runtime schema 最低版本为 6；`alembic upgrade head` 必须应用到 `0003_provider_capability_reports`，使 `provider_capability_reports` 及其 dataset/status 索引由 Alembic 显式管理。该 revision 仅执行 additive `CREATE ... IF NOT EXISTS` 和 schema ledger 登记，不重写已有表或市场 payload。若 migration Job 未达到 version 6，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
+
 StatefulSet 未 ready 或 migration Job 失败时不得 rollout service/schedule；migration Job 使用同一 URL Secret，
 成功后检查 `alembic_version`，并把 Job 日志及 manifest hash 作为切换证据。
 

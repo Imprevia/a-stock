@@ -16,6 +16,7 @@ from ..application.commands import (
     SubmitCollectionRunCommand,
     UpdateTimezonePreferenceCommand,
 )
+from ..application.collection import DatasetCollectorRegistry
 from ..application.mappers import (
     candidate_to_snapshot_fields,
     snapshot_to_candidate,
@@ -32,6 +33,7 @@ from ..application.queries import (
 from ..calculations import build_market_review_evidence
 from ..collection import CollectionCoordinator
 from ..domain.models import (
+    DATASET_IDS,
     CollectionCandidate,
     CollectionOutcome,
     CollectionTaskState,
@@ -369,6 +371,29 @@ class LegacyDatasetCollectorAdapter:
         )
 
 
+def build_legacy_provider_collector_registry(
+    provider: Any,
+    store: SnapshotStore,
+    *,
+    now: Callable[[], datetime],
+    rebuild_aggregate: Callable[..., Any] | None = None,
+    **coordinator_options: Any,
+) -> DatasetCollectorRegistry:
+    """Expose existing provider/coordinator paths through all stable collectors."""
+
+    return DatasetCollectorRegistry.complete(
+        LegacyDatasetCollectorAdapter.from_provider(
+            dataset_id,
+            provider,
+            store,
+            now=now,
+            rebuild_aggregate=rebuild_aggregate,
+            **coordinator_options,
+        )
+        for dataset_id in DATASET_IDS
+    )
+
+
 __all__ = [
     "LegacyAggregateCommandAdapter",
     "LegacyCollectionCommandAdapter",
@@ -380,4 +405,5 @@ __all__ = [
     "LegacyTimezoneCommandAdapter",
     "LegacyTimezoneQueryAdapter",
     "LegacyTradingSessionReaderAdapter",
+    "build_legacy_provider_collector_registry",
 ]

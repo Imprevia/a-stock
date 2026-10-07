@@ -100,7 +100,7 @@ interfaces/http ----> application ----> domain
 
 采集侧固定由 stable dataset id 映射到五个 collector：`core`、`breadth`、`limits`、`sectors`、`activeDirection`。每个 collector 独占本数据集的 provider 优先级、日期能力、验证、质量与 warning 组装；collection coordinator 只负责请求验证、run/task 生命周期、lease/fencing、collector 调用、成功提交/失败留存、聚合重建触发和父状态归并。移动代码时不得同时改变算法或降级顺序。
 
-持久化按 snapshot、collection run/task、lease、trading session、materialized aggregate、provider capability、limits fact/detail 和 timezone preference 拆分 repository；需要原子性的操作继续共享 PostgreSQL unit of work，不能因为接口拆分而拆散 fenced write、limits manifest/fact 或 aggregate CAS 事务。PostgreSQL 是 Dashboard/CronJob 唯一正式运行时；运行时只校验连接和 Alembic schema 兼容性，不调用 `create_schema`。SQLite 仅允许作为测试适配器或停写的一次性导入源，配置 PostgreSQL 的运行时不得静默回退。
+持久化按 snapshot、collection run/task、lease、trading session、materialized aggregate、provider capability、limits fact/detail 和 timezone preference 拆分 repository；需要原子性的操作继续共享 PostgreSQL unit of work，不能因为接口拆分而拆散 fenced write、limits manifest/fact 或 aggregate CAS 事务。PostgreSQL 是 Dashboard/CronJob 唯一正式运行时；运行时只校验连接和 Alembic schema 兼容性，不调用 `create_schema`。Alembic `0003_provider_capability_reports` 以非破坏方式创建 runtime 已要求的 capability table/index 并登记 schema version 6，不改写既有市场表、payload 或 checksum。SQLite 仅允许作为测试适配器或停写的一次性导入源，配置 PostgreSQL 的运行时不得静默回退。
 
 迁移期间允许旧 `api.py`、CLI 路径和少量 facade 保持导入兼容，但 facade 只能委托、不能新增业务逻辑；除稳定入口外必须在重构完成前移除。仓库使用 AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施及 bootstrap 之外的具体实现装配。
 

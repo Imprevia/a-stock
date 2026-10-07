@@ -52,6 +52,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/market_environment/application/ports/` | repository、unit-of-work、collector、executor 协议 | domain 与标准库，不依赖具体基础设施 |
 | `src/market_environment/application/queries/` | provider-free 精确日期读取、状态和 next-session | 只读 ports、domain；不得导入 collector/provider |
 | `src/market_environment/application/commands/` | collection run、刷新和 materialization command | 写 ports、collector registry、executor、domain |
+| `src/market_environment/application/collection/` | 五个 stable dataset identifier 的 collector registry、确定性注册与查找 | application ports、domain；不依赖具体 provider 或 persistence |
 | `src/market_environment/domain/` | 领域值、日期/质量/留存策略与纯分析 | 标准库/Pydantic 边界外的纯模块；不依赖 FastAPI、SQLAlchemy、requests |
 | `src/market_environment/infrastructure/persistence/postgres/` | PostgreSQL repository、unit of work、lease/fencing 和 aggregate CAS | application ports/domain/SQLAlchemy |
 | `src/market_environment/infrastructure/persistence/sqlite_import/` | 测试或停写迁移 SQLite 适配器 | application ports/domain；不得成为生产静默回退 |

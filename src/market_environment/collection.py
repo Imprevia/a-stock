@@ -8,7 +8,6 @@ import logging
 import os
 import time
 import uuid
-from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -17,16 +16,21 @@ from zoneinfo import ZoneInfo
 
 from .limit_promotion import limit_v1_enabled
 from .fuyao_config import FuyaoCollectionConfig
-from .fuyao_market import FuyaoMarketAdapter, FuyaoMarketResult
+from .fuyao_market import FuyaoMarketAdapter
+from .infrastructure.providers import (
+    ActiveDirectionCollector,
+    BreadthCollector,
+    CoreCollector,
+    SectorsCollector,
+)
 from .provider_shadow import compare_shadow
-from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
+from .providers import MarketDataProvider
 from .refresh import MARKET_TIME_ZONE, SUCCESS_STATUSES, effective_market_date, settlement_time
 from .schemas import PROMOTION_RULE_VERSION
 from .service import MarketEnvironmentService
 from .snapshot_store import (
     CollectionRunRecord,
     CollectionTaskRecord,
-    CoreIndexResultRecord,
     SnapshotRecord,
     SnapshotStore,
     LeaseFenceError,
@@ -49,9 +53,6 @@ SUCCESSFUL_TASK_STATUSES = frozenset({"success", "partial"})
 TERMINAL_TASK_STATUSES = frozenset(
     {"success", "partial", "failed-retained", "failed-missing", "busy"}
 )
-SECTOR_ENRICHMENT_FIELDS = ("f3", "f6", "f62", "f104", "f105", "f128", "f184")
-
-
 @dataclass(frozen=True)
 class CollectionStartResult:
     run: CollectionRunRecord
@@ -71,6 +72,10 @@ class CollectionCoordinator:
         fuyao_config: FuyaoCollectionConfig | None = None,
         fuyao_adapter: FuyaoMarketAdapter | None = None,
         analysis_service: MarketEnvironmentService | None = None,
+        core_collector: CoreCollector | None = None,
+        breadth_collector: BreadthCollector | None = None,
+        active_direction_collector: ActiveDirectionCollector | None = None,
+        sectors_collector: SectorsCollector | None = None,
     ) -> None:
         self.provider = provider or MarketDataProvider()
         self.store = store or SnapshotStore()
@@ -84,6 +89,48 @@ class CollectionCoordinator:
             provider=self.provider,
             persistent_cache=False,
             now=self._now,
+        )
+        self.core_collector = core_collector or CoreCollector(
+            self.provider,
+            self.store,
+            market_now=self._market_now,
+            is_settled=self._is_settled,
+            analysis_service=self._analysis_service,
+            fuyao_adapter=self.fuyao_adapter,
+            fuyao_is_enabled=self._fuyao_is_enabled,
+            fuyao_shadow_enabled=self._fuyao_shadow_enabled,
+            fuyao_revision=self._fuyao_revision,
+            lease_seconds=self.lease_seconds,
+        )
+        self.breadth_collector = breadth_collector or BreadthCollector(
+            self.provider,
+            self.store,
+            market_now=self._market_now,
+            is_settled=self._is_settled,
+            fuyao_adapter=self.fuyao_adapter,
+            fuyao_is_enabled=self._fuyao_is_enabled,
+            fuyao_shadow_enabled=self._fuyao_shadow_enabled,
+            fuyao_revision=self._fuyao_revision,
+        )
+        self.active_direction_collector = (
+            active_direction_collector
+            or ActiveDirectionCollector(
+                self.provider,
+                self.store,
+                market_now=self._market_now,
+                is_settled=self._is_settled,
+            )
+        )
+        self.sectors_collector = sectors_collector or SectorsCollector(
+            self.provider,
+            self.store,
+            market_now=self._market_now,
+            is_settled=self._is_settled,
+            fuyao_adapter=self.fuyao_adapter,
+            fuyao_is_enabled=self._fuyao_is_enabled,
+            fuyao_gate_warning=self._fuyao_gate_warning,
+            fuyao_shadow_enabled=self._fuyao_shadow_enabled,
+            fuyao_revision=self._fuyao_revision,
         )
         if self.rebuild_aggregate is None:
             aggregate_service = MarketEnvironmentService(
@@ -554,8 +601,12 @@ class CollectionCoordinator:
         started: float,
         lease: LeaseToken,
     ) -> CollectionTaskRecord:
+        if task.dataset == "breadth":
+            return self.breadth_collector.collect_task(task, started, lease)
+        if task.dataset == "activeDirection":
+            return self.active_direction_collector.collect_task(task, started, lease)
         if task.dataset == "sectors":
-            return self._collect_sector_dataset(task, started, lease)
+            return self.sectors_collector.collect_task(task, started, lease)
         provider_started = time.perf_counter()
         fallback_warning: str | None = None
         try:
@@ -631,256 +682,6 @@ class CollectionCoordinator:
             settled=settled,
         )
 
-    def _collect_sector_dataset(
-        self,
-        task: CollectionTaskRecord,
-        started: float,
-        lease: LeaseToken,
-    ) -> CollectionTaskRecord:
-        """Collect sectors from Eastmoney first, then an approved Fuyao fallback."""
-
-        provider_started = time.perf_counter()
-        primary_error: str | None = None
-        try:
-            payload = copy.deepcopy(self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=False))
-            quality = self._validate_payload("sectors", task.as_of, payload)
-            if str(quality.get("status")) not in SUCCESS_STATUSES:
-                primary_error = str(quality.get("warning") or f"东方财富行业排名质量为 {quality.get('status')}")
-        except Exception as exc:
-            primary_error = f"东方财富行业排名不可用：{exc}"
-
-        fallback = primary_error is not None
-        if fallback:
-            if not self._fuyao_is_enabled("sectors"):
-                raise RuntimeError(f"{primary_error}；{self._fuyao_gate_warning('sectors')}")
-            try:
-                payload = copy.deepcopy(self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=True))
-                quality = self._validate_payload("sectors", task.as_of, payload)
-                if str(quality.get("status")) not in SUCCESS_STATUSES:
-                    raise RuntimeError(str(quality.get("warning") or f"扶摇行业结果质量为 {quality.get('status')}"))
-            except Exception as exc:
-                raise RuntimeError(f"{primary_error}；扶摇行业 fallback 不可用：{exc}") from exc
-            warnings = [
-                primary_error,
-                *(str(value) for value in quality.get("warnings") or []),
-                f"扶摇 capability revision: {self._fuyao_revision('sectors')}",
-            ]
-            self._merge_quality_warnings(quality, warnings)
-
-            # The dataapi request is an optional same-vendor enrichment.  It
-            # runs only after the accepted Fuyao base result and inside this
-            # task's existing dataset/date lease.  Historical and pre-settlement
-            # requests are recorded as skipped without invoking a provider.
-            enrichment_eligible = (
-                task.as_of == effective_market_date(self._market_now())
-                and self._is_settled(task.as_of)
-            )
-            payload, quality = self._enrich_sector_payload(
-                payload,
-                quality,
-                task.as_of,
-                eligible=enrichment_eligible,
-            )
-
-        provider_ms = self._milliseconds(provider_started)
-        source = str(quality.get("source") or quality.get("provider") or "none")
-        observations = int(quality.get("observations") or 0)
-        quality_status = str(quality.get("status"))
-        warning = str(quality.get("warning")) if quality.get("warning") else None
-        if quality_status not in SUCCESS_STATUSES:
-            raise RuntimeError(warning or f"sectors collection returned {quality_status}")
-        settled = self._is_settled(task.as_of)
-        self.store.put(
-            SnapshotRecord(
-                dataset="sectors",
-                as_of=task.as_of,
-                payload=payload,
-                source=source,
-                status=quality_status,
-                observations=observations,
-                warnings=tuple(str(value) for value in quality.get("warnings") or []),
-                fetched_at=self._market_now(),
-                settled=settled,
-            ),
-            lease=lease,
-            now=self._market_now().astimezone(ZoneInfo("UTC")),
-        )
-        timings: dict[str, Any] = {
-            "providerCollectionMs": provider_ms,
-            "fuyaoFallback": fallback,
-            "sourceRevision": quality.get("providerRevision"),
-            "capabilityRevision": self._fuyao_revision("sectors") if fallback else None,
-        }
-        if fallback:
-            timings["sectorEnrichment"] = copy.deepcopy(quality.get("sectorEnrichment") or {})
-        if fallback:
-            timings["eastmoneyFailure"] = primary_error
-        shadow_warning: str | None = None
-        if not fallback and self._fuyao_shadow_enabled("sectors") and self._fuyao_is_enabled("sectors"):
-            try:
-                candidate = self._fetch_chapter_dataset("sectors", task.as_of, use_fuyao=True)
-                timings["shadow"] = compare_shadow(
-                    "sectors",
-                    payload,
-                    candidate,
-                    formal_revision=str(quality.get("providerRevision") or source),
-                    shadow_revision=self._fuyao_revision("sectors"),
-                    as_of=task.as_of,
-                )
-                shadow_status = timings["shadow"].get("status")
-                if shadow_status not in {"match", "degraded"}:
-                    shadow_warning = f"扶摇 shadow: {shadow_status}"
-            except Exception as exc:
-                timings["shadow"] = {
-                    "dataset": "sectors",
-                    "status": "insufficient",
-                    "warnings": [str(exc)],
-                }
-                shadow_warning = f"扶摇 shadow 不可用：{exc}"
-        if shadow_warning:
-            warning = "; ".join(value for value in (warning, shadow_warning) if value)
-        return self.store.transition_collection_task(
-            task.task_id,
-            "partial" if quality_status in {"partial", "fallback", "fallback-derived"} else "success",
-            expected_statuses=("collecting",),
-            source=source,
-            observations=observations,
-            warning=warning,
-            timings=timings,
-            completed_at=self._market_now(),
-            duration_ms=self._milliseconds(started),
-            settled=settled,
-        )
-
-    def _enrich_sector_payload(
-        self,
-        payload: dict[str, Any],
-        quality: dict[str, Any],
-        as_of: date,
-        *,
-        eligible: bool,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Apply the optional provider enrichment without invalidating Fuyao.
-
-        The provider-facing method is intentionally duck-typed so existing
-        test providers and deployments remain compatible while the dataapi
-        adapter is rolled out.  A malformed result or raised exception keeps
-        the accepted four-field Fuyao payload and records a bounded summary.
-        """
-
-        current_as_of = effective_market_date(self._market_now())
-        base_rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
-        base_quality = copy.deepcopy(quality)
-        base_status = str(base_quality.get("status") or "fallback")
-        enrich = getattr(self.provider, "enrich_fuyao_sectors", None)
-        if not eligible:
-            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
-                status="skipped",
-                as_of=as_of,
-                current_as_of=current_as_of,
-                eligible=False,
-                base_rows=len(base_rows),
-                warning="东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用",
-            )
-            payload["quality"] = base_quality
-            return payload, base_quality
-        if not callable(enrich):
-            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
-                status="disabled",
-                as_of=as_of,
-                current_as_of=current_as_of,
-                eligible=True,
-                base_rows=len(base_rows),
-                warning="当前 provider 未启用东方财富 dataapi 行业字段补充",
-            )
-            payload["quality"] = base_quality
-            return payload, base_quality
-        try:
-            candidate = enrich(
-                copy.deepcopy(payload),
-                as_of,
-                eligible=True,
-            )
-            if not isinstance(candidate, dict):
-                raise ValueError("sector enrichment returned a non-object payload")
-            candidate_quality = self._validate_payload("sectors", as_of, candidate)
-            if str(candidate_quality.get("status")) not in SUCCESS_STATUSES:
-                raise ValueError(
-                    str(candidate_quality.get("warning") or "sector enrichment returned an unusable quality status")
-                )
-            # Fuyao remains the accepted base source and quality status.  The
-            # candidate may only add row fields and additive metadata.
-            candidate_quality["status"] = base_status
-            candidate_quality["source"] = base_quality.get("source", candidate_quality.get("source"))
-            candidate_quality["provider"] = base_quality.get("provider", candidate_quality.get("provider"))
-            candidate_quality["warnings"] = list(
-                dict.fromkeys(
-                    [
-                        *(base_quality.get("warnings") or []),
-                        *(candidate_quality.get("warnings") or []),
-                    ]
-                )
-            )
-            candidate_quality["warning"] = (
-                "; ".join(str(value) for value in candidate_quality["warnings"])
-                if candidate_quality["warnings"]
-                else None
-            )
-            return candidate, candidate_quality
-        except Exception as exc:
-            base_quality["sectorEnrichment"] = self._sector_enrichment_summary(
-                status="failed",
-                as_of=as_of,
-                current_as_of=current_as_of,
-                eligible=True,
-                base_rows=len(base_rows),
-                warning=f"东方财富 dataapi 行业字段补充失败：{exc}",
-            )
-            self._merge_quality_warnings(base_quality, [base_quality["sectorEnrichment"]["warnings"][0]])
-            payload["quality"] = base_quality
-            return payload, base_quality
-
-    @staticmethod
-    def _sector_enrichment_summary(
-        *,
-        status: str,
-        as_of: date,
-        current_as_of: date,
-        eligible: bool,
-        base_rows: int,
-        warning: str | None = None,
-    ) -> dict[str, Any]:
-        warnings = [warning] if warning else []
-        return {
-            "status": status,
-            "source": "eastmoney-dataapi",
-            "provider": "eastmoney",
-            "sameVendor": True,
-            "endpoint": "https://data.eastmoney.com/dataapi/bkzj/getbkzj",
-            "requestedFields": list(SECTOR_ENRICHMENT_FIELDS),
-            "mappingRevision": None,
-            "matchMethod": None,
-            "sourceRows": 0,
-            "baseRows": base_rows,
-            "matchedRows": 0,
-            "unmatchedRows": base_rows,
-            "identityCoverage": 0.0 if base_rows else None,
-            "fieldCoverage": {},
-            "dateEvidence": {
-                "requested": as_of.isoformat(),
-                "current": current_as_of.isoformat(),
-                "eligible": eligible,
-                "settled": eligible,
-                "reason": warning or "未请求东方财富 dataapi 行业字段补充",
-            },
-            "warnings": warnings,
-        }
-
-    @staticmethod
-    def _merge_quality_warnings(quality: dict[str, Any], warnings: Iterable[str]) -> None:
-        merged = list(dict.fromkeys([*(quality.get("warnings") or []), *(str(value) for value in warnings if value)]))
-        quality["warnings"] = merged
-        quality["warning"] = "; ".join(merged) if merged else None
 
     def _collect_limits(
         self,
@@ -1104,311 +905,17 @@ class CollectionCoordinator:
         started: float,
         lease: LeaseToken,
     ) -> CollectionTaskRecord:
-        existing = self.store.get("core", task.as_of)
-        retained_by_code = {
-            item["code"]: item
-            for item in (existing.payload.get("indices", []) if existing else [])
-            if isinstance(item, dict) and item.get("code")
-        }
-        warnings: list[str] = []
-        fuyao_core_results: dict[str, FuyaoMarketResult] = {}
-        shadow_core_results: dict[str, FuyaoMarketResult] = {}
-        fuyao_core_degraded = False
-        # Fuyao core validation uses an independent quote only for the
-        # currently observable Shanghai session.  Historical collection must
-        # remain provider-free with respect to live quote endpoints.
-        try:
-            quotes = (
-                self.provider.fetch_quotes(INDEX_SPECS)
-                if task.as_of == effective_market_date(self._market_now())
-                else {}
-            )
-        except Exception as exc:
-            quotes = {}
-            warnings.append(f"腾讯实时报价不可用：{exc}")
-        if self._fuyao_is_enabled("core"):
-            try:
-                fuyao_core_results = self.fuyao_adapter.fetch_core(
-                    task.as_of,
-                    quotes_by_code=quotes,
-                )
-            except Exception as exc:
-                fuyao_core_degraded = True
-                warnings.append(f"扶摇核心指数采集失败，将回退现有 provider：{exc}")
-        elif self._fuyao_shadow_enabled("core"):
-            try:
-                shadow_core_results = self.fuyao_adapter.fetch_core(
-                    task.as_of,
-                    quotes_by_code=quotes,
-                )
-            except Exception as exc:
-                warnings.append(f"扶摇核心指数 shadow 不可用：{exc}")
-
-        analyses: list[dict[str, Any]] = []
-        current_successes = 0
-        index_sources: list[str] = []
-        effective_dates: list[date] = []
-        for spec in INDEX_SPECS:
-            index_started = time.perf_counter()
-            try:
-                quote = quotes.get(spec.code, {})
-                fuyao_result = fuyao_core_results.get(spec.code)
-                if fuyao_result is not None:
-                    quote_available = quote.get("price") not in (None, "")
-                    current_quote_missing = (
-                        task.as_of == effective_market_date(self._market_now()) and not quote_available
-                    )
-                    if fuyao_result.status != "ok" or current_quote_missing:
-                        fuyao_core_degraded = True
-                        reason = "；".join(fuyao_result.warnings) or "扶摇核心指数契约校验失败"
-                        if current_quote_missing:
-                            reason = f"{reason}；当前日期缺少独立腾讯报价校验"
-                        result = self.provider.fetch(
-                            spec,
-                            expected_price=quote.get("price"),
-                            quote=quote,
-                        )
-                        result = ProviderResult(
-                            bars=result.bars,
-                            source=result.source,
-                            warning="；".join(value for value in (result.warning, f"扶摇失败并回退：{reason}") if value),
-                            is_stale=result.is_stale,
-                        )
-                    else:
-                        result = ProviderResult(
-                            bars=list(fuyao_result.payload.get("bars") or []),
-                            source="fuyao",
-                            warning="；".join(fuyao_result.warnings) or None,
-                        )
-                else:
-                    if self._fuyao_is_enabled("core"):
-                        fuyao_core_degraded = True
-                    result = self.provider.fetch(
-                        spec,
-                        expected_price=quote.get("price"),
-                        quote=quote,
-                    )
-                bars = [bar for bar in result.bars if bar.date <= task.as_of]
-                if not bars:
-                    raise RuntimeError("所选日期前无历史数据")
-                analysis = self._analysis_service._analyse(spec, bars, result, quote)
-                analyses.append(analysis)
-                effective_dates.append(bars[-1].date)
-                current_successes += 1
-                index_sources.append(result.source)
-                warning = result.warning or analysis["dataQuality"].get("warning")
-                if warning:
-                    warnings.append(f"{spec.name}：{warning}")
-                self.store.put_core_index_result(
-                    CoreIndexResultRecord(
-                        task_id=task.task_id,
-                        code=spec.code,
-                        name=spec.name,
-                        status="success",
-                        source=result.source,
-                        observations=len(bars),
-                        warning=warning,
-                        duration_ms=self._milliseconds(index_started),
-                        payload=analysis,
-                    ),
-                    lease=lease,
-                    now=self._market_now().astimezone(ZoneInfo("UTC")),
-                )
-            except Exception as exc:
-                # Core sub-results retain only an exact-date index value; cross-date fallback is forbidden.
-                retained = retained_by_code.get(spec.code)
-                status = "failed-retained" if retained is not None else "failed-missing"
-                if retained is not None:
-                    analyses.append(copy.deepcopy(retained))
-                    retained_date = retained.get("history", [{}])[-1].get("date")
-                    if retained_date:
-                        effective_dates.append(date.fromisoformat(retained_date))
-                warnings.append(f"{spec.name}：{exc}")
-                self.store.put_core_index_result(
-                    CoreIndexResultRecord(
-                        task_id=task.task_id,
-                        code=spec.code,
-                        name=spec.name,
-                        status=status,
-                        source=(retained or {}).get("dataQuality", {}).get("source", "none"),
-                        observations=len((retained or {}).get("history", [])),
-                        warning=str(exc),
-                        duration_ms=self._milliseconds(index_started),
-                        payload=copy.deepcopy(retained) if retained is not None else None,
-                    ),
-                    lease=lease,
-                    now=self._market_now().astimezone(ZoneInfo("UTC")),
-                )
-
-        if not analyses:
-            raise RuntimeError("全部指数数据源不可用且没有同日期可保留结果")
-        effective_date = min(effective_dates) if effective_dates else task.as_of
-        trends = Counter(item["trendState"] for item in analyses)
-        core_payload = {
-            "asOf": effective_date.isoformat(),
-            "generatedAt": self._market_now().isoformat(),
-            "indices": analyses,
-            "summary": {
-                "synchronization": self._analysis_service._synchronization(analyses),
-                "dominantTrend": trends.most_common(1)[0][0] if trends else "数据不足",
-                "warnings": warnings,
-            },
-        }
-        settled = self._is_settled(task.as_of)
-        session_warning = self._persist_core_session_evidence(task.as_of, analyses, index_sources, lease)
-        if session_warning:
-            warnings.append(session_warning)
-        task_status = "success" if current_successes == len(INDEX_SPECS) else "partial"
-        if self._fuyao_is_enabled("core") and fuyao_core_degraded and task_status == "success":
-            task_status = "partial"
-        if current_successes == 0:
-            task_status = "failed-retained"
-        source = ",".join(sorted(set(index_sources)))
-        if not source:
-            source = existing.source if existing else "retained"
-        warning_text = "；".join(warnings) if warnings else None
-        task_timings: dict[str, Any] = {}
-        if shadow_core_results:
-            task_timings["shadow"] = compare_shadow(
-                "core",
-                core_payload,
-                shadow_core_results,
-                formal_revision=source,
-                shadow_revision=self._fuyao_revision("core"),
-                as_of=task.as_of,
-            )
-            shadow_status = task_timings["shadow"].get("status")
-            if shadow_status != "match":
-                warning_text = "；".join(value for value in (warning_text, f"扶摇 shadow: {shadow_status}") if value)
-        if task_status == "failed-retained":
-            self.store.set_refresh_warning(
-                "core",
-                task.as_of,
-                warning_text,
-                lease=lease,
-                now=self._market_now().astimezone(ZoneInfo("UTC")),
-            )
-        else:
-            self.store.put(
-                SnapshotRecord(
-                    dataset="core",
-                    as_of=task.as_of,
-                    payload=core_payload,
-                    source=source,
-                    status="ok" if task_status == "success" else "partial",
-                    observations=len(analyses),
-                    warnings=tuple(warnings),
-                    fetched_at=self._market_now(),
-                    settled=settled,
-                ),
-                lease=lease,
-                now=self._market_now().astimezone(ZoneInfo("UTC")),
-            )
-        return self.store.transition_collection_task(
-            task.task_id,
-            task_status,
-            expected_statuses=("collecting",),
-            source=source,
-            observations=len(analyses),
-            warning=warning_text,
-            timings=task_timings,
-            completed_at=self._market_now(),
-            duration_ms=self._milliseconds(started),
-            settled=settled,
-        )
-
-    def _persist_core_session_evidence(
-        self,
-        as_of: date,
-        analyses: list[dict[str, Any]],
-        sources: list[str],
-        lease: LeaseToken,
-    ) -> str | None:
-        histories: list[list[date]] = []
-        for analysis in analyses:
-            dates = [
-                date.fromisoformat(point["date"])
-                for point in analysis.get("history", [])
-                if isinstance(point, dict) and point.get("date")
-            ]
-            if len(dates) < 2 or dates[-1] != as_of:
-                return "core index history could not prove the requested session"
-            histories.append(dates)
-        if not histories:
-            return "core index history did not contain session evidence"
-        previous_dates = {history[-2] for history in histories}
-        if len(previous_dates) != 1:
-            return "core indices did not agree on the previous trading session"
-        previous_as_of = next(iter(previous_dates))
-        prior_dates = {history[-3] for history in histories if len(history) >= 3}
-        prior_as_of = next(iter(prior_dates)) if len(prior_dates) == 1 else None
-        source = "core-index-history:" + ",".join(sorted(set(sources or ["retained"])))
-        fetched_at = self._market_now()
-        lease_now = self._market_now().astimezone(ZoneInfo("UTC"))
-        previous_lease = self.store.acquire_lease(
-            "core",
-            previous_as_of,
-            lease.owner,
-            lease_seconds=self.lease_seconds,
-            now=lease_now,
-        )
-        warning = None
-        if previous_lease is None:
-            warning = "previous session core lease is busy; retained existing session evidence"
-        else:
-            try:
-                self.store.put_trading_session(
-                    TradingSessionRecord(
-                        previous_as_of,
-                        prior_as_of,
-                        True,
-                        source,
-                        actual_as_of=previous_as_of,
-                        fetched_at=fetched_at,
-                    ),
-                    lease=previous_lease,
-                    now=self._market_now().astimezone(ZoneInfo("UTC")),
-                )
-            finally:
-                self.store.release_lease("core", previous_as_of, lease=previous_lease)
-        self.store.put_trading_session(
-            TradingSessionRecord(
-                as_of,
-                previous_as_of,
-                True,
-                source,
-                actual_as_of=as_of,
-                fetched_at=fetched_at,
-            ),
-            lease=lease,
-            now=self._market_now().astimezone(ZoneInfo("UTC")),
-        )
-        return warning
+        return self.core_collector.collect_task(task, started, lease)
 
     def _fetch_chapter_dataset(self, dataset: str, as_of: date, *, use_fuyao: bool | None = None) -> dict[str, Any]:
-        # activeDirection remains on the established Eastmoney/TDX chain for
-        # this migration.  Ignore both cutover and shadow requests so an
-        # enabled legacy flag cannot route production collection through the
-        # incomplete Fuyao snapshot contract.
-        if dataset == "activeDirection":
-            use_fuyao = False
         if use_fuyao is None:
             # Sectors deliberately enters Fuyao only after both Eastmoney
             # endpoints fail; activeDirection is excluded above.
             use_fuyao = self._fuyao_is_enabled(dataset) and dataset != "sectors"
         if use_fuyao and dataset != "limits":
             return self._fetch_fuyao_chapter_dataset(dataset, as_of)
-        if dataset == "breadth":
-            return self.provider.fetch_chapter01_breadth(as_of, allow_current_snapshot=True)
         if dataset == "limits":
             return self.provider.fetch_chapter01_limits(as_of)
-        if dataset == "sectors":
-            return self.provider.fetch_chapter01_sectors(as_of, allow_current_snapshot=True)
-        if dataset == "activeDirection":
-            return self.provider.fetch_chapter01_active_direction(
-                as_of,
-                allow_current_snapshot=True,
-            )
         raise ValueError(f"unsupported collection dataset: {dataset}")
 
     def _fuyao_is_enabled(self, dataset: str) -> bool:

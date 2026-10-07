@@ -37,15 +37,15 @@
 - [x] 4.7 Extract timezone-preference persistence behind its repository port and verify personal/workspace authorization, fallback and PostgreSQL behavior remain compatible.
 - [x] 4.8 Convert `SnapshotStore` into delegation-only compatibility facade over the repositories/unit of work, migrate application callers to ports, and verify no new business rule or SQL is added to the facade.
 - [x] 4.9 Move SQLite support to an explicitly named legacy/test/migration adapter, require PostgreSQL for normal runtime composition, and verify one-time SQLite import/read fixtures still work while missing production database configuration fails closed rather than selecting SQLite.
-- [ ] 4.10 Add shared repository contract tests plus PostgreSQL-only transaction/fencing tests, and verify table names, Alembic revision, persisted checksums and existing data shapes require no migration for this refactor.
+- [x] 4.10 Add the non-destructive `0003_provider_capability_reports` Alembic compatibility migration, shared repository contract tests and PostgreSQL-only transaction/fencing tests; verify runtime-required table/index names and schema version 6 are Alembic-managed while persisted checksums and all existing table/payload shapes require no rewrite.
 
 ## 5. Dataset collector extraction
 
-- [ ] 5.1 Implement the `DatasetCollector` registry with the five stable dataset identifiers and an adapter around the existing provider methods, and verify unknown/duplicate dataset registration fails deterministically while current collection tests remain green.
-- [ ] 5.2 Extract `CoreCollector`, preserving five-index sub-result isolation, history depth, quote validation, fallback order and same-date retention, and verify core provider/collection fixtures produce equivalent source, warnings, observations and task status.
-- [ ] 5.3 Extract `BreadthCollector`, preserving Fuyao/TDX/Eastmoney gates, exact-date evidence, stock-universe validation and missing/insufficient semantics, and verify breadth, TDX daily package and stock-universe tests pass unchanged.
-- [ ] 5.4 Extract `ActiveDirectionCollector`, preserving Eastmoney primary/delay and independently gated TDX-derived fallback behavior, ranking metadata and `fallback-derived` quality, and verify active-direction focused collection tests pass.
-- [ ] 5.5 Extract `SectorsCollector`, preserving Eastmoney primary/delay, capability-gated Fuyao fallback, optional enrichment, lineage and current-date restrictions, and verify sector, enrichment, shadow and Fuyao collection tests pass.
+- [x] 5.1 Implement the `DatasetCollector` registry with the five stable dataset identifiers and an adapter around the existing provider methods, and verify unknown/duplicate dataset registration fails deterministically while current collection tests remain green.
+- [x] 5.2 Extract `CoreCollector`, preserving five-index sub-result isolation, history depth, quote validation, fallback order and same-date retention, and verify core provider/collection fixtures produce equivalent source, warnings, observations and task status.
+- [x] 5.3 Extract `BreadthCollector`, preserving Fuyao/TDX/Eastmoney gates, exact-date evidence, stock-universe validation and missing/insufficient semantics, and verify breadth, TDX daily package and stock-universe tests pass unchanged.
+- [x] 5.4 Extract `ActiveDirectionCollector`, preserving Eastmoney primary/delay and independently gated TDX-derived fallback behavior, ranking metadata and `fallback-derived` quality, and verify active-direction focused collection tests pass.
+- [x] 5.5 Extract `SectorsCollector`, preserving Eastmoney primary/delay, capability-gated Fuyao fallback, optional enrichment, lineage and current-date restrictions, and verify sector, enrichment, shadow and Fuyao collection tests pass.
 - [ ] 5.6 Extract `LimitsCollector` last, preserving Fuyao/Eastmoney membership merge, date evidence, normalization, facts, promotion dependencies, failure retention and transactional detail writes, and verify all limit contract/fixture/matrix/performance tests pass.
 - [ ] 5.7 Reduce `CollectionCoordinator` to validation, run/task lifecycle, lease/fencing, registry invocation, persistence, aggregate rebuild triggering and parent status derivation; verify it contains no dataset-specific provider/fallback implementation and the full collection suite passes.
 

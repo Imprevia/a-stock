@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import ast
+import os
+import uuid
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy import text
 
 from src.market_environment.application.ports import (
     MarketEnvironmentUnitOfWork as UnitOfWorkPort,
 )
-from src.market_environment.database import DatabaseSettings
+from src.market_environment.database import DatabaseSettings, create_database_engine
+from src.market_environment.domain.models import CollectionCandidate, DatasetDate
 from src.market_environment.infrastructure.persistence.postgres import (
     DatabaseSchemaCompatibilityError,
     MINIMUM_SCHEMA_VERSION,
     MarketEnvironmentUnitOfWork,
     PostgresConnectionFactory,
+    PostgresSnapshotRepository,
     REQUIRED_RUNTIME_TABLES,
 )
 
@@ -216,3 +222,71 @@ def test_postgres_runtime_modules_do_not_import_schema_creation_helper() -> None
             for alias in node.names
         }
         assert "create_schema" not in imported
+
+
+@pytest.mark.integration
+def test_postgres_unit_of_work_commit_and_rollback_use_real_transaction() -> None:
+    url = os.getenv("MARKET_ENVIRONMENT_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip(
+            "set MARKET_ENVIRONMENT_TEST_DATABASE_URL to an isolated PostgreSQL database"
+        )
+    engine = create_database_engine(DatabaseSettings(url=url))
+    factory = PostgresConnectionFactory(engine)
+    unique = uuid.uuid4().int
+    as_of = date(3000 + unique % 6000, 1 + unique % 12, 1 + unique % 28)
+    identity = DatasetDate("core", as_of)
+    candidate = CollectionCandidate(
+        identity=identity,
+        payload={"asOf": as_of.isoformat(), "contract": uuid.uuid4().hex},
+        source="postgres-transaction-contract",
+        status="ok",
+        observations=1,
+        warnings=(),
+        settled=True,
+        actual_as_of=as_of,
+    )
+
+    def repositories(connection):
+        return FakeRepositories(
+            snapshots=PostgresSnapshotRepository(
+                connection,
+                now=lambda: datetime.now(timezone.utc),
+            )
+        )
+
+    try:
+        with MarketEnvironmentUnitOfWork(factory, repositories) as unit:
+            unit.snapshots.put(candidate)
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM snapshot_entries "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                {"dataset": identity.dataset, "as_of": identity.as_of},
+            ).scalar_one() == 0
+
+        with MarketEnvironmentUnitOfWork(factory, repositories) as unit:
+            unit.snapshots.put(candidate)
+            unit.commit()
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM snapshot_entries "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                {"dataset": identity.dataset, "as_of": identity.as_of},
+            ).scalar_one() == 1
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM snapshot_entries "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                {"dataset": identity.dataset, "as_of": identity.as_of},
+            )
+        engine.dispose()

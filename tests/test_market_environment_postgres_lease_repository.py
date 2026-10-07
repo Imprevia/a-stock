@@ -164,3 +164,81 @@ def test_postgres_duplicate_acquisition_is_serialized_by_advisory_lock() -> None
             assert PostgresLeaseRepository(connection).release(winner) is True
     finally:
         engine.dispose()
+
+
+@pytest.mark.integration
+def test_postgres_stale_token_is_fenced_before_write_callback() -> None:
+    url = os.getenv("MARKET_ENVIRONMENT_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip(
+            "set MARKET_ENVIRONMENT_TEST_DATABASE_URL to an isolated PostgreSQL database"
+        )
+    engine = create_database_engine(DatabaseSettings(url=url))
+    unique = uuid.uuid4().int
+    identity = DatasetDate(
+        "core",
+        date(3000 + unique % 6000, 1 + unique % 12, 1 + unique % 28),
+    )
+    owner_prefix = f"fence-contract-{uuid.uuid4().hex}"
+    current = [NOW]
+    callback_calls: list[str] = []
+
+    try:
+        with engine.begin() as connection:
+            repository = PostgresLeaseRepository(
+                connection,
+                now=lambda: current[0],
+            )
+            first = repository.acquire(identity, f"{owner_prefix}-1", lease_seconds=30)
+            assert first is not None
+            current[0] += timedelta(seconds=31)
+            second = repository.acquire(identity, f"{owner_prefix}-2", lease_seconds=30)
+            assert second is not None
+
+            with pytest.raises(LeaseFenceError, match="fenced"):
+                repository.execute_fenced(
+                    first,
+                    "snapshot",
+                    lambda _connection: callback_calls.append("stale"),
+                    expected_identity=identity,
+                )
+            assert callback_calls == []
+
+            repository.execute_fenced(
+                second,
+                "snapshot",
+                lambda active_connection: callback_calls.append(
+                    str(active_connection.execute(text("SELECT 1")).scalar_one())
+                ),
+                expected_identity=identity,
+            )
+            assert callback_calls == ["1"]
+            assert repository.release(second) is True
+    finally:
+        with engine.begin() as connection:
+            parameters = {
+                "dataset": identity.dataset,
+                "as_of": identity.as_of,
+            }
+            connection.execute(
+                text(
+                    "DELETE FROM lease_fence_events "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                parameters,
+            )
+            connection.execute(
+                text(
+                    "DELETE FROM refresh_leases "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                parameters,
+            )
+            connection.execute(
+                text(
+                    "DELETE FROM refresh_lease_fences "
+                    "WHERE dataset = :dataset AND as_of = :as_of"
+                ),
+                parameters,
+            )
+        engine.dispose()
