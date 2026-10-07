@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -13,26 +12,28 @@ from time import monotonic, perf_counter, sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .application.commands.materialized_aggregate import (
+    MaterializedAggregateComposer,
+    MaterializedAggregateRebuilder,
+)
+from .application.queries.breadth_analysis import BreadthHistoryReader
+from .application.queries.limit_ecosystem import LimitEcosystemComposer
 from .calculations import (
     Bar,
-    amount_ratio,
-    classify_index_combination,
-    classify_sync_pattern,
-    classify_trend,
-    classify_volume_price,
-    advance_efficiency_percentile,
-    bullish_alignment_ratio,
-    breadth_index_consistency,
-    breadth_momentum,
-    breadth_width_label,
     build_summary_sentence,
     build_market_review_evidence,
     build_review_sentence,
-    build_synchronization_assessment,
-    ma20_slope_percentile,
-    moving_average,
-    position_label,
-    range_position,
+)
+from .domain.analysis import (
+    analyze_index,
+    analyze_breadth,
+    build_core_summary,
+    combination_overview,
+    previous_trading_date,
+    percentile_value,
+    sync_pattern,
+    synchronization_assessment,
+    synchronization_label,
 )
 from .providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from .refresh import SnapshotRefresher, effective_market_date
@@ -116,7 +117,56 @@ class MarketEnvironmentService:
         self._lock = Lock()
         self._core_load_lock = Lock()
         self._chapter_load_lock = Lock()
-        self._limit_response_cache: dict[tuple[str, bool, str, str], dict[str, Any]] = {}
+        self._limit_ecosystem_composer = LimitEcosystemComposer(
+            self.snapshot_store,
+            enabled=limit_v1_enabled,
+            strip_disabled_fields=without_promotion_fields,
+            build_ecosystem=build_limit_ecosystem,
+            validate=lambda value: LimitEvidence.model_validate(value).model_dump(
+                exclude_unset=True
+            ),
+            checksum=payload_checksum,
+        )
+        self._limit_response_cache = self._limit_ecosystem_composer.cache
+        self._breadth_history_reader = BreadthHistoryReader(
+            self.snapshot_store,
+            integrity_error=SnapshotIntegrityError,
+        )
+        self._materialized_aggregate_composer = MaterializedAggregateComposer(
+            repository=self.snapshot_store,
+            market_now=self._market_now,
+            snapshot_ttl_seconds=self.snapshot_ttl_seconds,
+            chapter_group_keys=CHAPTER_GROUP_KEYS,
+            local_core_context=self._local_core_context,
+            missing_chapter_provider_data=self._missing_chapter_provider_data,
+            snapshot_payload=self._snapshot_payload,
+            cache_state=cache_state,
+            limit_payload_for_response=self._limit_payload_for_response,
+            build_chapter01=self._build_chapter01,
+            core_payload=self._core_payload,
+            validate_response=lambda payload: MarketEnvironmentResponse.model_validate(
+                payload
+            ).model_dump(),
+            limits_snapshot_state=self._limits_snapshot_state,
+            record_factory=lambda as_of, payload, generated_at: MaterializedAggregateRecord(
+                as_of=as_of,
+                payload=payload,
+                generated_at=generated_at,
+            ).normalized(),
+            storage_schema_version=STORAGE_SCHEMA_VERSION,
+            schema_version_key=_MATERIALIZED_SCHEMA_VERSION_KEY,
+            limits_state_key=_MATERIALIZED_LIMITS_STATE_KEY,
+            component_revision_key=MATERIALIZED_COMPONENT_REVISION_KEY,
+        )
+        self._materialized_aggregate_rebuilder = MaterializedAggregateRebuilder(
+            repository=self.snapshot_store,
+            composer=self._materialized_aggregate_composer,
+            market_now=self._market_now,
+            utc_now_factory=lambda: self._market_now().astimezone(ZoneInfo("UTC")),
+            limits_v1_enabled=limit_v1_enabled,
+            conflict_error=MaterializedAggregateConflict,
+            attempts=_MATERIALIZED_REBUILD_ATTEMPTS,
+        )
 
     def close(self) -> None:
         """Release the refresh executor owned by the composition container."""
@@ -325,47 +375,10 @@ class MarketEnvironmentService:
         lease: LeaseToken | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        rebuild_started = perf_counter()
-        if self.snapshot_store is None:
-            raise RuntimeError("persistent snapshot store is disabled")
-        for _attempt in range(_MATERIALIZED_REBUILD_ATTEMPTS):
-            revision = self.snapshot_store.materialization_revision(as_of)
-            composed = self._compose_materialized_aggregate(as_of, revision)
-            if composed is None:
-                return None
-            validated, record = composed
-            if lease is None:
-                if self.snapshot_store.materialization_revision(as_of) != revision:
-                    continue
-                stored_record = record
-                persisted = False
-            else:
-                try:
-                    stored_record = self.snapshot_store.put_materialized_aggregate(
-                        record,
-                        lease=lease,
-                        expected_revision=revision,
-                        now=lambda: self._market_now().astimezone(ZoneInfo("UTC")),
-                    )
-                except MaterializedAggregateConflict:
-                    continue
-                persisted = True
-            logger.info(
-                "market aggregate rebuild",
-                extra={
-                    "event": "market_aggregate_rebuild",
-                    "requested_as_of": as_of.isoformat(),
-                    "actual_as_of": validated["asOf"],
-                    "limits_v1_enabled": limit_v1_enabled(),
-                    "aggregate_checksum": stored_record.checksum,
-                    "component_revision": revision,
-                    "persisted": persisted,
-                    "rebuild_ms": round((perf_counter() - rebuild_started) * 1000, 3),
-                },
-            )
-            return validated
-        raise MaterializedAggregateConflict(
-            f"materialized aggregate inputs kept changing: {as_of.isoformat()}"
+        return self._materialized_aggregate_rebuilder.rebuild(
+            as_of,
+            lease=lease,
+            now=now,
         )
 
     def _compose_materialized_aggregate(
@@ -373,52 +386,7 @@ class MarketEnvironmentService:
         as_of: date,
         revision: str,
     ) -> tuple[dict[str, Any], MaterializedAggregateRecord] | None:
-        if self.snapshot_store is None:
-            raise RuntimeError("persistent snapshot store is disabled")
-        core_record = self.snapshot_store.get("core", as_of)
-        if core_record is None:
-            return None
-        core_payload = copy.deepcopy(core_record.payload)
-        core = self._local_core_context(as_of, core_payload)
-        provider_data = self._missing_chapter_provider_data(
-            core["effectiveDate"],
-            "该日期尚未采集对应数据集",
-            status="missing",
-        )
-        limits_record = None
-        for group in CHAPTER_GROUP_KEYS:
-            record = self.snapshot_store.get(group, as_of)
-            if record is not None:
-                if group == "limits":
-                    limits_record = record
-                provider_data[group] = self._snapshot_payload(
-                    record,
-                    cache_state(
-                        record,
-                        now=self._market_now(),
-                        soft_ttl_seconds=self.snapshot_ttl_seconds,
-                    ),
-                    refreshing=False,
-                )
-        provider_data["limits"] = self._limit_payload_for_response(
-            as_of,
-            provider_data["limits"],
-        )
-        chapter = self._build_chapter01(core, provider_data)
-        payload = self._core_payload(core)
-        payload["chapter01"] = chapter
-        validated = MarketEnvironmentResponse.model_validate(payload).model_dump()
-        stored_payload = {
-            **validated,
-            _MATERIALIZED_SCHEMA_VERSION_KEY: STORAGE_SCHEMA_VERSION,
-            _MATERIALIZED_LIMITS_STATE_KEY: self._limits_snapshot_state(limits_record),
-            MATERIALIZED_COMPONENT_REVISION_KEY: revision,
-        }
-        return validated, MaterializedAggregateRecord(
-            as_of=as_of,
-            payload=stored_payload,
-            generated_at=self._market_now(),
-        ).normalized()
+        return self._materialized_aggregate_composer.compose(as_of, revision)
 
     def _get_local_aggregate(self, as_of: date) -> dict[str, Any]:
         if self.snapshot_store is None:
@@ -522,45 +490,12 @@ class MarketEnvironmentService:
             "settled": record.settled,
         }
 
-    def _limit_payload_for_response(self, as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
-        value = copy.deepcopy(payload)
-        limits_enabled = limit_v1_enabled()
-        if not limits_enabled:
-            value = without_promotion_fields(value)
-            for field in ("ladder", "stratifications", "history", "ruleEvidence", "riskEvidence", "confirmation", "invalidation"):
-                value.pop(field, None)
-        elif self.snapshot_store is not None:
-            cache_key = (
-                as_of.isoformat(),
-                limits_enabled,
-                payload_checksum(value),
-                self.snapshot_store.materialization_revision(as_of),
-            )
-            cached = self._limit_response_cache.get(cache_key)
-            if cached is not None:
-                return copy.deepcopy(cached)
-            value = build_limit_ecosystem(self.snapshot_store, as_of, value)
-            promotion = {"promotionQuality": value["promotionQuality"]}
-            if promotion["promotionQuality"]["status"] == "degraded":
-                quality = value.get("quality")
-                if isinstance(quality, dict):
-                    quality["status"] = "degraded"
-                    warnings = list(
-                        dict.fromkeys(
-                            [
-                                *(quality.get("warnings") or []),
-                                *(promotion["promotionQuality"].get("warnings") or []),
-                            ]
-                        )
-                    )
-                    quality["warnings"] = warnings
-                    quality["warning"] = "；".join(warnings) if warnings else quality.get("warning")
-            result = LimitEvidence.model_validate(value).model_dump(exclude_unset=True)
-            self._limit_response_cache[cache_key] = copy.deepcopy(result)
-            if len(self._limit_response_cache) > 32:
-                self._limit_response_cache.pop(next(iter(self._limit_response_cache)))
-            return result
-        return LimitEvidence.model_validate(value).model_dump(exclude_unset=True)
+    def _limit_payload_for_response(
+        self,
+        as_of: date,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._limit_ecosystem_composer.compose(as_of, payload)
 
     def _refresh_materialized_synchronization(self, as_of: date, payload: dict[str, Any]) -> dict[str, Any]:
         """Recalculate the additive assessment when older aggregates lack the new field."""
@@ -672,23 +607,11 @@ class MarketEnvironmentService:
             if item["dataQuality"]["warning"] is None and effective_date < as_of:
                 item["dataQuality"]["warning"] = f"非交易日，已回退到 {effective_date.isoformat()}"
 
-        trends = Counter(item["trendState"] for item in analyses)
-        sync_pattern = self._sync_pattern(analyses)
-        sync = sync_pattern["label"]
-        dominant = trends.most_common(1)[0][0] if trends else "数据不足"
-        alignment = bullish_alignment_ratio(analyses)
         core = {
             "asOf": effective_date.isoformat(),
             "generatedAt": datetime.now(MARKET_TIME_ZONE).isoformat(),
             "indices": analyses,
-            "summary": {
-                "synchronization": sync,
-                "syncPattern": sync_pattern,
-                "bullishAlignmentRatio": alignment,
-                "dominantTrend": dominant,
-                "warnings": warnings,
-                "dataGaps": data_gaps,
-            },
+            "summary": build_core_summary(analyses, warnings, data_gaps),
             "requestedAsOf": as_of,
             "effectiveDate": effective_date,
         }
@@ -1138,196 +1061,56 @@ class MarketEnvironmentService:
         ]
 
     @staticmethod
-    def _combination_overview(analyses: list[dict], synchronization_assessment: dict, breadth: dict) -> dict:
-        breadth_available = breadth.get("advanceRatio") is not None and breadth.get("medianReturn") is not None
-        strength = synchronization_assessment["conclusion"]
-
-        matched = [item["combination"] for item in analyses if item["combination"]["matched"]]
-        stage_counts = Counter(item["key"] for item in matched)
-        stage_key, stage_count = stage_counts.most_common(1)[0] if stage_counts else (None, 0)
-        stage_match = next((item for item in matched if item["key"] == stage_key), None)
-        if stage_match and stage_count >= 3:
-            stage = stage_match["state"]
-        elif matched:
-            stage = "组合分化"
-        else:
-            stage = "未形成明确组合"
-
-        volume_states = [item["volumePriceState"] for item in analyses if item.get("volumePriceState") not in {None, "数据不足"}]
-        volume_counts = Counter(volume_states)
-        volume_state, volume_count = volume_counts.most_common(1)[0] if volume_counts else (None, 0)
-        capital_map = {
-            "上涨放量": "资金认可价格推进",
-            "上涨缩量": "上涨但增量资金不足",
-            "放量滞涨": "成交活跃但价格推进不足",
-            "下跌缩量": "抛压或承接仍待确认",
-            "放量下跌": "资金主动撤退风险",
-            "量价平稳": "量价整体平稳",
-        }
-        capital_acceptance = capital_map.get(volume_state, "量价信号分化或未分类") if volume_count >= 3 else "量价信号分化或未分类"
-
-        if synchronization_assessment["conclusionCode"] == "systemic-decline-confirmed" or stage == "趋势破坏或退潮":
-            trading_mode = "风险控制"
-        elif stage == "高位分歧或派发风险":
-            trading_mode = "降低追高，等待承接"
-        elif stage == "趋势加速或突破确认":
-            trading_mode = "趋势跟随，防止追高"
-        elif stage == "上升趋势或主升阶段":
-            trading_mode = "顺势跟踪"
-        elif stage == "底部修复或启动尝试":
-            trading_mode = "观察修复确认"
-        elif stage == "震荡轮动":
-            trading_mode = "轮动应对"
-        else:
-            trading_mode = "保持观察"
-
-        confidence = "medium" if synchronization_assessment["confidence"] in {"high", "medium"} and stage_count >= 3 else "low"
-        evidence = [
-            f"五大指数同步性：{synchronization_assessment['patternLabel']}（{synchronization_assessment['status']}）",
-            f"明确组合覆盖：{len(matched)} / {len(analyses)}",
-        ]
-        if breadth_available:
-            evidence.append(f"市场广度：上涨占比 {breadth['advanceRatio']:.0%}，中位涨跌幅 {breadth['medianReturn']:.2f}%")
-        else:
-            evidence.append("市场广度缺失，市场是否真强仍待确认")
-        evidence.append(f"一致量价状态：{volume_state or '无'}（{volume_count} / {len(analyses)}）")
-        return {
-            "strength": strength,
-            "stage": stage,
-            "capitalAcceptance": capital_acceptance,
-            "tradingMode": trading_mode,
-            "confidence": confidence,
-            "evidence": evidence,
-        }
+    def _combination_overview(
+        analyses: list[dict],
+        synchronization_assessment_value: dict,
+        breadth: dict,
+    ) -> dict:
+        return combination_overview(
+            analyses,
+            synchronization_assessment_value,
+            breadth,
+        )
 
     @staticmethod
     def _analyse(spec, bars: list[Bar], result: ProviderResult, quote: dict) -> dict:
-        ma = {f"ma{window}": moving_average(bars, window) for window in (5, 10, 20, 60)}
-        ratio5 = amount_ratio(bars, 5)
-        ratio20 = amount_ratio(bars, 20)
-        combination = classify_index_combination(bars, ratio5)
-        slope_percentile = ma20_slope_percentile(bars)
-        efficiency_percentile = advance_efficiency_percentile(bars)
-        close = bars[-1].close
-        change_pct = quote.get("change_pct")
-        if change_pct is None or quote.get("is_stale"):
-            change_pct = ((close / bars[-2].close) - 1) * 100 if len(bars) > 1 and bars[-2].close else 0
-        warning = result.warning
-        quality_warnings: list[str] = []
-        if not quote:
-            quality_warnings.append("腾讯实时行情不可用，涨跌幅使用历史 K 线计算")
-        if len(bars) >= 20 and range_position(bars, 20) is None:
-            quality_warnings.append("20 日最高价与最低价相同，区间位置不可计算")
-        if len(bars) >= 60 and range_position(bars, 60) is None:
-            quality_warnings.append("60 日最高价与最低价相同，区间位置不可计算")
-        if quote.get("is_stale"):
-            quality_warnings.insert(0, "腾讯报价疑似停牌或过期，涨跌幅已使用历史 K 线计算")
-        if quality_warnings:
-            warning = "；".join(filter(None, [warning, *quality_warnings]))
-        data_gaps: list[dict[str, str]] = []
-        for field, metric in (("ma20SlopePercentile", slope_percentile), ("advanceEfficiencyPercentile", efficiency_percentile)):
-            if metric["value"] is None:
-                data_gaps.append({"field": field, "reason": metric["reason"]})
-        if len(bars) < 20:
-            data_gaps.append({"field": "rangePosition20", "reason": "insufficient-history"})
-        elif range_position(bars, 20) is None:
-            data_gaps.append({"field": "rangePosition20", "reason": "not-computable"})
-        if len(bars) < 60:
-            data_gaps.append({"field": "rangePosition60", "reason": "insufficient-history"})
-        elif range_position(bars, 60) is None:
-            data_gaps.append({"field": "rangePosition60", "reason": "not-computable"})
-        history = []
-        for index in range(max(0, len(bars) - 60), len(bars)):
-            sample = bars[: index + 1]
-            history.append(
-                {
-                    "date": bars[index].date.isoformat(),
-                    "open": bars[index].open,
-                    "close": bars[index].close,
-                    "low": bars[index].low,
-                    "high": bars[index].high,
-                    "ma5": moving_average(sample, 5),
-                    "ma10": moving_average(sample, 10),
-                    "ma20": moving_average(sample, 20),
-                    "ma60": moving_average(sample, 60),
-                    "amount": bars[index].amount,
-                }
-            )
-        return {
-            "code": spec.code,
-            "name": quote.get("name") or spec.name,
-            "representative": spec.representative,
-            "changePct": round(float(change_pct or 0), 2),
-            "close": round(close, 2),
-            "movingAverages": {key: round(value, 2) if value is not None else None for key, value in ma.items()},
-            "rangePosition20": range_position(bars, 20),
-            "rangePosition60": range_position(bars, 60),
-            "rangePosition20Label": position_label(range_position(bars, 20)),
-            "rangePosition60Label": position_label(range_position(bars, 60)),
-            "ma20SlopePercentile": slope_percentile["value"],
-            "advanceEfficiencyPercentile": efficiency_percentile["value"],
-            "ma20SlopeConfidence": slope_percentile["confidence"],
-            "advanceEfficiencyConfidence": efficiency_percentile["confidence"],
-            "ma20PositionLabel": "上方" if ma["ma20"] is not None and close >= ma["ma20"] else ("下方" if ma["ma20"] is not None else None),
-            "amount": round(bars[-1].amount, 2),
-            "amountRatio5": round(ratio5, 2) if ratio5 is not None else None,
-            "amountRatio20": round(ratio20, 2) if ratio20 is not None else None,
-            "trendState": classify_trend(bars, ratio20),
-            "volumePriceState": classify_volume_price(bars, ratio5),
-            "combination": combination,
-            "history": history,
-            "dataQuality": {"source": result.source, "isStale": bool(quote.get("is_stale")), "warning": warning},
-            "dataGaps": data_gaps,
-        }
+        return analyze_index(spec, bars, result, quote)
 
     @staticmethod
     def _sync_pattern(analyses: list[dict]) -> dict:
-        changes = {item["name"]: item.get("changePct") for item in analyses}
-        return classify_sync_pattern(changes)
+        return sync_pattern(analyses)
 
-    def _synchronization_assessment(self, core: dict[str, Any], breadth: dict) -> dict[str, object]:
-        previous_breadth = self._previous_breadth(core)
-        sync_pattern = core["summary"].get("syncPattern") or self._sync_pattern(core["indices"])
-        return build_synchronization_assessment(sync_pattern, core["indices"], breadth, previous_breadth)
+    def _synchronization_assessment(
+        self,
+        core: dict[str, Any],
+        breadth: dict,
+    ) -> dict[str, object]:
+        return synchronization_assessment(
+            core,
+            breadth,
+            self._previous_breadth(core),
+        )
 
     def _previous_breadth(self, core: dict[str, Any]) -> dict[str, Any] | None:
-        if self.snapshot_store is None:
-            return None
-        previous_date = self._previous_trading_date(core)
-        if previous_date is None:
-            return None
-        try:
-            record = self.snapshot_store.get("breadth", previous_date)
-        except SnapshotIntegrityError as exc:
-            logger.warning(
-                "previous breadth snapshot rejected",
-                extra={"event": "previous_breadth_snapshot_invalid", "as_of": previous_date.isoformat(), "error": str(exc)},
+        return self._breadth_reader().previous_for_core(core)
+
+    def _breadth_reader(self) -> BreadthHistoryReader:
+        reader = getattr(self, "_breadth_history_reader", None)
+        if reader is None:
+            reader = BreadthHistoryReader(
+                getattr(self, "snapshot_store", None),
+                integrity_error=SnapshotIntegrityError,
             )
-            return None
-        if record is None:
-            return None
-        payload = copy.deepcopy(record.payload)
-        quality = payload.setdefault("quality", {})
-        quality["asOf"] = previous_date.isoformat()
-        return payload
+            self._breadth_history_reader = reader
+        return reader
 
     @staticmethod
     def _previous_trading_date(core: dict[str, Any]) -> date | None:
-        as_of = core["effectiveDate"]
-        candidates: list[date] = []
-        for item in core["indices"]:
-            for point in item.get("history", []):
-                try:
-                    observed = date.fromisoformat(point["date"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if observed < as_of:
-                    candidates.append(observed)
-        return max(candidates) if candidates else None
+        return previous_trading_date(core)
 
     @staticmethod
     def _synchronization(analyses: list[dict]) -> str:
-        return MarketEnvironmentService._sync_pattern(analyses)["label"]
+        return synchronization_label(analyses)
 
     def _enrich_breadth(
         self,
@@ -1335,133 +1118,54 @@ class MarketEnvironmentService:
         as_of: date,
         analyses: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Derive the 02-page breadth fields from the snapshot store.
-
-        Pulls the latest 5 breadth snapshots (excluding today) from
-        ``snapshot_store`` and the live index ``changePct`` values from
-        ``analyses`` to fill the new optional fields. All operations are
-        defensive: missing history returns ``None``, missing index change
-        rows propagate ``None``, and the input dict is mutated in place
-        but returned for chaining.
-        """
-
-        advance_count = breadth.get("advanceCount")
-        decline_count = breadth.get("declineCount")
-        flat_count = breadth.get("flatCount")
-        valid_count = breadth.get("validCount")
-        advance_ratio = breadth.get("advanceRatio")
-        median_return = breadth.get("medianReturn")
-
-        # Derived ratios. Use ``0 / 0`` semantics: None when denominator is
-        # unknown or zero. Round to four decimals to mirror the existing
-        # advanceRatio contract.
-        if decline_count is not None and valid_count:
-            breadth["declineRatio"] = round(decline_count / valid_count, 4)
-        else:
-            breadth.setdefault("declineRatio", None)
-
-        if advance_count is not None and decline_count is not None and valid_count:
-            breadth["advanceDeclineSpread"] = round(
-                (advance_count - decline_count) / valid_count, 4
-            )
-        else:
-            breadth.setdefault("advanceDeclineSpread", None)
-
-        # Index consistency and width label.
-        index_changes: list[float | None] = [
-            item.get("changePct") for item in analyses if isinstance(item, dict)
-        ]
-        previous_ratio = None
-        previous_median = None
-        history_records = self._breadth_history_records(as_of, exclude_today=True, limit=5)
-        if history_records:
-            previous = history_records[-1]
-            previous_ratio = previous.get("advanceRatio")
-            previous_median = previous.get("medianReturn")
-        breadth["indexConsistent"] = breadth_index_consistency(index_changes, median_return)
-        width_label, width_reason = breadth_width_label(
-            advance_ratio,
-            median_return,
-            index_changes,
-            previous_ratio,
-            previous_median,
+        recent_history = self._breadth_reader().list_payloads(
+            as_of,
+            exclude_today=True,
+            limit=5,
         )
-        breadth["widthLabel"] = width_label
-        breadth["widthLabelReason"] = width_reason
-
-        # 5-day momentum needs a trailing 6-entry advanceRatio series.
-        recent_ratios: list[float | None] = []
-        if previous_ratio is not None:
-            recent_ratios.append(previous_ratio)
-        for record in reversed(history_records[:-1]):
-            recent_ratios.insert(0, record.get("advanceRatio"))
-        if advance_ratio is not None:
-            recent_ratios.append(advance_ratio)
-        recent_ratios = recent_ratios[-6:]
-        breadth["momentum"] = breadth_momentum(recent_ratios)
-
-        # Build the 250-day rolling samples for percentiles. The service
-        # reuses breadth snapshots stored in PostgreSQL; when fewer than 60
-        # observations are available we mark ``confidence="insufficient"``
-        # exactly as ``_metric_percentile`` would for an index metric.
-        history_payloads = self._breadth_history_records(as_of, exclude_today=False, limit=250)
-        ratios_sample = [item.get("advanceRatio") for item in history_payloads]
-        medians_sample = [item.get("medianReturn") for item in history_payloads]
-        spreads_sample = [item.get("advanceDeclineSpread") for item in history_payloads]
-        momentums_sample = [
-            breadth_momentum(
-                [item.get("advanceRatio") for item in history_payloads[max(0, index - 5):index + 1]]
-            )
-            for index in range(len(history_payloads))
-        ]
-        breadth["advanceRatioPercentile"] = self._percentile_value(ratios_sample)
-        breadth["medianReturnPercentile"] = self._percentile_value(medians_sample)
-        breadth["spreadPercentile"] = self._percentile_value(spreads_sample)
-        breadth["momentumPercentile"] = self._percentile_value(
-            [value for value in momentums_sample if value is not None]
+        percentile_history = self._breadth_reader().list_payloads(
+            as_of,
+            exclude_today=False,
+            limit=250,
         )
-
-        # Build the 5-point history payload the dashboard renders. Today
-        # is intentionally excluded from ``points`` so the table only shows
-        # the previous five trading days; the dashboard renders the live
-        # snapshot separately in the recap card and 5-day trend chart.
-        points: list[BreadthHistoryPoint] = [
-            self._build_history_point(record) for record in history_records[-5:]
-        ]
-        coverage = round(len(history_payloads) / 250.0, 4) if history_payloads else 0.0
-        history_observations = len(history_payloads) + (1 if advance_ratio is not None else 0)
-        history_quality_status = "insufficient" if history_observations < 60 else "ok"
-        breadth["history"] = BreadthHistoryEvidence(
+        result = analyze_breadth(
+            breadth,
+            as_of,
+            analyses,
+            recent_history=recent_history,
+            percentile_history=percentile_history,
+        )
+        points = [self._build_history_point(record) for record in result.history_points]
+        result.payload["history"] = BreadthHistoryEvidence(
             points=points,
-            validObservations=history_observations,
+            validObservations=result.history_observations,
             requiredObservations=60,
             windowDays=250,
-            coverage=coverage if points else 0.0,
+            coverage=result.history_coverage,
             percentile250={
-                "advanceRatio": breadth.get("advanceRatioPercentile"),
-                "medianReturn": breadth.get("medianReturnPercentile"),
-                "advanceDeclineSpread": breadth.get("spreadPercentile"),
-                "momentum": breadth.get("momentumPercentile"),
+                "advanceRatio": result.payload.get("advanceRatioPercentile"),
+                "medianReturn": result.payload.get("medianReturnPercentile"),
+                "advanceDeclineSpread": result.payload.get("spreadPercentile"),
+                "momentum": result.payload.get("momentumPercentile"),
             },
             quality=MetricQuality(
-                status=history_quality_status,
-                reason="insufficient-history" if history_quality_status == "insufficient" else None,
-                observations=history_observations,
+                status=result.history_quality_status,
+                reason=(
+                    "insufficient-history"
+                    if result.history_quality_status == "insufficient"
+                    else None
+                ),
+                observations=result.history_observations,
                 asOf=as_of.isoformat(),
-                source=breadth.get("quality", {}).get("source"),
+                source=result.payload.get("quality", {}).get("source"),
                 warnings=[],
             ),
         ).model_dump(mode="json", exclude_none=False)
-        return breadth
+        return result.payload
 
     @staticmethod
     def _percentile_value(samples: list[float | None]) -> float | None:
-        valid = [float(value) for value in samples if value is not None]
-        if len(valid) < 60:
-            return None
-        current = valid[-1]
-        rank = sum(value <= current for value in valid) / len(valid)
-        return round(rank, 4)
+        return percentile_value(samples)
 
     def _breadth_history_records(
         self,
@@ -1470,42 +1174,11 @@ class MarketEnvironmentService:
         exclude_today: bool,
         limit: int,
     ) -> list[dict[str, Any]]:
-        if self.snapshot_store is None:
-            return []
-        try:
-            dates = self.snapshot_store.list_snapshot_dates("breadth", through=as_of)
-        except SnapshotIntegrityError as exc:
-            logger.warning(
-                "breadth history lookup rejected",
-                extra={"event": "breadth_history_invalid", "as_of": as_of.isoformat(), "error": str(exc)},
-            )
-            return []
-        ordered: list[dict[str, Any]] = []
-        for snapshot_date in dates:
-            if exclude_today and snapshot_date == as_of:
-                continue
-            try:
-                record = self.snapshot_store.get("breadth", snapshot_date)
-            except SnapshotIntegrityError as exc:
-                logger.warning(
-                    "breadth history snapshot rejected",
-                    extra={
-                        "event": "breadth_history_snapshot_invalid",
-                        "as_of": snapshot_date.isoformat(),
-                        "error": str(exc),
-                    },
-                )
-                continue
-            if record is None:
-                continue
-            payload = copy.deepcopy(record.payload)
-            payload.setdefault("asOf", snapshot_date.isoformat())
-            ordered.append(payload)
-            if len(ordered) >= limit:
-                break
-        # list_snapshot_dates returns DESC; reorder to ASC for windowed math.
-        ordered.sort(key=lambda item: item.get("asOf", ""))
-        return ordered
+        return self._breadth_reader().list_payloads(
+            as_of,
+            exclude_today=exclude_today,
+            limit=limit,
+        )
 
     @staticmethod
     def _build_history_point(record: dict[str, Any]) -> BreadthHistoryPoint:

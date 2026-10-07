@@ -7,10 +7,16 @@ from .collection import (
     StartCollectionRunCommand,
     SubmitCollectionRunCommand,
 )
+from .materialized_aggregate import (
+    MaterializedAggregateComposer,
+    MaterializedAggregateRebuilder,
+)
 from .timezone_preferences import UpdateTimezonePreferenceCommand
 
 __all__ = [
     "ExecuteCollectionRunCommand",
+    "MaterializedAggregateComposer",
+    "MaterializedAggregateRebuilder",
     "RebuildAggregateCommand",
     "RefreshDatasetsCommand",
     "StartCollectionRunCommand",

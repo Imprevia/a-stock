@@ -2,11 +2,11 @@
 
 ## Stage
 
-Stage 5/8 — dataset collector 抽取；Stage 4 PostgreSQL repository、unit-of-work 与 Alembic compatibility migration 已完成。
+Stage 6/8 — query、aggregate 与 analysis 拆分；Stage 5 五类 dataset collector 抽取及 coordinator registry 接线已完成。
 
 ## Status
 
-in-progress（OpenSpec apply 34/51；任务 5.5 已完成，下一步抽取 5.6 LimitsCollector）
+in-progress（OpenSpec apply 41/51；任务 6.5 已完成，下一步执行 6.6 移除 query/materialization 对 MarketEnvironmentService 的运行时依赖）
 
 ## Scope
 
@@ -99,16 +99,23 @@ in-progress（OpenSpec apply 34/51；任务 5.5 已完成，下一步抽取 5.6 
 - Stage 5 BreadthCollector：将 Fuyao formal/shadow gate、既有 provider 的 TDX daily package/stock-universe/Eastmoney fallback 调用、exact-date quality 校验、missing/insufficient 处理及 snapshot/task 组装迁入 `infrastructure.providers.BreadthCollector`；coordinator 不再含 breadth provider 分支。breadth/TDX/universe focused 为 `44 passed, 66 deselected in 5.11s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.78s`。
 - Stage 5 ActiveDirectionCollector：将既有 provider 内 Eastmoney primary/delay 与独立 capability gate 的 TDX-derived fallback 调用、ranking metadata、`fallback-derived`→partial 映射、exact-date quality 与 snapshot/task 组装迁入 `infrastructure.providers.ActiveDirectionCollector`；未引入 Fuyao 路由。focused 为 `18 passed, 92 deselected in 0.82s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.42s`。
 - Stage 5 SectorsCollector：将 Eastmoney primary/delay、capability-gated Fuyao fallback、当前上海交易日且结算后的可选 dataapi enrichment、lineage/timing 与 shadow 迁入 `infrastructure.providers.SectorsCollector`；coordinator 删除原 sector/enrichment 方法。focused 为 `15 passed, 56 deselected in 1.06s`，完整 collection/Fuyao/TDX/provider/registry/compatibility 回归为 `116 passed in 8.24s`。
-- 待完成：17 项 apply 任务、limits collector/coordinator 收缩与 query decomposition、focused/full tests、完整架构门禁、docs-contract full 和最终 scope review。
+- Stage 5 LimitsCollector：将 detail feature gate、Fuyao/Eastmoney membership merge、前一交易日采集、日期证据、normalization、facts、promotion dependency、失败留存、shadow 及 `put_limit_collection` 事务写入迁入 `infrastructure.providers.LimitsCollector`；coordinator 的历史会话、feature gate 和任务分派改为委托 collector，并删除重复的 generic/limits provider 实现。`.venv\\Scripts\\python.exe -m pytest tests/test_market_environment_limit_contract.py tests/test_market_environment_limit_fixtures.py tests/test_market_environment_limit_matrix.py tests/test_market_environment_limit_facts.py tests/test_market_environment_limit_promotion.py tests/test_market_environment_limit_performance.py tests/test_market_environment_date_relabel.py tests/test_market_environment_collection.py tests/test_market_environment_fuyao_collection_integration.py -q` 为 `146 passed in 10.50s`；编译检查通过，未访问真实 provider、生产 PostgreSQL 或 Kubernetes。
+- Stage 5 coordinator/registry：`CollectionCoordinator` 通过完整 `DatasetCollectorRegistry` 动态解析 task collector，删除五路 dataset 分支、遗留 `_collect_*`/`_fetch_*` 和 Fuyao capability/cutover 实现；Fuyao gate 迁入 `FuyaoCollectionPolicy`，limits 状态详情委托 `LimitsCollector`，provider 包改为惰性导出以保持 skeleton import 无副作用。完整采集相关回归为 `249 passed in 12.59s`，API/bootstrap/registry 回归为 `39 passed in 4.01s`；`git diff --check` 通过，静态搜索确认 coordinator 不含 dataset-specific provider/fallback 实现。
+- Stage 6 aggregate composition/rebuild：新增 application `MaterializedAggregateComposer` 与 `MaterializedAggregateRebuilder`，迁入 exact-date component load、cache metadata、Pydantic response validation、storage metadata、component revision 双读校验、fenced CAS persistence 和三次 conflict retry；`MarketEnvironmentService` 的 compose/rebuild 入口仅保留兼容委托。aggregate/service/limit/command focused 为 `57 passed, 122 warnings in 5.70s`，application/bootstrap/API 回归为 `41 passed in 3.97s`；新增排序 JSON 逻辑 payload 字节等价断言，`git diff --check` 通过。
+- Stage 6 core/index analysis：新增纯 `domain.analysis.core`，迁入单指数技术分析、核心 summary、同步模式/标签/评估、组合概览和前序交易日推导；`CoreCollector` 直接依赖纯函数，不再通过 `MarketEnvironmentService` 执行分析，service 私有入口仅保留兼容委托。calculation/service/collection/provider/Fuyao 回归为 `144 passed in 4.15s`，application/bootstrap/domain import 回归为 `14 passed in 2.54s`；AST 测试确认 domain core analysis 不导入 repository、provider、service、application 或 infrastructure。
+- Stage 6 breadth analysis：新增 application `BreadthHistoryReader`，通过显式 repository 精确读取 previous breadth 与 5/250 日 payload，并在完整性失败时返回 insufficient；新增纯 `domain.analysis.breadth` 计算 decline/spread、momentum、250 日 percentile、index consistency、width label 与 history coverage。service 只保留 DTO history mapping 和兼容委托；focused/calculation/query/application/bootstrap 回归为 `93 passed in 3.70s`，测试确认 exact previous date 不会用更旧快照替代且少于 60 条历史继续输出 `insufficient`。
+- Stage 6 limits composition/policy：新增 application `LimitEcosystemComposer`，迁入 limits V1 gate、禁用字段清理、payload checksum + materialization revision cache、facts/membership ecosystem composition、Pydantic validation 与 bounded cache；新增纯 domain `apply_promotion_quality_layer`，保持 promotion degraded 向 dataset quality 叠加 warnings/status，而 missing/insufficient evidence 不伪造成功。limit contract/fixture/matrix/facts/promotion/performance/service 回归为 `129 passed in 6.04s`，application/bootstrap/API 回归为 `38 passed in 3.96s`。
+- Stage 6 API response boundary mappers：新增 interfaces.http.schemas.mappers，提供 map_market_environment/map_chapter01/map_next_session/map_timezone_preferences/map_collection_run/map_collection_status 六个纯函数，修正 from ……schemas （4 级点）相对路径，不再持有 coordinator/store/CollectionTaskRecord/CoreIndexResultRecord 直接耦合；routers 在 boundary 内将对象投影为 dict 后再交给 mapper。market_environment、core、next-session、chapter-01、data-collection、collection-runs POST/GET、preferences/timezone GET/PUT、attach_timezone_context 全部走 mapper 验证；unwrap_collection_coordinator 已从 dependencies.py 移除。golden 验证为 40 passed in 4.13s（API/characterization/bootstrap/status queries），market_environment focused/compatible 集为 506 passed, 6 skipped, 1 deselected in 19.90s；git diff --check 通过；未访问真实 provider、生产 PostgreSQL 或 Kubernetes。
+- 待完成：10 项 apply 任务、service facade 收缩与架构门禁、docs-contract full 与最终 scope review。
 
 ## Remaining Gaps
 
-- compatibility adapters 仍委托 `SnapshotStore`、`MarketEnvironmentService` 与 `CollectionCoordinator`；core 算法已进入独立 collector，但 registry 仍通过 legacy adapter 调用 coordinator，需由任务 5.3–5.7 继续替换并最终移除旧 facade。
+- compatibility adapters 仍委托 `SnapshotStore`、`MarketEnvironmentService` 与 `CollectionCoordinator`；正常 collection runtime 已通过完整 registry 调用五类 collector，但 5.1 的 legacy provider registry adapter 仍保留给迁移期测试，需在任务 7.2 随旧 facade 一并移除。
 - application container 的正常路径已要求 PostgreSQL，但仍通过过渡 facade 构造旧 PostgreSQL backend；新 connection factory/UoW 的完整 runtime wiring 与 `create_schema` 移除仍待后续 facade cleanup，不能视为最终生产装配完成。
 - Alembic `0003_provider_capability_reports` 与 shared repository contracts 已实现；真实 PostgreSQL transaction/concurrency/fencing integration 仅在显式隔离 test URL 下运行，本机未配置该 URL，因此相关 3 个 integration case 本轮按安全门控跳过。
-- `snapshot_store.py`、`providers.py`、`service.py`、`collection.py` 仍为迁移期混合职责模块，Stage 4–6 需按 repository、collector 与 analysis 边界拆分。
+- `snapshot_store.py`、`providers.py` 与 `service.py` 仍为迁移期混合职责模块；`collection.py` 已移除 dataset provider/fallback 算法，但 query/status compatibility 与 concrete assembly 仍待 Stage 6–7 继续收缩。
 - 当前仅有 ports/query 局部 AST 约束，完整分层、bootstrap-only assembly 与 thin entry-point 架构门禁尚待任务 7.1。
 
 ## Next Step
 
-实施任务 5.6：最后抽取 `LimitsCollector`，保持 Fuyao/Eastmoney membership merge、日期证据、normalization、facts、promotion dependency、失败留存和 transactional detail writes。
+实施任务 6.6：把 query 与 materialization 路径切换到 application ports，将 service facade 收缩为 delegation only，并验证普通 GET/status/next-session 路径 provider 调用数为 0 且 warm local read 维持既有 500ms 门槛。

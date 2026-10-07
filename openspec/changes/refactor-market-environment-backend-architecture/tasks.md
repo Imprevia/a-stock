@@ -46,16 +46,16 @@
 - [x] 5.3 Extract `BreadthCollector`, preserving Fuyao/TDX/Eastmoney gates, exact-date evidence, stock-universe validation and missing/insufficient semantics, and verify breadth, TDX daily package and stock-universe tests pass unchanged.
 - [x] 5.4 Extract `ActiveDirectionCollector`, preserving Eastmoney primary/delay and independently gated TDX-derived fallback behavior, ranking metadata and `fallback-derived` quality, and verify active-direction focused collection tests pass.
 - [x] 5.5 Extract `SectorsCollector`, preserving Eastmoney primary/delay, capability-gated Fuyao fallback, optional enrichment, lineage and current-date restrictions, and verify sector, enrichment, shadow and Fuyao collection tests pass.
-- [ ] 5.6 Extract `LimitsCollector` last, preserving Fuyao/Eastmoney membership merge, date evidence, normalization, facts, promotion dependencies, failure retention and transactional detail writes, and verify all limit contract/fixture/matrix/performance tests pass.
-- [ ] 5.7 Reduce `CollectionCoordinator` to validation, run/task lifecycle, lease/fencing, registry invocation, persistence, aggregate rebuild triggering and parent status derivation; verify it contains no dataset-specific provider/fallback implementation and the full collection suite passes.
+- [x] 5.6 Extract `LimitsCollector` last, preserving Fuyao/Eastmoney membership merge, date evidence, normalization, facts, promotion dependencies, failure retention and transactional detail writes, and verify all limit contract/fixture/matrix/performance tests pass.
+- [x] 5.7 Reduce `CollectionCoordinator` to validation, run/task lifecycle, lease/fencing, registry invocation, persistence, aggregate rebuild triggering and parent status derivation; verify it contains no dataset-specific provider/fallback implementation and the full collection suite passes.
 
 ## 6. Query, analysis, and response decomposition
 
-- [ ] 6.1 Extract materialized aggregate composition/rebuild into its command/domain service, preserving component revisions, Pydantic validation and conflict retries, and verify aggregate rebuild tests pass with byte-equivalent logical payloads.
-- [ ] 6.2 Extract core/index analysis and synchronization policies from `MarketEnvironmentService` into pure domain analysis modules, and verify calculation, combination and synchronization tests pass without repository or provider imports.
-- [ ] 6.3 Extract breadth history, percentile, momentum, index-consistency and width-label analysis behind explicit repository inputs, and verify exact previous-date and insufficient-history tests retain their outputs.
-- [ ] 6.4 Extract limit ecosystem composition and promotion policies from query orchestration while preserving quality layering and missing evidence rules, and verify the focused limit ecosystem/promotion suites pass.
-- [ ] 6.5 Move API response assembly into boundary mappers that consume typed application results and existing Pydantic DTOs, and verify golden success/partial/missing/degraded/failed-retained responses remain compatible.
+- [x] 6.1 Extract materialized aggregate composition/rebuild into its command/domain service, preserving component revisions, Pydantic validation and conflict retries, and verify aggregate rebuild tests pass with byte-equivalent logical payloads.
+- [x] 6.2 Extract core/index analysis and synchronization policies from `MarketEnvironmentService` into pure domain analysis modules, and verify calculation, combination and synchronization tests pass without repository or provider imports.
+- [x] 6.3 Extract breadth history, percentile, momentum, index-consistency and width-label analysis behind explicit repository inputs, and verify exact previous-date and insufficient-history tests retain their outputs.
+- [x] 6.4 Extract limit ecosystem composition and promotion policies from query orchestration while preserving quality layering and missing evidence rules, and verify the focused limit ecosystem/promotion suites pass.
+- [x] 6.5 Move API response assembly into boundary mappers that consume typed application results and existing Pydantic DTOs, and verify golden success/partial/missing/degraded/failed-retained responses remain compatible.
 - [ ] 6.6 Switch all query and materialization paths away from `MarketEnvironmentService`, reduce any temporary service facade to delegation only, and verify ordinary GET/status/next-session paths have zero provider calls and warm local reads remain under the existing 500 ms threshold.
 
 ## 7. Architecture enforcement and compatibility cleanup

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import copy
 import time
-from collections import Counter
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from ...fuyao_market import FuyaoMarketAdapter, FuyaoMarketResult
+from ...domain.analysis import analyze_index, build_collected_core_summary
 from ...provider_shadow import compare_shadow
 from ...providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from ...refresh import effective_market_date
@@ -36,7 +36,6 @@ class CoreCollector:
         *,
         market_now: Callable[[], datetime],
         is_settled: Callable[[date], bool],
-        analysis_service: Any,
         fuyao_adapter: FuyaoMarketAdapter,
         fuyao_is_enabled: Callable[[str], bool],
         fuyao_shadow_enabled: Callable[[str], bool],
@@ -47,7 +46,6 @@ class CoreCollector:
         self.store = store
         self._market_now = market_now
         self._is_settled = is_settled
-        self._analysis_service = analysis_service
         self.fuyao_adapter = fuyao_adapter
         self._fuyao_is_enabled = fuyao_is_enabled
         self._fuyao_shadow_enabled = fuyao_shadow_enabled
@@ -156,7 +154,7 @@ class CoreCollector:
                 bars = [bar for bar in result.bars if bar.date <= task.as_of]
                 if not bars:
                     raise RuntimeError("所选日期前无历史数据")
-                analysis = self._analysis_service._analyse(spec, bars, result, quote)
+                analysis = analyze_index(spec, bars, result, quote)
                 analyses.append(analysis)
                 effective_dates.append(bars[-1].date)
                 current_successes += 1
@@ -209,16 +207,11 @@ class CoreCollector:
         if not analyses:
             raise RuntimeError("全部指数数据源不可用且没有同日期可保留结果")
         effective_date = min(effective_dates) if effective_dates else task.as_of
-        trends = Counter(item["trendState"] for item in analyses)
         core_payload = {
             "asOf": effective_date.isoformat(),
             "generatedAt": self._market_now().isoformat(),
             "indices": analyses,
-            "summary": {
-                "synchronization": self._analysis_service._synchronization(analyses),
-                "dominantTrend": trends.most_common(1)[0][0] if trends else "数据不足",
-                "warnings": warnings,
-            },
+            "summary": build_collected_core_summary(analyses, warnings),
         }
         settled = self._is_settled(task.as_of)
         session_warning = self._persist_session_evidence(

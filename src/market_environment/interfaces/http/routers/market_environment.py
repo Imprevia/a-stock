@@ -18,6 +18,7 @@ from ..dependencies import (
     get_market_queries,
 )
 from ..errors import raise_application_error, raise_unprocessable
+from ..schemas import map_chapter01, map_market_environment, map_next_session
 
 
 router = APIRouter()
@@ -42,7 +43,7 @@ def market_environment(
     as_of = _resolve_as_of(as_of, effective_date)
     _validate_as_of(as_of, effective_date)
     try:
-        return queries.get(as_of)
+        return map_market_environment(queries.get(as_of))
     except Exception as error:
         raise_application_error(error)
 
@@ -56,7 +57,7 @@ def market_environment_core(
     as_of = _resolve_as_of(as_of, effective_date)
     _validate_as_of(as_of, effective_date)
     try:
-        return queries.get_core(as_of)
+        return map_market_environment(queries.get_core(as_of))
     except Exception as error:
         raise_application_error(error)
 
@@ -73,7 +74,7 @@ def market_environment_next_session(
     as_of = _resolve_as_of(as_of, effective_date)
     _validate_as_of(as_of, effective_date)
     try:
-        return queries.get_next_session_comparison(as_of)
+        return map_next_session(queries.get_next_session_comparison(as_of))
     except Exception as error:
         raise_application_error(error)
 
@@ -88,7 +89,7 @@ def market_environment_chapter01(
     as_of = _resolve_as_of(as_of, effective_date)
     _validate_as_of(as_of, effective_date)
     try:
-        return queries.get_chapter01(as_of, section)
+        return map_chapter01(queries.get_chapter01(as_of, section))
     except Exception as error:
         raise_application_error(error)
 

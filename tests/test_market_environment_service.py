@@ -1,3 +1,4 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from threading import Barrier, Event
@@ -663,6 +664,53 @@ def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path
     assert payload["chapter01"]["sectors"]["quality"]["sectorEnrichment"]["matchedRows"] == 1
     assert payload["chapter01"]["sectors"]["rows"][0]["leader"] == "样本股"
     MarketEnvironmentResponse.model_validate(payload)
+
+
+def test_extracted_materialized_rebuilder_preserves_logical_payload_bytes(tmp_path) -> None:
+    selected = market_today()
+    provider = SectionProvider()
+    seed_service = MarketEnvironmentService(provider=provider, persistent_cache=False)
+    core = seed_service._get_core(selected)
+    effective = core["effectiveDate"]
+    market_now = datetime.combine(
+        effective,
+        datetime.min.time(),
+        tzinfo=MARKET_TIME_ZONE,
+    ).replace(hour=16)
+    store = SnapshotStore(tmp_path / "aggregate-extraction.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=effective,
+            payload=seed_service._core_payload(core),
+            source="fixture",
+            status="ok",
+            observations=5,
+            warnings=(),
+            fetched_at=market_now,
+            settled=True,
+        )
+    )
+    service = MarketEnvironmentService(
+        provider=provider,
+        snapshot_store=store,
+        local_reads_only=True,
+        now=lambda: market_now,
+    )
+    revision = store.materialization_revision(effective)
+    composed = service._materialized_aggregate_composer.compose(effective, revision)
+    assert composed is not None
+
+    actual = service.rebuild_materialized_aggregate(effective)
+
+    serialize = lambda payload: json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    assert serialize(actual) == serialize(composed[0])
 
 
 def test_failed_refresh_rebuilds_aggregate_with_retained_warning(tmp_path) -> None:

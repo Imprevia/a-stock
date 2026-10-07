@@ -26,8 +26,6 @@ class CollectionQueries(Protocol):
 
 
 class CollectionCommands(Protocol):
-    coordinator: Any
-
     def start_run(self, as_of: date, datasets: Iterable[str] | None = None): ...
 
     def submit_run(self, run_id: str): ...
@@ -67,10 +65,6 @@ def get_effective_market_date() -> date:
     return market_today()
 
 
-def unwrap_collection_coordinator(value: Any):
-    return getattr(value, "coordinator", value)
-
-
 def _request_container(request: Request):
     container = getattr(request.app.state, "container", None)
     if container is None:
@@ -91,5 +85,4 @@ __all__ = [
     "get_market_queries",
     "get_timezone_commands",
     "get_timezone_queries",
-    "unwrap_collection_coordinator",
 ]

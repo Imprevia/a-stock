@@ -23,6 +23,7 @@ from ..dependencies import (
     get_timezone_queries,
 )
 from ..errors import raise_forbidden
+from ..schemas import map_timezone_preferences
 
 
 router = APIRouter()
@@ -109,6 +110,13 @@ def _timezone_preferences_payload(
     }
 
 
+def _map_timezone_preferences(
+    request: Request,
+    repository: TimezonePreferenceQueries,
+) -> dict:
+    return map_timezone_preferences(_timezone_preferences_payload(request, repository))
+
+
 async def attach_timezone_context(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/api/"):
@@ -118,7 +126,7 @@ async def attach_timezone_context(request: Request, call_next):
                 and getattr(request.app.state, "container", None) is None
             ):
                 raise RuntimeError("lifespan is not active")
-            context = _timezone_preferences_payload(
+            context = _map_timezone_preferences(
                 request,
                 get_timezone_queries(request),
             )
@@ -138,7 +146,7 @@ def get_timezone_preferences(
     request: Request,
     queries: Annotated[TimezonePreferenceQueries, Depends(get_timezone_queries)],
 ) -> dict:
-    return _timezone_preferences_payload(request, queries)
+    return _map_timezone_preferences(request, queries)
 
 
 @router.put(
@@ -161,7 +169,7 @@ def update_timezone_preferences(
         timezone_value=body.timezone,
         actor_id=identity.user_id,
     )
-    return _timezone_preferences_payload(request, queries)
+    return _map_timezone_preferences(request, queries)
 
 
 __all__ = ["attach_timezone_context", "router"]
