@@ -1838,6 +1838,7 @@ else
   podman run --rm --detach \
     --name "$SMOKE_NAME" \
     --publish 18000:8000 \
+    --env MARKET_ENVIRONMENT_DATABASE_URL=postgresql+psycopg://smoke:smoke@127.0.0.1:1/smoke \
     "$IMAGE" >/dev/null
   SMOKE_CREATED=true
   curl --fail --show-error --silent \

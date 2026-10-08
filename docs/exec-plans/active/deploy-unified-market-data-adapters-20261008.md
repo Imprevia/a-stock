@@ -40,6 +40,8 @@ schedule-disabled-application-deploy-pending
 - 使用同一授权 packet 第二次执行后更新为 revision `84`；入口识别 stored manifest absent + live exact CronJob suspended 的 retained-resource 状态，删除 Helm-owned `a-stock-data-collection` 并两次读回证明 absent。未创建 canary 或 provider-backed Job，legacy `market-data-collection` 同样 absent。
 - CronJob 删除后，其 owner-referenced 的三个既有 failed Job/Pod 已由 Kubernetes 级联清理；namespace 当前 CronJob/Job 列表均为空。它们的失败状态、UID、时间和 exit code 2 已在本计划的发布前证据中记录，未改写为成功。
 - 调度关闭后 Dashboard 与 PostgreSQL 仍为 `1/1` Ready，`/api/health` 返回 HTTP 200；两个 PVC 的 UID、PV、容量和 `Bound` 状态与发布前一致。
+- 第一次普通 `--component all` 尝试生成本地镜像 `20261008-234628-18afe45` 后，在镜像传输和 Helm write 前被本地健康门禁阻断：统一 bootstrap 已要求 PostgreSQL URL，但旧 smoke 命令未注入 `MARKET_ENVIRONMENT_DATABASE_URL`，容器以 `DatabaseConfigurationError` 退出。线上保持 revision `84`、旧镜像 Ready、CronJob absent，未导入该候选镜像。
+- 部署脚本已改为仅在本地 smoke 容器中注入不可达的 loopback PostgreSQL URL `127.0.0.1:1`；实测 `/api/health` 与首页均为 HTTP 200，未连接生产数据库或 provider。已增加命令级回归断言并同步 runbook；生产 Deployment 的数据库连接仍来自既有 Secret。
 
 ## Remaining Gaps（剩余缺口）
 

@@ -960,6 +960,23 @@ def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -
     assert live["items"] == []
     assert "patch cronjob" not in calls
 
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_local_smoke_supplies_required_database_setting(tmp_path: Path) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    podman_run = next(line for line in calls.splitlines() if line.startswith("podman run"))
+    assert (
+        "--env MARKET_ENVIRONMENT_DATABASE_URL="
+        "postgresql+psycopg://smoke:smoke@127.0.0.1:1/smoke"
+    ) in podman_run
+
+
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_generic_deploy_allows_new_release_only_when_live_schedule_is_absent(
     tmp_path: Path,
