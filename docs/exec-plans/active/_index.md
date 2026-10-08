@@ -48,7 +48,7 @@
 | `refactor-market-environment-backend-architecture` | Codex | in-progress | 2026-10-07 |
 | `consolidate-market-environment-module-layout` | Codex | in-progress | 2026-10-07 |
 | `unify-market-data-acquisition-adapters` | Codex | completed-without-real-provider-or-production-write | 2026-10-08 |
-| `deploy-unified-market-data-adapters-20261008` | Codex | authorized-schedule-disable-packet-ready | 2026-10-08 |
+| `deploy-unified-market-data-adapters-20261008` | Codex | schedule-disabled-application-deploy-pending | 2026-10-08 |
 
 ## 说明
 

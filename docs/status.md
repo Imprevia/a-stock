@@ -47,7 +47,7 @@
 
 ## 进行中
 
-- `deploy-unified-market-data-adapters-20261008` 已完成 TrueNAS k3s 只读预检：节点 Ready、k3s systemd enabled/active、Helm revision 82、Dashboard 1/1、两个 PVC Bound。线上 `a-stock-data-collection` 当前仍为 `suspend=false`；操作责任人已于 2026-10-08 明确授权停止后续自动采集，受控 `--disable-schedule` rollback-v1 packet 已绑定 reviewed HEAD、运行镜像及 chart/baseline/overlay/render hashes，待执行并证明 exact CronJob absent 后再进入普通应用发布。
+- `deploy-unified-market-data-adapters-20261008` 已完成受控调度关闭：revision 83 首次执行遇到 retained active CronJob 后 fail-safe 补偿为 suspended 并非零退出；同一授权 packet 第二次执行生成 revision 84，安全删除 exact Helm-owned `a-stock-data-collection` 并证明 absent。Dashboard/PostgreSQL 仍为 `1/1` Ready，两个 PVC 保持 Bound 且 UID/PV/容量未变；普通应用发布待从 clean upstream checkout 执行。
 
 - `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
 
@@ -98,7 +98,7 @@
 
 ## 下一步
 
-- `deploy-unified-market-data-adapters-20261008` 已获操作责任人授权停止自动采集；下一步只允许通过绑定 revision 82/current frozen image/hashes 的 `--disable-schedule` 关闭并删除 exact CronJob，证明 absent 后才可从 clean、upstream-aligned checkout 执行普通 `--component all` 发布。
+- `deploy-unified-market-data-adapters-20261008` 已通过绑定 revision 82/current frozen image/hashes 的 `--disable-schedule` 关闭并删除 exact CronJob；下一步从 clean、upstream-aligned checkout 执行普通 `--component all` 发布，并复核镜像、健康、PVC 与 CronJob absent。
 - 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
@@ -114,7 +114,7 @@
 ## 最后更新
 
 2026-10-08
-  - TrueNAS k3s 发布只读预检发现 revision 82 的 `a-stock-data-collection` 仍 active；按受控发布契约停止普通发布。操作责任人随后明确授权停止自动采集，rollback-v1 packet 已冻结并等待受控执行；尚未执行 Kubernetes/Helm 写入、镜像传输、provider 调用或 PVC/Secret 修改。
+  - TrueNAS k3s 发布只读预检发现 revision 82 的 `a-stock-data-collection` 仍 active；操作责任人明确授权停止自动采集后，受控 rollback-v1 packet 经 revision 83 fail-safe suspended、revision 84 retained-resource cleanup 两步完成 exact CronJob 删除并证明 absent。未创建 provider-backed Job，未修改 PVC/Secret/生产数据。
   - 完成 `unify-market-data-acquisition-adapters`：五数据集统一 acquisition/collector/committer/projector 路径、engine-neutral transport、Fuyao gateway 迁移、legacy runtime 收口和默认关闭 Scrapling profile 已通过 focused/全量/规则/OpenSpec 离线门禁；生产 allowlist 为空，未运行真实网络或生产写入。
 
 2026-09-30

@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-authorized-schedule-disable-packet-ready
+schedule-disabled-application-deploy-pending
 
 ## Acceptance（验收）
 
@@ -36,13 +36,16 @@ authorized-schedule-disable-packet-ready
 - 调度关闭 packet 使用 reviewed HEAD `eee52eacc5ca9d7a55a423293778133c196a8646`；该提交的 chart、部署脚本、验证器和 off overlay 与 revision 82 激活时的 reviewed HEAD `40c3498c16325ad0962661a841a3efe6d23cb7d2` 一致，并包含已归档的完整 scheduling baseline。
 - 冻结镜像为 `localhost/a-stock-market-environment:20260930-115139-40c3498`，containerd manifest digest 为 `sha256:53c1219db808acd6860286725fa77ebda7da40f8dbcbf8e66e001056cfe05883`；chart/baseline/off-overlay/render SHA-256 依次为 `3ad82655fee3d42b6527b75608132e805b0238561101c71e6f9d4b31590fd01a`、`d7e6492934ccf56ebaeb77c3a16e6e1e83ef074d306c8d84f0dc8efb5a68e25c`、`d624601138ca7e803c7e1b7c85c86172fa17f6c1295b5ac49c576924f0fff8ff`、`b03baadde1914dbf23b3c11c96fc0569d811eb312fb7394a94ddf7e204e93ab6`。
 - rollback-v1 canonical binding SHA-256 为 `c38c1ce02dd942750a1499b485a408525fa9ef24008c5c03e39aa51dca7c213d`，授权引用为 `rollback-v1:user-20261008-stop-auto-collection:c38c1ce02dd942750a1499b485a408525fa9ef24008c5c03e39aa51dca7c213d`；`--disable-schedule` 不适用 activation catch-up 行为。
+- 第一次受控 `--disable-schedule` 将 Helm stored manifest 更新为 revision `83`；retained CronJob 仍为 active 时入口拒绝删除并非零退出，fail-safe 随即将 exact `a-stock-data-collection` 补偿为 `suspend=true`。该次操作未报告成功。
+- 使用同一授权 packet 第二次执行后更新为 revision `84`；入口识别 stored manifest absent + live exact CronJob suspended 的 retained-resource 状态，删除 Helm-owned `a-stock-data-collection` 并两次读回证明 absent。未创建 canary 或 provider-backed Job，legacy `market-data-collection` 同样 absent。
+- CronJob 删除后，其 owner-referenced 的三个既有 failed Job/Pod 已由 Kubernetes 级联清理；namespace 当前 CronJob/Job 列表均为空。它们的失败状态、UID、时间和 exit code 2 已在本计划的发布前证据中记录，未改写为成功。
+- 调度关闭后 Dashboard 与 PostgreSQL 仍为 `1/1` Ready，`/api/health` 返回 HTTP 200；两个 PVC 的 UID、PV、容量和 `Bound` 状态与发布前一致。
 
 ## Remaining Gaps（剩余缺口）
 
-- 需从 clean、upstream-aligned rollback worktree 执行受控 `--disable-schedule`，并读回 Helm revision 与 exact CronJob absent 后置条件。
 - 普通应用发布必须在调度关闭成功后从 clean、upstream-aligned checkout 执行；不得从包含未跟踪嵌套仓库的工作区构建生产镜像。
 - 尚未产生新镜像 tag/digest、Helm revision、发布后资源状态或健康检查证据。
 
 ## Next Step（下一步）
 
-先从 clean rollback worktree 执行绑定上述 hashes 的受控 `--disable-schedule` 并证明 CronJob absent；再从最新 `origin/main` clean worktree 执行 `--component all`，最后补齐镜像、Helm、健康、PVC 与调度后置条件并运行 docs-contract full。
+从最新 `origin/main` clean worktree 执行 `--component all`，最后补齐镜像、Helm、健康、PVC 与调度后置条件并运行 docs-contract full。
