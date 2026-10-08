@@ -47,6 +47,7 @@
 | `activate-scheduled-collection-20260930` | 操作发起人 | activated-observation-complete-with-partial-quality | 2026-09-30 |
 | `refactor-market-environment-backend-architecture` | Codex | in-progress | 2026-10-07 |
 | `consolidate-market-environment-module-layout` | Codex | in-progress | 2026-10-07 |
+| `unify-market-data-acquisition-adapters` | Codex | completed-without-real-provider-or-production-write | 2026-10-08 |
 
 ## 说明
 

@@ -110,6 +110,16 @@ persistence:
 marketEnvironment:
   timezone: Asia/Shanghai
   persistentCache: true
+  # Optional static HTTP runtime. The default workload keeps the base image;
+  # enabling this profile only selects the separately built enhanced image.
+  # No source is authorized until an exact host/source pair is reviewed.
+  scrapling:
+    enabled: false
+    image:
+      repository: a-stock-market-environment-scrapling
+      pullPolicy: IfNotPresent
+      tag: latest
+    allowlist: []
   tdx:
     derivedActiveDirectionEnabled: false
   limits:

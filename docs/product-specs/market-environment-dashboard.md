@@ -2,9 +2,11 @@
 
 ## Status
 
-`active` · 版本 `0.12`
+`active` · 版本 `0.13`
 
 后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
+
+采集适配器统一已完成：五个数据集统一消费 typed `CollectionOutcome`，provider 差异由 dataset acquisition plan 与 source adapter 隔离，task/lease/同日留存/提交/聚合由 coordinator 和 typed committer 统一处理。`requests` 保持默认 HTTP engine；可选 Scrapling static engine 默认不安装、不启用且 host/source allowlist 为空，不构成生产数据源批准。
 
 ## 目标
 
@@ -47,8 +49,12 @@
 - 数据采集页覆盖核心指数、市场广度、涨跌停生态、行业板块和容量方向，并分别展示当前可用状态与最近采集结果；核心指数可展开查看五个指数子项。
 - 数据采集页从本地状态读取并显示容量方向的 `tdx-daily-package-derived` 来源、本地排序和行业映射覆盖率；`fallback-derived` 标记为本地派生降级，不能被显示为普通成功。
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
+- 五个数据集对 application 暴露同一个 `collect(DatasetDate) -> CollectionOutcome` 产品契约；业务流程只消费 normalized candidate/failure/evidence，不根据 Eastmoney、Fuyao、TDX、requests 或 Scrapling 类型分支。数据源优先级、日期能力、fallback、shadow 和 enrichment 由可审计 acquisition plan 决定，不能由 UI、coordinator 或 transport engine 临时改序。
+- source attempt 必须展示真实来源、revision、requested/actual date、fetch time、field availability、timings、分类失败和脱敏 provenance。shadow 不改变正式结果；同供应商 enrichment 不得显示为独立确认；成功缺少 candidate 或身份时必须 fail closed。
 - 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 PostgreSQL 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。两条 Eastmoney 路径均失败后，只有 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才允许使用精确日期 TDX 包本地派生容量方向，质量显示为 `fallback-derived`，记录本地成交额排序、TDX revision、行业映射覆盖率和前序 warning；该开关独立于 breadth 的 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED`，默认关闭。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
+- 所有 HTTP source adapter 共用一个进程内 transport policy gateway；gateway 统一 host 限速、预算、重试、single-flight、缓存和熔断，engine 只执行一个已授权 attempt。请求身份必须隔离 engine、精确日期、完整参数和认证/tenant scope，且诊断不得泄露 credential、Cookie、proxy 或 challenge body。
+- 可选 Scrapling 仅提供静态 HTTP engine：默认关闭、空 allowlist、独立依赖/镜像，不启用 Spider、浏览器、Chromium、代理轮换、内部重试、blocked-request escalation 或 challenge solving；401/403/CAPTCHA 不得触发 requests 到 Scrapling 的自动升级。是否为某个真实 host 启用必须由后续证据和独立 rollout 批准。
 - 行业扶摇 fallback 仅允许使用 `https://fuyao.aicubes.cn/api/a-share/calendar/trading-days`、`/api/a-share-index/catalog/ths-index-list?tag=industry` 和 `/api/a-share-index/prices/snapshot?thscodes=...`。目录、快照批次和交易日历必须共同证明请求日期；目录/快照覆盖不足、身份重复、批次时间不一致或日期不可证明时 fail closed，不把最新快照包装为历史日期。正式启用要求 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`、capability report `eligible` 和完全匹配的 approved revision；默认关闭，失败时保留同日期 `failed-retained`/`failed-missing`。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
@@ -132,8 +138,12 @@
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
 - 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；sectors 仍是东方财富主链后的 fallback，activeDirection 继续既有 Eastmoney/TDX。默认状态为 `unverified`/关闭。
 - shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
+- collector/committer/coordinator 边界验收：coordinator 不反射 collector 方法、不解释 vendor payload；每个 dataset/date 只有一个 lease 和 task sequence；core/limits 的 typed commit 在 PostgreSQL fence/UoW 内保持子结果和 detail/fact/manifest 原子；status/detail 查询 provider 调用数为 0。
+- transport engine 验收：requests 与 Scrapling 对同一离线 fixture 产生除 engine/timing 外等价的 normalized payload 或 failure category；401/403/challenge 快速失败，engine 无内部 retry，默认配置不会启动 enhanced runtime，base 镜像和 Helm 默认调度契约不变。
 
-## Provider 请求可靠性边界（2026-09-29，实施中）
+## Provider 请求可靠性边界（2026-10-08）
 
-- 所有 provider 的 HTTP 访问共享按 host 的请求门、最小间隔、抖动和有限请求预算；连接/读取错误、408、429、5xx 才允许有界退避重试并尊重 `Retry-After`，401/403、其他 4xx 和响应契约错误快速失败。每个 host 的 session 固定一个现代浏览器 UA，重建 session 或熔断恢复时重新选择，不伪造 Cookie、认证信息、TLS 指纹或代理来源。
-- 相同请求并发时只允许一个实际请求；实时成功结果可短时复用（默认约 10 秒），历史数据和 TDX 盘后包的缓存键必须包含完整参数和目标日期，禁止跨日期命中。连续可重试失败触发短暂冷却，冷却结束只执行一次受控探测；失败仍保留 `failed`、`degraded`、`insufficient` 或同日期失败留存质量，不得用零值或其他日期补齐。该传输层不得改变 Eastmoney/Fuyao 的既有降级顺序、错误类型或 feature flag 默认值。
+- composition root 为全部 HTTP source adapter 提供同一个进程内 policy gateway 和 engine registry。gateway 统一请求门、最小间隔、抖动、预算、网络/408/429/5xx 重试、`Retry-After`、single-flight、缓存和 cooldown/half-open，engine 只执行一个 attempt；不能在 adapter/engine 内形成第二套 transport 重试或限流。Fuyao 的 HTTP 200 业务 envelope 重试仍由 adapter 有界处理，不与 transport retry 叠加。
+- 连接/读取错误、408、429、5xx 才允许 gateway 在预算内有界重试；401/403、其他权限拒绝、CAPTCHA/interstitial challenge、日期或响应契约错误快速失败。请求身份隔离 engine、完整参数、目标日期和 authentication/tenant digest；诊断不保存 credential、Cookie、proxy、secret query 或 challenge body。
+- 该共享状态只保证单进程一致性，不宣称 Dashboard/CronJob/多 Pod 全局限流。传输层不得改变 Eastmoney/Fuyao 的既有降级顺序、错误类型或 feature flag 默认值；失败仍保留 `failed`、`degraded`、`insufficient` 或同日期失败留存质量，不得用零值、其他日期或自动切换 enhanced engine 补齐。
+- Scrapling 仅用于经授权 host 的静态 HTTP/TLS 客户端兼容验证，不定义为“绕过反爬”。它默认未安装/未启用且 allowlist 为空；Spider、JavaScript/browser、代理轮换、stealth/challenge solving 和 permission bypass 不属于本产品范围。

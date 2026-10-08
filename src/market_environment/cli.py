@@ -391,9 +391,12 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
             )
             return 2
         try:
-            sessions = active_coordinator.prepare_limit_history_sessions(
-                args.as_of,
-                args.history_sessions,
+            from .application.ports import (
+                CollectionRefreshRequest,
+                LimitHistoryPreparationRequest,
+            )
+            sessions = active_coordinator.prepare_limit_history(
+                LimitHistoryPreparationRequest(args.as_of, args.history_sessions)
             )
         except Exception as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
@@ -402,10 +405,12 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
         for session in sessions:
             try:
                 results.append(
-                    active_coordinator.collect(
-                        session,
-                        ("limits",),
-                        fetch_previous_limit_details=False,
+                    active_coordinator.collect_request(
+                        CollectionRefreshRequest(
+                            as_of=session,
+                            datasets=("limits",),
+                            fetch_previous_limit_details=False,
+                        )
                     )
                 )
             except Exception as exc:

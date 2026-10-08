@@ -108,7 +108,13 @@ class TimezonePreferenceStore:
     timezone values; no credentials or request payloads are persisted.
     """
 
-    def __init__(self, path: Path | str | None = None, *, database_url: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | str | None = None,
+        *,
+        database_url: str | None = None,
+        initialize_schema: bool = True,
+    ) -> None:
         self._postgres = database_url is not None or (
             path is None and bool(os.getenv("MARKET_ENVIRONMENT_DATABASE_URL"))
         )
@@ -120,7 +126,8 @@ class TimezonePreferenceStore:
                 else DatabaseSettings.from_environment(required=True)
             )
             self.path = None
-            create_schema(self.engine)
+            if initialize_schema:
+                create_schema(self.engine)
         else:
             if path is None:
                 raise ValueError("SQLite timezone preference store requires an explicit path")

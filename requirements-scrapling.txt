@@ -1,0 +1,4 @@
+# Optional static HTTP engine profile. This installs Python fetcher libraries only;
+# do not run `scrapling install` or download browser binaries for this profile.
+-r requirements.txt
+scrapling[fetchers]==0.4.15

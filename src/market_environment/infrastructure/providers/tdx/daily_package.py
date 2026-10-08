@@ -21,9 +21,12 @@ from datetime import date, datetime, timezone
 from threading import RLock
 from typing import Any
 
-import requests
-
-from src.trading_system.data.provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
+from src.trading_system.data.provider_http import (
+    HostPolicy,
+    ProviderHttpClient,
+    ProviderHttpError,
+    build_requests_compatibility_session,
+)
 from src.trading_system.data.providers import ProviderFailure
 
 
@@ -563,7 +566,7 @@ class TDXDailyPackageClient:
         self,
         *,
         timeout: float = 90.0,
-        session: requests.Session | None = None,
+        session: Any | None = None,
         max_bytes: int = 8 * 1024 * 1024,
         minimum_market_rows: Mapping[str, int] | None = None,
         stock_universe_minimums: Mapping[str, int] | None = None,
@@ -575,7 +578,7 @@ class TDXDailyPackageClient:
         package_cache_size: int = 2,
     ) -> None:
         self.timeout = timeout
-        self.session = session or requests.Session()
+        self.session = session or build_requests_compatibility_session()
         self.http = http_client or ProviderHttpClient(
             session=self.session,
             default_policy=HostPolicy(
@@ -616,25 +619,26 @@ class TDXDailyPackageClient:
                 timeout=(10, self.timeout),
                 cache_ttl=0.0,
                 requested_date=expected.isoformat(),
+                source_id="tdx-daily-package",
+                max_response_bytes=self.max_bytes,
             )
         except ProviderHttpError as exc:
             if exc.status_code == 404:
                 raise TDXDailyPackageUnavailable("TDX package is unavailable or not published") from exc
+            if exc.kind == "contract" or "exceeds" in str(exc).lower():
+                raise TDXDailyPackageError(
+                    "TDX package exceeds the download safety bound"
+                ) from exc
             raise TDXDailyPackageError(
                 f"TDX package HTTP status {exc.status_code or 'request failure'}",
                 status_code=exc.status_code,
             ) from exc
-        except requests.RequestException as exc:
-            raise TDXDailyPackageError("TDX package HTTP request failed") from exc
         status_code = int(getattr(response, "status_code", 200) or 200)
         if status_code == 404:
             raise TDXDailyPackageUnavailable("TDX package is unavailable or not published")
         if status_code < 200 or status_code >= 300:
             raise TDXDailyPackageError(f"TDX package HTTP status {status_code}", status_code=status_code)
-        try:
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise TDXDailyPackageError("TDX package HTTP request failed", status_code=status_code) from exc
+        response.raise_for_status()
         content = getattr(response, "content", b"")
         if not isinstance(content, bytes) or len(content) > self.max_bytes:
             raise TDXDailyPackageError("TDX package exceeds the download safety bound")

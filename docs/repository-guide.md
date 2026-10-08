@@ -23,7 +23,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/trading_knowledge/` | 本地交易知识源解析、SQLite FTS5 索引、只读查询和 MCP stdio 服务 | 修改知识源边界、引用契约或工具 schema 时同步产品规格、架构和 runbook |
 | `evidence/` | 可入库的验证清单和月度 SHA-256 摘要 | 不提交大体积输入快照和 trace |
 | `.github/workflows/` | 离线 PR 门禁和盘后证据运行 | PR workflow 禁止依赖外部行情网络 |
-| `src/market_environment/` | 分层模块化市场环境后端：composition、HTTP/CLI、use case、领域计算、PostgreSQL 与 provider collector；目录级文件状态见 `src/market_environment/AGENTS.md` | 修改分层、数据源、计算公式或 API 契约时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
+| `src/market_environment/` | 分层模块化市场环境后端：composition、HTTP/CLI、use case、typed acquisition、PostgreSQL、source adapter 与 collector；目录级文件状态见 `src/market_environment/AGENTS.md` | 修改分层、数据源、计算公式或 API 契约时同步 `docs/architecture.md`、产品规格与 `docs/runbooks.md` |
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/`、`deploy/k3s-native-scheduled/` | 市场环境看板的 Dashboard-only k3s Kustomize base，以及受 Kubernetes 1.27+ 检查的 native scheduled overlay | 修改镜像、端口、探针、存储、资源、调度或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart；`component` 控制 database/service/schedule/all 资源集合 | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
@@ -46,25 +46,29 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 
 | 路径 | 事实职责 | 允许依赖 |
 |------|----------|----------|
-| `src/market_environment/bootstrap/` | 配置、composition container、FastAPI app factory、lifespan 和 CLI composition | 可引用 interfaces/application/infrastructure；是唯一具体装配位置 |
+| `src/market_environment/bootstrap/` | 配置、composition container、FastAPI app factory、lifespan、CLI composition、完整 registry 与进程内唯一 transport gateway | 可引用 interfaces/application/infrastructure；是唯一具体装配位置，任何外部 I/O 前 fail-closed 校验注册完整性 |
 | `src/market_environment/interfaces/http/` | router、依赖获取、身份/时区上下文、DTO mapper 和 HTTP 错误映射 | application/domain；不得直接构造 provider、repository、executor |
 | `src/market_environment/interfaces/cli/` | CLI 参数到 application command/query 的适配 | application/domain；具体实现由 bootstrap 注入 |
-| `src/market_environment/application/ports/` | repository、unit-of-work、collector、executor 协议 | domain 与标准库，不依赖具体基础设施 |
+| `src/market_environment/application/ports/` | repository、unit-of-work、collector、committer、local projector、executor 等 typed 协议 | domain 与标准库，不依赖具体基础设施、vendor 或 native transport 类型 |
 | `src/market_environment/application/queries/` | provider-free 精确日期读取、状态和 next-session | 只读 ports、domain；不得导入 collector/provider |
 | `src/market_environment/application/commands/` | collection run、刷新和 materialization command | 写 ports、collector registry、executor、domain |
-| `src/market_environment/application/collection/` | 五个 stable dataset identifier 的 collector registry、确定性注册与查找 | application ports、domain；不依赖具体 provider 或 persistence |
-| `src/market_environment/domain/` | 领域值、日期/质量/留存策略与纯分析 | 标准库/Pydantic 边界外的纯模块；不依赖 FastAPI、SQLAlchemy、requests |
+| `src/market_environment/application/collection/` | 五个 stable dataset identifier 的 collector/committer/local-projector registry、确定性注册与查找 | application ports、domain；不依赖具体 provider、persistence 或 native response |
+| `src/market_environment/domain/` | 领域值、日期/质量/留存策略、normalized candidate/outcome/failure/evidence 与纯分析 | 标准库/Pydantic 边界外的纯模块；不依赖 FastAPI、SQLAlchemy、requests、Scrapling |
 | `src/market_environment/infrastructure/persistence/postgres/` | PostgreSQL repository、unit of work、lease/fencing 和 aggregate CAS | application ports/domain/SQLAlchemy |
 | `src/market_environment/infrastructure/persistence/sqlite_import/` | 测试或停写迁移 SQLite 适配器 | application ports/domain；不得成为生产静默回退 |
-| `src/market_environment/infrastructure/providers/` | vendor client 复用、五类 dataset collector 与降级链；Fuyao 实现归入 `fuyao/`，TDX 实现归入 `tdx/` | application collector port、domain、共享 transport |
+| `src/market_environment/infrastructure/providers/` | source adapter、dataset acquisition plan、五类 collector、`CollectorProviderRuntime` 与共享 core identity contract；Fuyao 实现归入 `fuyao/`，TDX 实现归入 `tdx/` | application ports、domain、共享 policy gateway；不得自行提交快照或管理 task/lease |
+| `src/market_environment/infrastructure/collection/` | coordinator、typed committer、local projector 与采集维护命令适配 | application ports/domain/PostgreSQL UoW；不得解释 vendor payload 或反射发现 collector 方法 |
+| `src/trading_system/data/provider_http.py` 及其 transport 子模块 | engine-neutral HTTP contract、默认 requests engine、可选 Scrapling static engine、进程内共享 policy gateway | engine 只执行单次请求；重试/限速/缓存/熔断/脱敏由 gateway 独占，不向上暴露 native response |
 | `src/market_environment/infrastructure/execution/` | 有界进程内 task executor | application executor port |
-| `src/market_environment/infrastructure/legacy/` | 明确隔离的旧 provider、SQLite/PostgreSQL 混合存储和 service 实现；service 主要供兼容/测试，provider transport 与 snapshot store 仍可能被当前 runtime adapter 传递使用 | 不得在 query/router 中直接构造；删除前必须完成调用方迁移并更新 `src/market_environment/AGENTS.md`、active plan 和验证证据 |
+| `src/market_environment/infrastructure/legacy/` | 明确隔离的兼容面：provider 文件仅重导出正式 runtime 并提供稳定 alias；service 主要供兼容/测试；snapshot store 仍被当前 PostgreSQL runtime adapter 传递使用 | 不得在 query/router 或 normal bootstrap 中直接构造；删除前必须完成调用方迁移并更新 `src/market_environment/AGENTS.md`、active plan 和验证证据 |
 
 稳定兼容入口保留 `src/market_environment/api.py`、`src/market_environment/cli.py` 以及清单登记的根级导入 shim；
 计算、DTO、迁移、Fuyao/TDX 与 provider 支撑 shim 分别转发到 `domain`、`interfaces` 或 `infrastructure` 的目标实现，
-`service.py`、`providers.py`、`snapshot_store.py` 继续转发到 `infrastructure/legacy/`。普通 query/materialization runtime
-使用 application query/command、`MaterializationSupport` 和明确命名的 runtime adapters，不再构造旧 service 或
-coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局门禁会拒绝未登记文件、含业务逻辑的 shim 和 production
+`service.py`、`providers.py`、`snapshot_store.py` 继续转发到登记的 compatibility target；其中 provider 的真实实现由
+`infrastructure/providers/runtime.py` 持有，legacy 文件只保留重导出/alias。普通 query/materialization runtime 使用
+application query/command、`MaterializationSupport` 和明确命名的 runtime adapters，不再构造旧 provider/service 或
+coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局门禁会拒绝未登记文件、含业务逻辑的 shim、normal runtime
+重新导入 legacy provider、compatibility shim 嵌套 coordinator，以及 production
 子包重新依赖已迁移根实现。
 根目录与 legacy 文件的逐文件状态、哪些仍被 runtime 间接使用以及迁移/删除前的检查清单，维护在
 `src/market_environment/AGENTS.md`；该文件是目录导航，不替代本仓库的架构、runbook 和 active plan 事实源。
@@ -96,7 +100,7 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 | `deploy/truenas/**` | `docs/architecture.md`, `docs/runbooks.md`, active plan | fail |
 | `docs/product-specs/**` 引用的代码路径 | 对应 spec | fail |
 | `scripts/**` | `docs/runbooks.md`, `docs/architecture.md`（涉及部署边界时） | warn |
-| `requirements.txt` / `pyproject.toml` | `docs/runbooks.md`, `README.md` | fail |
+| `requirements*.txt` / `pyproject.toml` / `Dockerfile*` / enhanced profile | `docs/runbooks.md`, `README.md`, `docs/architecture.md`；部署 profile 同步离线渲染证据 | fail |
 
 ## 文档映射规则
 

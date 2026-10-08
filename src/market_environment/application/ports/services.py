@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from datetime import date
 from typing import Protocol, runtime_checkable
 
+from .collection_inputs import CollectionRefreshRequest, LimitHistoryPreparationRequest
+
 
 @runtime_checkable
 class MarketEnvironmentQueryPort(Protocol):
@@ -41,6 +43,13 @@ class CollectionCommandPort(Protocol):
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
     ): ...
+
+    def refresh_request(self, request: CollectionRefreshRequest): ...
+
+    def prepare_limit_history(
+        self,
+        request: LimitHistoryPreparationRequest,
+    ) -> tuple[date, ...]: ...
 
 
 @runtime_checkable

@@ -12,11 +12,12 @@ from ..application.commands import (
     ExecuteCollectionRunCommand,
     RebuildAggregateCommand,
     RefreshDatasetsCommand,
+    PrepareLimitHistoryCommand,
     StartCollectionRunCommand,
     SubmitCollectionRunCommand,
     UpdateTimezonePreferenceCommand,
 )
-from ..application.collection import DatasetCollectorRegistry
+from ..application.ports import CollectionRefreshRequest, LimitHistoryPreparationRequest
 from ..application.mappers import (
     candidate_to_snapshot_fields,
     snapshot_to_candidate,
@@ -32,14 +33,7 @@ from ..application.queries import (
 )
 from ..domain.analysis.calculations import build_market_review_evidence
 from .collection import CollectionCoordinator
-from ..domain.models import (
-    DATASET_IDS,
-    CollectionCandidate,
-    CollectionOutcome,
-    CollectionTaskState,
-    DatasetDate,
-    MaterializationRevision,
-)
+from ..domain.models import CollectionCandidate, DatasetDate, MaterializationRevision
 from ..snapshot_store import SnapshotRecord, SnapshotStore
 
 
@@ -186,6 +180,12 @@ class _LegacyCoordinatorCommands:
             fetch_previous_limit_details=fetch_previous_limit_details,
         )
 
+    def refresh_request(self, request: CollectionRefreshRequest):
+        return self.coordinator.collect_request(request)
+
+    def prepare_limit_history(self, request: LimitHistoryPreparationRequest):
+        return self.coordinator.prepare_limit_history(request)
+
 
 @dataclass(frozen=True, slots=True)
 class CoordinatorCollectionCommandAdapter:
@@ -223,6 +223,9 @@ class CoordinatorCollectionCommandAdapter:
             fetch_previous_limit_details=fetch_previous_limit_details,
         )
 
+    def refresh_request(self, request: CollectionRefreshRequest):
+        return RefreshDatasetsCommand(self._commands).execute_request(request)
+
     def collect(
         self,
         as_of: date,
@@ -239,7 +242,12 @@ class CoordinatorCollectionCommandAdapter:
         )
 
     def prepare_limit_history_sessions(self, as_of: date, count: int):
-        return self.coordinator.prepare_limit_history_sessions(as_of, count)
+        return PrepareLimitHistoryCommand(self._commands).execute(
+            LimitHistoryPreparationRequest(as_of, count)
+        )
+
+    def prepare_limit_history(self, request: LimitHistoryPreparationRequest):
+        return PrepareLimitHistoryCommand(self._commands).execute(request)
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,80 +284,9 @@ class TimezoneCommandAdapter:
         return UpdateTimezonePreferenceCommand(self.repository).execute(*args, **kwargs)
 
 
-@dataclass(frozen=True, slots=True)
-class CoordinatorDatasetCollectorAdapter:
-    """Expose one existing provider/coordinator dataset chain as a collector."""
-
-    dataset_id: str
-    coordinator: CollectionCoordinator
-
-    @classmethod
-    def from_provider(
-        cls,
-        dataset_id: str,
-        provider: Any,
-        store: SnapshotStore,
-        *,
-        now: Callable[[], datetime],
-        rebuild_aggregate: Callable[..., Any] | None = None,
-        **coordinator_options: Any,
-    ) -> "CoordinatorDatasetCollectorAdapter":
-        return cls(
-            dataset_id,
-            CollectionCoordinator(
-                provider,
-                store,
-                now=now,
-                rebuild_aggregate=rebuild_aggregate,
-                **coordinator_options,
-            ),
-        )
-
-    def collect(self, identity: DatasetDate) -> CollectionOutcome:
-        if identity.dataset != self.dataset_id:
-            raise ValueError(
-                f"collector {self.dataset_id} cannot collect {identity.dataset}"
-            )
-        result = self.coordinator.collect(identity.as_of, (self.dataset_id,))
-        task = result.tasks[0]
-        record = self.coordinator.store.get(self.dataset_id, identity.as_of)
-        candidate = snapshot_to_candidate(record) if record is not None else None
-        return CollectionOutcome(
-            identity=identity,
-            state=CollectionTaskState(task.status),
-            candidate=candidate,
-            warning=task.warning,
-            retained=task.status == CollectionTaskState.FAILED_RETAINED.value,
-        )
-
-
-def build_provider_collector_registry(
-    provider: Any,
-    store: SnapshotStore,
-    *,
-    now: Callable[[], datetime],
-    rebuild_aggregate: Callable[..., Any] | None = None,
-    **coordinator_options: Any,
-) -> DatasetCollectorRegistry:
-    """Expose existing provider/coordinator paths through all stable collectors."""
-
-    return DatasetCollectorRegistry.complete(
-        CoordinatorDatasetCollectorAdapter.from_provider(
-            dataset_id,
-            provider,
-            store,
-            now=now,
-            rebuild_aggregate=rebuild_aggregate,
-            **coordinator_options,
-        )
-        for dataset_id in DATASET_IDS
-    )
-
-
 __all__ = [
     "CoordinatorCollectionCommandAdapter",
     "CoordinatorCollectionQueryAdapter",
-    "CoordinatorDatasetCollectorAdapter",
     "MaterializedAggregateReaderAdapter",
     "RebuilderAggregateCommandAdapter",
     "RepositoryMarketEnvironmentQueryAdapter",
@@ -357,5 +294,4 @@ __all__ = [
     "TimezoneCommandAdapter",
     "TimezoneQueryAdapter",
     "TradingSessionReaderAdapter",
-    "build_provider_collector_registry",
 ]

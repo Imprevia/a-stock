@@ -10,6 +10,7 @@ from src.market_environment.fuyao_market import FuyaoMarketResult
 from src.market_environment.provider_capability import ProviderCapabilityReport
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 from src.market_environment.refresh import MARKET_TIME_ZONE
+from src.market_environment.sector_enrichment import ENRICHMENT_MAPPING_REVISION
 from src.market_environment import cli as market_cli
 from src.market_environment.cli import main as cli_main
 
@@ -78,7 +79,7 @@ class EnrichingSectorProvider(FailingSectorProvider):
             "sameVendor": True,
             "endpoint": "https://data.eastmoney.com/dataapi/bkzj/getbkzj",
             "requestedFields": ["f3", "f6", "f62", "f104", "f105", "f128", "f184"],
-            "mappingRevision": "fixture-map-v1",
+            "mappingRevision": ENRICHMENT_MAPPING_REVISION,
             "matchMethod": "normalized-name",
             "sourceRows": 1,
             "baseRows": 1,
@@ -265,7 +266,11 @@ def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
     assert snapshot is not None and snapshot.source == "fuyao"
     assert snapshot.payload["rows"][0]["mainNet"] is None
     assert "东方财富行业排名不可用" in (result.tasks[0].warning or "")
+    assert "扶摇行业 provider fields unavailable" in (result.tasks[0].warning or "")
     assert "capability revision: r1" in (result.tasks[0].warning or "")
+    warning = result.tasks[0].warning or ""
+    assert warning.index("扶摇行业 provider fields unavailable") < warning.index("东方财富行业排名不可用")
+    assert warning.index("东方财富行业排名不可用") < warning.index("capability revision: r1")
     assert result.tasks[0].timings["sourceRevision"] == "r1"
 
 
@@ -298,6 +303,8 @@ def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_
     assert snapshot.payload["rows"][0]["leader"] == "样本股"
     enrichment = snapshot.payload["quality"]["sectorEnrichment"]
     assert enrichment["sameVendor"] is True
+    assert enrichment["mappingRevision"] == "fuyao-eastmoney-sector-map-v1"
+    assert enrichment["matchMethod"] == "normalized-name"
     assert enrichment["matchedRows"] == 1
     assert enrichment["identityCoverage"] == 1.0
     assert result.tasks[0].timings["sectorEnrichment"] == enrichment
@@ -362,6 +369,83 @@ def test_sector_enrichment_is_skipped_before_settlement_without_provider_call(tm
     enrichment = snapshot.payload["quality"]["sectorEnrichment"]
     assert enrichment["status"] == "skipped"
     assert enrichment["dateEvidence"]["eligible"] is False
+
+
+def test_sector_enrichment_is_skipped_for_historical_date_without_provider_call(tmp_path):
+    historical_now = datetime(2026, 9, 21, 16, 0, tzinfo=MARKET_TIME_ZONE)
+    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
+    store.put_capability_report(eligible_report("sectors"))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+        }
+    )
+    provider = EnrichingSectorProvider()
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: historical_now,
+        fuyao_config=config,
+        fuyao_adapter=FuyaoSectorAdapter(),
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors"], allow_historical_latest_only=True)
+    snapshot = store.get("sectors", AS_OF)
+
+    assert result.tasks[0].status == "partial"
+    assert provider.enrichment_calls == []
+    assert snapshot is not None
+    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert enrichment["status"] == "skipped"
+    assert enrichment["dateEvidence"]["reason"] == "东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用"
+    assert enrichment["dateEvidence"]["requested"] == AS_OF.isoformat()
+    assert enrichment["dateEvidence"]["current"] == "2026-09-21"
+
+
+@pytest.mark.parametrize(
+    ("clock_time", "expected_calls", "expected_status", "expected_reason"),
+    [
+        ("15:09", 0, "skipped", "东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用"),
+        ("15:10", 1, "complete", "current Shanghai market date after settlement"),
+    ],
+)
+def test_sector_enrichment_settlement_boundary_is_inclusive(
+    tmp_path,
+    clock_time,
+    expected_calls,
+    expected_status,
+    expected_reason,
+):
+    hour, minute = (int(part) for part in clock_time.split(":"))
+    at_boundary = datetime(2026, 9, 18, hour, minute, tzinfo=MARKET_TIME_ZONE)
+    store = SnapshotStore(tmp_path / f"snapshots-{clock_time.replace(':', '')}.sqlite3")
+    store.put_capability_report(eligible_report("sectors"))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+        }
+    )
+    provider = EnrichingSectorProvider()
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: at_boundary,
+        fuyao_config=config,
+        fuyao_adapter=FuyaoSectorAdapter(),
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors"])
+    snapshot = store.get("sectors", AS_OF)
+
+    assert provider.enrichment_calls == ([(AS_OF, True)] if expected_calls else [])
+    assert snapshot is not None
+    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert enrichment["status"] == expected_status
+    assert enrichment["dateEvidence"]["reason"] == expected_reason
+    assert enrichment["dateEvidence"]["current"] == AS_OF.isoformat()
+    assert enrichment["dateEvidence"]["settled"] is (expected_calls == 1)
 
 
 def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):

@@ -12,6 +12,7 @@ _REPOSITORY_NAMES = (
     "snapshots",
     "collection_runs",
     "collection_tasks",
+    "core_index_results",
     "leases",
     "trading_sessions",
     "aggregates",

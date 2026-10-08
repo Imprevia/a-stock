@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 
 import pytest
 from fastapi import APIRouter
@@ -20,6 +20,32 @@ from src.market_environment.bootstrap.container import (
     ContainerAdapters,
     build_container,
 )
+from src.market_environment.domain.models import DATASET_IDS
+from src.market_environment.infrastructure.collection import AcquisitionPlanCollector
+from src.market_environment.infrastructure.providers.breadth_acquisition import (
+    EASTMONEY_BREADTH_SOURCE_ID,
+    FUYAO_BREADTH_SOURCE_ID,
+    TDX_BREADTH_SOURCE_ID,
+)
+from src.market_environment.infrastructure.providers.core_acquisition import (
+    BAIDU_CORE_HISTORY_SOURCE_ID,
+    EASTMONEY_CORE_HISTORY_SOURCE_ID,
+    FUYAO_CORE_HISTORY_SOURCE_ID,
+    MOOTDX_CORE_HISTORY_SOURCE_ID,
+    SINA_CORE_HISTORY_SOURCE_ID,
+    TENCENT_CORE_HISTORY_SOURCE_ID,
+    TENCENT_CORE_QUOTE_SOURCE_ID,
+)
+from src.market_environment.infrastructure.providers.limits_acquisition import (
+    EASTMONEY_LIMITS_SOURCE_ID,
+    FUYAO_LIMITS_SOURCE_ID,
+    LEGACY_LIMITS_SUMMARY_SOURCE_ID,
+    LimitsAcquisitionPlan,
+)
+from src.market_environment.infrastructure.providers.fuyao.market import (
+    FuyaoMarketAdapter,
+)
+from src.market_environment.interfaces.cli.container import CliContainer
 
 
 def test_layer_package_skeleton_imports_without_runtime_construction() -> None:
@@ -94,12 +120,22 @@ def test_top_level_settings_are_immutable_and_side_effect_free() -> None:
     assert settings.manual_refresh_enabled is False
     assert settings.persistent_cache_enabled is True
     assert settings.limits_v1_enabled is False
+    assert settings.sector_enrichment_enabled is False
     assert settings.collection_workers == 3
     assert all(not item.enabled for item in settings.fuyao.datasets.values())
     assert settings.tdx.fallback_enabled is False
 
     with pytest.raises(FrozenInstanceError):
         settings.collection_workers = 4
+
+
+def test_top_level_settings_require_explicit_sector_enrichment_opt_in() -> None:
+    settings = MarketEnvironmentSettings.from_environment(
+        {"MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED": "1"},
+        require_database=False,
+    )
+
+    assert settings.sector_enrichment_enabled is True
 
 
 def test_top_level_settings_compose_postgresql_without_connecting() -> None:
@@ -205,6 +241,169 @@ def test_container_builds_from_fake_repository_collector_clock_and_executors() -
     assert timezone_repository.closed is True
     assert task_executor.closed is True
     assert refresh_executor.closed is True
+
+
+def test_container_and_cli_expose_complete_shared_runtime_registries() -> None:
+    repository = _FakeRepository()
+    timezone_repository = _FakeTimezoneRepository()
+    task_executor = _FakeExecutor()
+    refresh_executor = _FakeExecutor()
+    container = build_container(
+        MarketEnvironmentSettings.from_environment(
+            {"MARKET_ENVIRONMENT_PERSISTENT_CACHE": "0"}
+        ),
+        adapters=ContainerAdapters(
+            repository=repository,
+            task_executor=task_executor,
+            refresh_executor=refresh_executor,
+            timezone_repository=timezone_repository,
+            fuyao_adapter=_FakeFuyaoAdapter(),
+        ),
+    )
+    cli = CliContainer(container)
+    coordinator = container.reads.collection.coordinator
+
+    assert container.registries.collectors.dataset_ids == DATASET_IDS
+    assert container.registries.acquisition_plans.dataset_ids == DATASET_IDS
+    assert container.registries.committers.dataset_ids == DATASET_IDS
+    assert container.registries.detail_projectors.dataset_ids == DATASET_IDS
+    assert tuple(
+        adapter.capability.source_id
+        for adapter in container.registries.source_adapters
+    ) == (
+        TENCENT_CORE_QUOTE_SOURCE_ID,
+        FUYAO_CORE_HISTORY_SOURCE_ID,
+        MOOTDX_CORE_HISTORY_SOURCE_ID,
+        BAIDU_CORE_HISTORY_SOURCE_ID,
+        SINA_CORE_HISTORY_SOURCE_ID,
+        TENCENT_CORE_HISTORY_SOURCE_ID,
+        EASTMONEY_CORE_HISTORY_SOURCE_ID,
+        FUYAO_BREADTH_SOURCE_ID,
+        TDX_BREADTH_SOURCE_ID,
+        EASTMONEY_BREADTH_SOURCE_ID,
+        FUYAO_LIMITS_SOURCE_ID,
+        EASTMONEY_LIMITS_SOURCE_ID,
+        LEGACY_LIMITS_SUMMARY_SOURCE_ID,
+        "sectors-eastmoney-clist",
+        "sectors-eastmoney-clist-delay",
+        "sectors-fuyao",
+        "sectors-eastmoney-dataapi-enrichment",
+        "active-direction-eastmoney-primary",
+        "active-direction-eastmoney-delayed",
+        "active-direction-tdx-derived",
+    )
+    assert container.registries.transport_engines.names == ("requests",)
+    assert (
+        container.registries.transport_policy_gateway.engine_registry
+        is container.registries.transport_engines
+    )
+    assert (
+        container.registries.transport_policy_gateway.policy_for(
+            "www.tdx.com.cn"
+        ).request_budget
+        == 20
+    )
+    assert (
+        container.registries.transport_policy_gateway.policy_for(
+            "fuyao.aicubes.cn"
+        ).request_budget
+        == 120
+    )
+    assert coordinator.collector_registry is container.registries.collectors
+    assert coordinator.detail_projector_registry is container.registries.detail_projectors
+    assert coordinator.provider.http.gateway is container.registries.transport_policy_gateway
+    assert (
+        coordinator.provider.fuyao._transport_gateway
+        is container.registries.transport_policy_gateway
+    )
+    assert coordinator.typed_cutover_datasets == frozenset(DATASET_IDS)
+    assert isinstance(
+        container.registries.collectors.get("breadth"),
+        AcquisitionPlanCollector,
+    )
+    assert all(
+        isinstance(
+            container.registries.collectors.get(dataset),
+            AcquisitionPlanCollector,
+        )
+        for dataset in DATASET_IDS
+    )
+    assert cli.registries is container.registries
+    assert isinstance(
+        container.registries.acquisition_plans.get("limits"),
+        LimitsAcquisitionPlan,
+    )
+
+    cli.close()
+
+
+def test_default_fuyao_clients_share_the_composition_root_gateway() -> None:
+    container = build_container(
+        MarketEnvironmentSettings.from_environment(
+            {"MARKET_ENVIRONMENT_PERSISTENT_CACHE": "0"}
+        ),
+        adapters=ContainerAdapters(
+            repository=_FakeRepository(),
+            task_executor=_FakeExecutor(),
+            refresh_executor=_FakeExecutor(),
+            timezone_repository=_FakeTimezoneRepository(),
+        ),
+    )
+    coordinator = container.reads.collection.coordinator
+    fuyao_adapter = next(
+        resource
+        for resource in container.resources
+        if isinstance(resource, FuyaoMarketAdapter)
+    )
+
+    assert (
+        coordinator.provider.fuyao._transport_gateway
+        is container.registries.transport_policy_gateway
+    )
+    assert (
+        fuyao_adapter.client._transport_gateway
+        is container.registries.transport_policy_gateway
+    )
+
+    container.close()
+
+
+def test_postgresql_runtime_composition_performs_no_startup_io(monkeypatch) -> None:
+    import sqlalchemy.engine
+
+    from src.market_environment.infrastructure.legacy import snapshot_store as store_module
+    from src.market_environment import timezone_preferences as timezone_module
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("runtime composition attempted startup I/O")
+
+    monkeypatch.setattr(store_module, "create_schema", fail)
+    monkeypatch.setattr(timezone_module, "create_schema", fail)
+    monkeypatch.setattr(sqlalchemy.engine.Engine, "connect", fail)
+    monkeypatch.setattr("requests.sessions.Session.request", fail)
+
+    settings = MarketEnvironmentSettings.from_environment(
+        {
+            "MARKET_ENVIRONMENT_DATABASE_URL": (
+                "postgresql+psycopg://user:pass@db/market"
+            ),
+            "MARKET_ENVIRONMENT_PERSISTENT_CACHE": "0",
+        },
+        require_database=True,
+    )
+    container = build_container(
+        settings,
+        adapters=ContainerAdapters(
+            task_executor=_FakeExecutor(),
+            refresh_executor=_FakeExecutor(),
+        ),
+    )
+
+    assert container.registries.transport_engines.names == ("requests",)
+    assert not any(
+        name == "scrapling" or name.startswith("scrapling.") for name in sys.modules
+    )
+    container.close()
 
 
 def test_normal_runtime_without_postgresql_configuration_fails_closed() -> None:

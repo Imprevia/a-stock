@@ -41,6 +41,105 @@ class CollectionTaskState(str, Enum):
     BUSY = "busy"
 
 
+class AcquisitionFailureCategory(str, Enum):
+    """Stable failure vocabulary shared by plans, adapters and transport."""
+
+    CONFIGURATION = "configuration"
+    ENGINE_UNAVAILABLE = "engine-unavailable"
+    NETWORK = "network"
+    RATE_LIMIT = "rate-limit"
+    PERMISSION = "permission"
+    CHALLENGE = "challenge"
+    CONTRACT = "contract"
+    DATE_MISMATCH = "date-mismatch"
+    INSUFFICIENT = "insufficient"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True, slots=True)
+class FieldAvailability:
+    """Evidence for fields that were available, missing or unsupported."""
+
+    available: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    unsupported: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in (*self.available, *self.missing, *self.unsupported):
+            if not str(name).strip():
+                raise ValueError("field availability names must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionTimings:
+    """Redaction-safe timing evidence; values are milliseconds unless noted."""
+
+    total_ms: float | None = None
+    phases_ms: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.total_ms is not None and self.total_ms < 0:
+            raise ValueError("total acquisition timing must be non-negative")
+        if any(float(value) < 0 for value in self.phases_ms.values()):
+            raise ValueError("acquisition phase timings must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class RedactedProvenance:
+    """Safe provenance identity without credentials or raw response bodies."""
+
+    endpoint: str | None = None
+    engine: str | None = None
+    request_id: str | None = None
+    authentication_scope_digest: str | None = None
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptEvidence:
+    """One formal, fallback, shadow or enrichment acquisition attempt."""
+
+    role: str
+    provider: str
+    source: str
+    source_revision: str | None = None
+    engine: str | None = None
+    requested_as_of: date | None = None
+    actual_as_of: date | None = None
+    category: AcquisitionFailureCategory | None = None
+    status_code: int | None = None
+    warning: str | None = None
+    timings: AcquisitionTimings = field(default_factory=AcquisitionTimings)
+    provenance: RedactedProvenance = field(default_factory=RedactedProvenance)
+    evidence_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.role not in {"formal", "fallback", "shadow", "enrichment"}:
+            raise ValueError(f"unsupported acquisition attempt role: {self.role}")
+        if not self.provider.strip() or not self.source.strip():
+            raise ValueError("acquisition attempt provider and source are required")
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionFailure:
+    """Classified failure returned when an adapter cannot produce a candidate."""
+
+    category: AcquisitionFailureCategory
+    message: str
+    retryable: bool = False
+    source: str | None = None
+    source_revision: str | None = None
+    requested_as_of: date | None = None
+    fetched_at: datetime | None = None
+    timings: AcquisitionTimings = field(default_factory=AcquisitionTimings)
+    provenance: RedactedProvenance = field(default_factory=RedactedProvenance)
+    evidence_fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.message.strip():
+            raise ValueError("acquisition failure message must not be empty")
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetDate:
     dataset: str
@@ -71,6 +170,12 @@ class QualityMetadata:
     warnings: tuple[str, ...] = ()
     cache: CacheMetadata | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    source_revision: str | None = None
+    fetched_at: datetime | None = None
+    field_availability: FieldAvailability = field(default_factory=FieldAvailability)
+    timings: AcquisitionTimings = field(default_factory=AcquisitionTimings)
+    evidence_fingerprint: str | None = None
+    provenance: RedactedProvenance = field(default_factory=RedactedProvenance)
 
     def __post_init__(self) -> None:
         if self.observations < 0:
@@ -88,10 +193,20 @@ class CollectionCandidate:
     settled: bool
     actual_as_of: date | None = None
     quality: QualityMetadata | None = None
+    source_revision: str | None = None
+    fetched_at: datetime | None = None
+    field_availability: FieldAvailability = field(default_factory=FieldAvailability)
+    timings: AcquisitionTimings = field(default_factory=AcquisitionTimings)
+    evidence_fingerprint: str | None = None
+    provenance: RedactedProvenance = field(default_factory=RedactedProvenance)
 
     def __post_init__(self) -> None:
         if self.observations < 0:
             raise ValueError("candidate observations must be non-negative")
+        if not self.source.strip():
+            raise ValueError("candidate source must not be empty")
+        if self.actual_as_of is not None and self.actual_as_of != self.identity.as_of:
+            raise ValueError("candidate actual date must match requested date")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +216,21 @@ class CollectionOutcome:
     candidate: CollectionCandidate | None = None
     warning: str | None = None
     retained: bool = False
+    failure: AcquisitionFailure | None = None
+    attempts: tuple[AttemptEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if self.retained and self.state is not CollectionTaskState.FAILED_RETAINED:
             raise ValueError("retained outcomes must use failed-retained state")
         if self.state in {CollectionTaskState.SUCCESS, CollectionTaskState.PARTIAL} and self.candidate is None:
             raise ValueError("successful or partial outcomes require a candidate")
+        if self.state in {CollectionTaskState.SUCCESS, CollectionTaskState.PARTIAL} and self.failure is not None:
+            raise ValueError("successful or partial outcomes cannot carry a terminal failure")
+        if self.state in {CollectionTaskState.FAILED_MISSING, CollectionTaskState.FAILED_RETAINED}:
+            if self.candidate is not None and self.state is CollectionTaskState.FAILED_MISSING:
+                raise ValueError("failed-missing outcomes cannot carry a candidate")
+            if self.failure is None and not self.warning:
+                raise ValueError("classified failure outcomes require failure evidence or warning")
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,12 +245,18 @@ class MaterializationRevision:
 __all__ = [
     "CacheMetadata",
     "CacheState",
+    "AcquisitionFailure",
+    "AcquisitionFailureCategory",
+    "AcquisitionTimings",
+    "AttemptEvidence",
     "CollectionCandidate",
     "CollectionOutcome",
     "CollectionRunState",
     "CollectionTaskState",
     "DATASET_IDS",
     "DatasetDate",
+    "FieldAvailability",
     "MaterializationRevision",
     "QualityMetadata",
+    "RedactedProvenance",
 ]

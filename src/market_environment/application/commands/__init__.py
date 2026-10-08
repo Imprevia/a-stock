@@ -2,6 +2,7 @@
 
 from .collection import (
     ExecuteCollectionRunCommand,
+    PrepareLimitHistoryCommand,
     RebuildAggregateCommand,
     RefreshDatasetsCommand,
     StartCollectionRunCommand,
@@ -17,6 +18,7 @@ __all__ = [
     "ExecuteCollectionRunCommand",
     "MaterializedAggregateComposer",
     "MaterializedAggregateRebuilder",
+    "PrepareLimitHistoryCommand",
     "RebuildAggregateCommand",
     "RefreshDatasetsCommand",
     "StartCollectionRunCommand",

@@ -22,7 +22,15 @@ from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import requests
+from src.trading_system.data.provider_transport import (
+    HostPolicy,
+    RequestsTransportEngine,
+    TransportEngineRegistry,
+    TransportFailure,
+    TransportFailureCategory,
+    TransportPolicyGateway,
+    TransportRequest,
+)
 
 from ....domain.analysis.calculations import Bar
 from .request_gate import FuyaoRequestGate, GLOBAL_FUYAO_REQUEST_GATE
@@ -91,11 +99,11 @@ class FuyaoMarketResponse:
 
 
 class FuyaoMarketClient:
-    """Generic request layer with bounded retries and a request budget.
+    """Fuyao envelope client above the shared transport policy gateway.
 
-    The client intentionally accepts a requests-compatible session so tests
-    can use fixed, redacted fixtures.  No request is made when the key is
-    missing; callers can use the normalizers directly for offline probes.
+    A requests-compatible session remains injectable for offline fixtures. It
+    is wrapped in a single-attempt engine, so transport retries, pacing and the
+    request budget still have one authoritative owner.
     """
 
     _RETRYABLE_CODES = frozenset({4001, 5001, 5002, 5003})
@@ -107,7 +115,8 @@ class FuyaoMarketClient:
         api_key: str | None = None,
         *,
         timeout: float = 8.0,
-        session: requests.Session | None = None,
+        session: Any | None = None,
+        transport_gateway: TransportPolicyGateway | None = None,
         base_url: str = FUYAO_MARKET_BASE_URL,
         max_retries: int = 2,
         backoff_seconds: float = 0.2,
@@ -120,7 +129,9 @@ class FuyaoMarketClient:
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv(FUYAO_MARKET_API_KEY_ENV, "")).strip()
         self.timeout = max(0.1, float(timeout))
-        self.session = session or requests.Session()
+        if session is not None and transport_gateway is not None:
+            raise ValueError("provide either a Fuyao fixture session or a transport gateway, not both")
+        self.session = session
         self.base_url = base_url.rstrip("/")
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
@@ -129,15 +140,37 @@ class FuyaoMarketClient:
         self.request_budget = max(1, int(request_budget))
         self._request_count = 0
         self._sleep = sleep
-        self._request_gate = request_gate or (
-            GLOBAL_FUYAO_REQUEST_GATE
-            if sleep is time.sleep and monotonic is time.monotonic
-            else FuyaoRequestGate(
-                min_interval_seconds=self.min_request_interval_seconds,
-                sleep=sleep,
-                monotonic=monotonic,
+        if transport_gateway is not None:
+            self._transport_gateway = transport_gateway
+            self._request_gate = request_gate
+        else:
+            engine = RequestsTransportEngine(session=session, clock=monotonic)
+            self._transport_gateway = TransportPolicyGateway(
+                TransportEngineRegistry((engine,)),
+                default_policy=HostPolicy(
+                    minimum_interval=self.min_request_interval_seconds,
+                    jitter=(0.0, 0.0),
+                    timeout=self.timeout,
+                    max_retries=self.max_retries,
+                    retry_backoff=self.backoff_seconds,
+                    request_budget=self.request_budget,
+                    cache_ttl_seconds=0.0,
+                ),
+                clock=monotonic,
+                sleeper=sleep,
+                random_uniform=lambda _low, _high: 0.0,
             )
-        )
+            self._request_gate = request_gate
+            if session is not None and self._request_gate is None:
+                self._request_gate = (
+                    GLOBAL_FUYAO_REQUEST_GATE
+                    if sleep is time.sleep and monotonic is time.monotonic
+                    else FuyaoRequestGate(
+                        min_interval_seconds=self.min_request_interval_seconds,
+                        sleep=sleep,
+                        monotonic=monotonic,
+                    )
+                )
 
     @property
     def configured(self) -> bool:
@@ -151,44 +184,36 @@ class FuyaoMarketClient:
         if not self.configured:
             raise FuyaoMarketConfigurationError(f"{FUYAO_MARKET_API_KEY_ENV} is required")
 
-    def request(self, path: str, *, params: Mapping[str, Any] | None = None) -> FuyaoMarketResponse:
+    def request(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        requested_date: date | str | None = None,
+    ) -> FuyaoMarketResponse:
         self.require_configured()
-        if self._request_count >= self.request_budget:
-            raise FuyaoMarketRateLimitError("Fuyao request budget exceeded")
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
         for attempt in range(self.max_retries + 1):
-            if self._request_count >= self.request_budget:
-                raise FuyaoMarketRateLimitError("Fuyao request budget exceeded")
             self._request_count += 1
             try:
-                self._request_gate.wait()
-                response = self.session.get(
-                    url,
-                    params=dict(params or {}),
-                    headers={"X-api-key": self.api_key},
-                    timeout=self.timeout,
-                    allow_redirects=False,
+                response = self._transport_gateway.request(
+                    TransportRequest(
+                        "GET",
+                        url,
+                        params=dict(params or {}),
+                        headers={"X-api-key": self.api_key},
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                        requested_date=requested_date,
+                        source_id=f"fuyao-market-v2:{path}",
+                        authentication_scope=self.api_key,
+                    ),
+                    cache_ttl=0.0,
+                    gate=self._gated_attempt if self._request_gate is not None else None,
                 )
-            except requests.RequestException as exc:
-                if attempt < self.max_retries:
-                    self._backoff(attempt)
-                    continue
-                raise FuyaoMarketTransportError("Fuyao network request failed after retries") from exc
-            status = int(getattr(response, "status_code", 0))
-            if status == 429:
-                if attempt < self.max_retries:
-                    self._backoff(attempt, slow=True)
-                    continue
-                raise FuyaoMarketRateLimitError(
-                    f"Fuyao HTTP {self._http_error_detail(response, status)} after retries"
-                )
-            if 500 <= status < 600:
-                if attempt < self.max_retries:
-                    self._backoff(attempt)
-                    continue
-                raise FuyaoMarketTransportError(
-                    f"Fuyao {self._http_error_detail(response, status)} after retries"
-                )
+            except TransportFailure as exc:
+                self._raise_transport_failure(exc)
+            status = response.status_code
             if status < 200 or status >= 300:
                 detail = self._http_error_detail(response, status)
                 if status in {401, 403}:
@@ -222,6 +247,48 @@ class FuyaoMarketClient:
                 raise FuyaoMarketContractError("Fuyao success envelope is missing data")
             return FuyaoMarketResponse(dict(data), status, self._request_count)
         raise AssertionError("unreachable retry loop")
+
+    def _gated_attempt(self, operation: Callable[[], Any]) -> Any:
+        if self._request_gate is not None:
+            self._request_gate.wait()
+        return operation()
+
+    def _raise_transport_failure(self, failure: TransportFailure) -> None:
+        detail = self._transport_failure_detail(failure)
+        if failure.category is TransportFailureCategory.PERMISSION:
+            suffix = f" ({detail})" if detail else ""
+            raise FuyaoMarketPermissionError(
+                f"Fuyao authentication or permission denied{suffix}"
+            ) from failure
+        if failure.category in {
+            TransportFailureCategory.RATE_LIMIT,
+            TransportFailureCategory.REQUEST_BUDGET_EXHAUSTED,
+        }:
+            suffix = f" ({detail})" if detail else ""
+            raise FuyaoMarketRateLimitError(
+                f"Fuyao transport rate limit or request budget exceeded{suffix}"
+            ) from failure
+        if failure.category in {
+            TransportFailureCategory.CONTRACT,
+            TransportFailureCategory.INVALID_RESPONSE,
+            TransportFailureCategory.RESPONSE_TOO_LARGE,
+        }:
+            raise FuyaoMarketContractError("Fuyao response is not valid JSON") from failure
+        suffix = f" ({detail})" if detail else ""
+        raise FuyaoMarketTransportError(
+            f"Fuyao network request failed after governed retries{suffix}"
+        ) from failure
+
+    def _transport_failure_detail(self, failure: TransportFailure) -> str | None:
+        status = failure.status_code
+        if status is None:
+            return None
+        payload = failure.response_evidence
+        try:
+            code = int(payload.get("code"))
+        except (TypeError, ValueError):
+            return f"HTTP {status}"
+        return f"HTTP {status} ({self._envelope_error_detail(payload, code)})"
 
     def _backoff(self, attempt: int, *, slow: bool = False) -> None:
         base = self.slow_backoff_seconds if slow else self.backoff_seconds
@@ -537,6 +604,7 @@ class FuyaoMarketAdapter:
                 response = self.client.request(
                     "/api/a-share-index/prices/historical",
                     params={"thscode": identity, "interval": "1d", "start": start, "end": end},
+                    requested_date=as_of,
                 )
                 response_identity = self._text(response.data, "thscode", "identity")
                 if response_identity and response_identity.upper() != identity.upper():
@@ -815,6 +883,7 @@ class FuyaoMarketAdapter:
                 response = self.client.request(
                     "/api/a-share/prices/snapshot",
                     params={"limit": page_size, "offset": offset},
+                    requested_date=as_of,
                 )
                 data = response.data
                 pages_list.append(data)
@@ -1298,8 +1367,15 @@ class FuyaoMarketAdapter:
 
         if rows is not None:
             return self.normalize_sectors(rows, as_of)
-        calendar = self.client.request(self.SECTOR_CALENDAR_ENDPOINT).data
-        catalog = self.client.request(self.SECTOR_CATALOG_ENDPOINT, params={"tag": "industry"}).data
+        calendar = self.client.request(
+            self.SECTOR_CALENDAR_ENDPOINT,
+            requested_date=as_of,
+        ).data
+        catalog = self.client.request(
+            self.SECTOR_CATALOG_ENDPOINT,
+            params={"tag": "industry"},
+            requested_date=as_of,
+        ).data
         catalog_rows, catalog_warnings = self._sector_catalog(catalog)
         if catalog_warnings and not catalog_rows:
             # Keep an auditable insufficient result instead of making a
@@ -1313,6 +1389,7 @@ class FuyaoMarketAdapter:
             response = self.client.request(
                 self.SECTOR_SNAPSHOT_ENDPOINT,
                 params={"thscodes": ",".join(batch)},
+                requested_date=as_of,
             )
             batches.append(response.data)
         return self.normalize_sector_index_data(calendar, catalog, batches, as_of)

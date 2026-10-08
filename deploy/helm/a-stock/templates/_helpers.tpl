@@ -51,3 +51,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "a-stock.databaseMigrationName" -}}
 {{- printf "%s-database-migration" (include "a-stock.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{- define "a-stock.runtimeImage" -}}
+{{- if .Values.marketEnvironment.scrapling.enabled -}}
+{{- printf "%s:%s" .Values.marketEnvironment.scrapling.image.repository .Values.marketEnvironment.scrapling.image.tag -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- end -}}
+{{- end }}
+
+{{- define "a-stock.runtimeImagePullPolicy" -}}
+{{- if .Values.marketEnvironment.scrapling.enabled -}}
+{{- .Values.marketEnvironment.scrapling.image.pullPolicy -}}
+{{- else -}}
+{{- .Values.image.pullPolicy -}}
+{{- end -}}
+{{- end }}

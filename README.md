@@ -32,6 +32,10 @@ npm run dev --prefix apps/market-environment-dashboard
 
 完整 Python 依赖也包含部署文档安全测试所需的 CommonMark 与 Bash AST 解析器；只安装运行时依赖的环境不能生成该命令审计的发布证据。
 
+默认环境保持 requests-only。仅在离线验证可选静态 HTTP engine 时安装
+`requirements-scrapling.txt`；该 profile 固定 Scrapling 版本但不执行
+`scrapling install`、不下载 Chromium，也不表示任何真实 provider 已获准启用。
+
 打开 `http://localhost:5173` 查看上证、深证、创业板、沪深 300 和中证 500 的趋势、区间位置与成交额分析。市场广度指标暂未接入。
 
 ## TrueNAS k3s 部署

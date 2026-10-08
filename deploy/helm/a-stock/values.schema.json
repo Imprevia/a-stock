@@ -78,6 +78,35 @@
             "Asia/Shanghai"
           ]
         },
+        "scrapling": {
+          "type": "object",
+          "required": ["enabled", "image", "allowlist"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "image": {
+              "type": "object",
+              "required": ["repository", "tag", "pullPolicy"],
+              "properties": {
+                "repository": {"type": "string", "minLength": 1},
+                "tag": {"type": "string", "minLength": 1},
+                "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+              }
+            },
+            "allowlist": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["host", "sourceId"],
+                "properties": {
+                  "host": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$", "minLength": 1},
+                  "sourceId": {"type": "string", "pattern": "^\\S+$", "minLength": 1}
+                }
+              }
+            }
+          }
+        },
         "tdx": {
           "type": "object",
           "properties": {

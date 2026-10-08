@@ -178,6 +178,38 @@ provider 失败排查先区分传输层和契约层：检查 host、请求日期
 
 连续可重试失败后，host 会进入短暂冷却并触发既有 provider 降级；冷却结束只允许一次受控探测。排错时记录冷却开始/结束、探测结果和请求预算消耗，不手工清除缓存、绕过请求门、伪造 Cookie/UA、配置代理池或把其他日期响应写入当前日期。真实 provider probe 仍只能在盘后、显式授权的隔离环境执行；普通 GET、status 和 provider-free 读取不得触发探测。
 
+### 统一 acquisition adapter 与可选 Scrapling 排错（2026-10-08）
+
+采集问题按四层定位：coordinator/task、dataset acquisition plan、source adapter、transport policy/engine。先读取本地 task metadata 中的 dataset、requested/actual date、plan/source/capability revision、ordered attempts、failure category、field availability、timings、evidence fingerprint 和脱敏 provenance；不要从异常字符串猜测 provider 成功，也不要通过普通 GET 重放采集。
+
+- coordinator 只应出现一次 lease、一次合法 task transition 序列和最多一次 aggregate rebuild。若同一 dataset/date 出现嵌套 run、第二把 lease 或重复提交，检查 compatibility adapter 是否错误构造 coordinator 或调用旧 `collect_task`。
+- formal/fallback attempt 可以决定 candidate；shadow 只记录差异，不得改变正式 payload、source、checksum 或 task state；enrichment 只能 fill-only 写入计划批准字段。任何角色越权都视为契约失败。
+- success 必须同时存在有效 candidate、dataset/date/source identity 和 evidence fingerprint；permission、challenge、date-mismatch、insufficient 等失败不得改写为 success。失败留存只查询同一日期本地快照。
+- HTTP adapter 必须共享 composition root 创建的同一 policy gateway。重试总数只看 gateway budget；engine 内部重试、adapter 自行 sleep 或为同 host 创建独立 limiter 都是配置/架构错误。
+- 请求诊断不得记录 API key、Authorization、Cookie、secret query、proxy credential、完整 challenge page 或敏感 body。排错只保留规范化且脱敏的请求身份、状态、允许的响应 header、字节数、final URL、engine 和失败类别。
+
+默认运行环境只安装并选择 `requests` engine。离线 enhanced 环境使用 `.venv/bin/python -m pip install -r requirements-scrapling.txt` 安装精确版本的可选 profile；基础 `requirements.txt` 和默认镜像不引用该文件。Scrapling static engine 必须同时满足：配置选择已注册 engine、source/host 位于显式 allowlist、方法/body 能力受支持、可选依赖可导入。默认 allowlist 为空；任何条件不满足都在外部 I/O 前 fail closed，不回退到更宽松 engine。
+
+Scrapling engine 只允许静态单次 HTTP 请求，必须关闭内部 retries、blocked-request escalation、proxy rotation、challenge solving 与浏览器功能；不得执行 `scrapling install` 或下载 Chromium。401/403、登录墙、CAPTCHA/interstitial challenge 立即返回 non-retryable permission/challenge failure，禁止从 requests 自动升级到 Scrapling。启用或回滚只允许在独立受审部署计划中修改 enhanced profile/allowlist；关闭 enhanced profile 即恢复 requests-only，保留快照和审计，不删除 PVC 或任务历史。
+
+本变更的离线验证只能使用 fixture/fake engine、依赖解析、镜像/Helm 离线 render 和资源测量；禁止真实 provider probe、生产 PostgreSQL 写入、生产部署或调度激活。无论是否渲染 enhanced profile，`scheduledCollection.enabled=false`、`scheduledCollection.suspend=true` 都是默认后置条件。
+
+增强容器以基础镜像为父层构建，不能跳过基础镜像，也不能把 `requirements-scrapling.txt` 加入默认 `Dockerfile`：
+
+```bash
+podman build --format docker --tag localhost/a-stock-market-environment:local-base --file Dockerfile .
+podman build --format docker --build-arg BASE_IMAGE=localhost/a-stock-market-environment:local-base --tag localhost/a-stock-market-environment:local-scrapling --file Dockerfile.scrapling .
+helm lint deploy/helm/a-stock --set database.existingSecret=a-stock-postgresql
+helm template a-stock deploy/helm/a-stock --namespace a-stock --set database.existingSecret=a-stock-postgresql --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true
+helm template a-stock deploy/helm/a-stock --namespace a-stock --set database.existingSecret=a-stock-postgresql --set marketEnvironment.scrapling.enabled=true --set marketEnvironment.scheduledCollection.enabled=false --set marketEnvironment.scheduledCollection.suspend=true
+```
+
+Chart 的 `marketEnvironment.scrapling.enabled=false` 默认选择顶层 `image`；只有显式设为 `true` 才选择 `marketEnvironment.scrapling.image`，并把结构化 `allowlist` 作为 JSON 注入 Dashboard/CronJob。allowlist 条目必须是精确 `host` + `sourceId`，不能使用通配符；仓库默认值保持 `[]`。两个 profile 都不创建 Secret，资源 request/limit 与 `/tmp` `emptyDir` 契约一致。回滚开关是把 `marketEnvironment.scrapling.enabled` 恢复为 `false` 并保持 allowlist 为空；这会重新选择基础镜像和 requests-only registry，不改快照、数据库、PVC 或 task history。若同一进程已按另一 profile 初始化，composition 会 fail closed，必须通过受审 workload replacement 完成切换，不能在进程内热替换 gateway。
+
+2026-10-08 本地 Podman 实测（Linux amd64，5 次禁网、只读 rootfs、64 MiB `/tmp` tmpfs，统计完整 settings + composition-root 冷启动中位数）：最终 base/enhanced 镜像为 `457408146 / 808329793` bytes（`436.218 / 770.883 MiB`），增强增量 `350921647` bytes（`334.665 MiB`, `+76.720%`）；启动 `1.343 / 1.308s`，CPU user+system `1.350 / 1.321s`，峰值 RSS `74588 / 74948 KiB`，`/tmp` 增量均为 `0`。首轮另有一个受共享磁盘 D-state 影响的 base `25.218s` 异常样本，未纳入最终 5 次有 15 秒 timeout 的测量；稳定中位数未显示增强 profile 的启动回归。
+
+同次 SBOM/漏洞测量中，`pip inspect --local` 的 Python 包数为 `72 / 87`，enhanced 新增 15 个包；base/enhanced 的 CycloneDX 1.4 组件数为 `71 / 86`（生成器不把 pip 自身列为组件），`pip-audit` 使用 2026-10-08 当时的 PyPI advisory 数据均报告 0 个已知 Python 漏洞。Debian 包均为 87 个，排序后 `package=version` 清单 SHA-256 都是 `2b78937be57e2aedcf5515e4877b2d79590bb6569cdcd414b7ddaca6a77af5b4`，证明增强层未增加 OS 包。宿主未安装 Syft/Trivy/Grype，因此这不是全文件系统或供应链二进制 CVE 扫描；生产 rollout 前仍需用组织批准且带冻结数据库版本的 scanner 复核，不能把当前的 0 当作未来或全镜像零漏洞。验证没有执行真实 provider probe、生产部署、Secret 变更或调度激活。
+
 ### Helm Chart 与受控发布入口
 
 `deploy/helm/a-stock/` 提供与原生 k3s 清单等价的参数化 Chart，但生产写操作不直接调用 Helm。TrueNAS 上唯一受支持的通用 install/upgrade/application rollback 入口是 `scripts/deploy-truenas-k3s.sh`；仓库没有通用 uninstall 入口，退役必须另建受审 exact-resource 操作包。先从 `deploy/truenas/deploy.env.example` 创建私有环境文件，核对完整 baseline values 和 disabled/suspended 调度状态后执行：
@@ -739,9 +771,12 @@ kubectl delete pv a-stock-market-environment-data
 | hooks 连通 | `git config core.hooksPath`（应为 `.githooks`） | 终端输出 | 是 |
 | Build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Backend tests | `.venv` Python 下运行 `python -m pytest tests -q` | 终端输出 / plan | 是 |
+| Acquisition/registry | typed outcome、完整 registry、formal/fallback/shadow/enrichment、exact-date、redaction 和 provider-free projector 离线 fixture | pytest / plan | 是 |
+| Transport engines | requests/Scrapling 共用 success/rate-limit/permission/challenge/malformed/date-mismatch fixture；验证单一 retry budget、无自动升级和敏感信息脱敏 | pytest / plan | 启用本变更时是 |
+| Enhanced profile | base/enhanced 依赖解析、镜像构建、Helm 离线 render、镜像体积/启动/CPU/内存/临时存储/SBOM/漏洞差异；不得运行真实 provider | 终端输出 / plan | 引入 Scrapling profile 时是 |
 | k3s manifests | `kubectl kustomize deploy/k3s` 只渲染 Dashboard base；`python scripts/render-k3s.py --kube-version 1.27.0` 检查 `deploy/k3s-native-scheduled/render-policy.yaml` 后才渲染 native overlay；不得把该输出作为 TrueNAS 1.26 admission probe | 终端输出 / plan | 是 |
 | Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
-| Snapshot refresh | `python -m src.market_environment.cli snapshots refresh --as-of <date>` | CLI JSON / plan | 是 |
+| Snapshot refresh | 普通 PR/本变更只用 fake provider/临时存储验证 `python -m src.market_environment.cli snapshots refresh --as-of <date>` 等价路径；真实 provider 命令仅在另行授权的盘后隔离环境运行 | CLI JSON / plan | 是 |
 | Collection management | 启用开发开关后验证状态 GET、单项 POST、全部 POST、轮询和 partial 结果 | pytest / 浏览器 / plan | 是 |
 | Scheduled collection | scheduled-refresh success/partial/failed/skipped/settlement/lease-conflict 固定 fake-provider 回归；Kubernetes 1.26 controller-UTC/controller-Shanghai 与 1.27+ native 的 disabled/suspended/active Helm 矩阵；`kubectl kustomize` Dashboard base 与受版本门禁的 native overlay | pytest / CLI JSON / plan | 是 |
 | Warm cache | 对已预计算日期请求 Chapter 01，确认 provider 0 调用且 <500ms | pytest / plan | 是 |
@@ -962,7 +997,7 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 - 扶摇能力验证：使用脱敏 fixture 执行 `python -m src.market_environment.cli fuyao capability-probe --fixture tests/fixtures/market-environment/fuyao-market-data.json --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3`。该命令不访问网络；core 报告必须同时证明五个指数和至少 280 根有效 K 线，breadth 报告必须证明完整分页与稳定 timestamp；报告为 `ineligible`/`unverified` 时不得填写批准 revision。当前通用能力 revision 为 `fuyao-market-v2`，旧 `fuyao-market-v1` 不得用于 core/breadth/activeDirection 的批准。
 - v2 数据集边界：`core` 使用 `/api/a-share-index/prices/historical`，逐指数传 `thscode`、`interval=1d`、上海时区 `start/end` 毫秒时间戳；每项必须有 OHLC、成交额且最后有效 `date_ms` 等于 `as_of`。当前日期还必须有独立腾讯报价校验，历史日期不得调用实时报价。`breadth` 使用 `/api/a-share/prices/snapshot`，按 `limit/offset` 拉完 `total`；所有页的 `total` 和规范身份集合必须稳定，每页 `timestamp` 均须存在且映射到同一上海交易日；原始值允许漂移但要保留 exact/date stability 与 span 证据。历史 breadth 只读本地精确快照，Fuyao latest-only 接口不得回填历史。
 - 分数据集切换：批准并启用 `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=1` 或 `MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED=1` 后，core 链为 `Fuyao -> mootdx -> baidu -> sina -> tencent -> Eastmoney`，breadth 链为 `Fuyao -> TDX`（仅在 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 时）`-> Eastmoney`。`limits` 仍为 Fuyao 主源加东方财富交叉核对/降级；`sectors` 仍为东方财富主链失败后的 Fuyao fallback；`activeDirection` 不进入 Fuyao 切换，继续 Eastmoney/TDX。
-- 请求预算和回滚：limits 与通用 Fuyao 客户端共享进程级串行请求门、最小间隔和有界慢退避；最终错误只记录脱敏 `code/message/request_id`。出现 429、权限、字段、日期或分页异常时，先关闭对应 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或移除批准 revision，保留旧快照与 task 记录，不删除 PVC、不跨日期回填。
+- 请求预算和回滚：limits 与通用 Fuyao 客户端共享 composition root 的进程级 policy gateway、host budget、single-flight、熔断和最小间隔；网络/408/429/5xx 只由 gateway 重试，HTTP 200 内 `4001`/`5003` 等业务码只由 adapter 有界慢退避，不能叠加第二套 transport limiter/retry。缺 API key 时零 I/O，401/403 快速失败，最终错误只记录脱敏 `code/message/request_id`。出现 429、权限、字段、日期或分页异常时，先关闭对应 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或移除批准 revision，保留旧快照与 task 记录，不删除 PVC、不跨日期回填。
 - 真实验证只能在盘后、显式本地隔离路径执行：`python -m src.market_environment.cli fuyao real-probe --allow-real --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 --output /tmp/fuyao-real.json`，API key 仅来自 `MARKET_ENVIRONMENT_FUYAO_API_KEY`。缺 key、日期不一致、权限/限流错误均 fail closed。
 - 行业 real probe 必须明确记录扶摇的交易日历、同花顺行业目录和行业快照三个 endpoint，以及目录/快照覆盖和快照时间戳日期一致性；快照 `data.timestamp` 是响应时间戳，分批原始毫秒值可以不同，但必须全部映射到同一精确上海交易日。报告必须说明行业 fallback 不提供主力净流入、上涨/下跌家数或领涨股，缺失字段保持 `null`，不得以代码或零值填充。
 - 回滚按数据集清除 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或批准 revision；保留能力报告、任务元数据和同日期旧快照，不跨日期回填。Secret 不写入 values、日志、fixture 或 API 响应。

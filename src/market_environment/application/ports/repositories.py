@@ -90,6 +90,8 @@ class TradingSessionReader(Protocol):
 class TradingSessionRepository(TradingSessionReader, Protocol):
     def put_session(self, session: object) -> object: ...
 
+    def put_session_if_absent(self, session: object) -> object: ...
+
 
 @runtime_checkable
 class MaterializedAggregateReader(Protocol):

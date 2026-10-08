@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -126,6 +126,34 @@ def test_snapshot_repository_rejects_payload_date_relabel(repository_connection)
         actual_as_of=AS_OF,
     )
     with pytest.raises(SnapshotIntegrityError, match="exact-date mismatch|payload date mismatch"):
+        repository.put(candidate)
+
+
+def test_snapshot_repository_rejects_future_core_effective_date(
+    repository_connection,
+) -> None:
+    future = AS_OF + timedelta(days=1)
+    repository = PostgresSnapshotRepository(repository_connection, now=lambda: FETCHED_AT)
+    candidate = CollectionCandidate(
+        identity=DatasetDate("core", AS_OF),
+        payload={
+            "asOf": future.isoformat(),
+            "indices": [
+                {
+                    "code": "sh000001",
+                    "history": [{"date": future.isoformat(), "close": 3200}],
+                }
+            ],
+        },
+        source="fixture",
+        status="ok",
+        observations=1,
+        warnings=(),
+        settled=True,
+        actual_as_of=AS_OF,
+    )
+
+    with pytest.raises(SnapshotIntegrityError, match="exact-date mismatch"):
         repository.put(candidate)
 
 

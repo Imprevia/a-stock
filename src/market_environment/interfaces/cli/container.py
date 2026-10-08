@@ -24,6 +24,10 @@ class CliContainer:
     def coordinator(self):
         return self.application.commands.collection
 
+    @property
+    def registries(self):
+        return self.application.registries
+
     def close(self) -> None:
         self.application.close()
 

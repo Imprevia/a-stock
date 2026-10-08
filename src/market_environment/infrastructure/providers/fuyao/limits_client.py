@@ -12,7 +12,15 @@ from datetime import date, datetime, time as clock_time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import requests
+from src.trading_system.data.provider_transport import (
+    HostPolicy,
+    RequestsTransportEngine,
+    TransportEngineRegistry,
+    TransportFailure,
+    TransportFailureCategory,
+    TransportPolicyGateway,
+    TransportRequest,
+)
 
 from .request_gate import FuyaoRequestGate, GLOBAL_FUYAO_REQUEST_GATE
 
@@ -62,7 +70,7 @@ class FuyaoLimitDataset:
 
 
 class FuyaoClient:
-    """Small synchronous client with bounded retry and strict pagination checks."""
+    """Strict Fuyao limits client above the shared transport policy gateway."""
 
     _POOL_PATHS = {
         "limit_up": "/api/a-share/special-data/limit-up-pool",
@@ -80,7 +88,8 @@ class FuyaoClient:
         api_key: str | None = None,
         *,
         timeout: float = 8.0,
-        session: requests.Session | None = None,
+        session: Any | None = None,
+        transport_gateway: TransportPolicyGateway | None = None,
         base_url: str = FUYAO_BASE_URL,
         max_retries: int = 2,
         backoff_seconds: float = 0.2,
@@ -92,8 +101,10 @@ class FuyaoClient:
         request_gate: FuyaoRequestGate | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv(FUYAO_API_KEY_ENV, "")).strip()
-        self.timeout = timeout
-        self.session = session or requests.Session()
+        self.timeout = max(0.1, float(timeout))
+        if session is not None and transport_gateway is not None:
+            raise ValueError("provide either a Fuyao fixture session or a transport gateway, not both")
+        self.session = session
         self.base_url = base_url.rstrip("/")
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
@@ -104,15 +115,37 @@ class FuyaoClient:
         self._monotonic = monotonic
         self._ticker_cache: dict[str, dict[str, Any]] | None = None
         self._ticker_cache_created_at: float | None = None
-        self._request_gate = request_gate or (
-            GLOBAL_FUYAO_REQUEST_GATE
-            if sleep is time.sleep and monotonic is time.monotonic
-            else FuyaoRequestGate(
-                min_interval_seconds=self.min_request_interval_seconds,
-                sleep=sleep,
-                monotonic=monotonic,
+        if transport_gateway is not None:
+            self._transport_gateway = transport_gateway
+            self._request_gate = request_gate
+        else:
+            engine = RequestsTransportEngine(session=session, clock=monotonic)
+            self._transport_gateway = TransportPolicyGateway(
+                TransportEngineRegistry((engine,)),
+                default_policy=HostPolicy(
+                    minimum_interval=self.min_request_interval_seconds,
+                    jitter=(0.0, 0.0),
+                    timeout=self.timeout,
+                    max_retries=self.max_retries,
+                    retry_backoff=self.backoff_seconds,
+                    request_budget=120,
+                    cache_ttl_seconds=0.0,
+                ),
+                clock=monotonic,
+                sleeper=sleep,
+                random_uniform=lambda _low, _high: 0.0,
             )
-        )
+            self._request_gate = request_gate
+            if session is not None and self._request_gate is None:
+                self._request_gate = (
+                    GLOBAL_FUYAO_REQUEST_GATE
+                    if sleep is time.sleep and monotonic is time.monotonic
+                    else FuyaoRequestGate(
+                        min_interval_seconds=self.min_request_interval_seconds,
+                        sleep=sleep,
+                        monotonic=monotonic,
+                    )
+                )
 
     @property
     def configured(self) -> bool:
@@ -198,6 +231,7 @@ class FuyaoClient:
             data = self._request_data(
                 path,
                 params={"date_ms": date_ms, "page": page, "size": self._PAGE_SIZE},
+                requested_date=as_of,
             )
             pagination = data.get("pagination")
             items = data.get("item")
@@ -288,33 +322,43 @@ class FuyaoClient:
             warnings=tuple(warnings),
         )
 
-    def _request_data(self, path: str, *, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _request_data(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        requested_date: date | str | None = None,
+    ) -> dict[str, Any]:
         self.require_configured()
         url = f"{self.base_url}{path}"
         for attempt in range(self.max_retries + 1):
             try:
-                self._request_gate.wait()
-                response = self.session.get(
-                    url,
-                    params=dict(params or {}),
-                    headers={"X-api-key": self.api_key},
-                    timeout=self.timeout,
-                    allow_redirects=False,
+                response = self._transport_gateway.request(
+                    TransportRequest(
+                        "GET",
+                        url,
+                        params=dict(params or {}),
+                        headers={"X-api-key": self.api_key},
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                        requested_date=requested_date,
+                        source_id=f"fuyao-limits-v1:{path}",
+                        authentication_scope=self.api_key,
+                    ),
+                    cache_ttl=0.0,
+                    gate=self._gated_attempt if self._request_gate is not None else None,
                 )
-            except requests.RequestException as exc:
-                if attempt < self.max_retries:
-                    self._backoff(attempt)
-                    continue
-                raise FuyaoTransportError("Fuyao network request failed after retries") from exc
+            except TransportFailure as exc:
+                self._raise_transport_failure(exc)
 
-            status = int(getattr(response, "status_code", 0))
-            if status == 429 or 500 <= status < 600:
-                if attempt < self.max_retries:
-                    self._backoff(attempt, slow=status == 429)
-                    continue
-                raise FuyaoTransportError(f"Fuyao {self._http_error_detail(response, status)} after retries")
+            status = response.status_code
             if status < 200 or status >= 300:
-                raise FuyaoTransportError(f"Fuyao HTTP {status}")
+                detail = self._http_error_detail(response, status)
+                if status in {401, 403}:
+                    raise FuyaoPermissionError(
+                        f"Fuyao authentication or permission denied ({detail})"
+                    )
+                raise FuyaoTransportError(f"Fuyao {detail}")
             try:
                 payload = response.json()
             except (TypeError, ValueError) as exc:
@@ -344,11 +388,45 @@ class FuyaoClient:
             return dict(data)
         raise AssertionError("unreachable retry loop")
 
+    def _gated_attempt(self, operation: Callable[[], Any]) -> Any:
+        if self._request_gate is not None:
+            self._request_gate.wait()
+        return operation()
+
+    def _raise_transport_failure(self, failure: TransportFailure) -> None:
+        detail = self._transport_failure_detail(failure)
+        if failure.category is TransportFailureCategory.PERMISSION:
+            suffix = f" ({detail})" if detail else ""
+            raise FuyaoPermissionError(
+                f"Fuyao authentication or permission denied{suffix}"
+            ) from failure
+        if failure.category in {
+            TransportFailureCategory.CONTRACT,
+            TransportFailureCategory.INVALID_RESPONSE,
+            TransportFailureCategory.RESPONSE_TOO_LARGE,
+        }:
+            raise FuyaoContractError("Fuyao response is not valid JSON") from failure
+        suffix = f" ({detail})" if detail else ""
+        raise FuyaoTransportError(
+            f"Fuyao network request failed after governed retries{suffix}"
+        ) from failure
+
+    def _transport_failure_detail(self, failure: TransportFailure) -> str | None:
+        status = failure.status_code
+        if status is None:
+            return None
+        payload = failure.response_evidence
+        try:
+            code = int(payload.get("code"))
+        except (TypeError, ValueError):
+            return f"HTTP {status}"
+        return f"HTTP {status} ({self._envelope_error_detail(payload, code)})"
+
     def _backoff(self, attempt: int, *, slow: bool = False) -> None:
         base = self.slow_backoff_seconds if slow else self.backoff_seconds
         self._sleep(base * (2**attempt))
 
-    def _http_error_detail(self, response: requests.Response, status: int) -> str:
+    def _http_error_detail(self, response: Any, status: int) -> str:
         try:
             payload = response.json()
         except (TypeError, ValueError):

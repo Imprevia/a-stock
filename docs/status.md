@@ -47,9 +47,11 @@
 
 ## 进行中
 
+- `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
+
 - `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
 
-- `unify-provider-http-collection` 已完成统一 provider 传输边界：腾讯、百度、新浪、TDX 和 Eastmoney 通过共享 host policy，具备现代 session UA、请求门与抖动、连接/读取/408/429/5xx 有界重试、`Retry-After`、single-flight、短成功缓存、日期隔离、请求预算和失败冷却探测；Fuyao 保留专用 API-key 请求门与错误语义。focused transport/provider 回归为 105 passed，OpenSpec strict、docs-contract full 和规则门禁通过；全量 pytest 的 4 个失败是本机缺少 `mcp` 依赖及 Windows bash 路径兼容问题。默认不引入代理池、Cookie 伪造或 TLS 指纹模拟，真实网络 smoke 仍需授权的盘后隔离环境。
+- `unify-provider-http-collection` 已完成现有 requests-bound host policy 基线：腾讯、百度、新浪、TDX 和 Eastmoney 的已接入路径具备现代 session UA、请求门与抖动、连接/读取/408/429/5xx 有界重试、`Retry-After`、single-flight、短成功缓存、日期隔离、请求预算和失败冷却探测；Fuyao 与部分兼容调用仍保留专用 session/API-key request gate，待 `unify-market-data-acquisition-adapters` 纳入 composition-root gateway。focused transport/provider 回归为 105 passed，OpenSpec strict、docs-contract full 和规则门禁通过；全量 pytest 的 4 个失败是本机缺少 `mcp` 依赖及 Windows bash 路径兼容问题。默认不引入代理池、Cookie 伪造或 TLS 指纹模拟，真实网络 smoke 仍需授权的盘后隔离环境。
 - `evaluate-fuyao-market-data-provider` 已完成 Fuyao v2 core/breadth 契约、共享请求门、分数据集路由、activeDirection 保持 Eastmoney/TDX、离线 fixture/回归和架构/runbook/产品规格同步；真实 probe、core shadow 差异归因、breadth/sectors 日期与字段完整性修复，以及隔离 PostgreSQL capability/shadow smoke 均已完成并记录在 active plan。所有新开关保持关闭，未批准生产 revision；全量测试本轮 735 passed、3 skipped，另有 2 个既有性能阈值抖动失败（非本变更逻辑）。
 - `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当前 `fuyao-market-v2` fallback 证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。`FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0` 保持关闭，未写入正式 sectors 主源快照。
 - `enrich-fuyao-sector-fields-from-eastmoney-dataapi` 已完成离线实现：扶摇行业成功后可选调用东方财富 `dataapi/bkzj/getbkzj`，固定字段为 `f3,f6,f62,f104,f105,f128,f184`、过滤为 `m:90+s:4`；共享 host policy、latest-only/结算后门禁、严格身份匹配、百分比归一、fill-only 合并和 same-vendor lineage 已通过 focused 测试。默认 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`，尚未执行真实 probe 或正式快照写入。
@@ -86,6 +88,7 @@
 - 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 PostgreSQL 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按现场捕获的 pre-release 网络与 release 基线回退。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
 - 当前 PostgreSQL 为单主实例；事务 lease/fencing 可支持 Dashboard 与 CronJob 并发访问，但多主/跨节点 HA、复制和自动故障切换仍不在本次范围。
+- provider host policy 当前及目标均为进程内边界，不提供 Dashboard/CronJob/多 Pod 的分布式限流；可选 Scrapling 尚无获批生产 host，allowlist 必须保持为空。
 - 通达信不可用时五个指数仍串行进入降级链，本机冷缓存核心请求约 34 秒；章节拆分已避免额外证据继续阻塞首屏，但指数 provider 仍需独立优化。
 - 真实历史数据能否达到目标 750 日取决于 provider 覆盖；不足 500 日时不得形成验证证据。
 - `.codex/`、`.opencode/` — agent 工具会话目录（是否入库待确认）
@@ -93,6 +96,7 @@
 
 ## 下一步
 
+- 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
 - 定时采集的历史 revision 26 记录已由 2026-09-29 revision 70 取代；下一检查点是首个自然工作日 16:30 的 Job/Pod、五类数据质量、`collection_runs` 和 exact-date API 观察。回退仍必须由本次操作责任人书面确认并通过 `--disable-schedule`，禁止裸 `kubectl patch`。
@@ -105,6 +109,9 @@
 - 后续按覆盖清单逐章实现第 02 至 11 章 evaluator。
 
 ## 最后更新
+
+2026-10-08
+  - 完成 `unify-market-data-acquisition-adapters`：五数据集统一 acquisition/collector/committer/projector 路径、engine-neutral transport、Fuyao gateway 迁移、legacy runtime 收口和默认关闭 Scrapling profile 已通过 focused/全量/规则/OpenSpec 离线门禁；生产 allowlist 为空，未运行真实网络或生产写入。
 
 2026-09-30
   - **TrueNAS k3s 生产发布**：`main=40c3498` 通过受控 `--disable-schedule` + `--component all` 发布到 `192.168.1.20`；Helm revisions 77/78/79/80，镜像和 containerd digest、Deployment/PVC/NodePort/CronJob 后置条件见 `deploy-project-and-startup` plan。

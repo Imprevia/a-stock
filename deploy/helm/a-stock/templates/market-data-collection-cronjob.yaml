@@ -131,8 +131,8 @@ spec:
             {{- toYaml .Values.podSecurityContext | nindent 12 }}
           containers:
             - name: collector
-              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              image: {{ include "a-stock.runtimeImage" . | quote }}
+              imagePullPolicy: {{ include "a-stock.runtimeImagePullPolicy" . }}
               command:
                 - python
                 - -m
@@ -142,6 +142,10 @@ spec:
               env:
                 - name: TZ
                   value: {{ .Values.marketEnvironment.timezone | quote }}
+                - name: MARKET_ENVIRONMENT_SCRAPLING_ENABLED
+                  value: {{ ternary "1" "0" .Values.marketEnvironment.scrapling.enabled | quote }}
+                - name: MARKET_ENVIRONMENT_SCRAPLING_ALLOWLIST
+                  value: {{ toJson .Values.marketEnvironment.scrapling.allowlist | quote }}
                 - name: MARKET_ENVIRONMENT_DATABASE_URL
                   valueFrom:
                     secretKeyRef:

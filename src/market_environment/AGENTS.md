@@ -1,6 +1,6 @@
 # `src/market_environment` 目录说明
 
-适用范围：本文件及其子目录。本文档记录当前代码布局、运行时边界和重构后的兼容面，更新时间为 2026-10-07。
+适用范围：本文件及其子目录。本文档记录当前代码布局、运行时边界和重构后的兼容面，更新时间为 2026-10-08。
 
 ## 先说结论
 
@@ -8,7 +8,7 @@
 
 - `bootstrap/`、`interfaces/`、`application/`、`domain/`、`infrastructure/` 组成当前目标架构。
 - `api.py`、`cli.py`、`collection.py`、`schemas.py`、`database.py` 等根文件仍是稳定入口或过渡装配面，不能按“旧文件”处理。
-- `infrastructure/legacy/service.py` 不再由正常 HTTP 查询路径装配；但 `infrastructure/legacy/providers.py` 和 `infrastructure/legacy/snapshot_store.py` 仍通过兼容 shim 被当前采集器或 PostgreSQL 运行时适配器传递使用，不能直接删除。
+- `infrastructure/legacy/service.py` 不再由正常 HTTP 查询路径装配；`infrastructure/legacy/providers.py` 已缩为正式 provider runtime 的稳定重导出/alias；`infrastructure/legacy/snapshot_store.py` 仍被 PostgreSQL 运行时适配器传递使用。三者退役条件不同，不能成组删除。
 - 根目录的 `service.py`、`providers.py`、`snapshot_store.py` 是稳定导入 shim，不应继续添加业务逻辑，也不应仅因代码很短而删除。
 - SQLite 只允许出现在显式测试、停写迁移、日期重标记或诊断路径；正常运行时必须使用 PostgreSQL，普通 GET 不得触发 provider 采集。
 
@@ -43,11 +43,16 @@ src.market_environment.api:app
 
 ```text
 collection.CollectionCoordinator
-  -> application.collection.DatasetCollectorRegistry
-  -> infrastructure.providers/{core,breadth,limits,sectors,active_direction}
-  -> provider transport / fallback / quality checks
-  -> PostgreSQL-backed snapshot, task, lease and aggregate persistence
+  -> application.collection DatasetCollector/Committer/Projector registries
+  -> DatasetCollector.collect(DatasetDate) -> CollectionOutcome
+  -> infrastructure.providers acquisition plan + source adapter registries
+  -> governed HTTP transport 或非 HTTP client
+  -> normalized candidate/failure/evidence
+  -> typed committer + PostgreSQL fence/UoW
+  -> provider-free local projector / aggregate rebuild
 ```
+
+这是 `unify-market-data-acquisition-adapters` 的目标链路；迁移期间允许 compatibility source adapter 包装现有 provider 方法，但它不得构造 coordinator、获取 lease、提交快照或重建 aggregate。coordinator 不得继续通过 `inspect.signature` 发现 `collect_task` 或可选方法。
 
 生产运行时存储边界是 PostgreSQL。`PostgresRuntimeStore` 当前仍复用兼容性的 snapshot store 实现作为存储 facade，再由 PostgreSQL URL 选择 PostgreSQL backend；这属于渐进式迁移的兼容 seam，不是允许新增 SQLite 回退的理由。
 
@@ -68,21 +73,21 @@ collection.CollectionCoordinator
 | `bootstrap/` | 环境配置、composition container、FastAPI app factory、lifespan、资源关闭 | **运行时主路径**；唯一具体装配位置。不得在 router/query 中自行构造 provider、repository 或 executor。 |
 | `interfaces/http/` | HTTP router、依赖、时区/身份上下文、错误映射、响应 DTO mapper | **运行时主路径**；只依赖 application/domain。 |
 | `interfaces/cli/` | CLI 到 application command/query 的装配边界 | **运行时主路径**；不得因为 CLI 有维护命令而把网络或数据库副作用放到 import 阶段。 |
-| `application/ports/` | repository、unit-of-work、collector、executor 等 Protocol | **运行时主路径**；只定义边界，不放具体 SQL、HTTP 或 FastAPI 逻辑。 |
+| `application/ports/` | repository、unit-of-work、collector、committer、local projector、executor 等 Protocol | **运行时主路径**；只定义边界，不放具体 SQL、HTTP、native engine response 或 FastAPI 逻辑。 |
 | `application/queries/` | provider-free 的市场环境、状态、next-session、时区和 limits 查询 | **运行时主路径**；禁止导入 provider、collector 或 infrastructure。 |
 | `application/commands/` | collection run、dataset refresh、aggregate rebuild、时区更新 | **运行时主路径**；写操作必须经 port 和明确 command。 |
-| `application/collection/` | 五个稳定数据集 ID 的 registry 和确定性查找 | **运行时主路径**；数据集顺序和 ID 是稳定接口。 |
-| `domain/models/` | 数据集、日期、质量、任务状态、采集结果和 revision 等类型化值 | **纯领域 / 共享算法**；不依赖 FastAPI、SQLAlchemy、requests 或 infrastructure。 |
+| `application/collection/` | 五个稳定数据集 ID 的 collector/committer/local-projector registry 和确定性查找 | **运行时主路径**；数据集顺序和 ID 是稳定接口，注册不完整时必须在 I/O 前失败。 |
+| `domain/models/` | 数据集、日期、质量、任务状态、normalized candidate/outcome/failure/attempt evidence 和 revision 等类型化值 | **纯领域 / 共享算法**；不依赖 FastAPI、SQLAlchemy、requests、Scrapling 或 infrastructure。 |
 | `domain/analysis/` | 指数、广度、动量、分位数、一致性和标签等纯计算 | **纯领域 / 共享算法**；不得读取数据库或调用 provider。 |
 | `domain/policies/` | limits promotion 质量叠加等确定性策略 | **纯领域 / 共享算法**。 |
-| `infrastructure/providers/` | 五类 dataset collector、Fuyao/TDX/Eastmoney 降级、质量和 shadow 证据 | **运行时主路径**；只能通过 application collector port 进入，不得被 query 直接调用。 |
+| `infrastructure/providers/` | 五类 dataset collector、acquisition plan、source adapter、Fuyao/TDX/Eastmoney 降级和 lineage 证据 | **运行时主路径**；只能通过 application port 进入，不得被 query 直接调用或自行管理 task/lease/commit。 |
 | `infrastructure/persistence/postgres/` | PostgreSQL connection、UoW、snapshot/task/lease/aggregate/limits/timezone repositories | **运行时主路径**；生产唯一正式存储，禁止静默切到 SQLite。 |
 | `infrastructure/persistence/sqlite_import/` | 停写迁移或显式 fixture 的 SQLite adapter | **显式维护 / 迁移**；不允许进入无参数的普通 runtime composition。 |
 | `infrastructure/execution/` | 有界进程内 task executor | **运行时主路径**；负责 running + queued 容量门禁和幂等关闭。 |
 | `infrastructure/compatibility.py` | 新 ports/use cases 与旧 coordinator/store 之间的 typed adapter | **运行时支撑 / 过渡**；是渐进迁移 seam，不是新业务逻辑存放处。 |
 | `infrastructure/materialization_support.py` | provider-free materialized aggregate 组装和缓存元数据 | **运行时主路径**；只使用本地快照、纯分析和 schema 校验。 |
 | `infrastructure/materialized_aggregate_factory.py` | aggregate composer/rebuilder 的构造 | **运行时主路径**。 |
-| `infrastructure/legacy/` | 旧 provider、旧 service、兼容 snapshot store 的物理实现 | **兼容/过渡**；三个文件的使用情况不同，见下一节，不能整体视为死代码。 |
+| `infrastructure/legacy/` | provider 稳定重导出/alias、旧 service、兼容 snapshot store | **兼容/过渡**；三个文件的使用情况不同，见下一节，不能整体视为死代码。 |
 
 ## 根目录 Python 文件清单
 
@@ -125,7 +130,7 @@ collection.CollectionCoordinator
 | `fuyao.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/fuyao/limits_client.py`；根路径仅保留 limits 客户端稳定导出，真实访问仍只允许显式盘后 probe 或采集命令。 |
 | `fuyao_market.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/fuyao/market.py`；core/breadth/sectors 的生产调用均使用目标路径。 |
 | `fuyao_config.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/fuyao/config.py`；dataset 级开关仍默认 fail closed。 |
-| `fuyao_request_gate.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/fuyao/request_gate.py`；两个 Fuyao 客户端继续共享同一进程级请求门。 |
+| `fuyao_request_gate.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/fuyao/request_gate.py`；正常 composition 由共享 policy gateway 独占 host pacing/budget/transport retry，该 gate 只保留 fixture/显式兼容注入。 |
 | `tdx_config.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/tdx/config.py`；TDX fallback 与派生开关不变。 |
 | `tdx_daily.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/tdx/daily_package.py`；普通 GET 不调用，只有 collector 或显式 `tdx real-probe` 使用。 |
 | `provider_capability.py` | **兼容 shim** | 实现已迁到 `infrastructure/providers/capability.py`；保留 capability report 的稳定导出，不能把 `unverified` 升级为成功。 |
@@ -156,7 +161,7 @@ collection.CollectionCoordinator
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
-| `providers.py` | **兼容 shim** | 转发到 `infrastructure/legacy/providers.py`。当前 collector runtime 仍通过 `CollectorProviderRuntime` 间接使用其中的 vendor transport，因此不能直接删除；新 provider 逻辑应放到 `infrastructure/providers/`。 |
+| `providers.py` | **兼容 shim** | 经 `infrastructure/legacy/providers.py` 转发到正式 `infrastructure/providers/runtime.py::CollectorProviderRuntime`；旧 `MarketDataProvider` 与正式 runtime 是同一类 alias，normal bootstrap 不导入 legacy provider。 |
 | `service.py` | **兼容 shim** | 转发到 `infrastructure/legacy/service.py`。正常 bootstrap query/materialization 不构造 `MarketEnvironmentService`，但旧测试、外部脚本和交易系统数据适配仍可能导入它。 |
 | `__init__.py` | **包入口** | 只保留包说明和稳定的最小导出，避免导入时产生 I/O。 |
 
@@ -174,7 +179,7 @@ collection.CollectionCoordinator
 | `fuyao.py` | `infrastructure/providers/fuyao/limits_client.py`；生产内部已迁移，provider 兼容测试仍使用 | 完成 provider 客户端根路径弃用窗口 |
 | `fuyao_market.py` | `infrastructure/providers/fuyao/market.py`；生产内部已迁移，provider/fixture 测试仍使用 | 迁移仓库内兼容测试并确认无外部脚本使用 |
 | `fuyao_config.py` | `infrastructure/providers/fuyao/config.py`；生产内部已迁移，配置测试仍使用 | 迁移配置消费者并保留 fail-closed 开关测试 |
-| `fuyao_request_gate.py` | `infrastructure/providers/fuyao/request_gate.py`；生产内部已迁移，请求门测试仍使用 | 迁移测试/脚本且证明两个客户端仍共享同一 gate |
+| `fuyao_request_gate.py` | `infrastructure/providers/fuyao/request_gate.py`；生产 transport 已迁到共享 gateway，请求门 fixture/兼容测试仍使用 | 迁移 fixture/外部注入并保留同 host gateway pacing/budget 契约证明 |
 | `tdx_config.py` | `infrastructure/providers/tdx/config.py`；生产内部已迁移，配置测试仍使用 | 迁移配置消费者并保留默认关闭证明 |
 | `tdx_daily.py` | `infrastructure/providers/tdx/daily_package.py`；生产内部已迁移，解析/兼容测试仍使用 | 迁移测试/脚本并保留日期、包校验和下载边界契约 |
 | `provider_capability.py` | `infrastructure/providers/capability.py`；生产内部已迁移，兼容测试仍使用 | 迁移报告消费者并保留 eligible/unverified 语义测试 |
@@ -184,18 +189,18 @@ collection.CollectionCoordinator
 | `postgres_compat.py` | `infrastructure/persistence/postgres/compat.py`；生产内部已迁移，数据库兼容测试仍使用 | 迁移测试/脚本并保留 qmark、row 与事务行为测试 |
 | `postgres_migration.py` | `infrastructure/persistence/sqlite_import/migration.py`；CLI 已迁移，迁移测试仍使用 | 迁移维护脚本且证明普通 runtime 不选择 SQLite |
 | `date_relabel.py` / `snapshot_migration.py` | `infrastructure/persistence/sqlite_import/date_relabel.py`；CLI 已迁移，历史维护脚本/测试仍使用两个旧名 | 合并历史命令调用方并保留 dry-run、审计与回滚证明 |
-| `providers.py` | `infrastructure/legacy/providers.py`；collector runtime 仍通过 `CollectorProviderRuntime` 间接使用 transport | 先提取 transport/normalizer 到正式 provider 包，再迁移 runtime 与外部脚本 |
+| `providers.py` | 正式实现位于 `infrastructure/providers/runtime.py`，legacy 文件仅 re-export/alias；CLI real probe、旧 collector/service、兼容测试和未知仓库外脚本仍使用稳定根名 | CLI probe 改 source adapter，旧 collector/service/test 调用迁移，完成公共导入弃用窗口和 stable-import 证明 |
 | `service.py` | `infrastructure/legacy/service.py`；正常 HTTP 不构造，旧测试、脚本和交易系统适配可能使用 | 完成所有 facade 消费者迁移并评审破坏性删除 |
 | `snapshot_store.py` | `infrastructure/legacy/snapshot_store.py`；`PostgresRuntimeStore` 仍间接复用 facade/backend | 先完成 PostgreSQL-native facade 替换和 SQLite fixture adapter 拆分 |
 
-本次没有删除上述 shim：每个条目仍有稳定兼容调用或未完成的 runtime seam。任务完成的判据是“实现已归类、内部新依赖被门禁、保留原因可审计”，不是为了减少文件数而制造未经评审的 import break。
+本次没有删除上述根级 shim：每个条目仍有稳定兼容调用或未完成的弃用窗口。任务完成的判据是“实现已归类、normal runtime 无 legacy provider 依赖、内部新依赖被门禁、保留原因可审计”，不是为了减少文件数而制造未经评审的 import break。
 
 ## `infrastructure/legacy` 三个大文件应如何理解
 
 这是最容易误判的区域：
 
 - `legacy/service.py`：旧的聚合 service facade。正常 HTTP query/materialization runtime 不再构造它；它主要服务兼容测试、历史脚本和旧导入面。
-- `legacy/providers.py`：旧 provider transport 和部分共享 normalizer。五个新 collector 已在 `infrastructure/providers/`，但 `CollectorProviderRuntime` 仍以这里的 `MarketDataProvider` 作为 vendor transport 基类，因此它目前仍有运行时传递依赖。
+- `legacy/providers.py`：只重导出 `infrastructure/providers/runtime.py` 的稳定 DTO/常量，并用 `MarketDataProvider = CollectorProviderRuntime` 保持类身份；不包含 provider、网络、重试或 normalizer 逻辑。normal bootstrap/registry 不导入它。
 - `legacy/snapshot_store.py`：旧的 snapshot store 实现和 record 类型。`PostgresRuntimeStore` 继承兼容 `SnapshotStore`，因此 PostgreSQL runtime 仍会经过这里的 facade/backend 逻辑；同时它也承载显式 SQLite fixture/migration 兼容。
 
 所以，“legacy”在这里表示“迁移隔离和兼容边界”，不等于“没有调用者”。删除这些文件前必须：
@@ -205,13 +210,30 @@ collection.CollectionCoordinator
 3. 更新 `docs/architecture.md`、`docs/runbooks.md` 和 active plan。
 4. 运行架构 AST 门禁、兼容矩阵和全量离线测试。
 
+### Provider facade / shim 调用清单与退役前置
+
+| 调用面 | 当前状态 | 删除前置条件 |
+|---|---|---|
+| normal bootstrap / acquisition plans | 构造正式 `CollectorProviderRuntime`，五数据集走完整 collector/plan/adapter/committer registry；不导入或构造 legacy `MarketDataProvider` | 保持 architecture gate、runtime MRO、bootstrap startup 和五数据集 parity 证据 |
+| `cli.py` 的 TDX/Fuyao real probe | 显式维护命令仍经稳定根 alias 构造 runtime；默认不开网络且要求 real-probe 授权 | 改为精确 source adapter/runtime port，并保留 `--allow-real`、零凭据泄露和默认零网络门禁 |
+| coordinator 无 registry fallback 与旧五 collector | 仅供直接构造 coordinator 的 compatibility/test 路径；normal bootstrap 总是注入完整 registry | 所有调用者注入完整 registry，删除旧 collector 分支，并复核 source/warning/date/retention、单 lease、单 commit、最多一次 rebuild |
+| `legacy/service.py` / 根 `service.py` | 旧测试、脚本及 `src/trading_system/data/providers.py` 的 lazy service 仍使用 | 迁移到 provider-free application query/repository port，完成 API/service golden 和仓库外兼容窗口 |
+| `SnapshotRefresher` / 根 `refresh.py` | legacy service 与旧 refresh 测试使用；会自行 provider、lease 和 snapshot write，不是无副作用 shim | 统一到 coordinator command，把 effective-date 策略移入 application/domain，再迁移旧导入 |
+| compatibility adapters | query/command adapters 只委托现有 coordinator；会嵌套 coordinator 的 `CoordinatorDatasetCollectorAdapter`/factory 已删除 | 在 application port 完全替代前保留 delegation-only adapters；静态门禁禁止重新引入 nested coordinator |
+| provider/TDX/Fuyao/limits/sector 测试与未知外部导入 | 多个 fixture 仍直接构造稳定 `MarketDataProvider` 名称；保留 alias/import smoke | fixture 改正式 runtime/source adapter，仅保留一组稳定导入测试，并完成公开弃用周期 |
+| `ProviderLimitHistoryPreparer` | typed 显式维护路径，会获取交易日历并写 trading-session evidence；不是 shim | 独立 calendar source/application port 完成后再替换，期间必须保留显式命令和 provider-call/date 测试 |
+| `legacy/snapshot_store.py` | 与 provider facade 无关，`PostgresRuntimeStore` 仍复用其 facade/backend，SQLite import 也有显式 adapter | 完成 PostgreSQL-native facade、SQLite 专用 adapter 与 schema/checksum/transaction 迁移后另行退役 |
+
 ## 修改规则
 
 - 新 HTTP 路由放 `interfaces/http/routers/`；响应投影放 `interfaces/http/schemas/mappers.py`。
 - 新读路径放 `application/queries/`，必须 provider-free；不要在 query 中导入 `infrastructure`、`providers` 或 `collection`。
 - 新写路径放 `application/commands/`，通过 `application/ports/` 访问存储、采集和 executor。
 - 新纯计算放 `domain/analysis/` 或 `domain/policies/`；禁止在纯领域层读取数据库、环境 provider 或 FastAPI。
-- 新 provider/fallback 放 `infrastructure/providers/`，并保留 exact-date、source、quality、warning、failure-retention 和 fail-closed 语义。
+- 新 provider/fallback 放 `infrastructure/providers/` 的 source adapter/acquisition plan，不得把 vendor import 或 native response 提升到 application/query/coordinator；并保留 exact-date、source、quality、warning、failure-retention 和 fail-closed 语义。
+- HTTP source 必须经 composition root 共享的 engine-neutral policy gateway；adapter 不得直接创建 `requests.Session`/Scrapling client、复制 retry/limiter 或在 permission/challenge 后自动换 engine。非 HTTP mootdx/TCP 和本地 TDX package 仍返回相同 typed acquisition 结果。
+- `requests` 是默认 engine；Scrapling 只能作为默认关闭、空 allowlist 的可选 static engine。禁止浏览器安装、Spider、代理轮换、challenge solving、blocked-request escalation 和 engine 内部重试。
+- standard/core/limits committer 与 local projector 放在明确的 collection/persistence adapter 边界；collector 不写 snapshot，status/detail projector 不调用 provider。
 - 新 PostgreSQL 持久化放 `infrastructure/persistence/postgres/`；不要在 application 或 router 中写 SQL。
 - 根级 shim 只允许转发、兼容别名或极薄的稳定入口；不要把新业务逻辑继续塞进 `service.py`、`providers.py`、`snapshot_store.py`。
 - 不要把真实 provider smoke、生产数据库写入、CronJob 激活或 Kubernetes/Helm 写操作混入普通测试。
@@ -223,7 +245,7 @@ collection.CollectionCoordinator
 
 ```bash
 python scripts/check_market_environment_architecture.py
-python -m pytest tests/test_market_environment_architecture.py tests/test_market_environment_bootstrap.py tests/test_market_environment_queries.py -q
+python -m pytest tests/test_market_environment_architecture.py tests/test_market_environment_bootstrap.py tests/test_market_environment_application_ports.py tests/test_market_environment_collector_registry.py tests/test_market_environment_queries.py tests/test_provider_http.py -q
 python -m pytest tests -q
 python scripts/check-docs-contract.py --mode=full
 ```

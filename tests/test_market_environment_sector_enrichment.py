@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -106,11 +107,24 @@ def test_identity_matcher_is_exact_versioned_and_collision_safe():
 
     result = matcher.match(base, source)
 
+    assert ENRICHMENT_MAPPING_REVISION == "fuyao-eastmoney-sector-map-v1"
     assert normalize_sector_name("电子（行业）") == normalize_sector_name("电子(行业)")
     assert result.mapping_revision == ENRICHMENT_MAPPING_REVISION
     assert result.matched_rows == 1
     assert result.matches[0].method == "normalized-name"
     assert result.unmatched_base == (1,)
+
+
+def test_identity_matcher_prefers_reviewed_explicit_code_mapping():
+    result = SectorIdentityMatcher({"885001.TI": "BK001"}).match(
+        [{"code": "885001.TI", "name": "电子", "changePct": 2.35, "amount": 1000}],
+        [{"f12": "BK001", "f14": "电子", "f3": 235, "f6": 1000}],
+    )
+
+    assert result.mapping_revision == "fuyao-eastmoney-sector-map-v1"
+    assert result.matches[0].method == "explicit-code"
+    assert result.unmatched_base == ()
+    assert result.conflicts == ()
 
 
 def test_identity_matcher_rejects_duplicate_names_and_taxonomy_conflicts():
@@ -130,6 +144,28 @@ def test_identity_matcher_rejects_duplicate_names_and_taxonomy_conflicts():
     assert any("candidates" in conflict for conflict in duplicate.conflicts)
     assert taxonomy.matches == ()
     assert any("taxonomy" in conflict for conflict in taxonomy.conflicts)
+
+
+def test_missing_enrichment_environment_defaults_disabled_and_makes_zero_requests(monkeypatch):
+    monkeypatch.delenv(
+        "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED",
+        raising=False,
+    )
+    calls = []
+    client = MarketDataProvider(sector_enrichment_now=lambda: AFTER_SETTLEMENT)
+    monkeypatch.setattr(
+        client.http,
+        "get_json",
+        lambda *_args, **_kwargs: calls.append("unexpected"),
+    )
+
+    result = client.enrich_fuyao_sectors(base_payload(), AS_OF, eligible=True)
+    enrichment = result["quality"]["sectorEnrichment"]
+
+    assert client.sector_enrichment_enabled is False
+    assert calls == []
+    assert enrichment["status"] == "disabled"
+    assert enrichment["dateEvidence"]["reason"] == "feature-disabled"
 
 
 def test_disabled_historical_and_pre_settlement_paths_make_zero_requests(monkeypatch):
@@ -198,6 +234,15 @@ def test_fill_only_merge_normalizes_integerized_percentages_and_preserves_fuyao(
     client = provider()
     monkeypatch.setattr(client.http, "get_json", lambda *_args, **_kwargs: FIXTURE["complete"])
     before = base_payload()
+    authoritative_fields = {
+        "mainNet": 999,
+        "mainNetPct": 9.99,
+        "upCount": 7,
+        "downCount": 3,
+        "leader": "扶摇领涨样本",
+    }
+    before["rows"][0].update(authoritative_fields)
+    original = copy.deepcopy(before)
 
     result = client.enrich_fuyao_sectors(before, AS_OF, eligible=True)
 
@@ -208,20 +253,67 @@ def test_fill_only_merge_normalizes_integerized_percentages_and_preserves_fuyao(
         2.35,
         1_000_000_000,
     )
-    assert first["mainNet"] == 999
-    assert first["mainNetPct"] == 3.15
-    assert first["leader"] == "领涨样本"
-    assert second["mainNet"] == -25_000_000
-    assert second["mainNetPct"] == -0.85
+    assert {field: first[field] for field in authoritative_fields} == authoritative_fields
+    assert {
+        field: second[field]
+        for field in ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
+    } == {
+        "mainNet": -25_000_000,
+        "mainNetPct": -0.85,
+        "upCount": 30,
+        "downCount": 20,
+        "leader": "医药样本",
+    }
     enrichment = result["quality"]["sectorEnrichment"]
     assert enrichment["status"] == "enriched"
+    assert enrichment["source"] == "eastmoney-dataapi"
+    assert enrichment["provider"] == "eastmoney"
+    assert enrichment["sameVendor"] is True
+    assert enrichment["requestedFields"] == ["f3", "f6", "f62", "f104", "f105", "f128", "f184"]
+    assert enrichment["mappingRevision"] == "fuyao-eastmoney-sector-map-v1"
+    assert enrichment["matchMethod"] == "explicit-code-or-normalized-name"
     assert enrichment["percentageScale"] == 0.01
     assert enrichment["identityCoverage"] == 1.0
-    assert enrichment["fieldCoverage"]["mainNet"] == 1.0
-    assert enrichment["fieldFilled"]["mainNet"] == 1
+    assert enrichment["fieldCoverage"] == {
+        "mainNet": 1.0,
+        "mainNetPct": 1.0,
+        "upCount": 1.0,
+        "downCount": 1.0,
+        "leader": 1.0,
+    }
+    assert enrichment["fieldMatched"] == {
+        "mainNet": 2,
+        "mainNetPct": 2,
+        "upCount": 2,
+        "downCount": 2,
+        "leader": 2,
+    }
+    assert enrichment["fieldFilled"] == {
+        "mainNet": 1,
+        "mainNetPct": 1,
+        "upCount": 1,
+        "downCount": 1,
+        "leader": 1,
+    }
+    assert enrichment["dateEvidence"] == {
+        "requested": AS_OF.isoformat(),
+        "current": AS_OF.isoformat(),
+        "eligible": True,
+        "settled": True,
+        "reason": "request-attempted",
+    }
+    assert enrichment["warnings"] == ["sector enrichment mapping coverage 2/2"]
     assert result["quality"]["source"] == "fuyao"
+    assert result["quality"]["provider"] == "fuyao"
     assert result["quality"]["status"] == "fallback"
-    assert before["rows"][0]["mainNetPct"] is None
+    assert result["quality"]["warnings"] == [
+        "sector provider fields unavailable",
+        "sector enrichment mapping coverage 2/2",
+    ]
+    assert result["quality"]["warning"] == (
+        "sector provider fields unavailable；sector enrichment mapping coverage 2/2"
+    )
+    assert before == original
 
 
 def test_partial_128_row_coverage_preserves_unmatched_fuyao_fields(monkeypatch):
@@ -246,8 +338,37 @@ def test_partial_128_row_coverage_preserves_unmatched_fuyao_fields(monkeypatch):
     assert enrichment["unmatchedRows"] == 1
     assert enrichment["identityCoverage"] == 0.5
     assert enrichment["status"] == "partial"
-    assert result["rows"][1]["mainNet"] is None
+    assert enrichment["fieldCoverage"] == {
+        "mainNet": 0.5,
+        "mainNetPct": 0.5,
+        "upCount": 0.5,
+        "downCount": 0.5,
+        "leader": 0.5,
+    }
+    assert enrichment["fieldMatched"] == {
+        "mainNet": 1,
+        "mainNetPct": 1,
+        "upCount": 1,
+        "downCount": 1,
+        "leader": 1,
+    }
+    assert enrichment["fieldFilled"] == {
+        "mainNet": 0,
+        "mainNetPct": 1,
+        "upCount": 1,
+        "downCount": 1,
+        "leader": 1,
+    }
+    assert enrichment["warnings"] == ["sector enrichment mapping coverage 1/2"]
+    assert all(
+        result["rows"][1][field] is None
+        for field in ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
+    )
     assert result["quality"]["status"] == "fallback"
+    assert result["quality"]["warnings"] == [
+        "sector provider fields unavailable",
+        "sector enrichment mapping coverage 1/2",
+    ]
 
 
 @pytest.mark.parametrize("fixture_name", ["malformedValues", "ambiguousPercentageScale"])
@@ -275,8 +396,18 @@ def test_duplicate_name_and_missing_leader_remain_unfilled(monkeypatch):
 
     assert duplicate_result["rows"][0]["mainNet"] == 999
     assert duplicate_result["rows"][0]["mainNetPct"] is None
-    assert duplicate_result["quality"]["sectorEnrichment"]["matchedRows"] == 0
-    assert duplicate_result["quality"]["sectorEnrichment"]["status"] == "partial"
+    duplicate_enrichment = duplicate_result["quality"]["sectorEnrichment"]
+    assert duplicate_enrichment["matchedRows"] == 0
+    assert duplicate_enrichment["status"] == "partial"
+    assert duplicate_enrichment["warnings"] == [
+        "sector enrichment mapping coverage 0/1",
+        "base row 0 normalized name has 2 candidates",
+    ]
+    assert duplicate_result["quality"]["warnings"] == [
+        "sector provider fields unavailable",
+        "sector enrichment mapping coverage 0/1",
+        "base row 0 normalized name has 2 candidates",
+    ]
     assert leader_result["rows"][0]["leader"] is None
     assert leader_result["rows"][0]["mainNetPct"] == 0.1
 
@@ -295,6 +426,13 @@ def test_supplemental_failure_retains_base_and_records_source_date_warning(monke
     assert result["rows"] == base["rows"]
     assert result["quality"]["source"] == "fuyao"
     assert result["quality"]["status"] == "fallback"
-    assert result["quality"]["sectorEnrichment"]["status"] == "failed"
-    assert "2026-09-30" in result["quality"]["warning"]
-    assert "东方财富 dataapi" in result["quality"]["warning"]
+    enrichment = result["quality"]["sectorEnrichment"]
+    assert enrichment["status"] == "failed"
+    assert enrichment["warnings"] == [
+        "东方财富 dataapi 行业字段补充失败（2026-09-30）：fixture unavailable"
+    ]
+    assert result["quality"]["warnings"] == [
+        "sector provider fields unavailable",
+        *enrichment["warnings"],
+    ]
+    assert result["quality"]["warning"] == "；".join(result["quality"]["warnings"])

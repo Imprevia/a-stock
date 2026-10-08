@@ -7,6 +7,7 @@ from typing import Protocol, Self, runtime_checkable
 from .repositories import (
     CollectionRunRepository,
     CollectionTaskRepository,
+    CoreIndexResultRepository,
     LeaseRepository,
     LimitDetailRepository,
     MaterializedAggregateRepository,
@@ -22,6 +23,7 @@ class MarketEnvironmentUnitOfWork(Protocol):
     snapshots: SnapshotRepository
     collection_runs: CollectionRunRepository
     collection_tasks: CollectionTaskRepository
+    core_index_results: CoreIndexResultRepository
     leases: LeaseRepository
     trading_sessions: TradingSessionRepository
     aggregates: MaterializedAggregateRepository

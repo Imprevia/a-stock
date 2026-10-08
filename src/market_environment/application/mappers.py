@@ -7,12 +7,15 @@ from datetime import date, datetime
 from typing import Any, Mapping, Protocol
 
 from ..domain.models import (
+    AcquisitionTimings,
     CacheMetadata,
     CacheState,
     CollectionCandidate,
     DatasetDate,
+    FieldAvailability,
     MaterializationRevision,
     QualityMetadata,
+    RedactedProvenance,
 )
 
 
@@ -44,7 +47,84 @@ _QUALITY_KEYS = {
     "snapshotFetchedAt",
     "refreshing",
     "refreshWarning",
+    "sourceRevision",
+    "fetchedAt",
+    "fieldAvailability",
+    "timings",
+    "evidenceFingerprint",
+    "provenance",
 }
+
+
+def _timings_from_api(value: Any) -> AcquisitionTimings:
+    if not isinstance(value, Mapping):
+        return AcquisitionTimings()
+    phases = value.get("phasesMs")
+    return AcquisitionTimings(
+        total_ms=float(value["totalMs"]) if value.get("totalMs") is not None else None,
+        phases_ms={str(key): float(item) for key, item in (phases or {}).items()},
+    )
+
+
+def _timings_to_api(value: AcquisitionTimings) -> dict[str, Any] | None:
+    if value.total_ms is None and not value.phases_ms:
+        return None
+    return {
+        "totalMs": value.total_ms,
+        "phasesMs": dict(value.phases_ms),
+    }
+
+
+def _field_availability_from_api(value: Any) -> FieldAvailability:
+    if not isinstance(value, Mapping):
+        return FieldAvailability()
+    return FieldAvailability(
+        available=tuple(str(item) for item in value.get("available") or ()),
+        missing=tuple(str(item) for item in value.get("missing") or ()),
+        unsupported=tuple(str(item) for item in value.get("unsupported") or ()),
+    )
+
+
+def _field_availability_to_api(value: FieldAvailability) -> dict[str, Any] | None:
+    if not (value.available or value.missing or value.unsupported):
+        return None
+    return {
+        "available": list(value.available),
+        "missing": list(value.missing),
+        "unsupported": list(value.unsupported),
+    }
+
+
+def _provenance_from_api(value: Any) -> RedactedProvenance:
+    if not isinstance(value, Mapping):
+        return RedactedProvenance()
+    reserved = {"endpoint", "engine", "requestId", "authenticationScopeDigest"}
+    return RedactedProvenance(
+        endpoint=str(value["endpoint"]) if value.get("endpoint") is not None else None,
+        engine=str(value["engine"]) if value.get("engine") is not None else None,
+        request_id=str(value["requestId"]) if value.get("requestId") is not None else None,
+        authentication_scope_digest=(
+            str(value["authenticationScopeDigest"])
+            if value.get("authenticationScopeDigest") is not None
+            else None
+        ),
+        attributes={str(key): copy.deepcopy(item) for key, item in value.items() if key not in reserved},
+    )
+
+
+def _provenance_to_api(value: RedactedProvenance) -> dict[str, Any] | None:
+    if not (value.endpoint or value.engine or value.request_id or value.authentication_scope_digest or value.attributes):
+        return None
+    result = copy.deepcopy(dict(value.attributes))
+    if value.endpoint is not None:
+        result["endpoint"] = value.endpoint
+    if value.engine is not None:
+        result["engine"] = value.engine
+    if value.request_id is not None:
+        result["requestId"] = value.request_id
+    if value.authentication_scope_digest is not None:
+        result["authenticationScopeDigest"] = value.authentication_scope_digest
+    return result
 
 
 def quality_from_api(payload: Mapping[str, Any]) -> QualityMetadata:
@@ -66,6 +146,10 @@ def quality_from_api(payload: Mapping[str, Any]) -> QualityMetadata:
             refreshing=payload.get("refreshing"),
             refresh_warning=payload.get("refreshWarning"),
         )
+    timings = _timings_from_api(payload.get("timings"))
+    field_availability = _field_availability_from_api(payload.get("fieldAvailability"))
+    provenance = _provenance_from_api(payload.get("provenance"))
+    fetched_at = payload.get("fetchedAt")
     return QualityMetadata(
         dataset=str(payload.get("dataset") or "unknown"),
         source=str(payload.get("source") or "none"),
@@ -81,12 +165,24 @@ def quality_from_api(payload: Mapping[str, Any]) -> QualityMetadata:
             for key, value in payload.items()
             if key not in _QUALITY_KEYS
         },
+        source_revision=(
+            str(payload["sourceRevision"]) if payload.get("sourceRevision") is not None else None
+        ),
+        fetched_at=(datetime.fromisoformat(str(fetched_at)) if fetched_at is not None else None),
+        field_availability=field_availability,
+        timings=timings,
+        evidence_fingerprint=(
+            str(payload["evidenceFingerprint"])
+            if payload.get("evidenceFingerprint") is not None
+            else None
+        ),
+        provenance=provenance,
     )
 
 
 def quality_to_api(quality: QualityMetadata) -> dict[str, Any]:
     cache = quality.cache
-    return {
+    result = {
         "dataset": quality.dataset,
         "source": quality.source,
         "provider": quality.provider,
@@ -105,6 +201,16 @@ def quality_to_api(quality: QualityMetadata) -> dict[str, Any]:
         "refreshWarning": cache.refresh_warning if cache is not None else None,
         **copy.deepcopy(dict(quality.extra)),
     }
+    optional = {
+        "sourceRevision": quality.source_revision,
+        "fetchedAt": quality.fetched_at.isoformat() if quality.fetched_at is not None else None,
+        "fieldAvailability": _field_availability_to_api(quality.field_availability),
+        "timings": _timings_to_api(quality.timings),
+        "evidenceFingerprint": quality.evidence_fingerprint,
+        "provenance": _provenance_to_api(quality.provenance),
+    }
+    result.update({key: value for key, value in optional.items() if value is not None})
+    return result
 
 
 def snapshot_to_candidate(record: SnapshotRecordLike) -> CollectionCandidate:
@@ -122,6 +228,12 @@ def snapshot_to_candidate(record: SnapshotRecordLike) -> CollectionCandidate:
         settled=record.settled,
         actual_as_of=actual_as_of,
         quality=quality,
+        source_revision=quality.source_revision if quality is not None else None,
+        fetched_at=quality.fetched_at if quality is not None else None,
+        field_availability=quality.field_availability if quality is not None else FieldAvailability(),
+        timings=quality.timings if quality is not None else AcquisitionTimings(),
+        evidence_fingerprint=quality.evidence_fingerprint if quality is not None else None,
+        provenance=quality.provenance if quality is not None else RedactedProvenance(),
     )
 
 

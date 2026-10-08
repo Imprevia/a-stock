@@ -120,6 +120,7 @@ class FakeRepositories:
     snapshots: object = "snapshots"
     collection_runs: object = "collection-runs"
     collection_tasks: object = "collection-tasks"
+    core_index_results: object = "core-index-results"
     leases: object = "leases"
     trading_sessions: object = "trading-sessions"
     aggregates: object = "aggregates"

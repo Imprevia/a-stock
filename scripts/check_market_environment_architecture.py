@@ -118,6 +118,105 @@ ROOT_SHIM_INTERNAL_IMPORT_EXCEPTIONS = frozenset(
     }
 )
 
+# All provider HTTP attempts now pass through the shared transport gateway.
+# Keeping this empty inventory explicit prevents a new direct-network path.
+REGISTERED_DIRECT_NETWORK_MODULES = frozenset()
+
+# The coordinator still constructs the legacy collectors until the collector
+# boundary is closed. Only its already-characterized imports are grandfathered;
+# any new vendor dependency is rejected by the gate.
+COORDINATOR_VENDOR_IMPORT_EXCEPTIONS = frozenset(
+    {
+        (
+            f"{PACKAGE_NAME}.infrastructure.collection.coordinator",
+            f"{PACKAGE_NAME}.infrastructure.providers",
+        ),
+        (
+            f"{PACKAGE_NAME}.infrastructure.collection.coordinator",
+            f"{PACKAGE_NAME}.infrastructure.providers.fuyao.config",
+        ),
+        (
+            f"{PACKAGE_NAME}.infrastructure.collection.coordinator",
+            f"{PACKAGE_NAME}.infrastructure.providers.fuyao.market",
+        ),
+    }
+)
+
+# Provider validators consume only the engine-neutral response contract.
+NATIVE_RESPONSE_TYPE_EXCEPTIONS = frozenset()
+
+NORMAL_RUNTIME_PROVIDER_MODULES = frozenset(
+    {
+        f"{PACKAGE_NAME}.bootstrap.container",
+        f"{PACKAGE_NAME}.bootstrap.registries",
+        f"{PACKAGE_NAME}.infrastructure.providers.runtime",
+    }
+)
+
+VENDOR_IMPORT_PREFIXES = (
+    "akshare",
+    "aiohttp",
+    "baostock",
+    "httpx",
+    "mootdx",
+    "requests",
+    "scrapling",
+    "tushare",
+    f"{PACKAGE_NAME}.fuyao",
+    f"{PACKAGE_NAME}.fuyao_config",
+    f"{PACKAGE_NAME}.fuyao_market",
+    f"{PACKAGE_NAME}.fuyao_request_gate",
+    f"{PACKAGE_NAME}.industry_mapping",
+    f"{PACKAGE_NAME}.providers",
+    f"{PACKAGE_NAME}.sector_enrichment",
+    f"{PACKAGE_NAME}.tdx_config",
+    f"{PACKAGE_NAME}.tdx_daily",
+    f"{PACKAGE_NAME}.infrastructure.legacy.providers",
+    f"{PACKAGE_NAME}.infrastructure.providers",
+)
+
+_NETWORK_CALLS = frozenset(
+    {
+        "aiohttp.ClientSession",
+        "aiohttp.request",
+        "http.client.HTTPConnection",
+        "http.client.HTTPSConnection",
+        "httpx.AsyncClient",
+        "httpx.Client",
+        "httpx.delete",
+        "httpx.get",
+        "httpx.head",
+        "httpx.options",
+        "httpx.patch",
+        "httpx.post",
+        "httpx.put",
+        "httpx.request",
+        "requests.Session",
+        "requests.delete",
+        "requests.get",
+        "requests.head",
+        "requests.options",
+        "requests.patch",
+        "requests.post",
+        "requests.put",
+        "requests.request",
+        "requests.session",
+        "socket.create_connection",
+        "socket.socket",
+        "urllib.request.build_opener",
+        "urllib.request.install_opener",
+        "urllib.request.urlretrieve",
+        "urllib.request.urlopen",
+    }
+)
+
+_COMPLETE_REGISTRY_TYPES = frozenset(
+    {
+        "AcquisitionPlanRegistry",
+        "DatasetCollectorRegistry",
+    }
+)
+
 
 def module_name(path: Path) -> str:
     parts = path.with_suffix("").parts
@@ -143,6 +242,176 @@ def imported_modules(module: str, tree: ast.AST) -> set[str]:
     return imports
 
 
+def _import_aliases(module: str, tree: ast.AST) -> dict[str, str]:
+    package = (
+        module
+        if module.rsplit(".", 1)[-1] == "__init__"
+        else module.rpartition(".")[0]
+    )
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                aliases[local_name] = alias.name if alias.asname else local_name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                imported_module = importlib.util.resolve_name(
+                    "." * node.level + (node.module or ""),
+                    package,
+                )
+            elif node.module:
+                imported_module = node.module
+            else:
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                aliases[alias.asname or alias.name] = f"{imported_module}.{alias.name}"
+    return aliases
+
+
+def _qualified_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if not isinstance(node, ast.Attribute):
+        return None
+    parent = _qualified_name(node.value, aliases)
+    return f"{parent}.{node.attr}" if parent else None
+
+
+def _source_path(module: str, node: ast.AST | None = None) -> str:
+    path = module.replace(".", "/")
+    if path.endswith("/__init__"):
+        path = path.removesuffix("/__init__") + "/__init__.py"
+    else:
+        path += ".py"
+    line = getattr(node, "lineno", None)
+    return f"{path}:{line}" if line is not None else path
+
+
+def _is_coordinator_module(module: str) -> bool:
+    parts = module.split(".")
+    return any(part == "coordinator" or part.startswith("coordinator_") for part in parts)
+
+
+def _is_native_response_type(name: str) -> bool:
+    parts = name.split(".")
+    if not parts or parts[0] not in {"aiohttp", "httpx", "requests", "scrapling"}:
+        return False
+    return parts[-1] in {"ClientResponse", "Response"}
+
+
+def _is_direct_network_call(name: str | None) -> bool:
+    if name is None:
+        return False
+    if name in _NETWORK_CALLS or name.startswith("scrapling."):
+        return True
+    parts = name.split(".")
+    terminal = parts[-1]
+    if parts[0] == "requests":
+        return terminal in {
+            "Session",
+            "delete",
+            "get",
+            "head",
+            "options",
+            "patch",
+            "post",
+            "put",
+            "request",
+            "session",
+        }
+    if parts[0] == "httpx":
+        return terminal in {
+            "AsyncClient",
+            "Client",
+            "delete",
+            "get",
+            "head",
+            "options",
+            "patch",
+            "post",
+            "put",
+            "request",
+        }
+    if name.startswith("urllib.request."):
+        return terminal in {"build_opener", "install_opener", "urlopen", "urlretrieve"}
+    return False
+
+
+def _empty_collection(node: ast.AST) -> bool:
+    return isinstance(node, (ast.List, ast.Set, ast.Tuple)) and not node.elts
+
+
+def _registry_violations(
+    module: str,
+    tree: ast.AST,
+    aliases: dict[str, str],
+) -> list[str]:
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = _qualified_name(node.func, aliases)
+        if called is None:
+            continue
+        called_parts = called.split(".")
+        registry_type = called_parts[-1]
+        if registry_type in _COMPLETE_REGISTRY_TYPES:
+            violations.append(
+                f"{_source_path(module, node)}: incomplete {registry_type}; "
+                f"construct it with {registry_type}.complete(...) before external I/O"
+            )
+            continue
+        if called_parts[-2:] == ["AcquisitionPlanRegistry", "complete"]:
+            if not node.args or _empty_collection(node.args[0]):
+                violations.append(
+                    f"{_source_path(module, node)}: incomplete stable dataset registry; "
+                    "register acquisition plans for every DATASET_IDS entry"
+                )
+            source_keywords = [
+                keyword
+                for keyword in node.keywords
+                if keyword.arg == "source_adapters"
+            ]
+            if not source_keywords:
+                violations.append(
+                    f"{_source_path(module, node)}: incomplete acquisition/source "
+                    "registries; AcquisitionPlanRegistry.complete(...) requires "
+                    "source_adapters=SourceAdapterRegistry(...) before external I/O"
+                )
+            elif any(
+                isinstance(keyword.value, ast.Call)
+                and (_qualified_name(keyword.value.func, aliases) or "").split(".")[-1]
+                == "SourceAdapterRegistry"
+                and (
+                    not keyword.value.args
+                    or _empty_collection(keyword.value.args[0])
+                )
+                for keyword in source_keywords
+            ):
+                violations.append(
+                    f"{_source_path(module, node)}: incomplete source adapter registry; "
+                    "register every source referenced by the dataset plans"
+                )
+        if called_parts[-2:] == ["DatasetCollectorRegistry", "complete"] and (
+            not node.args or _empty_collection(node.args[0])
+        ):
+            violations.append(
+                f"{_source_path(module, node)}: incomplete stable dataset registry; "
+                "register collectors for every DATASET_IDS entry"
+            )
+        if registry_type == "SourceAdapterRegistry" and (
+            not node.args or _empty_collection(node.args[0])
+        ):
+            violations.append(
+                f"{_source_path(module, node)}: incomplete source adapter registry; "
+                "register every source referenced by the dataset plans"
+            )
+    return violations
+
+
 def _matches(imported: str, prefix: str) -> bool:
     return imported == prefix or imported.startswith(f"{prefix}.")
 
@@ -150,6 +419,7 @@ def _matches(imported: str, prefix: str) -> bool:
 def violations_for_source(module: str, source: str) -> list[str]:
     tree = ast.parse(source)
     imported = imported_modules(module, tree)
+    aliases = _import_aliases(module, tree)
     violations: list[str] = []
 
     is_internal_submodule = (
@@ -195,10 +465,37 @@ def violations_for_source(module: str, source: str) -> list[str]:
             if any(_matches(value, prefix) for prefix in forbidden):
                 violations.append(f"{module}: application imports {value}")
 
+    guarded_vendor_boundary = module.startswith(
+        f"{PACKAGE_NAME}.application"
+    ) or _is_coordinator_module(module)
+    if guarded_vendor_boundary:
+        for value in sorted(imported):
+            if not any(_matches(value, prefix) for prefix in VENDOR_IMPORT_PREFIXES):
+                continue
+            if (module, value) in COORDINATOR_VENDOR_IMPORT_EXCEPTIONS:
+                continue
+            violations.append(
+                f"{_source_path(module)}: vendor import {value} crosses the "
+                "application/query/coordinator boundary; move provider mechanics "
+                "behind a registered source adapter"
+            )
+
     if module.startswith(f"{PACKAGE_NAME}.infrastructure"):
         for value in sorted(imported):
             if _matches(value, f"{PACKAGE_NAME}.interfaces"):
                 violations.append(f"{module}: infrastructure imports {value}")
+
+    if module in NORMAL_RUNTIME_PROVIDER_MODULES:
+        for value in sorted(imported):
+            if value == f"{PACKAGE_NAME}.providers" or _matches(
+                value,
+                f"{PACKAGE_NAME}.infrastructure.legacy.providers",
+            ):
+                violations.append(
+                    f"{_source_path(module)}: normal runtime imports legacy "
+                    f"provider facade {value}; depend on registered source adapters "
+                    "or CollectorProviderRuntime"
+                )
 
     if module.startswith(f"{PACKAGE_NAME}.application.queries"):
         for value in sorted(imported):
@@ -246,6 +543,67 @@ def violations_for_source(module: str, source: str) -> list[str]:
             for target in node.targets
         ):
             violations.append(f"{module}: missing app assignment")
+
+    native_response_uses: dict[str, ast.AST | None] = {
+        imported_name: None
+        for imported_name in aliases.values()
+        if _is_native_response_type(imported_name)
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Attribute, ast.Name)):
+            continue
+        referenced_name = _qualified_name(node, aliases)
+        if referenced_name is not None and _is_native_response_type(referenced_name):
+            native_response_uses[referenced_name] = node
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            native_names = {
+                name
+                for name in (
+                    "aiohttp.ClientResponse",
+                    "httpx.Response",
+                    "requests.Response",
+                    "scrapling.Response",
+                )
+                if name in node.value
+            }
+            for native_name in native_names:
+                native_response_uses[native_name] = node
+
+    for native_name, node in sorted(native_response_uses.items()):
+        if (module, native_name) in NATIVE_RESPONSE_TYPE_EXCEPTIONS:
+            continue
+        violations.append(
+            f"{_source_path(module, node)}: native engine response type "
+            f"{native_name} escapes the transport adapter; use "
+            "TransportResponse instead"
+        )
+
+    if module not in REGISTERED_DIRECT_NETWORK_MODULES:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = _qualified_name(node.func, aliases)
+            if _is_direct_network_call(called):
+                violations.append(
+                    f"{_source_path(module, node)}: unregistered direct network call "
+                    f"{called}; route it through a registered source/transport adapter"
+                )
+
+    if module == f"{PACKAGE_NAME}.infrastructure.compatibility":
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = _qualified_name(node.func, aliases)
+            if called is not None and called.split(".")[-1] == "CollectionCoordinator":
+                violations.append(
+                    f"{_source_path(module, node)}: compatibility shim constructs a "
+                    "nested CollectionCoordinator; use a normalized source adapter "
+                    "without lease, commit or rebuild side effects"
+                )
+
+    violations.extend(_registry_violations(module, tree, aliases))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):

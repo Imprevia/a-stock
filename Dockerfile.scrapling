@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+
+# Build the requests-only image first, then layer the optional static HTTP
+# dependencies without changing the default runtime image.
+ARG BASE_IMAGE=localhost/a-stock-market-environment:local-base
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY requirements.txt requirements-scrapling.txt /tmp/a-stock-requirements/
+RUN python -m pip install -r /tmp/a-stock-requirements/requirements-scrapling.txt \
+    && rm -rf /tmp/a-stock-requirements
+
+USER 10001:10001

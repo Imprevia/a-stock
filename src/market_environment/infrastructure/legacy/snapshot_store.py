@@ -276,7 +276,13 @@ class LegacySnapshotStoreAdapter:
     remains temporarily available for SQLite fixtures, migration commands and
     callers not yet moved to the split repositories.
     """
-    def __init__(self, path: Path | str | None = None, *, database_url: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | str | None = None,
+        *,
+        database_url: str | None = None,
+        initialize_schema: bool = True,
+    ) -> None:
         # Explicit paths remain available to the isolated SQLite migration
         # tool and legacy unit fixtures.  Normal application construction uses
         # the configured PostgreSQL URL and never silently falls back when a
@@ -292,7 +298,8 @@ class LegacySnapshotStoreAdapter:
                 else DatabaseSettings.from_environment(required=True)
             )
             self.path = None
-            create_schema(self.engine)
+            if initialize_schema:
+                create_schema(self.engine)
         else:
             self.path = Path(path) if path is not None else default_snapshot_path()
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -2902,6 +2909,7 @@ class SnapshotStore:
         *,
         database_url: str | None = None,
         backend: Any | None = None,
+        initialize_schema: bool = True,
     ) -> None:
         if (
             backend is None
@@ -2916,7 +2924,11 @@ class SnapshotStore:
         self._backend = (
             backend
             if backend is not None
-            else LegacySnapshotStoreAdapter(path, database_url=database_url)
+            else LegacySnapshotStoreAdapter(
+                path,
+                database_url=database_url,
+                initialize_schema=initialize_schema,
+            )
         )
 
     @classmethod

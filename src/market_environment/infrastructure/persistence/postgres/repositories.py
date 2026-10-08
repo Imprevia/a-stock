@@ -49,6 +49,67 @@ def _as_datetime(value: datetime | str) -> datetime:
     return result.astimezone(timezone.utc)
 
 
+def _allows_legacy_core_effective_date(
+    identity: DatasetDate,
+    payload: Mapping[str, Any],
+) -> bool:
+    """Accept legacy core effective dates without relabeling snapshot identity."""
+
+    if identity.dataset != "core":
+        return False
+    try:
+        effective_as_of = date.fromisoformat(str(payload.get("asOf") or ""))
+    except ValueError:
+        return False
+    if effective_as_of >= identity.as_of:
+        return False
+    quality = payload.get("quality")
+    if isinstance(quality, Mapping) and quality.get("asOf") not in (
+        None,
+        identity.as_of.isoformat(),
+    ):
+        return False
+    indices = payload.get("indices")
+    if not isinstance(indices, Sequence) or isinstance(indices, (str, bytes)) or not indices:
+        return False
+    latest_dates: list[date] = []
+    for value in indices:
+        if not isinstance(value, Mapping):
+            return False
+        history = value.get("history")
+        if not isinstance(history, Sequence) or isinstance(history, (str, bytes)) or not history:
+            return False
+        latest = history[-1]
+        if not isinstance(latest, Mapping):
+            return False
+        try:
+            latest_date = date.fromisoformat(str(latest.get("date") or ""))
+        except ValueError:
+            return False
+        if latest_date > identity.as_of:
+            return False
+        latest_dates.append(latest_date)
+    return min(latest_dates) == effective_as_of
+
+
+def _snapshot_dates_are_compatible(
+    identity: DatasetDate,
+    payload: Mapping[str, Any],
+    actual_as_of: date | None,
+) -> bool:
+    if actual_as_of not in (None, identity.as_of):
+        return False
+    expected_as_of = identity.as_of.isoformat()
+    quality = payload.get("quality")
+    quality_as_of = quality.get("asOf") if isinstance(quality, Mapping) else None
+    if payload.get("asOf") in (None, expected_as_of) and quality_as_of in (
+        None,
+        expected_as_of,
+    ):
+        return True
+    return _allows_legacy_core_effective_date(identity, payload)
+
+
 class PostgresSnapshotRepository:
     def __init__(
         self,
@@ -93,17 +154,13 @@ class PostgresSnapshotRepository:
                 f"unsupported snapshot schema version: {record.schema_version}"
             )
         candidate = snapshot_to_candidate(record)
-        if candidate.identity != identity or candidate.actual_as_of not in (
-            None,
-            identity.as_of,
+        if candidate.identity != identity or not _snapshot_dates_are_compatible(
+            identity,
+            payload,
+            candidate.actual_as_of,
         ):
             raise SnapshotIntegrityError(
                 f"snapshot exact-date mismatch: {identity.dataset}/{identity.as_of.isoformat()}"
-            )
-        payload_as_of = payload.get("asOf")
-        if payload_as_of not in (None, identity.as_of.isoformat()):
-            raise SnapshotIntegrityError(
-                f"snapshot payload date mismatch: {identity.dataset}/{identity.as_of.isoformat()}"
             )
         return candidate
 
@@ -111,11 +168,10 @@ class PostgresSnapshotRepository:
         fields = candidate_to_snapshot_fields(candidate, fetched_at=self.now())
         payload = dict(fields["payload"])
         expected_as_of = candidate.identity.as_of.isoformat()
-        quality = payload.get("quality")
-        quality_as_of = quality.get("asOf") if isinstance(quality, Mapping) else None
-        if candidate.actual_as_of not in (None, candidate.identity.as_of) or any(
-            value not in (None, expected_as_of)
-            for value in (payload.get("asOf"), quality_as_of)
+        if not _snapshot_dates_are_compatible(
+            candidate.identity,
+            payload,
+            candidate.actual_as_of,
         ):
             raise SnapshotIntegrityError(
                 "snapshot exact-date mismatch: "
@@ -236,6 +292,47 @@ class PostgresTradingSessionRepository:
             },
         )
         return value
+
+    def put_session_if_absent(self, session: object) -> TradingSessionRecord:
+        """Seed derived prior-session evidence without overwriting its owner."""
+
+        if not isinstance(session, TradingSessionRecord):
+            raise TypeError("trading session repository requires TradingSessionRecord")
+        value = session.normalized()
+        if value.schema_version != TRADING_SESSION_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported trading session schema version: {value.schema_version}"
+            )
+        if value.actual_as_of not in (None, value.as_of):
+            raise ValueError("trading session actual_as_of must match as_of")
+        self.connection.execute(
+            text(
+                """
+                INSERT INTO trading_sessions(
+                    as_of, previous_as_of, actual_as_of, is_session, source,
+                    schema_version, checksum, fetched_at, warnings_json
+                ) VALUES (
+                    :as_of, :previous_as_of, :actual_as_of, :is_session, :source,
+                    :schema_version, :checksum, :fetched_at, :warnings_json
+                )
+                ON CONFLICT(as_of) DO NOTHING
+                """
+            ),
+            {
+                "as_of": value.as_of,
+                "previous_as_of": value.previous_as_of,
+                "actual_as_of": value.actual_as_of,
+                "is_session": int(value.is_session),
+                "source": value.source,
+                "schema_version": value.schema_version,
+                "checksum": value.checksum,
+                "fetched_at": value.fetched_at,
+                "warnings_json": _canonical_json(list(value.warnings)),
+            },
+        )
+        stored = self.get_session(value.as_of)
+        assert stored is not None
+        return stored
 
     @staticmethod
     def _from_row(

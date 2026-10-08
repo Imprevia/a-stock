@@ -5,26 +5,23 @@ from datetime import datetime
 from src.market_environment.application.ports import (
     CollectionCommandPort,
     CollectionQueryPort,
-    DatasetCollector,
     MarketEnvironmentQueryPort,
     SnapshotRepository,
 )
 from src.market_environment.domain.models import (
     CollectionCandidate,
-    CollectionTaskState,
     DatasetDate,
 )
 from src.market_environment.infrastructure.compatibility import (
     RebuilderAggregateCommandAdapter,
     CoordinatorCollectionCommandAdapter,
     CoordinatorCollectionQueryAdapter,
-    CoordinatorDatasetCollectorAdapter,
     RepositoryMarketEnvironmentQueryAdapter,
     SnapshotRepositoryAdapter,
 )
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.snapshot_store import SnapshotStore
-from tests.test_market_environment_collection import AS_OF, CollectionProvider
+from tests.test_market_environment_collection import AS_OF
 
 
 NOW = datetime(2026, 9, 3, 16, 0, tzinfo=MARKET_TIME_ZONE)
@@ -51,26 +48,6 @@ def test_snapshot_store_adapter_round_trips_typed_candidate(tmp_path) -> None:
     assert isinstance(adapter, SnapshotRepository)
     assert stored == adapter.get(candidate.identity)
     assert adapter.list_dates("breadth") == (AS_OF,)
-
-
-def test_provider_and_coordinator_are_exposed_as_dataset_collector(tmp_path) -> None:
-    provider = CollectionProvider()
-    store = SnapshotStore(tmp_path / "collector.sqlite3")
-    collector = CoordinatorDatasetCollectorAdapter.from_provider(
-        "breadth",
-        provider,
-        store,
-        now=lambda: NOW,
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    outcome = collector.collect(DatasetDate("breadth", AS_OF))
-
-    assert isinstance(collector, DatasetCollector)
-    assert outcome.state is CollectionTaskState.SUCCESS
-    assert outcome.candidate is not None
-    assert outcome.candidate.source == "fixture"
-    assert provider.calls == ["breadth"]
 
 
 class _FakeSnapshotRecord:

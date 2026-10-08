@@ -13,9 +13,6 @@ from src.market_environment.domain.models import (
     CollectionTaskState,
     DatasetDate,
 )
-from src.market_environment.infrastructure.compatibility import (
-    build_provider_collector_registry,
-)
 from src.market_environment.infrastructure.persistence.sqlite_import import (
     LegacySqliteSnapshotStore,
 )
@@ -93,27 +90,6 @@ def test_registry_rejects_unknown_duplicate_and_incomplete_registration() -> Non
     registry = DatasetCollectorRegistry()
     with pytest.raises(ValueError, match="unknown dataset collector: core"):
         registry.get("core")
-
-
-def test_legacy_provider_adapter_builds_complete_registry_without_algorithm_move(
-    tmp_path,
-) -> None:
-    provider = CollectionProvider()
-    store = LegacySqliteSnapshotStore(tmp_path / "collector-registry.sqlite3")
-    registry = build_provider_collector_registry(
-        provider,
-        store,
-        now=lambda: AFTER_MARKET,
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    outcome = registry.collect(DatasetDate("breadth", AS_OF))
-
-    assert registry.dataset_ids == DATASET_IDS
-    assert outcome.state is CollectionTaskState.SUCCESS
-    assert outcome.candidate is not None
-    assert outcome.candidate.source == "fixture"
-    assert provider.calls == ["breadth"]
 
 
 def test_collection_coordinator_invokes_task_collector_through_registry(tmp_path) -> None:

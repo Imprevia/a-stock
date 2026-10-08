@@ -13,10 +13,18 @@ from src.market_environment.application.mappers import (
     snapshot_to_candidate,
 )
 from src.market_environment.domain.models import (
+    AcquisitionFailure,
+    AcquisitionFailureCategory,
+    AcquisitionTimings,
+    AttemptEvidence,
+    CollectionCandidate,
     CollectionOutcome,
     CollectionRunState,
     CollectionTaskState,
     DatasetDate,
+    FieldAvailability,
+    QualityMetadata,
+    RedactedProvenance,
 )
 from src.market_environment.snapshot_store import SnapshotRecord
 
@@ -128,3 +136,97 @@ def test_typed_values_reject_invalid_identity_and_outcome() -> None:
             state=CollectionTaskState.FAILED_MISSING,
             retained=True,
         )
+
+
+def test_acquisition_evidence_values_are_typed_and_validate_success_identity() -> None:
+    identity = DatasetDate("breadth", AS_OF)
+    candidate = CollectionCandidate(
+        identity=identity,
+        payload={"advanceCount": 1},
+        source="fixture-primary",
+        status="ok",
+        observations=1,
+        warnings=(),
+        settled=True,
+        actual_as_of=AS_OF,
+        source_revision="fixture-v1",
+        fetched_at=FETCHED_AT,
+        field_availability=FieldAvailability(available=("advanceCount",), missing=("leader",)),
+        timings=AcquisitionTimings(total_ms=12.5, phases_ms={"parse": 1.5}),
+        evidence_fingerprint="a" * 64,
+        provenance=RedactedProvenance(
+            endpoint="https://fixture.invalid/data",
+            engine="requests",
+            authentication_scope_digest="b" * 64,
+        ),
+    )
+    attempt = AttemptEvidence(
+        role="formal",
+        provider="fixture",
+        source="fixture-primary",
+        source_revision="fixture-v1",
+        engine="requests",
+        requested_as_of=AS_OF,
+        actual_as_of=AS_OF,
+        timings=AcquisitionTimings(total_ms=12.5),
+        provenance=candidate.provenance,
+        evidence_fingerprint="a" * 64,
+    )
+    outcome = CollectionOutcome(
+        identity=identity,
+        state=CollectionTaskState.SUCCESS,
+        candidate=candidate,
+        attempts=(attempt,),
+    )
+    assert outcome.candidate is candidate
+    assert outcome.attempts[0].engine == "requests"
+
+    failure = AcquisitionFailure(
+        category=AcquisitionFailureCategory.DATE_MISMATCH,
+        message="fixture date mismatch",
+        source="fixture-primary",
+        requested_as_of=AS_OF,
+    )
+    failed = CollectionOutcome(
+        identity=identity,
+        state=CollectionTaskState.FAILED_MISSING,
+        warning=failure.message,
+        failure=failure,
+    )
+    assert failed.failure is failure
+
+    with pytest.raises(ValueError, match="actual date"):
+        CollectionCandidate(
+            identity=identity,
+            payload={},
+            source="fixture",
+            status="ok",
+            observations=0,
+            warnings=(),
+            settled=True,
+            actual_as_of=AS_OF.replace(day=4),
+        )
+
+
+def test_extended_quality_evidence_round_trips_without_changing_legacy_defaults() -> None:
+    quality = QualityMetadata(
+        dataset="breadth",
+        source="fixture-primary",
+        provider="fixture",
+        status="degraded",
+        observations=3,
+        as_of=AS_OF,
+        source_revision="fixture-v1",
+        fetched_at=FETCHED_AT,
+        field_availability=FieldAvailability(available=("advanceCount",), unsupported=("leader",)),
+        timings=AcquisitionTimings(total_ms=4.0, phases_ms={"normalize": 2.0}),
+        evidence_fingerprint="c" * 64,
+        provenance=RedactedProvenance(endpoint="https://fixture.invalid", engine="requests"),
+    )
+    encoded = quality_to_api(quality)
+    decoded = quality_from_api(encoded)
+
+    assert decoded == quality
+    assert quality_to_api(decoded) == encoded
+    assert "sourceRevision" in encoded
+    assert "fieldAvailability" in encoded

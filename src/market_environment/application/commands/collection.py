@@ -6,7 +6,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
-from ..ports import AggregateCommandPort, CollectionCommandPort, TaskExecutor
+from ..ports import (
+    AggregateCommandPort,
+    CollectionCommandPort,
+    CollectionRefreshRequest,
+    LimitHistoryPreparationRequest,
+    TaskExecutor,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +59,17 @@ class RefreshDatasetsCommand:
             fetch_previous_limit_details=fetch_previous_limit_details,
         )
 
+    def execute_request(self, request: CollectionRefreshRequest):
+        return self.commands.refresh_request(request)
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareLimitHistoryCommand:
+    commands: CollectionCommandPort
+
+    def execute(self, request: LimitHistoryPreparationRequest) -> tuple[date, ...]:
+        return self.commands.prepare_limit_history(request)
+
 
 @dataclass(frozen=True, slots=True)
 class RebuildAggregateCommand:
@@ -65,6 +82,7 @@ class RebuildAggregateCommand:
 __all__ = [
     "ExecuteCollectionRunCommand",
     "RebuildAggregateCommand",
+    "PrepareLimitHistoryCommand",
     "RefreshDatasetsCommand",
     "StartCollectionRunCommand",
     "SubmitCollectionRunCommand",

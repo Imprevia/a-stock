@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import time
 import uuid
+from contextlib import nullcontext
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ...application.collection import DatasetCollectorRegistry
+from ...application.collection import (
+    DatasetCollectorRegistry,
+    DatasetCommitterRegistry,
+    DatasetDetailProjectorRegistry,
+)
+from ...application.ports import (
+    CollectionRefreshRequest,
+    DatasetCommitRequest,
+    LimitHistoryPreparationRequest,
+    LimitHistoryPreparer,
+)
+from ...application.mappers import snapshot_to_candidate
+from ...domain.models import CollectionOutcome, CollectionTaskState, DatasetDate
 from ..providers.fuyao.config import FuyaoCollectionConfig
 from ..providers.fuyao.market import FuyaoMarketAdapter
 from ..providers import (
@@ -24,6 +36,9 @@ from ..providers import (
     SectorsCollector,
 )
 from .refresh import MARKET_TIME_ZONE, effective_market_date, settlement_time
+from .projectors import build_local_detail_projector_registry
+from .callbacks import normalize_rebuild_callback
+from .limits_history import CollectorLimitHistoryPreparer
 from ...snapshot_store import (
     CollectionRunRecord,
     CollectionTaskRecord,
@@ -68,8 +83,18 @@ class CollectionCoordinator:
         sectors_collector: SectorsCollector | None = None,
         limits_collector: LimitsCollector | None = None,
         collector_registry: DatasetCollectorRegistry | None = None,
+        committer_registry: DatasetCommitterRegistry | None = None,
+        commit_request_factories: dict[
+            str,
+            Callable[..., DatasetCommitRequest],
+        ]
+        | None = None,
+        commit_preparers: dict[str, Any] | None = None,
+        detail_projector_registry: DatasetDetailProjectorRegistry | None = None,
+        limit_history_preparer: LimitHistoryPreparer | None = None,
+        typed_cutover_datasets: Iterable[str] = (),
     ) -> None:
-        if provider is None:
+        if provider is None and collector_registry is None:
             raise ValueError("CollectionCoordinator requires an explicit collector provider")
         if store is None:
             raise ValueError("CollectionCoordinator requires an explicit repository")
@@ -77,15 +102,34 @@ class CollectionCoordinator:
         self.store = store
         self._now = now or (lambda: datetime.now(MARKET_TIME_ZONE))
         self.lease_seconds = lease_seconds
-        self.rebuild_aggregate = rebuild_aggregate
-        self._limits_v1_override = limits_v1_enabled
-        self.fuyao_config = fuyao_config or FuyaoCollectionConfig.from_environment()
-        self.fuyao_adapter = fuyao_adapter or FuyaoMarketAdapter()
-        self.fuyao_policy = fuyao_policy or FuyaoCollectionPolicy(
-            self.fuyao_config,
-            self.store,
+        self.rebuild_aggregate = normalize_rebuild_callback(rebuild_aggregate)
+        self.committer_registry = committer_registry
+        self._commit_request_factories = dict(commit_request_factories or {})
+        self._commit_preparers = dict(commit_preparers or {})
+        self.typed_cutover_datasets = frozenset(typed_cutover_datasets)
+        unknown_cutovers = self.typed_cutover_datasets - set(
+            SUPPORTED_COLLECTION_DATASETS
         )
+        if unknown_cutovers:
+            raise ValueError(
+                "unsupported typed collector cutovers: "
+                + ", ".join(sorted(unknown_cutovers))
+            )
+        if self.typed_cutover_datasets and self.committer_registry is None:
+            raise ValueError(
+                "typed collector cutovers require a complete committer registry"
+            )
+        if self.committer_registry is not None:
+            for dataset in self.typed_cutover_datasets:
+                self.committer_registry.get(dataset)
+        self._limits_v1_override = limits_v1_enabled
         if collector_registry is None:
+            self.fuyao_config = fuyao_config or FuyaoCollectionConfig.from_environment()
+            self.fuyao_adapter = fuyao_adapter or FuyaoMarketAdapter()
+            self.fuyao_policy = fuyao_policy or FuyaoCollectionPolicy(
+                self.fuyao_config,
+                self.store,
+            )
             core_collector = core_collector or CoreCollector(
                 self.provider,
                 self.store,
@@ -147,7 +191,21 @@ class CollectionCoordinator:
                     active_direction_collector,
                 )
             )
+        else:
+            self.fuyao_config = fuyao_config
+            self.fuyao_adapter = fuyao_adapter
+            self.fuyao_policy = fuyao_policy
         self.collector_registry = collector_registry
+        self.limit_history_preparer = limit_history_preparer
+        if self.limit_history_preparer is None and limits_collector is not None:
+            self.limit_history_preparer = CollectorLimitHistoryPreparer(limits_collector)
+        self.detail_projector_registry = (
+            detail_projector_registry
+            or build_local_detail_projector_registry(
+                self.store,
+                limits_enabled=self._limits_v1_override,
+            )
+        )
 
     def start_run(
         self,
@@ -168,7 +226,11 @@ class CollectionCoordinator:
         run = self.store.create_collection_run(run_id, as_of, selected, created_at=current)
         tasks: list[CollectionTaskRecord] = []
         for dataset in selected:
-            cutover_error = self.fuyao_policy.preflight_error(dataset)
+            cutover_error = (
+                self.fuyao_policy.preflight_error(dataset)
+                if self.fuyao_policy is not None
+                else None
+            )
             if cutover_error is not None:
                 task_id = uuid.uuid4().hex
                 task = self.store.create_collection_task(
@@ -288,9 +350,26 @@ class CollectionCoordinator:
         )
         return CollectionStartResult(run=run, tasks=self.store.list_collection_tasks(run.run_id))
 
+    def collect_request(self, request: CollectionRefreshRequest) -> CollectionStartResult:
+        return self.collect(
+            request.as_of,
+            request.datasets,
+            fetch_previous_limit_details=request.fetch_previous_limit_details,
+            allow_historical_latest_only=request.allow_historical_latest_only,
+        )
+
     def prepare_limit_history_sessions(self, as_of: date, count: int) -> tuple[date, ...]:
-        prepare = self._collector_method("limits", "prepare_history_sessions")
-        return prepare(as_of, count)
+        return self.prepare_limit_history(
+            LimitHistoryPreparationRequest(as_of=as_of, count=count)
+        )
+
+    def prepare_limit_history(
+        self,
+        request: LimitHistoryPreparationRequest,
+    ) -> tuple[date, ...]:
+        if self.limit_history_preparer is None:
+            raise ValueError("limits history preparation is not configured")
+        return self.limit_history_preparer.prepare(request)
 
     def get_run(self, run_id: str) -> CollectionStartResult | None:
         current = self._market_now()
@@ -356,9 +435,10 @@ class CollectionCoordinator:
         snapshot: Any,
         as_of: date,
     ) -> dict[str, Any] | None:
-        collector = self.collector_registry.get(dataset)
-        callback = getattr(collector, "collection_detail", None)
-        return callback(snapshot, as_of) if callable(callback) else None
+        identity = DatasetDate(dataset, as_of)
+        candidate = snapshot_to_candidate(snapshot) if snapshot is not None else None
+        projected = self.detail_projector_registry.project(identity, candidate)
+        return dict(projected) if projected is not None else None
 
     def validate_request(
         self,
@@ -408,19 +488,24 @@ class CollectionCoordinator:
                 duration_ms=self._milliseconds(started),
             )
         try:
-            collect_task = self._collector_method(task.dataset, "collect_task")
-            parameters = inspect.signature(collect_task).parameters.values()
-            accepts_options = any(
-                parameter.kind == inspect.Parameter.VAR_KEYWORD
-                or parameter.name == "fetch_previous_limit_details"
-                for parameter in parameters
-            )
-            options = (
-                {"fetch_previous_limit_details": fetch_previous_limit_details}
-                if accepts_options
-                else {}
-            )
-            result = collect_task(task, started, lease, **options)
+            if task.dataset in self.typed_cutover_datasets:
+                result = self._collect_and_commit(
+                    task,
+                    lease,
+                    started,
+                    fetch_previous_limit_details=fetch_previous_limit_details,
+                )
+            else:
+                collector = self.collector_registry.get(task.dataset)
+                if task.dataset == "limits":
+                    result = collector.collect_task(
+                        task,
+                        started,
+                        lease,
+                        fetch_previous_limit_details=fetch_previous_limit_details,
+                    )
+                else:
+                    result = collector.collect_task(task, started, lease)
             if result.status in {*SUCCESSFUL_TASK_STATUSES, "failed-retained"} and self.rebuild_aggregate is not None:
                 rebuild_started = time.perf_counter()
                 try:
@@ -510,29 +595,123 @@ class CollectionCoordinator:
             duration_ms=self._milliseconds(started),
         )
 
+    def _collect_and_commit(
+        self,
+        task: CollectionTaskRecord,
+        lease: LeaseToken,
+        started: float,
+        *,
+        fetch_previous_limit_details: bool = True,
+    ) -> CollectionTaskRecord:
+        identity = DatasetDate(task.dataset, task.as_of)
+        preparer = self._commit_preparers.get(task.dataset)
+        context = (
+            preparer.prepare(
+                task,
+                lease,
+                fetch_previous_limit_details=fetch_previous_limit_details,
+            )
+            if preparer is not None
+            else nullcontext(None)
+        )
+        with context as preparation:
+            outcome = self.collector_registry.collect(identity)
+            if outcome.identity != identity:
+                raise ValueError("collector returned a mismatched dataset/date outcome")
+
+            candidate_bearing_retention = (
+                task.dataset == "core"
+                and outcome.state is CollectionTaskState.FAILED_RETAINED
+                and outcome.retained
+                and outcome.candidate is not None
+            )
+            if outcome.state not in {
+                CollectionTaskState.SUCCESS,
+                CollectionTaskState.PARTIAL,
+            } and not candidate_bearing_retention:
+                existing = self.store.get(task.dataset, task.as_of)
+                warning = outcome.warning or (
+                    outcome.failure.message if outcome.failure is not None else "collection failed"
+                )
+                if existing is not None:
+                    self.store.set_refresh_warning(
+                        task.dataset,
+                        task.as_of,
+                        warning,
+                        lease=lease,
+                        now=self._market_now().astimezone(ZoneInfo("UTC")),
+                    )
+                return self.store.transition_collection_task(
+                    task.task_id,
+                    "failed-retained" if existing is not None else "failed-missing",
+                    expected_statuses=("collecting",),
+                    warning=warning,
+                    completed_at=self._market_now(),
+                    duration_ms=self._milliseconds(started),
+                )
+
+            if candidate_bearing_retention:
+                existing = self.store.get(task.dataset, task.as_of)
+                if existing is None:
+                    raise ValueError(
+                        "failed-retained outcome requires a same-date snapshot"
+                    )
+                warning = outcome.warning or (
+                    outcome.failure.message
+                    if outcome.failure is not None
+                    else "collection failed; retained same-date snapshot"
+                )
+                self.store.set_refresh_warning(
+                    task.dataset,
+                    task.as_of,
+                    warning,
+                    lease=lease,
+                    now=self._market_now().astimezone(ZoneInfo("UTC")),
+                )
+
+            factory = self._commit_request_factories.get(task.dataset)
+            if candidate_bearing_retention and factory is None:
+                raise ValueError(
+                    "candidate-bearing retention requires a typed commit request factory"
+                )
+            request = (
+                factory(task, outcome, lease, preparation)
+                if factory is not None
+                else DatasetCommitRequest(identity=identity, outcome=outcome, lease=lease)
+            )
+            committed_outcome = request.outcome
+            evidence = self.committer_registry.commit(request)
+            candidate = evidence.candidate
+            if "collection-task" in evidence.writes:
+                committed_task = self.store.get_collection_task(task.task_id)
+                if committed_task is None or committed_task.status != committed_outcome.state.value:
+                    raise ValueError("committer did not expose the expected atomic task state")
+                return committed_task
+            phase_timings = dict(candidate.timings.phases_ms)
+            if candidate.timings.total_ms is not None:
+                phase_timings["providerCollectionMs"] = candidate.timings.total_ms
+            return self.store.transition_collection_task(
+                task.task_id,
+                committed_outcome.state.value,
+                expected_statuses=("collecting",),
+                source=candidate.source,
+                observations=candidate.observations,
+                warning=committed_outcome.warning,
+                timings=phase_timings,
+                completed_at=self._market_now(),
+                duration_ms=self._milliseconds(started),
+                settled=candidate.settled,
+            )
+
     def _rebuild_aggregate(self, as_of: date, lease: LeaseToken, started_at: datetime) -> None:
         callback = self.rebuild_aggregate
         if callback is None:
             return
-        parameters = inspect.signature(callback).parameters
-        accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
-        if accepts_kwargs or {"lease", "now"} <= set(parameters):
-            callback(
-                as_of,
-                lease=lease,
-                now=started_at.astimezone(ZoneInfo("UTC")),
-            )
-        else:
-            callback(as_of)
-
-
-    def _collector_method(self, dataset: str, method: str) -> Callable[..., Any]:
-        collector = self.collector_registry.get(dataset)
-        callback = getattr(collector, method, None)
-        if not callable(callback):
-            raise TypeError(f"collector {dataset} does not implement {method}")
-        return callback
-
+        callback(
+            as_of,
+            lease=lease,
+            now=started_at.astimezone(ZoneInfo("UTC")),
+        )
 
     def _market_now(self) -> datetime:
         value = self._now()

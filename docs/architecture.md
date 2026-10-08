@@ -98,17 +98,45 @@ interfaces/http ----> application ----> domain
 - `domain/` 保存精确日期、质量/缓存、collection outcome、run/task 状态等领域值，以及指数、广度、同步性和涨跌停生态纯计算；不得导入 FastAPI、SQLAlchemy、requests 或 infrastructure。
 - `infrastructure/` 实现 PostgreSQL persistence、SQLite 停写迁移/测试适配器、外部 provider、collector 和进程内 executor。共享 HTTP transport、Fuyao request gate、TDX 包客户端等保持基础设施复用，不向 application 暴露具体 vendor client。
 
-采集侧固定由 stable dataset id 映射到五个 collector：`core`、`breadth`、`limits`、`sectors`、`activeDirection`。每个 collector 独占本数据集的 provider 优先级、日期能力、验证、质量与 warning 组装；collection coordinator 只负责请求验证、run/task 生命周期、lease/fencing、collector 调用、成功提交/失败留存、聚合重建触发和父状态归并。移动代码时不得同时改变算法或降级顺序。
+采集侧固定由 stable dataset id 映射到五个 collector：`core`、`breadth`、`limits`、`sectors`、`activeDirection`。目标边界中，每个 collector 只接收 typed `DatasetDate`、执行已注册的 dataset acquisition plan 并返回 `CollectionOutcome`；provider 优先级、fallback、shadow、enrichment、日期能力与字段权威由 plan 和 source adapter 表达，不进入 coordinator。collection coordinator 只负责请求验证、run/task 生命周期、lease/fencing、collector 调用、typed committer、同日期失败留存、最多一次聚合重建和父状态归并。迁移期间允许无副作用的 compatibility adapter 包装尚未迁移的 provider 方法，但不得嵌套 coordinator、二次 lease、直接提交快照或重复重建聚合；移动代码时不得同时改变算法或降级顺序。
 
 持久化按 snapshot、collection run/task、lease、trading session、materialized aggregate、provider capability、limits fact/detail 和 timezone preference 拆分 repository；需要原子性的操作继续共享 PostgreSQL unit of work，不能因为接口拆分而拆散 fenced write、limits manifest/fact 或 aggregate CAS 事务。PostgreSQL 是 Dashboard/CronJob 唯一正式运行时；运行时只校验连接和 Alembic schema 兼容性，不调用 `create_schema`。Alembic `0003_provider_capability_reports` 以非破坏方式创建 runtime 已要求的 capability table/index 并登记 schema version 6，不改写既有市场表、payload 或 checksum。SQLite 仅允许作为测试适配器或停写的一次性导入源，配置 PostgreSQL 的运行时不得静默回退。
 
-迁移期间允许旧 `api.py`、CLI 路径和经清单登记的根级导入 shim 保持兼容；shim 只转发到 `domain`、`interfaces` 或 `infrastructure` 的目标实现，不新增业务逻辑。纯计算位于 `domain/analysis` / `domain/policies`，HTTP DTO 位于 `interfaces/http/schemas`，迁移辅助位于 `infrastructure/persistence`，Fuyao/TDX 实现分别位于 `infrastructure/providers/fuyao` 与 `infrastructure/providers/tdx`。普通 runtime 使用明确命名的 PostgreSQL store/provider adapter、application query/command 和 `MaterializationSupport`，不构造旧 service 或 `Legacy*` coordinator facade；但当前 provider transport 与兼容 snapshot store 仍可能被 runtime adapter 传递使用，不能仅因路径含 `legacy` 就删除。逐文件的运行时/兼容/维护状态和 shim 退役矩阵见 `src/market_environment/AGENTS.md`。仓库使用 `scripts/check_market_environment_architecture.py` AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施、shim 内新增业务逻辑、未登记根模块及 production 子包重新依赖已迁移根实现。
+迁移期间允许旧 `api.py`、CLI 路径和经清单登记的根级导入 shim 保持兼容；shim 只转发到 `domain`、`interfaces` 或 `infrastructure` 的目标实现，不新增业务逻辑。纯计算位于 `domain/analysis` / `domain/policies`，HTTP DTO 位于 `interfaces/http/schemas`，迁移辅助位于 `infrastructure/persistence`，Fuyao/TDX 实现分别位于 `infrastructure/providers/fuyao` 与 `infrastructure/providers/tdx`。普通 runtime 使用 `infrastructure/providers/runtime.py::CollectorProviderRuntime`、明确命名的 PostgreSQL store、application query/command 和 `MaterializationSupport`，不继承或构造 legacy `MarketDataProvider`、旧 service 或 `Legacy*` coordinator facade；`infrastructure/legacy/providers.py` 只保留稳定重导出和同类身份 alias。兼容 snapshot store 仍被 PostgreSQL runtime adapter 传递使用，不能与 provider facade 一并删除。逐文件的运行时/兼容/维护状态和 shim 退役矩阵见 `src/market_environment/AGENTS.md`。仓库使用 `scripts/check_market_environment_architecture.py` AST/import 门禁阻止 domain/application 反向依赖、query 导入 provider、router 直接装配基础设施、normal runtime 重新依赖 legacy provider、compatibility shim 嵌套 coordinator、shim 内新增业务逻辑、未登记根模块及 production 子包重新依赖已迁移根实现。
+
+### 统一采集适配器目标边界（2026-10-08）
+
+统一的是采集结果、失败分类、数据集计划和注册表，不是强制所有来源使用 HTTP 或同一第三方库。目标依赖只能沿下列方向流动：
+
+```text
+application command
+  -> DatasetCollectorRegistry
+  -> DatasetCollector.collect(DatasetDate) -> CollectionOutcome
+  -> DatasetAcquisitionPlanRegistry
+  -> DatasetAcquisitionPlan
+  -> SourceAdapterRegistry
+  -> SourceAdapter.acquire(SourceRequest)
+  -> governed HTTP transport 或非 HTTP client
+  -> normalized candidate / classified failure + ordered evidence
+  -> DatasetCommitterRegistry + LocalProjectorRegistry
+  -> coordinator retention / commit / aggregate rebuild
+```
+
+- `application/ports` 与 `domain` 只定义 typed dataset/date、candidate/outcome、failure、attempt evidence、source capability、committer/projector 等稳定契约，不导入 FastAPI、persistence、vendor client、`requests.Response` 或 Scrapling 原生类型。
+- dataset acquisition plan 是确定性基础设施策略：描述 formal、fallback、shadow、enrichment 的有序步骤。source adapter 负责认证、请求构造、供应商载荷解析、实际日期证明、字段能力与归一化；shadow 不改变正式 payload/source/checksum/task state，enrichment 只填允许字段。
+- bootstrap 是唯一 composition root，必须在任何外部 I/O 前验证五个 stable dataset、所有 plan/adapter/capability revision、committer、local projector 和 transport engine 注册完整。缺失、重复、未知或不可用配置一律 fail closed。
+- coordinator 不解释供应商异常或 payload，不通过 `inspect.signature` 发现 collector 能力。它为每个 dataset/date 管理唯一 lease 和 task transition，并从同日期本地存储推导 `failed-retained`/`failed-missing`。
+- 普通数据集使用标准 snapshot committer；`core` 和 `limits` 使用 typed committer，在同一 PostgreSQL unit of work 和 fence 内分别保持指数子结果/交易日证据，以及 membership/detail/fact/manifest 的原子性。status detail 通过完整 local projector registry 读取，provider/transport 调用数必须为 0。
+- 共享 HTTP 层由进程内唯一 policy gateway 和 engine registry 组成。gateway 独占 host pacing、请求预算、网络/408/429/5xx 重试、`Retry-After`、single-flight、缓存、cooldown/half-open、请求身份与脱敏诊断；engine 每次只执行一个已授权请求。Fuyao limits 与 market 客户端注入同一 gateway，缺 API key 时在 I/O 前失败，401/403 不重试；只有 HTTP 200 内的 `4001`/`5003` 等业务 envelope 仍由 adapter 做有界慢退避并保留脱敏 request ID。请求身份至少包含 engine、精确请求日期、完整规范化参数和不可逆 authentication/tenant-scope digest，不能跨日期、engine 或认证范围复用。
+- `requests` 是默认 engine。Scrapling 仅通过精确版本的 `requirements-scrapling.txt` 可选 profile 提供静态 HTTP engine，host/source allowlist 默认空且不在 requests 失败后自动升级；基础 `requirements.txt` 与默认镜像不安装它。禁止 Spider、浏览器/Chromium、代理轮换、内部重试、blocked-request escalation、challenge solving 和 401/403 绕过。
+- host policy 仍是单进程边界；PostgreSQL lease 只去重 dataset/date 工作，不宣称 Dashboard 与 CronJob 之间共享分布式 HTTP 限流。跨进程限流需要独立设计。
+- `ProviderResult` 与 Fuyao/TDX 原生结果只可停留在 source adapter 下方。五数据集正常 runtime 已不再继承或构造 legacy all-dataset facade；成熟 provider mechanics 由正式 `CollectorProviderRuntime` 持有，`MarketDataProvider` 仅为同一类的稳定 alias。根导入、CLI real probe、旧 collector/coordinator fallback、legacy service/`SnapshotRefresher` 和兼容测试的退役前置条件按 `src/market_environment/AGENTS.md` 清单管理。
 
 ## 运行时流
 
 普通读取流为：浏览器 → Vite `/api` 代理 → FastAPI `src/market_environment/api.py` 稳定入口 → HTTP router → provider-free query use case → PostgreSQL materialized aggregate / read repository。`/api/market-environment`、`/core`、`/chapter-01`、`/next-session` 和 collection status 只读取精确日期本地结果；缺失、陈旧或活动采集不得在普通 GET 中启动外部 provider。
 
-手工采集流为：`/data-collection` → collection command use case → `TaskExecutor` 端口的有界进程内实现 → collection coordinator → 五个独立 dataset task → dataset collector → vendor adapter → 成功快照 → 聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，单项失败不停止后续任务，也不覆盖同日期成功快照。不同 task 可以由 executor 调度，但共享东方财富请求门保证供应商调用不并发；CLI 与 HTTP 复用同一 application command，不通过 shell 启动子进程。TDX 备用只在 collector 内按上述 feature flag 和精确日期触发，普通 GET、状态查询和 provider-free 读取绝不触发外部盘后包。
+手工采集流为：`/data-collection` → collection command use case → `TaskExecutor` 端口的有界进程内实现 → collection coordinator → 五个独立 dataset task → collector registry → dataset acquisition plan → source adapter → normalized outcome → typed committer → 最多一次聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，单项失败不停止后续任务，也不覆盖同日期成功快照。不同 task 可以由 executor 调度，但同一进程的所有 HTTP adapter 共用唯一 policy gateway；CLI 与 HTTP 复用同一 application command，不通过 shell 启动子进程。TDX 包/TCP 等非 HTTP 来源仍通过 source adapter 返回同一 outcome，普通 GET、状态查询和 provider-free 读取绝不触发任何外部来源。
 
 盘后定时采集流为：k3s/Helm CronJob → `python -m src.market_environment.cli snapshots scheduled-refresh` → collection coordinator → 同一组五类独立 task → PostgreSQL Service。CLI 在 Python 内按 `Asia/Shanghai` 解析日期，周末无 provider 调用并返回 skipped，结算边界前拒绝执行；CronJob 使用显式 timezone strategy：Kubernetes 1.27+ 的 native strategy 才输出 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 controller strategy 省略该字段且只允许经验证的 `Etc/UTC` 或 `Asia/Shanghai` 映射。CronJob 默认业务目标为工作日 16:30、`concurrencyPolicy: Forbid` 且不对 `partial` 自动整批重试；controller strategy 在获授权 no-provider canary 证明之前必须保持 suspend。CronJob 与人工触发并发时由 PostgreSQL dataset/date lease 作为最终去重边界。第一版不维护交易所节假日日历，工作日节假日可能留下 failed/partial 记录，但精确日期校验禁止把其他交易日数据写成当天。
 
@@ -339,7 +367,7 @@ tests/                              公式、服务层和 API 契约测试
 - **删除**：`components/DashboardPlaceholder.vue`（无引用）。`App.vue` 的手写路由、`currentView`、`popstate`、`pushState`、hash 解析、9 章节内联模板、3 个 ECharts 闭包变量与 5 个图表函数全部移除。
 
 验证：19 文件 / 108 tests / 全绿；`npm run build` 通过（单 chunk 警告为 echarts 全量打包，非回归）；`python scripts/check-docs-contract.py --mode=full` 通过。
-- 扶摇市场数据迁移采用独立通用请求层 `src/market_environment/infrastructure/providers/fuyao/market.py`，与同包下 `limits_client.py` 的 limits 专用 `FuyaoClient` 并行存在。两个客户端共享 `request_gate.py` 的进程级串行请求门、最小间隔和有界慢退避；根级 `fuyao*.py` 只保留稳定兼容导出。最终错误只保留脱敏的 `code`、`message`、`request_id`。`core` 与 `breadth` 的当前契约 revision 为 `fuyao-market-v2`：前者只使用 `/api/a-share-index/prices/historical` 的逐指数 `thscode/start/end/date_ms` 契约，后者只使用 `/api/a-share/prices/snapshot` 的完整 `limit/offset` 分页。旧 `fuyao-market-v1` 不得批准这两个数据集。`sectors` 仍是东方财富主链后的 Fuyao fallback；`activeDirection` 强制保留 Eastmoney/TDX 链且 capability 保持 `unverified`。所有开关默认关闭。TDX 配置与盘后包实现对应位于 `infrastructure/providers/tdx/config.py` 和 `daily_package.py`，不改变其显式 probe/collector-only 边界。
+- 扶摇市场数据迁移采用 `src/market_environment/infrastructure/providers/fuyao/market.py`，与同包下 `limits_client.py` 的 limits 专用 `FuyaoClient` 并行存在。正常 composition 为两个客户端注入同一个进程级 policy gateway，由 gateway 统一执行串行节流、请求预算和 transport retry；HTTP 200 的 `4001`/`5003` 等业务码有界重试仍由客户端负责，兼容 fixture 才保留可注入的 `request_gate`。根级 `fuyao*.py` 只保留稳定兼容导出。最终错误只保留脱敏的 `code`、`message`、`request_id`。`core` 与 `breadth` 的当前契约 revision 为 `fuyao-market-v2`：前者只使用 `/api/a-share-index/prices/historical` 的逐指数 `thscode/start/end/date_ms` 契约，后者只使用 `/api/a-share/prices/snapshot` 的完整 `limit/offset` 分页。旧 `fuyao-market-v1` 不得批准这两个数据集。`sectors` 仍是东方财富主链后的 Fuyao fallback；`activeDirection` 强制保留 Eastmoney/TDX 链且 capability 保持 `unverified`。所有开关默认关闭。TDX 配置与盘后包实现对应位于 `infrastructure/providers/tdx/config.py` 和 `daily_package.py`，不改变其显式 probe/collector-only 边界。
 - shadow 对账结果只进入采集任务 `timings` 元数据，不覆盖正式快照、source 或 checksum；能力报告保存在 `provider_capability_reports`，SQLite/ PostgreSQL 均为加法 schema。
 
 ### 行业板块扶摇降级边界（2026-09-29）
@@ -385,10 +413,12 @@ host policy、单飞、短缓存、有限重试和按上海市场日隔离的缓
 不改变正式 Eastmoney → Fuyao 回退顺序，不构成独立 provider 交叉确认；Tushare 当前 token 无相关
 行业资金流/指数接口权限，因此不进入运行时路径。
 
-### 统一 provider 请求层边界（2026-09-29，实施中）
+### 统一 provider 请求层边界（2026-10-08，已完成）
 
-所有腾讯、百度、新浪、TDX 及后续 provider 的 HTTP 访问统一经过共享请求层；该层只负责传输可靠性和请求压力控制，不改变 provider 的字段契约、日期证据、降级顺序或 feature flag。每个 host 使用可复用 session 和现代浏览器 UA；UA 在同一 host 的 session 生命周期内保持稳定，session 重建或熔断恢复时重新选择，不伪造 Cookie、认证信息、TLS 指纹或代理来源。
+腾讯、百度、新浪、Eastmoney、TDX HTTP 包/名称查询、行业 enrichment 和两个 Fuyao 客户端已统一进入 composition root 创建的 engine-neutral policy gateway；兼容 provider 只保留 transport 层创建的可注入 session fixture seam，架构门禁不再允许这些模块直接构造或调用 `requests`。非 HTTP mootdx/TCP 行为不变。Fuyao API-key 零 I/O 门禁与 HTTP 200 business-code 语义保留在 adapter，raw HTTP attempt、408/429/5xx retry 和进程级预算归 gateway；401/403 不重试，HTTP 错误只向 adapter 暴露有界且脱敏的 `code`、`message`、`request_id` 证据，因此不会同时受两套 transport retry/limiter 控制。
 
-请求层按 host 执行最小间隔、抖动和并发门。连接/读取异常、408、429、5xx 只允许有界退避重试，并优先遵守响应中的 `Retry-After`；401/403、其他 4xx 和响应契约错误快速失败，403 不进入盲目重试循环。相同请求并发时使用 single-flight 合并；成功结果可短时缓存，实时数据默认约 10 秒，历史数据和 TDX 盘后包的缓存键必须包含完整参数和请求日期，禁止跨日期命中。
+gateway 只负责传输可靠性和请求压力控制，不改变 provider 字段契约、日期证据、降级顺序或 feature flag。它按 host 执行最小间隔、抖动、并发门、请求预算、single-flight、成功短缓存、`Retry-After`、cooldown 与 half-open 探测；连接/读取异常、408、429、5xx 才允许在同一预算内有界重试。engine 接收 engine-neutral request 并只执行一次，返回 normalized status/headers/body/final URL/timing 或 classified failure；provider validator 不导入 `requests.Response` 或 Scrapling 原生类型。
 
-连续可重试失败达到阈值后，host 进入短暂冷却，采集任务使用既有 provider 降级链；冷却结束只执行一次受控探测，探测失败继续冷却。请求预算、重试次数、最终错误类别、实际来源和耗时写入脱敏质量/采集证据，失败仍由上层输出 `failed`、`degraded`、`insufficient`、`failed-retained` 或 `failed-missing`，不得用零值或其他日期替代。Eastmoney/Fuyao 已有请求门、错误类型和开关继续有效，避免重复限流或改变已批准的质量语义。
+缓存与 single-flight identity 包含 engine、规范 URL、完整参数、精确请求日期和不可逆 authentication/tenant-scope digest。401/403、其他 permission failure、CAPTCHA/interstitial challenge 与响应日期/契约错误快速失败，不重试、不自动换 engine。日志和持久证据不保存 credential、Authorization、Cookie、proxy material、secret query、原始 challenge page 或敏感 body。
+
+该 gateway 的 host policy 是单进程共享，不是 Dashboard/CronJob/多 Pod 的分布式限流；跨触发器只由 PostgreSQL dataset/date lease 防止重复采集。失败仍由 acquisition/coordinator 输出真实 `failed`、`degraded`、`insufficient`、`failed-retained` 或 `failed-missing`，不得用零值、其他日期或更宽松 engine 替代。

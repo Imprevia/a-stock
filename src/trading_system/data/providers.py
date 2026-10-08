@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any, Callable, Iterable
@@ -110,14 +112,48 @@ class EastmoneyClient:
                 cache_ttl_seconds=0.0,
             ),
         )
+        self._requested_date: ContextVar[str | None] = ContextVar(
+            f"eastmoney-requested-date-{id(self)}",
+            default=None,
+        )
+        self._source_id: ContextVar[str | None] = ContextVar(
+            f"eastmoney-source-id-{id(self)}",
+            default=None,
+        )
 
-    def get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+    @contextmanager
+    def request_identity(
+        self,
+        *,
+        requested_date: str | None = None,
+        source_id: str | None = None,
+    ):
+        """Bind transport identity without changing the legacy two-arg API."""
+
+        date_token = self._requested_date.set(requested_date)
+        source_token = self._source_id.set(source_id)
+        try:
+            yield
+        finally:
+            self._source_id.reset(source_token)
+            self._requested_date.reset(date_token)
+
+    def get_json(
+        self,
+        url: str,
+        params: dict[str, Any],
+        *,
+        requested_date: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
         try:
             response = self.transport.get(
                 url,
                 params=params,
                 timeout=self.timeout,
                 cache_ttl=0.0,
+                requested_date=requested_date or self._requested_date.get(),
+                source_id=source_id or self._source_id.get(),
                 gate=self.limiter.run,
             )
         except ProviderHttpError as exc:

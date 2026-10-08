@@ -32,3 +32,6 @@ __all__ = [
     "LimitsCollector",
     "SectorsCollector",
 ]
+from .acquisition import CompatibilitySourceAdapter, DeterministicAcquisitionPlan
+
+__all__ = ["CompatibilitySourceAdapter", "DeterministicAcquisitionPlan"]
