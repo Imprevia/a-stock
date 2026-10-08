@@ -47,8 +47,6 @@
 
 ## 进行中
 
-- `deploy-unified-market-data-adapters-20261008` 已完成受控调度关闭：revision 83 首次执行遇到 retained active CronJob 后 fail-safe 补偿为 suspended 并非零退出；同一授权 packet 第二次执行生成 revision 84，安全删除 exact Helm-owned `a-stock-data-collection` 并证明 absent。Dashboard/PostgreSQL 仍为 `1/1` Ready，两个 PVC 保持 Bound 且 UID/PV/容量未变；普通应用发布待从 clean upstream checkout 执行。
-
 - `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
 
 - `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
@@ -63,7 +61,8 @@
 
 ## 最近完成
 
-- `consolidate-helm-managed-scheduling`（2026-09-17）完成仓库与生产验收；随后 2026-09-21 恢复到 Helm revision 25 的 suspended 基线，并于 2026-09-22 通过受控 `--activate-schedule` 升至 revision 26。当前唯一 `a-stock-data-collection` 为 Helm-owned、`suspend=false`、工作日上海 16:30，Dashboard/PostgreSQL 均 Ready；首次自然触发和数据质量观察仍待完成。`manual-local` 因仍承载共享 PV 保留。
+- `deploy-unified-market-data-adapters-20261008` 已完成 TrueNAS k3s 生产发布：受控 `--disable-schedule` 经 revisions 83/84 fail-safe 暂停并删除 retained CronJob，随后 revisions 85/86/87 完成 database/service/完整 release 收敛。目标镜像 `20261008-235342-36aba3b` 已部署，Dashboard/PostgreSQL 均 `1/1` Ready、0 重启，两个 PVC UID/PV/容量未变，健康、首页和 provider-free GET 均为 HTTP 200；CronJob/Job 保持 absent，Scrapling 与 Fuyao 数据集开关保持关闭，未触发 provider 或新采集。
+- `consolidate-helm-managed-scheduling`（2026-09-17）完成仓库与生产验收；随后 2026-09-21 恢复到 Helm revision 25 的 suspended 基线，并于 2026-09-22 通过受控 `--activate-schedule` 升至 revision 26。该历史激活状态已被 2026-10-09 的受控 revision 84 调度关闭取代，当前 `a-stock-data-collection` absent；`manual-local` 因仍承载共享 PV 保留。
 - `fix-tdx-breadth-stock-universe`（2026-09-25）完成 TDX 普通 A 股 universe 过滤、生产部署、只读 real probe、2026-09-23/24 精确日期重采集、provider/collection/API 契约、文档更新和离线门禁；生产 CronJob 按 fail-closed 规则保持 absent。
 - 2026-09-30 使用受控 TrueNAS k3s 入口部署 `main`（`40c3498`）：先清理暂停的 Helm-owned CronJob（revision 77），再以 `--component all` 完成 database/service/完整清单收敛（revisions 78/79/80）。镜像 `localhost/a-stock-market-environment:20260930-115139-40c3498` 已导入目标 containerd，digest 为 `sha256:53c1219db808acd6860286725fa77ebda7da40f8dbcbf8e66e001056cfe05883`；Deployment 与两个 Pod Ready/Running，两个 PVC Bound，CronJob absent，NodePort `/api/health` 返回 200。调度保持 disabled，未创建 Job 或触发 provider 采集。
 - 2026-09-17 完成 TrueNAS PostgreSQL 生产切换与 SQLite 历史导入：生产 dry-run 发现并修复 migration Job `fsGroup`、只读 WAL `immutable=1` 和 revision trigger 冲突；隔离 PostgreSQL 16.4 集成测试 11 项通过，正式导入 `snapshot_entries=46`、`core_index_results=65`、`materialized_market_environment=10`，最新历史日 API 200。
@@ -98,7 +97,7 @@
 
 ## 下一步
 
-- `deploy-unified-market-data-adapters-20261008` 已通过绑定 revision 82/current frozen image/hashes 的 `--disable-schedule` 关闭并删除 exact CronJob；下一步从 clean、upstream-aligned checkout 执行普通 `--component all` 发布，并复核镜像、健康、PVC 与 CronJob absent。
+- `deploy-unified-market-data-adapters-20261008` 已完成 revision 87 生产发布；保持当前不可变镜像、PVC 和调度 disabled/absent 基线，调度恢复或真实 provider probe 必须另行授权。
 - 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
@@ -106,12 +105,15 @@
 - operator override 下一检查点是受控 PostgreSQL 切换后的首次自然触发；需核对 Job/Pod 日志、五类数据状态、schema migration 证据与数据库备份校验，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
-- 后续盘后继续观察新日期的 TDX universe 与五类质量；当前 CronJob 已按 `activate-scheduled-collection-20260930` active，若需停止必须由责任人授权并使用 `--disable-schedule`，禁止直接修改 CronJob。
+- 2026-09-30 的调度激活已于 2026-10-09 通过受控 revision 84 关闭；当前 CronJob/Job absent，不会继续产生自然盘后样本。后续如需恢复观察，必须另行授权并走 suspended release/canary/activation 入口，禁止直接创建或修改 CronJob。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。
 - 积累 500–750 个交易日快照，回测市场环境阈值与分类稳定性。
 - 后续按覆盖清单逐章实现第 02 至 11 章 evaluator。
 
 ## 最后更新
+
+2026-10-09
+  - **TrueNAS k3s 生产发布**：统一市场数据采集适配器随 `main=36aba3b` 发布；受控调度关闭为 revisions 83/84，database/service/完整 release 为 revisions 85/86/87。镜像 `localhost/a-stock-market-environment:20261008-235342-36aba3b` 的 containerd digest 为 `sha256:7d7a2762e274aad710257ad66224ddf782831b156a3bd56eafbf0f93cb219978`；Dashboard/PostgreSQL/PVC/健康与 provider-free GET 后置条件通过，CronJob/Job absent，未触发 provider。
 
 2026-10-08
   - TrueNAS k3s 发布只读预检发现 revision 82 的 `a-stock-data-collection` 仍 active；操作责任人明确授权停止自动采集后，受控 rollback-v1 packet 经 revision 83 fail-safe suspended、revision 84 retained-resource cleanup 两步完成 exact CronJob 删除并证明 absent。未创建 provider-backed Job，未修改 PVC/Secret/生产数据。

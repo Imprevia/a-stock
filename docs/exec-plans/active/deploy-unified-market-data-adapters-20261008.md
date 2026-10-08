@@ -6,7 +6,7 @@
 
 ## Status（状态）
 
-schedule-disabled-application-deploy-pending
+completed-with-production-write
 
 ## Acceptance（验收）
 
@@ -42,12 +42,19 @@ schedule-disabled-application-deploy-pending
 - 调度关闭后 Dashboard 与 PostgreSQL 仍为 `1/1` Ready，`/api/health` 返回 HTTP 200；两个 PVC 的 UID、PV、容量和 `Bound` 状态与发布前一致。
 - 第一次普通 `--component all` 尝试生成本地镜像 `20261008-234628-18afe45` 后，在镜像传输和 Helm write 前被本地健康门禁阻断：统一 bootstrap 已要求 PostgreSQL URL，但旧 smoke 命令未注入 `MARKET_ENVIRONMENT_DATABASE_URL`，容器以 `DatabaseConfigurationError` 退出。线上保持 revision `84`、旧镜像 Ready、CronJob absent，未导入该候选镜像。
 - 部署脚本已改为仅在本地 smoke 容器中注入不可达的 loopback PostgreSQL URL `127.0.0.1:1`；实测 `/api/health` 与首页均为 HTTP 200，未连接生产数据库或 provider。已增加命令级回归断言并同步 runbook；生产 Deployment 的数据库连接仍来自既有 Secret。
+- 修复提交 `36aba3b359ffb306fe95a6afe989a1c501fa4d3c` 与 `origin/main` 对齐后，从 clean worktree 重新执行普通 `--component all` 成功；应用代码载荷包含 `b2dd6898eb79a06a4cff00c2a14213fc0f28648c` 的统一采集适配器实现。
+- 新镜像为 `localhost/a-stock-market-environment:20261008-235342-36aba3b`；远端归档 SHA-256 为 `1dd76b3807019dba42d5c25be68b364b5e4b24912867e675fa6209ddfbd6c585`，containerd manifest digest 为 `sha256:7d7a2762e274aad710257ad66224ddf782831b156a3bd56eafbf0f93cb219978`，运行 Pod imageID 为 `sha256:d0b1fefe8408ef07c45e53fec14a31902077a6638a188deefdae2c7509a8ec30`。
+- Helm database/service/完整 release 收敛依次完成 revisions `85`、`86`、`87`；revision `87` 为 deployed。Deployment revision `16` 使用目标镜像并为 `1/1`，Pod `a-stock-56948cfc-v8xl8` 为 Running/Ready、0 重启；PostgreSQL StatefulSet 与 Pod 同样为 `1/1` Running/Ready、0 重启。
+- 写后两个 PVC 仍为 `Bound`：PostgreSQL PVC UID `6c426fc5-10e2-4e88-b534-b258c70869c4`、PV `a-stock-postgresql-data`、`5Gi`；旧 SQLite PVC UID `c03bc7f8-2935-41d6-ba63-b1e9e26b8ffe`、PV `a-stock-data`、`2Gi`。StatefulSet UID `272d7fa4-69a2-4608-b755-31e27ac27c66` 未变。
+- 写后 `a-stock-data-collection`、legacy `market-data-collection` 和 namespace 内 Job 均 absent；Deployment 明确读回 `MARKET_ENVIRONMENT_SCRAPLING_ENABLED=0`、`MARKET_ENVIRONMENT_SCRAPLING_ALLOWLIST=[]`，Fuyao 四类数据集开关保持关闭。未调用任何采集 POST 或真实 provider。
+- `http://192.168.1.20:32001/api/health` 与首页均返回 HTTP 200；provider-free `GET /api/market-environment?as_of=2026-10-08` 返回 5 个指数和真实 `asOf/generatedAt`，data-collection GET 返回已保存的 exact-date source/quality 状态，没有触发采集。
+- k3s systemd 保持 `enabled/active`，节点 `ix-truenas` 为 Ready。部署脚本回归为 `52 passed`；`bash -n`、Helm strict lint/template、`git diff --check` 和 docs-contract full 均通过。
 
 ## Remaining Gaps（剩余缺口）
 
-- 普通应用发布必须在调度关闭成功后从 clean、upstream-aligned checkout 执行；不得从包含未跟踪嵌套仓库的工作区构建生产镜像。
-- 尚未产生新镜像 tag/digest、Helm revision、发布后资源状态或健康检查证据。
+- 无本次部署阻断项。定时采集按授权保持 disabled/absent；后续恢复必须另建受审计划并取得独立授权。
+- 本次未执行真实 provider smoke 或新采集；现有 2026-10-08 数据继续保留真实 fallback/partial/missing 质量，不因发布改写为成功。
 
 ## Next Step（下一步）
 
-从最新 `origin/main` clean worktree 执行 `--component all`，最后补齐镜像、Helm、健康、PVC 与调度后置条件并运行 docs-contract full。
+保持 revision `87`、当前不可变镜像、PVC 和调度 disabled 基线；继续通过只读接口观察应用与已有数据质量。任何调度重新激活、provider probe、Secret/PVC 变更均需独立计划和授权。
