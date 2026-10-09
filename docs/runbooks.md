@@ -177,8 +177,9 @@ python -m src.market_environment.cli fuyao real-probe --allow-real \
 
    repair 前把同一个 operator-owned packet 的 `REVIEWED_GIT_HEAD` 更新为 clean repair-control commit，并增加
    `FROZEN_IMAGE_SOURCE_GIT_HEAD=<原 40 位 image source commit>` 与
-   `EXPECTED_REPAIR_HELM_REVISION=91`；该 revision 必须仍为 deployed，chart/hooks/computed values 与受审 empty
-   non-hook disabled schedule-component failure shape 精确一致，任何漂移都在 Helm write 前拒绝。chart/values/render
+   `EXPECTED_REPAIR_HELM_REVISION=91`；该 revision 必须仍为 deployed。入口分别使用 `helm get metadata --output json`、
+   `helm get values --all --output json` 和 `helm get hooks` 校验 chart/revision/status、computed values 与 stored hooks，
+   并要求其与受审 empty non-hook disabled schedule-component failure shape 精确一致；任何漂移都在 Helm write 前拒绝。chart/values/render
    hashes 和 frozen image tag/digest 保持不变。repair 完成后必须核对紧邻的 revision 92 为 deployed、stored manifest/computed values 为完整 off render、tracked live Deployment/Service 与完整 off release 精确一致、Pod imageID/digest 与 sectors-off 状态不变、
    两个 CronJob 和 namespace Job absent、Secret/PVC identity 不变，才可把步骤 1 视为完成。repair-control
    commit 以 `REVIEWED_GIT_HEAD` 记录，原 image source commit 以

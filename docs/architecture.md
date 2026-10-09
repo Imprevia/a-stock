@@ -424,7 +424,8 @@ manifest 缩窄。
 若历史中断恰好留下预期 deployed revision 的受审 empty non-hook disabled schedule-component stored manifest 与 computed values，但 live Deployment→ReplicaSet→Ready Pod 仍证明 exact
 frozen image、sectors-off，且两个 application CronJob 与 namespace Job 均 absent，可通过独立
 `repair-sectors-off-release` 恢复。该入口从新的 clean reviewed control-plane HEAD 运行，但复用原 stage 已记录的 image
-source HEAD、tag 和 manifest digest；写前必须证明 revision/status/chart/hooks/computed values 与 stored manifest 精确等于受审 failure shape、tracked live Deployment/Service 精确
+source HEAD、tag 和 manifest digest；写前通过 `helm get metadata`、`helm get values --all`、`helm get hooks`
+证明 revision/status/chart/hooks/computed values 与 stored manifest 精确等于受审 failure shape、tracked live Deployment/Service 精确
 等于受审完整 off release 的持续资源子集、Secret/PVC identity 未漂移。唯一写操作是带 reviewed off values、exact image 和
 `component=all` 的 `helm upgrade --no-hooks`；禁止 build/save/copy/transfer/import、provider、probe、promotion、collection
 和 Job。写后必须证明紧邻的下一 revision 为 deployed、stored manifest/computed values 为完整 off release、tracked live Deployment/Service 精确一致、exact Ready Pod/image、sectors-off、CronJob/Job absent 及 Secret/PVC

@@ -1950,6 +1950,7 @@ def _repair_target_stubs(
     chart_name: str | None = None,
     chart_version: str | None = None,
     stored_component: str = "schedule",
+    stored_hooks: str = "",
 ) -> tuple[Path, Path]:
     fake_bin = tmp_path / "repair-bin"
     fake_bin.mkdir()
@@ -1963,10 +1964,11 @@ def _repair_target_stubs(
     pods_path = tmp_path / "repair-pods.json"
     pvc_path = tmp_path / "repair-postgresql-pvc.json"
     statefulset_path = tmp_path / "repair-postgresql-statefulset.json"
-    release_status_path = tmp_path / "repair-release-status.json"
-    post_release_status_path = tmp_path / "repair-post-release-status.json"
+    release_metadata_path = tmp_path / "repair-release-metadata.json"
+    post_release_metadata_path = tmp_path / "repair-post-release-metadata.json"
     release_values_path = tmp_path / "repair-release-values.json"
     post_release_values_path = tmp_path / "repair-post-release-values.json"
+    release_hooks_path = tmp_path / "repair-release-hooks.yaml"
 
     full_manifest.write_text(reviewed_off_render, encoding="utf-8")
     current_manifest.write_text(stored_manifest, encoding="utf-8")
@@ -2029,32 +2031,29 @@ def _repair_target_stubs(
     post_release_values_path.write_text(
         json.dumps(post_release_values), encoding="utf-8"
     )
+    release_hooks_path.write_text(stored_hooks, encoding="utf-8")
     chart_metadata = yaml.safe_load((CHART / "Chart.yaml").read_text(encoding="utf-8"))
 
-    def write_release_status(path: Path, *, revision: int, status: str) -> None:
+    def write_release_metadata(path: Path, *, revision: int, status: str) -> None:
         path.write_text(
             json.dumps(
                 {
                     "name": "a-stock",
+                    "chart": chart_name or chart_metadata["name"],
+                    "version": chart_version or chart_metadata["version"],
+                    "appVersion": chart_metadata["appVersion"],
                     "namespace": "a-stock",
-                    "version": revision,
-                    "info": {"status": status},
-                    "chart": {
-                        "metadata": {
-                            "name": chart_name or chart_metadata["name"],
-                            "version": chart_version or chart_metadata["version"],
-                        }
-                    },
-                    "hooks": [],
+                    "revision": revision,
+                    "status": status,
                 }
             ),
             encoding="utf-8",
         )
 
-    write_release_status(
-        release_status_path, revision=release_revision, status=release_status
+    write_release_metadata(
+        release_metadata_path, revision=release_revision, status=release_status
     )
-    write_release_status(post_release_status_path, revision=92, status="deployed")
+    write_release_metadata(post_release_metadata_path, revision=92, status="deployed")
 
     helm_wrapper = fake_bin / "helm"
     helm_wrapper.write_text(
@@ -2063,8 +2062,7 @@ def _repair_target_stubs(
         "case \"$1\" in\n"
         "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
         "  list) printf '[{\"name\":\"a-stock\"}]\\n' ;;\n"
-        f"  status) if [[ -f {state} ]]; then cat {post_release_status_path}; else cat {release_status_path}; fi ;;\n"
-        f"  get) if [[ \"$2\" == values ]]; then if [[ -f {state} ]]; then cat {post_release_values_path}; else cat {release_values_path}; fi; elif [[ -f {state} ]]; then cat {full_manifest}; else cat {current_manifest}; fi ;;\n"
+        f"  get) if [[ \"$2\" == metadata ]]; then if [[ -f {state} ]]; then cat {post_release_metadata_path}; else cat {release_metadata_path}; fi; elif [[ \"$2\" == values ]]; then if [[ -f {state} ]]; then cat {post_release_values_path}; else cat {release_values_path}; fi; elif [[ \"$2\" == hooks ]]; then cat {release_hooks_path}; elif [[ -f {state} ]]; then cat {full_manifest}; else cat {current_manifest}; fi ;;\n"
         "  upgrade)\n"
         "    [[ \" $* \" == *\" --no-hooks \"* ]] || exit 81\n"
         "    [[ \" $* \" == *\" --set component=all \"* ]] || exit 82\n"
@@ -2362,13 +2360,19 @@ def test_repair_sectors_off_restores_only_complete_release_without_image_or_data
 
     assert completed.returncode == 0, completed.stderr
     upgrade_calls = [line for line in call_log.splitlines() if line.startswith("helm upgrade ")]
-    status_calls = [line for line in call_log.splitlines() if line.startswith("helm status ")]
+    metadata_calls = [
+        line for line in call_log.splitlines() if line.startswith("helm get metadata ")
+    ]
     values_calls = [
         line for line in call_log.splitlines() if line.startswith("helm get values ")
     ]
+    hooks_calls = [
+        line for line in call_log.splitlines() if line.startswith("helm get hooks ")
+    ]
     assert len(upgrade_calls) == 1
-    assert len(status_calls) == 3
+    assert len(metadata_calls) == 3
     assert len(values_calls) == 3
+    assert len(hooks_calls) == 3
     assert "--set image.repository=registry.local/frozen" in upgrade_calls[0]
     assert "--set image.tag=reviewed-20261009" in upgrade_calls[0]
     assert "--set component=all" in upgrade_calls[0]
@@ -2397,6 +2401,10 @@ def test_repair_sectors_off_restores_only_complete_release_without_image_or_data
         pytest.param({"chart_name": "unexpected-chart"}, id="chart-name-drift"),
         pytest.param({"chart_version": "0.0.0-drift"}, id="chart-version-drift"),
         pytest.param({"stored_component": "all"}, id="stored-values-drift"),
+        pytest.param(
+            {"stored_hooks": "apiVersion: batch/v1\nkind: Job\n"},
+            id="stored-hooks-drift",
+        ),
     ],
 )
 def test_repair_sectors_off_rejects_release_identity_drift_before_helm_write(

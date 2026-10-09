@@ -47,7 +47,7 @@
 
 ## 进行中
 
-- `activate-fuyao-sector-fallback`（2026-10-09）已获用户授权扩展当前 change，并保留对真实 probe、生产 capability 写入、配置 rollout、单次 collection 和条件回滚的授权。首次任务 5.1 已 build/import 一次镜像 `20261009-102618-8e83125` 并冻结 digest `sha256:8ca1614e…cf42`；revisions 88/89/90 分别完成 database/service/完整 off release，但旧控制流随后误写 revision 91，其 stored manifest 是 reviewed empty non-hook disabled schedule-component render。live Dashboard 仍为新镜像、1/1 Ready、sectors off，CronJob/Job absent，PVC 未变；exact release gate 因此阻止后续 promotion。OpenSpec 当前 `17/24`；same-image、无 build/import、`--no-hooks` 的严格 repair 与 repair 扩展后的全量离线门禁已通过，下一步冻结 repair-control commit 并执行生产前只读重绑；尚未执行生产 repair、probe、写 capability、启用 sectors 或采集。
+- `activate-fuyao-sector-fallback`（2026-10-09）已获用户授权扩展当前 change，并保留对真实 probe、生产 capability 写入、配置 rollout、单次 collection 和条件回滚的授权。首次任务 5.1 已 build/import 一次镜像 `20261009-102618-8e83125` 并冻结 digest `sha256:8ca1614e…cf42`；revisions 88/89/90 分别完成 database/service/完整 off release，但旧控制流随后误写 revision 91。repair-control commit `3975d71` 的只读重绑全部通过，首次 repair 尝试因真实 Helm status JSON 不含 chart/hooks 而在 Helm write 前安全退出，revision 91 与 live runtime 未改变。现已改用 `helm get metadata`/`helm get hooks` 并通过最终全量门禁，OpenSpec 为 `17/24`；等待第二个 clean repair-control commit 后重试，尚未完成生产 repair、probe、写 capability、启用 sectors 或采集。
 - `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
 
 - `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
@@ -115,7 +115,7 @@
 ## 最后更新
 
 2026-10-09
-  - **扶摇行业 fallback 生产预发布与 repair 扩展**：首次授权 stage 已单次 build/import 并冻结镜像 `20261009-102618-8e83125@sha256:8ca1614e…cf42`；revisions 88/89/90 成功后，旧 `component=all` 尾部误创建 revision 91 empty non-hook disabled schedule-component stored manifest。live 服务仍健康且 sectors off，exact release gate 正确阻止后续步骤。OpenSpec/事实文档当前为 `17/24`；disabled stage 终止条件、same-image hook-free complete-off repair 与全量离线门禁均完成，计划收口仍打开；生产 repair、probe、capability 写入、enable 和 collection 尚未执行。
+  - **扶摇行业 fallback 生产预发布与 repair 扩展**：首次授权 stage 已单次 build/import 并冻结镜像 `20261009-102618-8e83125@sha256:8ca1614e…cf42`；revisions 88/89/90 成功后，旧 `component=all` 尾部误创建 revision 91 empty non-hook disabled schedule-component stored manifest。首次 repair 在 identity gate 发现真实 Helm status JSON 不含 chart/hooks 后于 Helm write 前退出；revision 91 与 live runtime 未变。metadata/hooks gate 已修正并通过最终全量门禁，OpenSpec/事实文档当前为 `17/24`；生产 repair、probe、capability 写入、enable 和 collection 尚未完成。
   - **TrueNAS k3s 生产发布**：统一市场数据采集适配器随 `main=36aba3b` 发布；受控调度关闭为 revisions 83/84，database/service/完整 release 为 revisions 85/86/87。镜像 `localhost/a-stock-market-environment:20261008-235342-36aba3b` 的 containerd digest 为 `sha256:7d7a2762e274aad710257ad66224ddf782831b156a3bd56eafbf0f93cb219978`；Dashboard/PostgreSQL/PVC/健康与 provider-free GET 后置条件通过，CronJob/Job absent，未触发 provider。
 
 2026-10-08

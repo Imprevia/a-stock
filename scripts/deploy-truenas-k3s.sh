@@ -1858,13 +1858,16 @@ verify_controlled_sectors_packet() {
 verify_repair_release_state() {
   local expected_revision="$1"
   local expected_component="$2"
-  local status_file="$TMP_DIR/sectors-repair-release-status.json"
+  local metadata_file="$TMP_DIR/sectors-repair-release-metadata.json"
   local values_file="$TMP_DIR/sectors-repair-release-values.json"
-  helm status "$RELEASE_NAME" --namespace "$NAMESPACE" --output json > "$status_file" \
+  local hooks_file="$TMP_DIR/sectors-repair-release-hooks.yaml"
+  helm get metadata "$RELEASE_NAME" --namespace "$NAMESPACE" --output json > "$metadata_file" \
     || return 1
   helm get values "$RELEASE_NAME" --namespace "$NAMESPACE" --all --output json > "$values_file" \
     || return 1
-  python3 - "$status_file" "$values_file" "$OPERATION_CHART_DIR/Chart.yaml" \
+  helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$hooks_file" \
+    || return 1
+  python3 - "$metadata_file" "$values_file" "$hooks_file" "$OPERATION_CHART_DIR/Chart.yaml" \
     "$OPERATION_CHART_DIR/values.yaml" "$SECTORS_OFF_VALUES_FILE" \
     "$RELEASE_NAME" "$NAMESPACE" "$expected_revision" "$expected_component" \
     "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" <<'PYEOF'
@@ -1874,8 +1877,9 @@ import sys
 import yaml
 
 (
-    status_path,
+    metadata_path,
     values_path,
+    hooks_path,
     chart_path,
     defaults_path,
     overlay_path,
@@ -1887,10 +1891,12 @@ import yaml
     image_tag,
 ) = sys.argv[1:]
 
-with open(status_path, encoding="utf-8") as stream:
-    status = json.load(stream)
+with open(metadata_path, encoding="utf-8") as stream:
+    metadata = json.load(stream)
 with open(values_path, encoding="utf-8") as stream:
     stored_values = json.load(stream)
+with open(hooks_path, encoding="utf-8") as stream:
+    stored_hooks = stream.read()
 with open(chart_path, encoding="utf-8") as stream:
     chart = yaml.safe_load(stream)
 with open(defaults_path, encoding="utf-8") as stream:
@@ -1909,7 +1915,7 @@ def merge(target, source):
 
 if not all(
     isinstance(item, dict)
-    for item in (status, stored_values, chart, expected_values, overlay)
+    for item in (metadata, stored_values, chart, expected_values, overlay)
 ):
     raise SystemExit("repair release state must use JSON/YAML mappings")
 merge(expected_values, overlay)
@@ -1917,14 +1923,12 @@ expected_values["component"] = component
 expected_values.setdefault("image", {})["repository"] = image_repository
 expected_values["image"]["tag"] = image_tag
 
-metadata = ((status.get("chart") or {}).get("metadata") or {})
-info = status.get("info") or {}
 if (
-    status.get("name") != release_name
-    or status.get("namespace") != namespace
-    or status.get("version") != int(revision)
-    or info.get("status") != "deployed"
-    or metadata.get("name") != chart.get("name")
+    metadata.get("name") != release_name
+    or metadata.get("namespace") != namespace
+    or metadata.get("revision") != int(revision)
+    or metadata.get("status") != "deployed"
+    or metadata.get("chart") != chart.get("name")
     or metadata.get("version") != chart.get("version")
 ):
     raise SystemExit("repair requires the exact deployed Helm release identity")
@@ -1932,7 +1936,7 @@ if stored_values != expected_values:
     raise SystemExit(
         "repair requires the exact reviewed disabled schedule-component stored values"
     )
-if status.get("hooks") not in (None, []):
+if stored_hooks.strip():
     raise SystemExit("repair requires a release revision without stored hooks")
 PYEOF
 }

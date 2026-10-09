@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Stage 5 — same-image complete-off repair 与 6.1 全量离线门禁已完成；准备冻结 clean repair-control commit 并执行生产前只读重绑，真实 probe 继续受上海 15:10 门禁约束。
+Stage 5 — 真实 Helm metadata/hooks gate 修正及全量离线门禁已完成；准备冻结第二个 clean repair-control commit 并重试生产 repair，真实 probe 继续受上海 15:10 门禁约束。
 
 ## Status（状态）
 
-`production-stage-repair-ready` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `17/24`；任务 3.4 与 6.1 已完成，6.2 保持打开。首次 5.1 已执行受控 Helm/Kubernetes 写入和单次 image build/import，但不能标记完成：revision 90 的完整 off release 后又出现 revision 91 empty non-hook disabled schedule-component stored manifest，exact gate 已停止后续操作。下一步冻结 clean repair-control commit 并重新只读绑定生产状态；尚未执行生产 repair、调用真实 provider、写 capability、启用 sectors 或执行 production collection。
+`production-stage-repair-retry-ready` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `17/24`；任务 3.4 与修正后的 6.1 已完成，6.2 保持打开。首次 repair 尝试在任何 Helm write 前退出，revision 91 与 live runtime 未改变。真实 Helm 3.21.4 metadata/hooks 读取契约已修正并通过全量门禁；下一步冻结新的 clean repair-control commit 并重新只读绑定后重试 repair。尚未完成生产 repair、调用真实 provider、写 capability、启用 sectors 或执行 production collection。
 
 ## Scope（范围）
 
@@ -49,6 +49,8 @@ Stage 5 — same-image complete-off repair 与 6.1 全量离线门禁已完成�
 - 中断后 PVC 未变：`a-stock-data` UID `c03bc7f8-…`、2Gi Bound；`a-stock-postgresql-data` UID `6c426fc5-…`、5Gi Bound。未执行 probe、capability promotion、sectors enable 或 collection。
 - 任务 3.4 已实现：disabled `component=all` 不再写 schedule 尾部；repair 双重绑定 revision 91 deployed/chart/hooks/computed values/stored manifest 与 mutable live state，只执行一次 `helm upgrade --no-hooks`，并要求 revision 92 deployed、`component=all` 与完整 off stored/live state。Helm v3.21.4 源码确认同 ownership live resources 会在 update 前补入 current；focused repair `9 passed`、部署 guard `104 passed`、packet validator `73 passed`。
 - repair 扩展后的 6.1 验证完成：focused `384 passed, 1 warning`；后端全量 `1233 passed, 6 skipped, 1 warning`；前端 Vitest `20 files / 129 tests` 全部通过，Vite production build 成功并仅保留既有单 chunk 大于 500 kB 提示。`rules validate`（49 rules）、`rules coverage`（330 documented / 49 executable）、`docs sync-check`、两份 Fuyao profile 的 Helm strict lint/template、OpenSpec strict、`bash -n`、`git diff --check` 与 docs-contract full（代码 1 / 文档 6 / plan 1）均通过；唯一 pytest warning 是既有 Starlette `BlockingPortal` deprecation。
+- repair-control commit `3975d717b0fe7a478dd617a4965dc5e738bc72de` 的生产前只读重绑确认 revision 91 deployed、stored manifest 为 1 byte 且 SHA-256 `01ba4719…546b`，Dashboard/PostgreSQL 1/1 Ready、Pod 0 重启、frozen application imageID `sha256:853a8a…d03`、CronJob/Job absent、capability 总行数/目标行数 `0/0`，Secret/PVC UID 未漂移。首次 repair 尝试随后因脚本假设 `helm status -o json` 含 chart/hooks 而在前置 identity gate 安全退出；未调用 `helm upgrade`，revision 仍为 91。真实 Helm 3.21.4 需改用 `helm get metadata` 校验 chart/revision/status，并以 `helm get hooks` 证明 stored hooks 为空。
+- metadata/hooks 修正后的最终 6.1 验证完成：repair focused `10 passed`、部署 guard `105 passed`、完整 focused `385 passed, 1 warning`、后端全量 `1234 passed, 6 skipped, 1 warning`；前端 Vitest `20 files / 129 tests` 全部通过且 Vite build 成功。规则三门禁、两份 Fuyao profile Helm strict lint/template、OpenSpec strict、`bash -n` 与 `git diff --check` 均通过；pytest warning 仍仅为既有 Starlette deprecation，Vite 仍仅有既有大 chunk 提示。
 
 ## Remaining Gaps（剩余缺口）
 
