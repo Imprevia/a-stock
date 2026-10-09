@@ -119,7 +119,7 @@ Repair performs one `helm upgrade --no-hooks` with `component=all`, the reviewed
 values, and the exact existing image repository/tag. It does not build, save, copy, transfer,
 import, retag, execute a hook, invoke a provider, promote a report, or run a collection. The
 postcondition requires the immediately following revision to be deployed with the reviewed complete
-off stored manifest and computed values, the tracked live Deployment/Service state to equal that release,
+off stored manifest, computed values, and stored hooks equal to the reviewed complete packet; the tracked live Deployment/Service state to equal that release,
 the exact Pod/image and sectors-off state to remain intact, CronJob/Job absence, and unchanged
 Secret/PVC identities. Any other stored-manifest or live-state shape fails before Helm writes.
 The repair-control source HEAD is reviewed independently from the already-frozen image source

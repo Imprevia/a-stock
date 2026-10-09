@@ -55,7 +55,9 @@ non-hook disabled schedule component while the live Deployment/Service declarati
 the reviewed complete sectors-off release and the Dashboard still runs the exact frozen image
 with sectors disabled, the system SHALL provide an explicit repair operation that binds the exact
 deployed source revision and writes the reviewed complete sectors-off release with `--no-hooks`.
-The repair MUST reject revision, status, chart, hook, or computed-value drift before the write and
+The repair MUST require empty stored hooks for the partial schedule revision, require the complete
+release's stored hooks to exactly match the reviewed complete packet after the write, reject revision,
+status, chart, hook, or computed-value drift before the write, and
 prove that the result is the immediately following deployed complete-release revision. The repair MUST NOT build, save, transfer,
 import, retag, probe, promote capability evidence, invoke a provider, collect market data, or
 run a Job. It MUST preserve Secret/PVC identities and prove the exact live image, disabled
@@ -68,7 +70,7 @@ before and after the write.
 
 #### Scenario: Reviewed schedule-only stored manifest is repaired
 - **WHEN** the expected deployed revision is exactly the reviewed empty non-hook disabled schedule-only packet, its status/chart/hooks/computed values match the reviewed failure shape, the tracked live Deployment/Service state equals the reviewed complete off release, the Dashboard is the exact Ready sectors-off frozen image, and all repair preconditions pass
-- **THEN** one hook-free Helm upgrade restores the reviewed complete sectors-off manifest and computed values in the next deployed revision without changing the image, Secrets, PVCs, scheduling, capability rows, snapshots, collection runs, or provider state
+- **THEN** one hook-free Helm upgrade restores the reviewed complete sectors-off manifest, computed values, and reviewed stored hooks in the next deployed revision without executing a hook or changing the image, Secrets, PVCs, scheduling, capability rows, snapshots, collection runs, or provider state
 
 #### Scenario: Repair provenance or runtime state is not exact
 - **WHEN** the source revision/status/chart/hooks/computed values or stored manifest differ from the reviewed empty non-hook disabled schedule-only packet, tracked live Deployment/Service state differs from the reviewed complete off release, the live image or sectors state differs, a CronJob or Job exists, or a reviewed hash/identity differs

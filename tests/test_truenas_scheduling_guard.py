@@ -1951,6 +1951,7 @@ def _repair_target_stubs(
     chart_version: str | None = None,
     stored_component: str = "schedule",
     stored_hooks: str = "",
+    post_stored_hooks: str | None = None,
 ) -> tuple[Path, Path]:
     fake_bin = tmp_path / "repair-bin"
     fake_bin.mkdir()
@@ -1969,6 +1970,7 @@ def _repair_target_stubs(
     release_values_path = tmp_path / "repair-release-values.json"
     post_release_values_path = tmp_path / "repair-post-release-values.json"
     release_hooks_path = tmp_path / "repair-release-hooks.yaml"
+    post_release_hooks_path = tmp_path / "repair-post-release-hooks.yaml"
 
     full_manifest.write_text(reviewed_off_render, encoding="utf-8")
     current_manifest.write_text(stored_manifest, encoding="utf-8")
@@ -2032,6 +2034,19 @@ def _repair_target_stubs(
         json.dumps(post_release_values), encoding="utf-8"
     )
     release_hooks_path.write_text(stored_hooks, encoding="utf-8")
+    reviewed_hooks = [
+        document
+        for document in yaml.safe_load_all(reviewed_off_render)
+        if document
+        and "helm.sh/hook"
+        in ((document.get("metadata") or {}).get("annotations") or {})
+    ]
+    post_release_hooks_path.write_text(
+        post_stored_hooks
+        if post_stored_hooks is not None
+        else yaml.safe_dump_all(reviewed_hooks, explicit_start=True, sort_keys=False),
+        encoding="utf-8",
+    )
     chart_metadata = yaml.safe_load((CHART / "Chart.yaml").read_text(encoding="utf-8"))
 
     def write_release_metadata(path: Path, *, revision: int, status: str) -> None:
@@ -2062,7 +2077,7 @@ def _repair_target_stubs(
         "case \"$1\" in\n"
         "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
         "  list) printf '[{\"name\":\"a-stock\"}]\\n' ;;\n"
-        f"  get) if [[ \"$2\" == metadata ]]; then if [[ -f {state} ]]; then cat {post_release_metadata_path}; else cat {release_metadata_path}; fi; elif [[ \"$2\" == values ]]; then if [[ -f {state} ]]; then cat {post_release_values_path}; else cat {release_values_path}; fi; elif [[ \"$2\" == hooks ]]; then cat {release_hooks_path}; elif [[ -f {state} ]]; then cat {full_manifest}; else cat {current_manifest}; fi ;;\n"
+        f"  get) if [[ \"$2\" == metadata ]]; then if [[ -f {state} ]]; then cat {post_release_metadata_path}; else cat {release_metadata_path}; fi; elif [[ \"$2\" == values ]]; then if [[ -f {state} ]]; then cat {post_release_values_path}; else cat {release_values_path}; fi; elif [[ \"$2\" == hooks ]]; then if [[ -f {state} ]]; then cat {post_release_hooks_path}; else cat {release_hooks_path}; fi; elif [[ -f {state} ]]; then cat {full_manifest}; else cat {current_manifest}; fi ;;\n"
         "  upgrade)\n"
         "    [[ \" $* \" == *\" --no-hooks \"* ]] || exit 81\n"
         "    [[ \" $* \" == *\" --set component=all \"* ]] || exit 82\n"
@@ -2393,6 +2408,63 @@ def test_repair_sectors_off_restores_only_complete_release_without_image_or_data
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_repair_sectors_off_rejects_post_upgrade_hook_drift(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    reviewed_off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository="registry.local/frozen",
+        image_tag="reviewed-20261009",
+    )
+    fake_bin, calls = _repair_target_stubs(
+        tmp_path,
+        reviewed_off_render=reviewed_off_render,
+        post_stored_hooks=(
+            "apiVersion: batch/v1\n"
+            "kind: Job\n"
+            "metadata:\n"
+            "  name: unreviewed-hook\n"
+            "  annotations:\n"
+            "    helm.sh/hook: post-upgrade\n"
+        ),
+    )
+    kubeconfig = tmp_path / "repair-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+
+    completed = _run_controlled_sector_entry(
+        script,
+        env_file,
+        off,
+        enabled,
+        fake_bin,
+        operation="--repair-sectors-off-release",
+    )
+    call_log = calls.read_text(encoding="utf-8")
+    upgrade_calls = [
+        line for line in call_log.splitlines() if line.startswith("helm upgrade ")
+    ]
+
+    assert completed.returncode != 0
+    assert "postcondition requires the next deployed complete-off revision" in completed.stderr
+    assert len(upgrade_calls) == 1
+    assert "--no-hooks" in upgrade_calls[0]
+    assert "--atomic" not in upgrade_calls[0]
+    for forbidden in (
+        "podman ",
+        "scp ",
+        "kubectl exec",
+        "capabilities promote",
+        "scheduled-refresh",
+        "images import",
+    ):
+        assert forbidden not in call_log
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(
     "stub_overrides",
     [
@@ -2439,7 +2511,7 @@ def test_repair_sectors_off_rejects_release_identity_drift_before_helm_write(
     call_log = calls.read_text(encoding="utf-8")
 
     assert completed.returncode != 0
-    assert "requires exact deployed revision and stored values" in completed.stderr
+    assert "requires exact deployed revision" in completed.stderr
     assert "helm upgrade " not in call_log
     for forbidden in (
         "podman ",

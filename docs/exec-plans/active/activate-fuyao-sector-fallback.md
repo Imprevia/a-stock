@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Stage 5 — exact Pod 空 env 规范化与最终 6.1 全量门禁已完成；准备冻结第三个 clean repair-control commit 并重试生产 repair，真实 probe 继续受上海 15:10 门禁约束。
+Stage 5 — revision 92 complete-off repair 已实际部署，stored hook 精确 postcondition 与最终离线门禁均已收口；等待上海 15:10 后执行真实 probe，仍未进行 capability promotion 或 sectors enable。
 
 ## Status（状态）
 
-`production-stage-repair-pod-gate-ready` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `17/24`；任务 3.4 与最终 6.1 已完成，6.2 保持打开。metadata/hooks 修正后的 repair 已通过 release/stored/live gates，但在 Helm write 前拒绝 Kubernetes 1.26 省略显式空字符串的等价 Pod 环境；revision 91 与 live runtime 未改变。该窄等价规范化及最终全量门禁均已通过；下一步冻结新的 clean repair-control commit 并重新只读绑定后重试 repair。尚未完成生产 repair、调用真实 provider、写 capability、启用 sectors 或执行 production collection。
+`production-stage-repair-complete` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `18/24`；任务 3.4、5.1、6.1 已完成，6.2 保持打开。第三个 repair-control commit 完成唯一一次 `helm upgrade --no-hooks`，revision 92 为 deployed complete-off；后续修正以只读方式证明 stored migration hook 与 reviewed complete packet 精确一致，namespace Jobs 未创建，其他 runtime identity 未变。尚未调用真实 provider、写 capability、启用 sectors 或执行 production collection。
 
 ## Scope（范围）
 
@@ -54,12 +54,14 @@ Stage 5 — exact Pod 空 env 规范化与最终 6.1 全量门禁已完成；准
 - 第二个 repair-control commit `4bd72f70fd5790f4789dc2be288f7306af84f3de` 的重复只读绑定仍确认 revision 91 与所有运行时 identity 未漂移。一次命令因人工传入错误 full SHA 在目标访问前拒绝；改正 SHA 后，metadata/values/hooks、stored manifest、tracked live Deployment/Service、PostgreSQL 和 image gates 均通过，但 exact Pod selector 把 Kubernetes 1.26 对显式 `value: ""` 的省略误判为环境漂移，仍在 `helm upgrade` 前退出。该修复只能规范化“desired 明确空字符串且 live 同项无 value/valueFrom”，不得弱化非空值、Secret reference 或变量集合比较。
 - exact Pod selector 已复用 API read-back 空值规范化：仅当 desired 同名项明确为 `value: ""` 且 live 同项同时缺少 `value`/`valueFrom` 时补为空字符串后再精确比较；非空值省略、Secret key 漂移和变量集合新增测试均 fail closed。packet validator 更新后为 `77 passed`。
 - exact Pod 修正后的最终 6.1 验证完成：完整 focused `389 passed, 1 warning`、后端全量 `1238 passed, 6 skipped, 1 warning`、前端 Vitest `20 files / 129 tests` 与 Vite build 通过；规则三门禁、两份 Fuyao profile Helm strict lint/template、OpenSpec strict、`bash -n` 和 `git diff --check` 均通过。warning 仍仅为既有 Starlette deprecation，Vite 仍仅有既有大 chunk 提示。
+- 第三个 repair-control commit `041670fe97222764f4020390b96b57c51c688d81` 的写前重绑确认 revision 91、empty manifest SHA `01ba4719…546b`、hooks 0 byte、workloads 1/1、CronJob/Job absent、capability `0/0`、Secret/PVC/image identity 不变。受控入口只执行一次 `helm upgrade --no-hooks` 并创建 revision 92 deployed；rollout Ready。后续只读审计确认 revision 92 computed `component=all`、frozen image 与 sectors-off/scheduling-off 不变，stored non-hook manifest 与 reviewed complete-off packet 精确一致，stored hook 与 reviewed render 中唯一 `a-stock-schema-migration` hook 文档精确一致；`--no-hooks` 未执行 hook，namespace Jobs 仍 absent。
+- revision 92 最终证据：Dashboard/PostgreSQL `1/1 Ready`；Dashboard imageID `sha256:853a8a28723b05276036c7593321d725ae7066f0fc6bbb577ea1c7f751b92d03`、重启 `0`；Secret UID 未变；PVC UID `c03bc7f8-…` 与 `6c426fc5-…` 未变；CronJob/Job absent；capability 总行数/目标行数 `0/0`。post-hook gate 修正后 focused repair `11 passed`、部署 guard `106 passed`，packet validator `77 passed`。
 
 ## Remaining Gaps（剩余缺口）
 
-- 6.2 必须在 repair 及后续每个生产操作后持续更新。必须用已冻结 digest 恢复 complete off stored/live release，且不得再次 build/import；成功前 5.1 保持未完成。
+- 真实 v2 报告尚未生成，运行时 PostgreSQL 目标 capability 行仍为 `0`；任务 5.2–5.6 尚未执行。上海 15:10 settlement gate 之前不得 probe；probe 成功后仍必须按 5.2→5.3→5.4→5.5 串行推进，任一失败才执行 5.6。6.2 将在每个生产操作后继续更新。
 - 真实 v2 报告尚未生成，运行时 PostgreSQL 目标行仍为 0；旧 v1 隔离证据不能作为资格。任务 5.2–5.6 均未执行；5.2 不得在上海 15:10 前执行。
 
 ## Next Step（下一步）
 
-先完成并离线验证任务 3.4，重跑 6.1 并更新 6.2；repair 前重新只读记录 revisions 88–91 status、revision 91 stored manifest 资源集/hash、PostgreSQL Ready、Secret/PVC identity、runtime imageID 和 capability 行数。随后从新的 clean reviewed repair-control HEAD 使用现有 frozen image source HEAD/tag/digest 及 `EXPECTED_REPAIR_HELM_REVISION=91` 执行一次 `repair-sectors-off-release`；禁止 build/import/hooks/provider/capability/collection。只有 revision 92 deployed、stored complete off release、tracked live Deployment/Service exact、Pod/image exact、CronJob/Job absence和 Secret/PVC identity 全部通过后才勾选 5.1。达到上海 settlement gate 后依次执行 5.2–5.5，任一 rollout 或观察失败时执行 5.6 same-image off rollback。
+revision 92 complete-off repair 已完成且禁止重放。下一步等待上海 15:10 后在新权限受限隔离目录执行 5.2 real probe；仅当报告 eligible、exact-date、320/320、脱敏与 checksum 全部通过，才在 sectors-off Pod 内执行 5.3 dry-run/apply。随后按授权执行 5.4 same-image enable、5.5 单次 sectors collection；任一失败才按 5.6 same-image off rollback，并在每一步回写本计划。

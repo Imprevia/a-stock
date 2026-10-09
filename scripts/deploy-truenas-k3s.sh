@@ -1858,6 +1858,7 @@ verify_controlled_sectors_packet() {
 verify_repair_release_state() {
   local expected_revision="$1"
   local expected_component="$2"
+  local expected_hooks_manifest="$3"
   local metadata_file="$TMP_DIR/sectors-repair-release-metadata.json"
   local values_file="$TMP_DIR/sectors-repair-release-values.json"
   local hooks_file="$TMP_DIR/sectors-repair-release-hooks.yaml"
@@ -1867,7 +1868,8 @@ verify_repair_release_state() {
     || return 1
   helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$hooks_file" \
     || return 1
-  python3 - "$metadata_file" "$values_file" "$hooks_file" "$OPERATION_CHART_DIR/Chart.yaml" \
+  python3 - "$metadata_file" "$values_file" "$hooks_file" "$expected_hooks_manifest" \
+    "$OPERATION_CHART_DIR/Chart.yaml" \
     "$OPERATION_CHART_DIR/values.yaml" "$SECTORS_OFF_VALUES_FILE" \
     "$RELEASE_NAME" "$NAMESPACE" "$expected_revision" "$expected_component" \
     "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" <<'PYEOF'
@@ -1880,6 +1882,7 @@ import yaml
     metadata_path,
     values_path,
     hooks_path,
+    expected_hooks_path,
     chart_path,
     defaults_path,
     overlay_path,
@@ -1896,7 +1899,9 @@ with open(metadata_path, encoding="utf-8") as stream:
 with open(values_path, encoding="utf-8") as stream:
     stored_values = json.load(stream)
 with open(hooks_path, encoding="utf-8") as stream:
-    stored_hooks = stream.read()
+    stored_hooks = [item for item in yaml.safe_load_all(stream) if item is not None]
+with open(expected_hooks_path, encoding="utf-8") as stream:
+    expected_hooks = [item for item in yaml.safe_load_all(stream) if item is not None]
 with open(chart_path, encoding="utf-8") as stream:
     chart = yaml.safe_load(stream)
 with open(defaults_path, encoding="utf-8") as stream:
@@ -1915,7 +1920,15 @@ def merge(target, source):
 
 if not all(
     isinstance(item, dict)
-    for item in (metadata, stored_values, chart, expected_values, overlay)
+    for item in (
+        metadata,
+        stored_values,
+        chart,
+        expected_values,
+        overlay,
+        *stored_hooks,
+        *expected_hooks,
+    )
 ):
     raise SystemExit("repair release state must use JSON/YAML mappings")
 merge(expected_values, overlay)
@@ -1936,8 +1949,8 @@ if stored_values != expected_values:
     raise SystemExit(
         "repair requires the exact reviewed disabled schedule-component stored values"
     )
-if stored_hooks.strip():
-    raise SystemExit("repair requires a release revision without stored hooks")
+if stored_hooks != expected_hooks:
+    raise SystemExit("repair requires stored hooks to exactly match the reviewed packet")
 PYEOF
 }
 
@@ -2265,10 +2278,10 @@ if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sect
     REPAIR_LIVE_BEFORE_MANIFEST="$TMP_DIR/sectors-repair-live-before.yaml"
     REPAIR_LIVE_AFTER_MANIFEST="$TMP_DIR/sectors-repair-live-after.yaml"
     REPAIR_POST_MANIFEST="$TMP_DIR/sectors-repair-post-manifest.yaml"
+    REPAIR_EXPECTED_EMPTY_HOOKS="$TMP_DIR/sectors-repair-expected-empty-hooks.yaml"
+    REPAIR_EXPECTED_COMPLETE_HOOKS="$TMP_DIR/sectors-repair-expected-complete-hooks.yaml"
 
-    verify_repair_release_state "$EXPECTED_REPAIR_HELM_REVISION" schedule \
-      || die 'repair-sectors-off-release requires exact deployed revision and stored values'
-    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_CURRENT_MANIFEST"
+    : > "$REPAIR_EXPECTED_EMPTY_HOOKS"
     render_scheduling_packet "$OPERATION_CHART_DIR" "$SECTORS_OFF_VALUES_FILE" "" \
       "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
       --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
@@ -2276,6 +2289,27 @@ if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sect
       --set component=schedule > "$REPAIR_EXPECTED_PARTIAL_MANIFEST" \
       || die 'repair-sectors-off-release could not render the reviewed schedule-only failure shape'
     printf '%s\n' "$REVIEWED_OFF_RENDER" > "$REPAIR_DESIRED_MANIFEST"
+    python3 - "$REPAIR_DESIRED_MANIFEST" "$REPAIR_EXPECTED_COMPLETE_HOOKS" <<'PYEOF'
+import sys
+
+import yaml
+
+source_path, output_path = sys.argv[1:]
+with open(source_path, encoding="utf-8") as stream:
+    documents = [item for item in yaml.safe_load_all(stream) if item is not None]
+hooks = [
+    item
+    for item in documents
+    if isinstance(item, dict)
+    and "helm.sh/hook" in ((item.get("metadata") or {}).get("annotations") or {})
+]
+with open(output_path, "w", encoding="utf-8") as stream:
+    yaml.safe_dump_all(hooks, stream, explicit_start=True, sort_keys=False)
+PYEOF
+    verify_repair_release_state "$EXPECTED_REPAIR_HELM_REVISION" schedule \
+      "$REPAIR_EXPECTED_EMPTY_HOOKS" \
+      || die 'repair-sectors-off-release requires exact deployed revision, stored values, and empty hooks'
+    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_CURRENT_MANIFEST"
     python3 "$PACKET_VALIDATOR" compare-release-exact \
       --current "$REPAIR_CURRENT_MANIFEST" --desired "$REPAIR_EXPECTED_PARTIAL_MANIFEST" \
       || die 'repair-sectors-off-release requires the exact reviewed schedule-only stored manifest'
@@ -2302,6 +2336,7 @@ if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sect
 
     # Rebind every mutable target fact immediately before the only Helm write.
     verify_repair_release_state "$EXPECTED_REPAIR_HELM_REVISION" schedule \
+      "$REPAIR_EXPECTED_EMPTY_HOOKS" \
       || die 'repair-sectors-off-release release identity drifted before Helm write'
     helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_CURRENT_MANIFEST"
     python3 "$PACKET_VALIDATOR" compare-release-exact \
@@ -2347,7 +2382,8 @@ if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sect
     python3 "$PACKET_VALIDATOR" compare-release-exact \
       --current "$REPAIR_POST_MANIFEST" --desired "$REPAIR_DESIRED_MANIFEST"
     verify_repair_release_state "$((EXPECTED_REPAIR_HELM_REVISION + 1))" all \
-      || die 'repair-sectors-off-release postcondition requires the next deployed complete-off revision and stored values'
+      "$REPAIR_EXPECTED_COMPLETE_HOOKS" \
+      || die 'repair-sectors-off-release postcondition requires the next deployed complete-off revision, stored values, and reviewed hooks'
     kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
       -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$REPAIR_LIVE_AFTER_MANIFEST"
     python3 "$PACKET_VALIDATOR" compare-live-desired \
