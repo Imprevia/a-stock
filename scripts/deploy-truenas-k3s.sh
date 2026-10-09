@@ -986,7 +986,11 @@ select_runtime_sectors_pod() {
   local replicasets_file="$TMP_DIR/sectors-runtime-replicasets.json"
   local pods_file="$TMP_DIR/sectors-runtime-pods.json"
   local desired_file="$TMP_DIR/sectors-runtime-reviewed.yaml"
-  printf '%s\n' "$REVIEWED_OFF_RENDER" > "$desired_file"
+  if [[ "$required_enabled" == "1" ]]; then
+    printf '%s\n' "$REVIEWED_ENABLED_RENDER" > "$desired_file"
+  else
+    printf '%s\n' "$REVIEWED_OFF_RENDER" > "$desired_file"
+  fi
   kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$deployments_file" \
     || return 1
   kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$replicasets_file" \

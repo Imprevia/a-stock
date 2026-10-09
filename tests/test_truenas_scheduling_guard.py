@@ -844,6 +844,115 @@ def test_promotion_pod_selector_returns_exact_ready_disabled_pod(tmp_path: Path)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "a-stock-dashboard-reviewed"
 
+
+def _run_sectors_pod_selector_with_required(
+    tmp_path: Path,
+    payloads: tuple[dict, dict, dict],
+    *,
+    required_enabled: str,
+    desired_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    deployments, replicasets, pods = payloads
+    deployments_path = tmp_path / "deployments.json"
+    replicasets_path = tmp_path / "replicasets.json"
+    deployments_path.write_text(json.dumps(deployments), encoding="utf-8")
+    replicasets_path.write_text(json.dumps(replicasets), encoding="utf-8")
+    return _run_validator(
+        "select-disabled-promotion-pod",
+        json.dumps(pods),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--digest",
+        f"sha256:{'d' * 64}",
+        "--deployments",
+        str(deployments_path),
+        "--replicasets",
+        str(replicasets_path),
+        "--desired",
+        str(desired_path),
+        "--require-enabled",
+        required_enabled,
+    )
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_sectors_pod_selector_accepts_enabled_runtime_against_enabled_render(
+    tmp_path: Path,
+) -> None:
+    enabled_render = _render_sector_profile(SECTORS_ENABLED)
+    payloads = _sector_runtime_payloads(enabled_render)
+    pod = payloads[2]["items"][0]
+    dashboard = pod["spec"]["containers"][0]
+    for item in dashboard["env"]:
+        if item["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED":
+            item["value"] = "1"
+    deployments = payloads[0]["items"]
+    for item in deployments:
+        for env in item["spec"]["template"]["spec"]["containers"][0]["env"]:
+            if env["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED":
+                env["value"] = "1"
+    desired = tmp_path / "enabled.yaml"
+    desired.write_text(enabled_render, encoding="utf-8")
+
+    completed = _run_sectors_pod_selector_with_required(
+        tmp_path,
+        payloads,
+        required_enabled="1",
+        desired_path=desired,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "a-stock-dashboard-reviewed"
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_sectors_pod_selector_rejects_enabled_runtime_against_off_render(
+    tmp_path: Path,
+) -> None:
+    off_render = _render_sector_profile(SECTORS_OFF)
+    payloads = _sector_runtime_payloads(off_render)
+    pod = payloads[2]["items"][0]
+    dashboard = pod["spec"]["containers"][0]
+    for item in dashboard["env"]:
+        if item["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED":
+            item["value"] = "1"
+    deployments = payloads[0]["items"]
+    for item in deployments:
+        for env in item["spec"]["template"]["spec"]["containers"][0]["env"]:
+            if env["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED":
+                env["value"] = "1"
+    desired = tmp_path / "off.yaml"
+    desired.write_text(off_render, encoding="utf-8")
+
+    completed = _run_sectors_pod_selector_with_required(
+        tmp_path,
+        payloads,
+        required_enabled="1",
+        desired_path=desired,
+    )
+
+    assert completed.returncode != 0
+    assert "differs from the reviewed packet" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_select_runtime_sectors_pod_picks_reviewed_render_per_required_enabled() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    required_check = 'if [[ "$required_enabled" == "1" ]]; then'
+    assert required_check in source
+    off_marker = "REVIEWED_OFF_RENDER"
+    enabled_marker = "REVIEWED_ENABLED_RENDER"
+    # Both renders must be selectable, and the enabled branch must appear in
+    # the file so the selector can pick the matching render for required_enabled=1.
+    assert off_marker in source
+    assert enabled_marker in source
+    assert source.index(required_check) < source.index(enabled_marker)
+
+
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path: Path) -> None:
     disabled = _render(CHART, BASELINE, OFF, "disabled")

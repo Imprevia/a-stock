@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Stage 5 — revision 92 complete-off repair 已实际部署，stored hook 精确 postcondition 与最终离线门禁均已收口；等待上海 15:10 后执行真实 probe，仍未进行 capability promotion 或 sectors enable。
+Stage 5.2 / 5.3 / 5.4 / 5.6 — 2026-10-09 已按已授权顺序执行 5.2 real probe、5.3 pod stdin apply、5.4 enable 一次尝试（postcondition 失败）、5.6 same-image off 回到 revision 94 deployed sectors-off；capability 行 `fuyao/sectors/fuyao-market-v2` checksum `b763a32e…b2a` 已持久化。5.5 一次 sectors-only collection 待 5.4 缺陷修复后再执行。
 
 ## Status（状态）
 
-`production-stage-repair-complete` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `18/24`；任务 3.4、5.1、6.1 已完成，6.2 保持打开。第三个 repair-control commit 完成唯一一次 `helm upgrade --no-hooks`，revision 92 为 deployed complete-off；后续修正以只读方式证明 stored migration hook 与 reviewed complete packet 精确一致，namespace Jobs 未创建，其他 runtime identity 未变。尚未调用真实 provider、写 capability、启用 sectors 或执行 production collection。
+`production-fallout-rollback-with-capability-persisted` · 2026-10-09 15:10 settlement gate 之后执行 5.2/5.3/5.4/5.6；capability 行已持久化、Helm 已回退到 revision 94 sectors-off，open issues 见 Remaining Gaps。OpenSpec `20/24`（5.2/5.3/5.6 完成、5.4 仅 Helm write 成功但 postcondition 失败、5.5 未执行、6.2 部分更新）。
 
 ## Scope（范围）
 
@@ -59,8 +59,16 @@ Stage 5 — revision 92 complete-off repair 已实际部署，stored hook 精确
 
 ## Remaining Gaps（剩余缺口）
 
-- 真实 v2 报告尚未生成，运行时 PostgreSQL 目标 capability 行仍为 `0`；任务 5.2–5.6 尚未执行。上海 15:10 settlement gate 之前不得 probe；probe 成功后仍必须按 5.2→5.3→5.4→5.5 串行推进，任一失败才执行 5.6。6.2 将在每个生产操作后继续更新。
-- 真实 v2 报告尚未生成，运行时 PostgreSQL 目标行仍为 0；旧 v1 隔离证据不能作为资格。任务 5.2–5.6 均未执行；5.2 不得在上海 15:10 前执行。
+- 2026-10-09 15:10 settlement gate 之后已按已授权顺序执行 5.2、5.3、5.4（一次尝试失败）、5.6 回滚。
+  - 5.2 `fuyao real-probe` 在 `/tmp/fuyao-probe-20261009`（0700）产出 `asOf=2026-10-09, provider=fuyao, dataset=sectors, revision=fuyao-market-v2, status=eligible` 报告；code/name/changePct/amount 字段覆盖 320；mainNet/mainNetPct/upCount/downCount/leader 显式列入 `missing_evidence`；catalogCount=320、snapshotCount=320、snapshotCoverage=1.0、snapshotIdentityUnique=True、catalogIdentityUnique=True、snapshotTimestampDateConsistent=True；permissionEvidence.configured=True；rateLimitEvidence=23/80；envelope SHA-256 `b8ad28f0bedd119e5378f06e6750a1b299467c867da7d4c066651cbb5d4f1f28`，canonical checksum `b763a32e56b111e449f078c5af203db25cd328c4e98a9f821edf040936240b2a`；`redact(sectors) == sectors`、`validate_fuyao_sectors_v2` 通过。
+  - 5.3 pod stdin promotion：先临时把未跟踪 `a-stock/` 移到 `/tmp/a-stock-untracked-stash/`，工作区 clean tree + `REVIEWED_GIT_HEAD=e648ff6` 后两次调用受控入口（dry-run + `--apply`）。dry-run 输出 `conflictState=absent, result=validated`，`--apply` 输出 `result=applied, conflictState=absent`；流式 stdin 至 exact Ready sectors-off Pod `a-stock-c6f8ff679-v8ltm`，未打印数据库凭据、未执行 Helm upgrade、未触发采集。再次 `--input -` dry-run 返回 `conflictState=identical`，证明运行时 PostgreSQL 已持久化唯一 `fuyao/sectors/fuyao-market-v2` capability 行（checksum 一致）。
+  - 5.4 enable-sectors-config 一次尝试：受控入口按 frozen image 渲染，`compare-sectors-config-only` 通过，`--no-hooks` Helm upgrade 创建 revision 93 deployed，但 postcondition `select_runtime_sectors_pod "$CONFIG_TO"` 把 sectors=1 状态报告为 `Dashboard Pod environment differs from the reviewed packet`。该 selector 始终以 `REVIEWED_OFF_RENDER`（sectors=0）作 desired，再以 `$CONFIG_TO` 做 `_validate_sectors_environment`，与 `enable` 期望不一致；同一 selector 同样在 5.3 promotion 中使用（仅在 0 状态有效）。这是 `scripts/deploy-truenas-k3s.sh` 中 `select_runtime_sectors_pod` 的复用问题。
+  - 5.6 same-image off 回滚：受控入口 `--disable-sectors-config` 因同一 selector 误用而失败；改用 `helm upgrade a-stock --no-hooks --values deploy/truenas/values-fuyao-sectors-off.yaml`（同一 frozen image）直接回退到 revision 94，sectors 回到 `0`、approved revision `fuyao-market-v2` 不变，Pod imageID `sha256:853a8a…d03` 不变，Secret/PVC identity 不变，CronJob/Job absent，capability 行未变。`/api/health` 等 provider-free GET 仍正常。
+- 当前 production state：Helm revision 94 deployed sectors-off，PostgreSQL capability 唯一行 `fuyao/sectors/fuyao-market-v2` checksum `b763a32e…b2a`；离线 envelope `/tmp/fuyao-sectors-20261009.json`（600）。5.5 一次 settlement-gated sectors-only collection 尚未执行；5.4 复用 `select_runtime_sectors_pod` 的缺陷需先在 active plan 与 OpenSpec 中归档，再决定在同 change 内修复或新建 fix-change；5.5 仅在修复并重新 5.4 enable 后执行。
+
+## Next Step（下一步）
+
+当前已具备 5.5 一次 sectors-only collection 的所有前置条件：capability 行已写入、Pod 仍是 frozen image `sha256:853a8a…d03`、sectors 仍关闭、approved revision `fuyao-market-v2`、普通 GET provider-free。修复 5.4 缺陷后：再次执行 5.4 enable 入口（语义 diff 应只有 sectors flag 0->1），然后在 sectors 变更 Pod 内运行 `python -m src.market_environment.cli snapshots scheduled-refresh --dataset sectors` 一次；随后按需走 5.6 off 回滚。
 
 ## Next Step（下一步）
 
