@@ -476,6 +476,7 @@ def _runtime_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         "kind": "Deployment",
         "metadata": {
             "name": "a-stock",
+            "namespace": "a-stock",
             "uid": "deployment-current",
             "labels": LABELS,
             "annotations": {"deployment.kubernetes.io/revision": "2"},
@@ -487,6 +488,7 @@ def _runtime_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         "kind": "ReplicaSet",
         "metadata": {
             "name": "a-stock-current",
+            "namespace": "a-stock",
             "uid": "replicaset-current",
             "labels": LABELS,
             "annotations": {"deployment.kubernetes.io/revision": "2"},
@@ -507,6 +509,7 @@ def _runtime_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         "kind": "Pod",
         "metadata": {
             "name": "a-stock-current-abc",
+            "namespace": "a-stock",
             "uid": "pod-current",
             "labels": LABELS,
             "ownerReferences": [
@@ -538,6 +541,7 @@ def _runtime_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         "kind": "Pod",
         "metadata": {
             "name": "a-stock-data-collection-old",
+            "namespace": "a-stock",
             "uid": "collector-pod",
             "labels": LABELS,
             "ownerReferences": [
@@ -589,6 +593,8 @@ def _run_runtime(
         str(pods_path),
         "--release-name",
         "a-stock",
+        "--namespace",
+        "a-stock",
         "--image",
         IMAGE,
         "--digest",
@@ -602,6 +608,27 @@ def test_runtime_image_accepts_current_dashboard_and_ignores_retained_collector(
     completed = _run_runtime(tmp_path, _runtime_payloads())
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("payload_index", "description"),
+    [(0, "Deployment"), (1, "ReplicaSet"), (2, "Pod")],
+)
+@pytest.mark.parametrize("mutation", ["namespace", "deleting"])
+def test_runtime_image_rejects_wrong_namespace_or_deleting_runtime_resource(
+    tmp_path: Path, payload_index: int, description: str, mutation: str
+) -> None:
+    payloads = _runtime_payloads()
+    resource = payloads[payload_index]["items"][0]
+    if mutation == "namespace":
+        resource["metadata"]["namespace"] = "wrong"
+    else:
+        resource["metadata"]["deletionTimestamp"] = "2026-10-09T00:00:00Z"
+
+    completed = _run_runtime(tmp_path, payloads)
+
+    assert completed.returncode != 0
+    assert description in completed.stderr
 
 
 def test_runtime_image_accepts_ready_release_postgresql_pod(tmp_path: Path) -> None:

@@ -105,7 +105,10 @@ GET /api/a-share-index/catalog/ths-index-list?tag=industry
 GET /api/a-share-index/prices/snapshot?thscodes=<comma-separated-thscodes>
 ```
 
-真实 probe 只能在上海盘后、显式授权的隔离环境运行。先确认东方财富
+真实 probe 只能在上海盘后、显式授权的隔离环境运行。命令必须先把当前时间归一到
+`Asia/Shanghai`，并在构造 provider/client 或创建 JSON/SQLite 输出前同时证明：请求日期等于当前
+effective market date、该日期为工作日、当前时间不早于 `MARKET_ENVIRONMENT_SETTLEMENT_TIME`。
+15:09、日期不匹配或周末必须零 provider 请求、零输出文件，并且没有 `--force` 绕过。先确认东方财富
 `push2` 与 `push2delay` 的失败证据已记录，再从独立 Secret 注入
 `MARKET_ENVIRONMENT_FUYAO_API_KEY`，执行带明确日期的 probe；不要把 key 放进命令行参数、
 values、shell history 或日志。probe 必须脱敏输出 endpoint、请求日期、交易日历命中、目录数量、
@@ -124,19 +127,116 @@ python -m src.market_environment.cli fuyao real-probe --allow-real \
   --output /tmp/fuyao-real.json
 ```
 
-批准 revision 只能在离线契约、脱敏 real probe 和隔离 shadow 对账均通过后填写到
-`marketEnvironment.fuyao.datasets.sectors.approvedRevision`，并同步设置
-`MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION`。正式启用必须同时设置
-`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`；开关默认 `0`，revision 为空或与 capability
-report 不一致时 fail closed，继续保留 Eastmoney 同日期失败语义。
+批准 revision 只能在离线契约与当次脱敏 real probe 通过后进入受审报告晋升流程；隔离 SQLite
+中的报告本身不能打开正式运行时门禁，旧 `fuyao-market-v1` 证据也不能批准 v2。生产 revision 87
+不包含 promotion CLI，因此必须先以 sectors-off 状态发布受审新镜像，不能直接从旧 Pod 晋升，也
+不能先启用 sectors。以下六步分别保留审计证据；任一步失败都停止，不得跳序：
 
-受控启用后观察 collection task 的 `source`、`fallback`/`partial` 质量、exact-date、字段
-warning、前序 Eastmoney warning 和 status/API；扶摇只提供行业指数排名、涨跌幅和成交额，
-不得将缺失资金流、宽度或领涨股显示为完整行业事实。任何日期不一致、目录/快照覆盖不足、
-权限/限流错误或 shadow 异常，先将 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0` 并重新部署，
-再确认 Eastmoney 双失败后的 `failed-retained`/`failed-missing` 和 provider-free GET；不删除
-PVC、不跨日期回填、不手工 SQL 写入快照。Secret 仍只由 existingSecret 引用，回滚时不得把
-凭据写进 values 或日志。
+1. **冻结 packet 并 off-first 预发布**：只从 clean reviewed HEAD 构建一次不可变镜像。生产 packet
+   至少绑定 `reviewedHead`、chart SHA-256、off/enabled values SHA-256、off/enabled render SHA-256、
+   release、namespace、实际 Kubernetes version 和 image repository/tag/manifest digest。受控入口在
+   首次网络、构建或目标写入前校验这些绑定、typed `scheduledCollection.enabled=false/suspend=true`
+   和 sectors-off；dirty source、hash 漂移、候选已启用 sectors、enrichment/shadow/Scrapling/其他
+   Fuyao 数据集开启或任一 application CronJob 存在时 fail closed。完整 sectors-off release 发布后，
+   核对 exact Deployment→ReplicaSet→Ready Pod owner chain、tag/imageID/containerd digest、应用和
+   PostgreSQL 健康、Secret 引用、PVC UID/PV/容量、两个 exact CronJob 与 namespace Job absent；此步
+   不运行 provider、promotion 或 collection。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --stage-sectors-off \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+   ```
+
+   `fuyao-sectors-packet.env` 是 operator-owned 审核输入，必须包含受审 HEAD、chart、两份 values、两份
+   render、image repository/tag 的绑定值；stage 只构建和导入一次镜像，并在任何 Helm write 前从目标
+   containerd 的 exact tag 冻结 manifest digest。该文件不得提交，也不得包含 provider 或数据库凭据。
+2. **盘后隔离 probe**：仅在上述 pre-I/O 时间门禁通过后运行 real probe。使用权限受限的新目录保存
+   SQLite 与 JSON，记录 JSON envelope 文件 SHA-256，并人工核对 canonical checksum、
+   `provider=fuyao`、`dataset=sectors`、`revision=fuyao-market-v2`、`status=eligible`、请求/日历/
+   快照日期一致、320 个唯一目录与 320 个唯一快照及 1.0 覆盖率、同日批次时间、四个支持字段
+   完整、五个不支持字段明确缺失、权限已配置以及 `0 < requestsUsed <= requestBudget`。标准脱敏后
+   结构必须完全不变；任一不满足就保留失败证据并停止。
+3. **exact Pod stdin promotion**：受控入口先解析唯一 Ready application Pod，证明它运行步骤 1 的
+   frozen image、sectors 为 `0`、PostgreSQL URL 仍来自既有 Secret、两个 exact CronJob absent，且
+   本地报告 SHA-256 未变；随后才允许以下受控入口。入口内部只把脱敏 envelope 送入 exact Pod 的
+   stdin，不使用
+   `kubectl cp`、Pod 临时文件、TTY、`sh -c` 或宿主数据库 URL。先 dry-run，审阅单行选择、masked
+   backend 和 conflict state，再对完全相同的文件显式 apply：
+
+   ```bash
+   REVIEWED_REPORT_PATH=/secure/path/fuyao-real.json
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --promote-sectors-capability \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --report "$REVIEWED_REPORT_PATH" \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+
+   # 仅在 dry-run 输出和同一 envelope SHA-256 已复核后执行
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --promote-sectors-capability --apply \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --report "$REVIEWED_REPORT_PATH" \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+   ```
+
+   `--input -` 只接受一个 JSON envelope；空、畸形或多文档输入统一脱敏拒绝且零写入。apply 只允许
+   repository/UoW 在一个事务中写入所选 `provider_capability_reports` 行；同 checksum 幂等，同
+   revision 不同 checksum 冲突退出。完成后核对 checksum 及 capability 行 before/after，并证明
+   snapshots、collection runs、aggregates、其他 capability rows、开关和调度均未变化。
+4. **same-image config-only enable**：只在匹配 eligible report 已读回后，用步骤 1 的 exact frozen image
+   和受审 enabled profile 发布完整 release。该入口必须使用 hook-free Helm upgrade，不 build/save/copy/
+   transfer/import 镜像，不运行 migration、Helm hook 或 provider-backed Job；写入前 live/desired 语义
+   diff 只能是 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED: "0" -> "1"`。image、approved revision、
+   Secret、PVC、Service、replica topology、调度和其他环境值任一变化都在 Helm write 前拒绝。发布后
+   证明 Deployment/Pod 健康、image identity/PVC/Secret 不变、matching capability 可读、两个 CronJob
+   和 Job absent，enrichment/Scrapling/shadow/其他 Fuyao 数据集仍关闭。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --enable-sectors-config \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+   ```
+5. **一次 settlement-gated sectors collection**：只在上海当前有效交易日结算后，通过 exact Ready
+   Pod 执行 `python -m src.market_environment.cli snapshots scheduled-refresh --dataset sectors` 一次；
+   禁止普通 `refresh --force`、全量采集或恢复 CronJob。验收 `source=fuyao`、revision 与 exact
+   `asOf`、稳定排名、`fallback`/`partial`、前序 `push2`/`push2delay` warning，以及每行代码、名称、
+   涨跌幅、成交额有值；`mainNet`、`mainNetPct`、`upCount`、`downCount`、`leader` 必须为 `null` 并
+   有字段 warning。同时只读核对 collection run、status、chapter-01、Deployment/Pod/PVC/Helm 状态。
+6. **条件 config-only off rollback**：任一 rollout 或观察失败时，使用步骤 1 的 exact same frozen image
+   与受审 off profile 走同一个 hook-free config-only full-release 入口。写入前唯一允许差异是 sectors
+   enabled flag `"1" -> "0"`；禁止 build/import、裸 Helm、`kubectl patch`、历史 Helm rollback、
+   release uninstall 或删除资源。回退后确认 Eastmoney 双失败恢复同日期 `failed-retained`/
+   `failed-missing` 和 provider-free GET，保留 capability report、同日快照、任务历史、Job、Secret 和
+   PVC，不得跨日期回填或手工 SQL 修改 payload。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --disable-sectors-config \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+   ```
+
+promotion 不调用 provider，不创建 collection run，不写 snapshot/aggregate，不修改 Secret、调度、
+enabled flag 或 approved revision。off-first、promotion、enable、collection 和条件 off 必须分别记录
+实际 packet/hash/server-observed 证据；授权本身不能替代任何前置门禁或写后验收。
 
 ### 扶摇行业字段补充（东方财富同供应商 dataapi）
 

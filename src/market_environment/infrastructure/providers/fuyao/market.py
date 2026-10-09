@@ -1125,6 +1125,7 @@ class FuyaoMarketAdapter:
 
         catalog_by_code, catalog_warnings = self._sector_catalog(catalog)
         warnings.extend(catalog_warnings)
+        catalog_row_count = len(self._rows(catalog))
         catalog_integrity = not any(
             "catalog row lacks" in warning or "catalog contains duplicate" in warning
             for warning in catalog_warnings
@@ -1256,8 +1257,13 @@ class FuyaoMarketAdapter:
             "calendarCount": len(calendar_dates),
             "catalogCount": len(catalog_by_code),
             "snapshotCount": len(snapshot_by_code),
+            "catalogIdentityUnique": catalog_integrity
+            and len(catalog_by_code) == catalog_row_count,
+            "snapshotIdentityUnique": not duplicate_snapshot
+            and len(snapshot_by_code) == len(snapshot_rows),
             "snapshotCoverage": (len(snapshot_by_code) / len(catalog_by_code)) if catalog_by_code else 0.0,
             "snapshotBatchCount": len(snapshots) if isinstance(snapshots, Sequence) and not isinstance(snapshots, Mapping) else 1,
+            "snapshotTimestampCount": timestamp_count,
             "snapshotTimestamps": sorted(str(value) for value in timestamps),
             "snapshotTimestampSemantics": "response-time; validated by Shanghai trading date",
             "snapshotTimestampDateConsistent": timestamp_count == batch_count and timestamp_dates == {as_of},

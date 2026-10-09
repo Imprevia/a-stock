@@ -6,12 +6,16 @@ from datetime import date, datetime, timezone
 import pytest
 
 from src.market_environment.application.collection import SourceAdapterRegistry
+from src.market_environment.application.ports import SourceRequest
 from src.market_environment.domain.models import (
     AcquisitionFailureCategory,
     CollectionTaskState,
     DatasetDate,
 )
 from src.market_environment.infrastructure.providers.fuyao.market import FuyaoMarketResult
+from src.market_environment.infrastructure.providers.fuyao.config import (
+    FUYAO_SECTORS_RUNTIME_REVISION,
+)
 from src.market_environment.infrastructure.legacy.providers import MarketDataProvider
 from src.market_environment.infrastructure.providers.sector_enrichment import (
     ENRICHMENT_MAPPING_REVISION,
@@ -49,7 +53,11 @@ def eastmoney_rows(*, change: float = 2.5) -> list[dict]:
     ]
 
 
-def fuyao_result(*, revision: str = "r1", change: float = 2.5) -> FuyaoMarketResult:
+def fuyao_result(
+    *,
+    revision: str = FUYAO_SECTORS_RUNTIME_REVISION,
+    change: float = 2.5,
+) -> FuyaoMarketResult:
     rows = [
         {
             "rank": 1,
@@ -57,11 +65,11 @@ def fuyao_result(*, revision: str = "r1", change: float = 2.5) -> FuyaoMarketRes
             "name": "电子",
             "changePct": change,
             "amount": 1000,
-            "mainNet": 999,
-            "mainNetPct": 9.99,
-            "upCount": 7,
-            "downCount": 3,
-            "leader": "扶摇领涨样本",
+            "mainNet": None,
+            "mainNetPct": None,
+            "upCount": None,
+            "downCount": None,
+            "leader": None,
         },
         {
             "rank": 2,
@@ -267,7 +275,11 @@ def plan(
         (
             EastmoneySectorPrimaryAdapter(provider, now=lambda: NOW),
             EastmoneySectorDelayedAdapter(provider, now=lambda: NOW),
-            FuyaoSectorSourceAdapter(fuyao, revision="r1", now=lambda: NOW),
+            FuyaoSectorSourceAdapter(
+                fuyao,
+                revision=FUYAO_SECTORS_RUNTIME_REVISION,
+                now=lambda: NOW,
+            ),
             EastmoneySectorEnrichmentAdapter(
                 provider,
                 enabled=lambda: enrichment_enabled,
@@ -280,10 +292,92 @@ def plan(
         fuyao_is_enabled=lambda _dataset: fuyao_enabled,
         fuyao_gate_warning=lambda _dataset: "扶摇行业数据源未启用",
         fuyao_shadow_enabled=lambda _dataset: shadow_enabled,
-        fuyao_revision=lambda _dataset: "r1",
+        fuyao_revision=lambda _dataset: FUYAO_SECTORS_RUNTIME_REVISION,
         market_today=lambda: AS_OF,
         is_settled=lambda _as_of: settled,
     )
+
+
+def fuyao_request(*, revision: str = FUYAO_SECTORS_RUNTIME_REVISION) -> SourceRequest:
+    return SourceRequest(
+        identity=DatasetDate("sectors", AS_OF),
+        source_id=FUYAO_SECTOR_SOURCE_ID,
+        role="fallback",
+        capability_revision=revision,
+        current_market_date=AS_OF,
+        settled=True,
+    )
+
+
+@pytest.mark.parametrize("revision", ["fuyao-market-v1", "unknown-revision"])
+def test_fuyao_sector_adapter_rejects_unapproved_revision_before_provider_io(revision):
+    client = FuyaoClient()
+    adapter = FuyaoSectorSourceAdapter(client, revision=revision, now=lambda: NOW)
+
+    result = adapter.acquire(fuyao_request(revision=revision))
+
+    assert result.category is AcquisitionFailureCategory.CONFIGURATION
+    assert FUYAO_SECTORS_RUNTIME_REVISION in result.message
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("code", ""),
+        ("name", "   "),
+        ("changePct", None),
+        ("changePct", "2.5"),
+        ("changePct", float("nan")),
+        ("amount", None),
+        ("amount", float("inf")),
+        pytest.param("amount", 10**10000, id="amount-overflow"),
+    ),
+)
+def test_fuyao_sector_adapter_rejects_invalid_required_row_fields(
+    field_name,
+    invalid_value,
+):
+    payload = fuyao_result()
+    payload.payload["rows"][0][field_name] = invalid_value
+    client = FuyaoClient(payload)
+    adapter = FuyaoSectorSourceAdapter(client, now=lambda: NOW)
+
+    result = adapter.acquire(fuyao_request())
+
+    assert result.category is AcquisitionFailureCategory.CONTRACT
+    assert field_name in result.message
+    assert client.calls == 1
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ("mainNet", "mainNetPct", "upCount", "downCount", "leader"),
+)
+def test_fuyao_sector_adapter_rejects_non_null_unsupported_fields(field_name):
+    payload = fuyao_result()
+    payload.payload["rows"][0][field_name] = 0
+    client = FuyaoClient(payload)
+    adapter = FuyaoSectorSourceAdapter(client, now=lambda: NOW)
+
+    result = adapter.acquire(fuyao_request())
+
+    assert result.category is AcquisitionFailureCategory.CONTRACT
+    assert field_name in result.message
+    assert client.calls == 1
+
+
+def test_fuyao_sector_adapter_requires_explicit_null_unsupported_fields():
+    payload = fuyao_result()
+    del payload.payload["rows"][0]["leader"]
+    client = FuyaoClient(payload)
+    adapter = FuyaoSectorSourceAdapter(client, now=lambda: NOW)
+
+    result = adapter.acquire(fuyao_request())
+
+    assert result.category is AcquisitionFailureCategory.CONTRACT
+    assert "leader" in result.message
+    assert client.calls == 1
 
 
 def test_primary_sector_candidate_stops_before_fallback_and_keeps_source():
@@ -358,17 +452,17 @@ def test_fuyao_fallback_and_dataapi_enrichment_are_ordered_and_fill_only():
     assert outcome.state is CollectionTaskState.PARTIAL
     assert outcome.candidate is not None
     assert outcome.candidate.source == "fuyao"
-    assert outcome.candidate.source_revision == "r1"
+    assert outcome.candidate.source_revision == FUYAO_SECTORS_RUNTIME_REVISION
     first, second = outcome.candidate.payload["rows"]
     assert {
         field: first[field]
         for field in ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
     } == {
-        "mainNet": 999,
-        "mainNetPct": 9.99,
-        "upCount": 7,
-        "downCount": 3,
-        "leader": "扶摇领涨样本",
+        "mainNet": -1,
+        "mainNetPct": -1,
+        "upCount": -1,
+        "downCount": -1,
+        "leader": "不得覆盖",
     }
     assert {
         field: second[field]
@@ -398,7 +492,7 @@ def test_fuyao_fallback_and_dataapi_enrichment_are_ordered_and_fill_only():
         "东方财富行业排名不可用"
     )
     assert warning.index("东方财富行业排名不可用") < warning.index(
-        "扶摇 capability revision: r1"
+        f"扶摇 capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}"
     )
     assert "sector enrichment mapping coverage 2/2" in warning
 

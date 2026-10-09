@@ -47,6 +47,7 @@
 
 ## 进行中
 
+- `activate-fuyao-sector-fallback`（2026-10-09）已获用户授权扩展当前 change，并保留此前对真实 probe、生产 capability 写入、配置 rollout、单次 collection 和条件回滚的授权。OpenSpec 当前 `17/23`：stdin promotion、off-first 单次 build/import、import 后 Helm 前冻结 digest、exact Pod/runtime binding、same-frozen-image hook-free config rollout、real-probe pre-I/O 结算门禁、全量离线验收与计划收口均完成；剩余为生产 5.1–5.6。09:18（Asia/Shanghai）只读生产 preflight 确认 Helm revision 87、应用/PostgreSQL/PVC/调度/Secret 引用健康，capability 总行数和目标行数均为 0；未读取 Secret 值，也未执行真实 provider、生产 PostgreSQL、Helm/Kubernetes 或 collection 写操作。
 - `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
 
 - `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
@@ -97,6 +98,7 @@
 
 ## 下一步
 
+- `activate-fuyao-sector-fallback` 下一步先冻结 clean reviewed production packet并执行已授权 5.1 off-first 预发布；达到上海 15:10 settlement gate 后依次执行 5.2 盘后 probe、5.3 Pod stdin promotion、5.4 hook-free enable 和 5.5 一次 sectors-only collection，失败时走 5.6 同镜像 off rollback。生产操作目前均未执行。
 - `deploy-unified-market-data-adapters-20261008` 已完成 revision 87 生产发布；保持当前不可变镜像、PVC 和调度 disabled/absent 基线，调度恢复或真实 provider probe 必须另行授权。
 - 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
@@ -113,6 +115,7 @@
 ## 最后更新
 
 2026-10-09
+  - **扶摇行业 fallback 扩展**：用户已授权扩展 `activate-fuyao-sector-fallback`；OpenSpec 和事实文档已改为 off-first clean image、exact Pod stdin promotion、same-frozen-image hook-free config-only enable/off 及 real-probe pre-I/O 结算门禁。扩展实现、重新离线验收和计划收口完成，进度 `17/23`；后端全量 `1225 passed, 6 skipped`、前端 `129 passed` 与 build、规则/OpenSpec/docs-contract/Helm 门禁均通过，5.1–5.6 生产操作尚未执行。
   - **TrueNAS k3s 生产发布**：统一市场数据采集适配器随 `main=36aba3b` 发布；受控调度关闭为 revisions 83/84，database/service/完整 release 为 revisions 85/86/87。镜像 `localhost/a-stock-market-environment:20261008-235342-36aba3b` 的 containerd digest 为 `sha256:7d7a2762e274aad710257ad66224ddf782831b156a3bd56eafbf0f93cb219978`；Dashboard/PostgreSQL/PVC/健康与 provider-free GET 后置条件通过，CronJob/Job absent，未触发 provider。
 
 2026-10-08

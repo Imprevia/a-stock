@@ -55,7 +55,11 @@ class PostgresConnectionFactory:
     ) -> "PostgresConnectionFactory":
         factory = cls(engine_factory(settings))
         if validate_runtime:
-            factory.validate_runtime()
+            try:
+                factory.validate_runtime()
+            except BaseException:
+                factory.dispose()
+                raise
         return factory
 
     def connect(self):

@@ -13,6 +13,7 @@ _EXPORTS = {
     "REQUIRED_RUNTIME_TABLES": ".connection",
     "RuntimeSchemaReport": ".connection",
     "MarketEnvironmentUnitOfWork": ".unit_of_work",
+    "ProviderCapabilityPromotionUnitOfWork": ".capability_unit_of_work",
     "PostgresCollectionRunRepository": ".collection_repositories",
     "PostgresCollectionTaskRepository": ".collection_repositories",
     "PostgresCoreIndexResultRepository": ".collection_repositories",

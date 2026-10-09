@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -14,6 +15,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from .bootstrap.container import ContainerAdapters
+from .application.commands import (
+    CapabilityPromotionError,
+    CapabilityPromotionRepositoryError,
+)
 from .infrastructure.collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
 from .infrastructure.providers.fuyao.market import FuyaoMarketAdapter, FuyaoMarketClient
 from .infrastructure.providers.capability import ProviderCapabilityReport
@@ -25,6 +30,7 @@ from .snapshot_store import SnapshotStore
 from .infrastructure.persistence.sqlite_import import LegacySqliteSnapshotStore
 from .infrastructure.providers.tdx.daily_package import TDXDailyPackageClient
 from .interfaces.cli.container import build_cli_container
+from .interfaces.cli.capability_promotion import build_capability_promotion_runtime
 
 
 _DEFAULT_COLLECTION_COORDINATOR_CLASS = CollectionCoordinator
@@ -112,6 +118,31 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--database-url", default=None, help="PostgreSQL URL (defaults to environment)")
     migrate.add_argument("--backup", default=None, help="optional non-existing before-image destination")
     migrate.add_argument("--apply", action="store_true", help="commit the import; omitted means dry-run")
+    capabilities = commands.add_parser(
+        "capabilities",
+        help="validate and promote provider capability reports",
+    )
+    capability_commands = capabilities.add_subparsers(
+        dest="capability_command",
+        required=True,
+    )
+    promote = capability_commands.add_parser(
+        "promote",
+        help="promote one reviewed report (dry-run by default)",
+    )
+    promote.add_argument(
+        "--input",
+        required=True,
+        help="redacted report envelope path, or - to read stdin",
+    )
+    promote.add_argument("--provider", required=True)
+    promote.add_argument("--dataset", required=True)
+    promote.add_argument("--revision", required=True)
+    promote.add_argument(
+        "--apply",
+        action="store_true",
+        help="commit the selected report; omitted means dry-run",
+    )
     fuyao = commands.add_parser("fuyao", help="audit Fuyao market-data capability")
     fuyao_commands = fuyao.add_subparsers(dest="fuyao_command", required=True)
     probe = fuyao_commands.add_parser("capability-probe", help="run a deterministic fixture probe")
@@ -179,9 +210,15 @@ def _capability_report_from_result(dataset: str, result: Any, as_of: date, *, re
             **pagination_evidence,
             "catalogCount": quality.get("catalogCount"),
             "snapshotCount": quality.get("snapshotCount"),
+            "catalogIdentityUnique": quality.get("catalogIdentityUnique"),
+            "snapshotIdentityUnique": quality.get("snapshotIdentityUnique"),
             "snapshotCoverage": quality.get("snapshotCoverage"),
             "snapshotBatchCount": quality.get("snapshotBatchCount"),
+            "snapshotTimestampCount": quality.get("snapshotTimestampCount"),
             "snapshotTimestamps": quality.get("snapshotTimestamps", []),
+            "snapshotTimestampDateConsistent": quality.get(
+                "snapshotTimestampDateConsistent"
+            ),
         }
     permission_evidence = quality.get("permissionEvidence")
     if not isinstance(permission_evidence, dict):
@@ -290,8 +327,31 @@ def _market_now(now: Callable[[], datetime] | None = None) -> datetime:
     return current.astimezone(MARKET_TIME_ZONE)
 
 
+def _validate_fuyao_real_probe_boundary(as_of: date, current: datetime) -> None:
+    if current.weekday() >= 5:
+        raise ValueError("Fuyao real probe requires a Shanghai market weekday")
+    if current.time().replace(tzinfo=None) < settlement_time():
+        raise ValueError(
+            "Fuyao real probe is only allowed after the configured settlement time"
+        )
+    if as_of != effective_market_date(current):
+        raise ValueError(
+            "Fuyao real probe requires the current effective Shanghai market date"
+        )
+
+
 def _print_payload(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _close_capability_runtime(runtime: Any | None) -> bool:
+    if runtime is None:
+        return True
+    try:
+        runtime.close()
+    except Exception:
+        return False
+    return True
 
 
 def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
@@ -517,8 +577,67 @@ def main(
     *,
     coordinator: CollectionCoordinator | None = None,
     now: Callable[[], datetime] | None = None,
+    capability_runtime_factory: Callable[[], Any] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "capabilities" and args.capability_command == "promote":
+        runtime = None
+        try:
+            envelope = (
+                json.load(sys.stdin)
+                if args.input == "-"
+                else json.loads(Path(args.input).read_text(encoding="utf-8"))
+            )
+            runtime_builder = (
+                capability_runtime_factory or build_capability_promotion_runtime
+            )
+            runtime = runtime_builder()
+            result = runtime.command.execute(
+                envelope,
+                provider=args.provider,
+                dataset=args.dataset,
+                revision=args.revision,
+                target_backend=runtime.target_backend,
+                apply=args.apply,
+            )
+        except CapabilityPromotionRepositoryError:
+            _close_capability_runtime(runtime)
+            _print_payload(
+                {
+                    "status": "rejected",
+                    "error": "capability repository operation failed",
+                }
+            )
+            return 3
+        except CapabilityPromotionError as exc:
+            _close_capability_runtime(runtime)
+            _print_payload({"status": "rejected", "error": str(exc)})
+            return 2
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            _close_capability_runtime(runtime)
+            _print_payload(
+                {"status": "rejected", "error": "capability input could not be read"}
+            )
+            return 2
+        except Exception:
+            _close_capability_runtime(runtime)
+            _print_payload(
+                {
+                    "status": "rejected",
+                    "error": "capability repository operation failed",
+                }
+            )
+            return 3
+        if not _close_capability_runtime(runtime):
+            _print_payload(
+                {
+                    "status": "rejected",
+                    "error": "capability repository operation failed",
+                }
+            )
+            return 3
+        _print_payload(result.to_dict())
+        return 0
     if args.command == "fuyao":
         if args.fuyao_command == "capability-probe":
             try:
@@ -538,6 +657,12 @@ def main(
             if not args.allow_real:
                 _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
                 return 2
+            probe_now = _market_now(now)
+            try:
+                _validate_fuyao_real_probe_boundary(args.as_of, probe_now)
+            except ValueError as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
             if not os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "").strip():
                 _print_payload({"status": "rejected", "error": "MARKET_ENVIRONMENT_FUYAO_API_KEY is required"})
                 return 2
@@ -545,7 +670,6 @@ def main(
                 adapter = FuyaoMarketAdapter(FuyaoMarketClient())
                 # Current-date core evidence must include an independent quote
                 # source; historical probes intentionally remain quote-free.
-                probe_now = _market_now(now)
                 quotes = (
                     MarketDataProvider().fetch_quotes(INDEX_SPECS)
                     if args.as_of == effective_market_date(probe_now)

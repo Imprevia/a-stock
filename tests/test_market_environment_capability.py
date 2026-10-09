@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.market_environment.fuyao_config import (
+    FUYAO_SECTORS_RUNTIME_REVISION,
     FuyaoCollectionConfig,
     FuyaoConfigurationError,
 )
@@ -62,6 +63,29 @@ def test_fuyao_switches_default_closed_and_require_approved_revision() -> None:
     )
     assert enabled.can_cutover("core", capability_status="eligible", revision="r1")
     assert not enabled.can_cutover("core", capability_status="unverified", revision="r1")
+
+    unsafe_sectors = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "true",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "fuyao-market-v1",
+        }
+    )
+    assert not unsafe_sectors.can_cutover(
+        "sectors",
+        capability_status="eligible",
+        revision="fuyao-market-v1",
+    )
+    approved_sectors = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "true",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
+        }
+    )
+    assert approved_sectors.can_cutover(
+        "sectors",
+        capability_status="eligible",
+        revision=FUYAO_SECTORS_RUNTIME_REVISION,
+    )
 
 
 def test_limits_existing_flag_is_not_part_of_cutover_switches() -> None:

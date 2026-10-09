@@ -397,6 +397,45 @@ materialized aggregate 与快照读取均 provider-free，只读本地 `(dataset
 保留 endpoint、日期、目录/快照数量、字段覆盖、权限/限流结果等脱敏证据，API key 只由独立
 Secret 注入，绝不进入 values、日志、报告或 API 响应。
 
+隔离 probe 与正式运行时之间增加独立的 capability promotion application boundary。CLI
+`python -m src.market_environment.cli capabilities promote --input <report.json|-> --provider <provider> --dataset <dataset> --revision <revision> [--apply]`
+只负责解析脱敏报告 envelope、选择唯一匹配报告、验证原始 canonical checksum、identity、`eligible`
+状态和注册的数据集证据策略，并通过正常运行时配置解析目标 PostgreSQL；数据库连接信息不得作为命令行参数或输出。
+默认 dry-run 只做冲突检查并输出脱敏计划，显式 `--apply` 才通过 provider-capability repository/UoW
+在一个事务中写入一条报告。同 identity/checksum 重复晋升幂等，同 revision 不同 checksum 冲突拒绝，未知策略和
+`fuyao-market-v1` fail closed。标准 redaction 应用于输入后必须与原结构完全一致，检查失败时不得回显敏感值。
+`--input -` 只接受一个 stdin JSON envelope；空输入、畸形输入和多文档输入均在 repository write 前拒绝。
+
+`fuyao/sectors/fuyao-market-v2` 的 evidence policy 固定要求三个允许 endpoint、envelope/requested/calendar/snapshot
+日期完全一致、320 个唯一目录与 320 个唯一快照及 1.0 覆盖率、同一上海交易日的批次时间、代码/名称/涨跌幅/成交额
+四字段完整、五个不支持字段明确缺失、权限已配置，且 `0 < requestsUsed <= requestBudget`。promotion 不装配 provider
+client、collection coordinator、snapshot committer、scheduler、deployment/Secret client，也不修改 enabled 或 approved
+revision；因此它可以在 provider 不可达时独立完成，但不能被当作启用或采集证据。
+
+生产恢复先冻结绑定 clean reviewed HEAD、chart、off/enabled values、两份 render、release、namespace、Kubernetes
+version 和 image repository/tag 的 source packet，再把包含 promotion CLI 的新镜像构建、传输并 import 恰好一次。
+入口从目标 containerd 的 exact tag 读取唯一 manifest digest，在任何 Helm write 前完成不可变 image identity 和 production
+packet；预填 digest 若存在必须与读取值一致。发布前因 dirty source、source packet hash/identity drift、可选 engine 开启、
+CronJob 存在或候选 sectors 已启用而失败时，必须在网络或集群写入前停止；import 后无法证明 exact digest 时必须在 Helm
+write 前停止。随后才以 sectors-off 完整 release 发布。
+
+off-first 发布成功后，受审 real-probe envelope 另以文件 SHA-256 和 canonical capability checksum 冻结。生产 promotion
+解析 exact Ready application Pod，证明它属于该 Deployment、运行冻结镜像、sectors 为关闭状态且两个 application
+CronJob absent，再通过 `kubectl exec -i` 把报告流式送入 `capabilities promote --input -`。CLI 只使用 Pod 已注入的
+`MARKET_ENVIRONMENT_DATABASE_URL` Secret 环境；控制端不得读取或导出数据库 URL，不得 `kubectl cp` 报告、在 Pod
+落临时报告文件、使用 TTY 或通过 `sh -c` 二次解释。dry-run 与 apply 必须消费同一受审 envelope/checksum；promotion
+本身不改变快照、任务、聚合、开关或调度。
+
+匹配报告晋升后，enable 与 off rollback 统一走 same-frozen-image、hook-free config-only full-release rollout。该路径
+不构建、保存、复制、传输或 import 镜像，不运行 migration/Helm hook/provider-backed Job；写入前比较 live/desired
+packet，只允许 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED` 在 `"0"` 与 `"1"` 之间翻转，image、approved revision、
+Secret、PVC、Service、topology、调度及其他环境值必须完全一致，写入前后都证明两个 CronJob absent。real probe 还必须
+在构造任何 provider/client 和创建 JSON/SQLite 输出前校验上海当前有效日期、工作日和配置的 settlement time，没有
+force 绕过；首次生产采集只使用结算门禁内的 `snapshots scheduled-refresh --dataset sectors`。首次采集只在两条
+Eastmoney 尝试失败后进入 Fuyao，并保留前序 warning。任一步失败都停止后续操作；需要回退时仅关闭 sectors 开关，
+保留 capability report、同日快照、任务历史、Job、Secret 和 PVC，后续失败仍只允许同日
+`failed-retained`/`failed-missing`。
+
 扶摇行业结果通过上述门禁后，才允许在显式开关
 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=1` 下调用同供应商
 `https://data.eastmoney.com/dataapi/bkzj/getbkzj`。请求固定使用

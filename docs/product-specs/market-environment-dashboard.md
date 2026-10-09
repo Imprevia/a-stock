@@ -2,7 +2,7 @@
 
 ## Status
 
-`active` · 版本 `0.13`
+`active` · 版本 `0.15`
 
 后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
 
@@ -56,6 +56,10 @@
 - 所有 HTTP source adapter 共用一个进程内 transport policy gateway；gateway 统一 host 限速、预算、重试、single-flight、缓存和熔断，engine 只执行一个已授权 attempt。请求身份必须隔离 engine、精确日期、完整参数和认证/tenant scope，且诊断不得泄露 credential、Cookie、proxy 或 challenge body。
 - 可选 Scrapling 仅提供静态 HTTP engine：默认关闭、空 allowlist、独立依赖/镜像，不启用 Spider、浏览器、Chromium、代理轮换、内部重试、blocked-request escalation 或 challenge solving；401/403/CAPTCHA 不得触发 requests 到 Scrapling 的自动升级。是否为某个真实 host 启用必须由后续证据和独立 rollout 批准。
 - 行业扶摇 fallback 仅允许使用 `https://fuyao.aicubes.cn/api/a-share/calendar/trading-days`、`/api/a-share-index/catalog/ths-index-list?tag=industry` 和 `/api/a-share-index/prices/snapshot?thscodes=...`。目录、快照批次和交易日历必须共同证明请求日期；目录/快照覆盖不足、身份重复、批次时间不一致或日期不可证明时 fail closed，不把最新快照包装为历史日期。正式启用要求 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`、capability report `eligible` 和完全匹配的 approved revision；默认关闭，失败时保留同日期 `failed-retained`/`failed-missing`。
+- capability report 从隔离 probe 进入正式运行时只能通过通用 `capabilities promote` 边界：显式选择 provider/dataset/revision，校验原始 checksum、`eligible`、脱敏一致性和数据集证据策略，默认 dry-run；只有显式 `--apply` 才在运行时 PostgreSQL 的单个事务中写入一条报告。同 checksum 重复操作幂等，同 revision 不同 checksum 冲突拒绝；该命令不得调用 provider、触发采集、写快照/聚合、修改 Secret、调度或任何 provider 开关。
+- `fuyao/sectors/fuyao-market-v2` 的晋升证据必须证明三个允许 endpoint、请求/交易日历/快照日期一致、320 个唯一目录与 320 个唯一快照全覆盖、批次时间均属于同一上海交易日、代码/名称/涨跌幅/成交额四字段完整、`mainNet`/`mainNetPct`/`upCount`/`downCount`/`leader` 五字段明确缺失，以及权限已配置且请求数处于正的有界预算内。旧 `fuyao-market-v1`、混合日期、部分覆盖或含凭据的报告不得晋升。
+- 生产恢复采用 off-first 的六步受控序列：冻结 clean reviewed source/chart/values/render/image packet 并先把新镜像以 Fuyao sectors 关闭状态发布；达到上海结算时间后执行当前有效交易日 real probe；把受审报告通过 stdin 流式传给该冻结镜像的 exact Ready Pod，先 dry-run 再显式 apply；复用同一镜像执行 hook-free config-only enable；只通过 `snapshots scheduled-refresh --dataset sectors` 触发一次当日采集；失败时复用同一镜像执行 config-only off。real probe 必须在构造 provider/client 和创建 JSON/SQLite 文件前拒绝结算前、非当前有效日期和周末请求，且没有 force 绕过。
+- sectors-off 预发布必须绑定 clean reviewed HEAD、chart、off/enabled values、两份 render、release、namespace、Kubernetes version 和不可变 image identity。enable/off 不得 build、传输或 import 镜像，不得运行 Helm hook、migration 或 provider-backed Job；live/desired 之间唯一允许的语义差异是 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED` 的 `0`/`1` 翻转。promotion 只允许使用 Pod 已有的 PostgreSQL Secret 环境，不得把数据库 URL 导出到宿主、`kubectl cp` 报告或把报告持久化到容器。全过程保持调度、Scrapling、行业 enrichment、sector shadow 和其他 Fuyao 数据集关闭；回滚不得删除 capability report、同日快照、任务历史、Job、Secret 或 PVC，也不得跨日期回填。
 - 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
 - 盘后定时采集使用与 Dashboard 相同镜像并通过同一 PostgreSQL Service/Secret 访问运行时状态，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。

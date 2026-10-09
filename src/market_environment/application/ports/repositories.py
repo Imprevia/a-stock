@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...domain.models import (
     CollectionCandidate,
@@ -119,7 +119,10 @@ class ProviderCapabilityRepository(Protocol):
         revision: str,
     ) -> Mapping[str, Any] | None: ...
 
-    def put_capability(self, report: Mapping[str, Any]) -> None: ...
+    def put_capability(
+        self,
+        report: Mapping[str, Any],
+    ) -> Literal["inserted", "identical", "conflict"]: ...
 
     def list_capabilities(
         self,

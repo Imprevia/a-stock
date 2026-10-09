@@ -41,6 +41,12 @@ Explicit scheduling write modes never build, copy, import, or retag an image:
   --activate-schedule --baseline-values PATH --scheduling-overlay PATH --kube-version VERSION
   --disable-schedule --baseline-values PATH --scheduling-overlay PATH --kube-version VERSION
 
+Controlled Fuyao sectors modes:
+  --stage-sectors-off --off-values PATH --enabled-values PATH --kube-version VERSION
+  --promote-sectors-capability --off-values PATH --enabled-values PATH --report PATH [--apply]
+  --enable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
+  --disable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
+
 All renders accept --release-name NAME and --namespace NAME. Target modes bind
 these values and --kube-version to live discovery before any write.
 
@@ -91,6 +97,10 @@ SCHEDULING_OVERLAY_FILE=''
 TARGET_KUBERNETES_VERSION=''
 CLI_RELEASE_NAME=''
 CLI_NAMESPACE=''
+CLI_SECTORS_OFF_VALUES_FILE=''
+CLI_SECTORS_ENABLED_VALUES_FILE=''
+CLI_CAPABILITY_REPORT_FILE=''
+PROMOTION_APPLY=false
 
 set_operation() {
   local requested="$1"
@@ -132,6 +142,22 @@ while (($#)); do
       set_operation disable-schedule
       shift
       ;;
+    --stage-sectors-off)
+      set_operation stage-sectors-off
+      shift
+      ;;
+    --promote-sectors-capability)
+      set_operation promote-sectors-capability
+      shift
+      ;;
+    --enable-sectors-config)
+      set_operation enable-sectors-config
+      shift
+      ;;
+    --disable-sectors-config)
+      set_operation disable-sectors-config
+      shift
+      ;;
     --baseline-values)
       (($# >= 2)) || die '--baseline-values requires a path'
       BASELINE_VALUES_FILE="$2"
@@ -156,6 +182,25 @@ while (($#)); do
       (($# >= 2)) || die '--namespace requires a name'
       CLI_NAMESPACE="$2"
       shift 2
+      ;;
+    --off-values)
+      (($# >= 2)) || die '--off-values requires a path'
+      CLI_SECTORS_OFF_VALUES_FILE="$2"
+      shift 2
+      ;;
+    --enabled-values)
+      (($# >= 2)) || die '--enabled-values requires a path'
+      CLI_SECTORS_ENABLED_VALUES_FILE="$2"
+      shift 2
+      ;;
+    --report)
+      (($# >= 2)) || die '--report requires a path'
+      CLI_CAPABILITY_REPORT_FILE="$2"
+      shift 2
+      ;;
+    --apply)
+      PROMOTION_APPLY=true
+      shift
       ;;
     --component)
       (($# >= 2)) || die '--component requires one of all, database, service, schedule'
@@ -827,7 +872,7 @@ if cronjobs:
   return 0
 }
 
-verify_schedule_runtime_image() {
+verify_frozen_runtime_image() {
   local image_repo="$1"
   local image_tag="$2"
   local digest="$3"
@@ -839,12 +884,121 @@ verify_schedule_runtime_image() {
   kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$replicasets_file" || return 1
   kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$pods_file" || return 1
   python3 "$PACKET_VALIDATOR" verify-runtime-image \
-    --release-name "$RELEASE_NAME" --image "$image_ref" --digest "$digest" \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --image "$image_ref" --digest "$digest" \
     --deployments "$deployments_file" --replicasets "$replicasets_file" --pods "$pods_file" || return 1
   # TrueNAS k3s 1.26 bundles an older ctr without `images info`. Build the
   # narrow JSON contract from the exact row in the stable `images ls` table.
   remote "sudo -n k3s ctr --namespace k8s.io images ls | awk -v image='$image_ref' '\$1 == image {printf \"{\\\"Name\\\":\\\"%s\\\",\\\"Target\\\":{\\\"digest\\\":\\\"%s\\\"}}\\n\", \$1, \$3; found=1} END {if (!found) exit 1}'" \
     | python3 "$PACKET_VALIDATOR" verify-containerd-image --image "$image_ref" --digest "$digest"
+}
+
+capture_containerd_image_digest() {
+  local image_ref="$1"
+  local digest
+  digest="$(remote "sudo -n k3s ctr --namespace k8s.io images ls | awk -v image='$image_ref' '\$1 == image {print \$3; matches += 1} END {if (matches != 1) exit 1}'")" \
+    || return 1
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+require_all_application_cronjobs_absent() {
+  local phase="$1"
+  local live_cronjobs legacy_cronjob
+  live_cronjobs="$(capture_live_cronjobs)" || return 1
+  require_generic_schedule_disabled "$phase release" "$live_cronjobs"
+  if [[ "$NAMESPACE" == a-stock && "$GENERIC_CRONJOB_NAME" != market-data-collection ]]; then
+    legacy_cronjob="$(capture_exact_cronjob market-data-collection)" || return 1
+    [[ -z "$legacy_cronjob" ]] || die "$phase requires legacy market-data-collection CronJob absent"
+  fi
+}
+
+require_namespace_jobs_absent() {
+  local phase="$1"
+  local payload
+  payload="$(kubectl get jobs --namespace "$NAMESPACE" -o json)" || return 1
+  JOBS_PAYLOAD="$payload" python3 - "$phase" <<'PYEOF'
+import json, os, sys
+payload = json.loads(os.environ["JOBS_PAYLOAD"])
+items = payload.get("items")
+if not isinstance(items, list):
+    raise SystemExit(f"{sys.argv[1]} Job response must contain an items list")
+if items:
+    raise SystemExit(f"{sys.argv[1]} requires namespace Jobs absent")
+PYEOF
+}
+
+capture_preserved_resource_identities() {
+  local packet="$1"
+  local kind name identity packet_file
+  local resources=()
+  packet_file="$TMP_DIR/preserved-identities-packet.yaml"
+  printf '%s\n' "$packet" > "$packet_file"
+  mapfile -t resources < <(python3 - "$COMPONENT_BASELINE_CLAIM" "$packet_file" <<'PYEOF'
+import sys, yaml
+documents = [item for item in yaml.safe_load_all(open(sys.argv[2])) if isinstance(item, dict)]
+names = set()
+for document in documents:
+    if document.get("kind") == "PersistentVolumeClaim":
+        name = (document.get("metadata") or {}).get("name")
+        if name:
+            names.add(("pvc", name))
+    if document.get("kind") != "Deployment":
+        continue
+    containers = (((document.get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers", [])
+    for container in containers:
+        for entry in container.get("env") or []:
+            secret = ((entry.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
+            if secret:
+                names.add(("secret", secret))
+if sys.argv[1]:
+    names.add(("pvc", sys.argv[1]))
+for kind, name in sorted(names):
+    print(f"{kind}\t{name}")
+PYEOF
+  )
+  for resource in "${resources[@]}"; do
+    IFS=$'\t' read -r kind name <<< "$resource"
+    case "$kind" in
+      secret)
+        identity="$(kubectl get secret "$name" --namespace "$NAMESPACE" \
+          -o jsonpath='{.metadata.uid}{"|"}{.metadata.resourceVersion}')" || return 1
+        ;;
+      pvc)
+        identity="$(kubectl get pvc "$name" --namespace "$NAMESPACE" \
+          -o jsonpath='{.metadata.uid}{"|"}{.metadata.resourceVersion}{"|"}{.spec.volumeName}{"|"}{.status.phase}{"|"}{.status.capacity.storage}')" || return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    [[ -n "$identity" ]] || return 1
+    printf '%s\t%s\t%s\n' "$kind" "$name" "$identity"
+  done
+}
+
+select_runtime_sectors_pod() {
+  local required_enabled="$1"
+  local deployments_file="$TMP_DIR/sectors-runtime-deployments.json"
+  local replicasets_file="$TMP_DIR/sectors-runtime-replicasets.json"
+  local pods_file="$TMP_DIR/sectors-runtime-pods.json"
+  local desired_file="$TMP_DIR/sectors-runtime-reviewed.yaml"
+  printf '%s\n' "$REVIEWED_OFF_RENDER" > "$desired_file"
+  kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$deployments_file" \
+    || return 1
+  kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$replicasets_file" \
+    || return 1
+  kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$pods_file" \
+    || return 1
+  python3 "$PACKET_VALIDATOR" select-disabled-promotion-pod \
+    --release-name "$RELEASE_NAME" \
+    --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" \
+    --digest "$FROZEN_IMAGE_DIGEST" \
+    --deployments "$deployments_file" \
+    --replicasets "$replicasets_file" \
+    --desired "$desired_file" \
+    --require-enabled "$required_enabled" < "$pods_file"
 }
 
 deploy_helm_upgrade_with_component() {
@@ -880,7 +1034,7 @@ deploy_component_step() {
   local image_tag="$3"
   log "component step: name=$component phase=start release=$RELEASE_NAME namespace=$NAMESPACE image=$image_repo:$image_tag"
   if [[ "$component" == schedule && -n "$FROZEN_IMAGE_DIGEST" ]]; then
-    verify_schedule_runtime_image "$image_repo" "$image_tag" "$FROZEN_IMAGE_DIGEST" \
+    verify_frozen_runtime_image "$image_repo" "$image_tag" "$FROZEN_IMAGE_DIGEST" \
       || { log "component step: name=$component phase=failed reason=frozen_image_runtime_unproven retryTarget=--component $component"; return 1; }
   fi
   local helm_exit=0
@@ -1162,6 +1316,24 @@ COMPONENT_BASELINE_SCHEDULED_CONCURRENCY="${COMPONENT_BASELINE_FIELDS[18]}"
 COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE="${COMPONENT_BASELINE_FIELDS[19]}"
 COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE="${COMPONENT_BASELINE_FIELDS[20]}"
 
+CONTROLLED_SECTORS_OPERATION=""
+case "$OPERATION" in
+  stage-sectors-off|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+    [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
+    CONTROLLED_SECTORS_OPERATION="$OPERATION"
+    COMPONENT_NAME=all
+    COMPONENT_SELECTED=true
+    ;;
+esac
+if [[ "$PROMOTION_APPLY" == true && "$CONTROLLED_SECTORS_OPERATION" != promote-sectors-capability ]]; then
+  die '--apply is only valid with --promote-sectors-capability'
+fi
+# The off-first operation uses the existing complete ordinary deployment
+# implementation after adding the stricter reviewed-packet gates below.
+if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+  OPERATION=deploy
+fi
+
 if [[ "$COMPONENT_SELECTED" == true ]]; then
   requested_release="${CLI_RELEASE_NAME:-${RELEASE_NAME:-a-stock}}"
   requested_namespace="${CLI_NAMESPACE:-${NAMESPACE:-a-stock}}"
@@ -1193,6 +1365,16 @@ ACTIVATION_CATCH_UP_MODE="${ACTIVATION_CATCH_UP_MODE:-}"
 FROZEN_IMAGE_REPOSITORY="${FROZEN_IMAGE_REPOSITORY:-}"
 FROZEN_IMAGE_TAG="${FROZEN_IMAGE_TAG:-}"
 FROZEN_IMAGE_DIGEST="${FROZEN_IMAGE_DIGEST:-}"
+SECTORS_OFF_VALUES_FILE="${CLI_SECTORS_OFF_VALUES_FILE:-${SECTORS_OFF_VALUES_FILE:-}}"
+SECTORS_ENABLED_VALUES_FILE="${CLI_SECTORS_ENABLED_VALUES_FILE:-${SECTORS_ENABLED_VALUES_FILE:-}}"
+CAPABILITY_REPORT_FILE="${CLI_CAPABILITY_REPORT_FILE:-${CAPABILITY_REPORT_FILE:-}}"
+REVIEWED_GIT_HEAD="${REVIEWED_GIT_HEAD:-}"
+REVIEWED_CHART_SHA256="${REVIEWED_CHART_SHA256:-}"
+REVIEWED_OFF_VALUES_SHA256="${REVIEWED_OFF_VALUES_SHA256:-}"
+REVIEWED_ENABLED_VALUES_SHA256="${REVIEWED_ENABLED_VALUES_SHA256:-}"
+REVIEWED_OFF_RENDER_SHA256="${REVIEWED_OFF_RENDER_SHA256:-}"
+REVIEWED_ENABLED_RENDER_SHA256="${REVIEWED_ENABLED_RENDER_SHA256:-}"
+REVIEWED_REPORT_SHA256="${REVIEWED_REPORT_SHA256:-}"
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 INGRESS_HOST="${INGRESS_HOST:-a-stock.k3s.lan}"
 POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-a-stock-postgresql}"
@@ -1204,6 +1386,19 @@ TAILSCALE_HOST="${TAILSCALE_HOST:-gyt.tail0007b1.ts.net}"
 TAILSCALE_PORT="${TAILSCALE_PORT:-8443}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-5m}"
 PACKET_VALIDATOR="$REPO_DIR/scripts/validate-scheduling-packet.py"
+
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  [[ -n "$SECTORS_OFF_VALUES_FILE" ]] || die "$CONTROLLED_SECTORS_OPERATION requires --off-values"
+  [[ -n "$SECTORS_ENABLED_VALUES_FILE" ]] || die "$CONTROLLED_SECTORS_OPERATION requires --enabled-values"
+  case "$CONTROLLED_SECTORS_OPERATION" in
+    stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+      HELM_VALUES_FILE="$SECTORS_OFF_VALUES_FILE"
+      ;;
+    enable-sectors-config)
+      HELM_VALUES_FILE="$SECTORS_ENABLED_VALUES_FILE"
+      ;;
+  esac
+fi
 
 git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git checkout: $REPO_DIR"
 [[ -f "$REPO_DIR/Dockerfile" ]] || die "Dockerfile not found under $REPO_DIR"
@@ -1218,6 +1413,13 @@ if [[ "$OPERATION" == deploy ]]; then
       ;;
   esac
 fi
+case "$CONTROLLED_SECTORS_OPERATION" in
+  promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+    for command_name in ssh kubectl nc; do
+      command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
+    done
+    ;;
+esac
 [[ "$GIT_UPDATE" =~ ^(true|false)$ ]] || die 'GIT_UPDATE must be true or false'
 [[ "$GIT_UPDATE" == false ]] || die 'GIT_UPDATE=true is unsupported; update and review the checkout before launching deployment'
 
@@ -1241,6 +1443,31 @@ if [[ -n "$HELM_VALUES_FILE" ]] && ! is_absolute_path "$HELM_VALUES_FILE"; then
 fi
 if [[ -n "$HELM_VALUES_FILE" ]]; then
   [[ -f "$HELM_VALUES_FILE" ]] || die "HELM_VALUES_FILE does not exist: $HELM_VALUES_FILE"
+fi
+if [[ -n "$SECTORS_OFF_VALUES_FILE" ]] && ! is_absolute_path "$SECTORS_OFF_VALUES_FILE"; then
+  SECTORS_OFF_VALUES_FILE="$REPO_DIR/$SECTORS_OFF_VALUES_FILE"
+fi
+if [[ -n "$SECTORS_ENABLED_VALUES_FILE" ]] && ! is_absolute_path "$SECTORS_ENABLED_VALUES_FILE"; then
+  SECTORS_ENABLED_VALUES_FILE="$REPO_DIR/$SECTORS_ENABLED_VALUES_FILE"
+fi
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  [[ -f "$SECTORS_OFF_VALUES_FILE" ]] || die "sectors off values file does not exist: $SECTORS_OFF_VALUES_FILE"
+  [[ -f "$SECTORS_ENABLED_VALUES_FILE" ]] || die "sectors enabled values file does not exist: $SECTORS_ENABLED_VALUES_FILE"
+  case "$CONTROLLED_SECTORS_OPERATION" in
+    stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+      HELM_VALUES_FILE="$SECTORS_OFF_VALUES_FILE"
+      ;;
+    enable-sectors-config)
+      HELM_VALUES_FILE="$SECTORS_ENABLED_VALUES_FILE"
+      ;;
+  esac
+fi
+if [[ -n "$CAPABILITY_REPORT_FILE" ]] && ! is_absolute_path "$CAPABILITY_REPORT_FILE"; then
+  CAPABILITY_REPORT_FILE="$REPO_DIR/$CAPABILITY_REPORT_FILE"
+fi
+if [[ "$CONTROLLED_SECTORS_OPERATION" == promote-sectors-capability ]]; then
+  [[ -n "$CAPABILITY_REPORT_FILE" ]] || die '--promote-sectors-capability requires --report'
+  [[ -f "$CAPABILITY_REPORT_FILE" ]] || die "capability report does not exist: $CAPABILITY_REPORT_FILE"
 fi
 if [[ -n "$SCHEDULING_OVERLAY_FILE" ]] && ! is_absolute_path "$SCHEDULING_OVERLAY_FILE"; then
   SCHEDULING_OVERLAY_FILE="$REPO_DIR/$SCHEDULING_OVERLAY_FILE"
@@ -1267,6 +1494,15 @@ require_generic_deploy_values() {
     return 1
   fi
 }
+
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die "$CONTROLLED_SECTORS_OPERATION requires --kube-version"
+  [[ -z "$SCHEDULING_OVERLAY_FILE" ]] || die "$CONTROLLED_SECTORS_OPERATION does not accept a scheduling overlay"
+  require_generic_deploy_values "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_OFF_VALUES_FILE" \
+    || die 'reviewed sectors-off values must keep scheduled collection disabled/suspended'
+  require_generic_deploy_values "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_ENABLED_VALUES_FILE" \
+    || die 'reviewed sectors-enabled values must keep scheduled collection disabled/suspended'
+fi
 
 validate_identifier RELEASE_NAME "$RELEASE_NAME"
 validate_identifier NAMESPACE "$NAMESPACE"
@@ -1309,11 +1545,18 @@ fi
 
 EARLY_RENDER_ARGS=()
 COMPONENT_RENDER_ARGS=()
-if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule ]]; then
-  [[ -n "$FROZEN_IMAGE_REPOSITORY" && -n "$FROZEN_IMAGE_TAG" && -n "$FROZEN_IMAGE_DIGEST" ]] || die "$OPERATION requires frozen image repository, tag, and digest"
+if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule || -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  [[ -n "$FROZEN_IMAGE_REPOSITORY" && -n "$FROZEN_IMAGE_TAG" ]] \
+    || die "$OPERATION requires frozen image repository and tag"
   validate_scalar FROZEN_IMAGE_REPOSITORY "$FROZEN_IMAGE_REPOSITORY"
   validate_scalar FROZEN_IMAGE_TAG "$FROZEN_IMAGE_TAG"
-  [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
+  if [[ "$CONTROLLED_SECTORS_OPERATION" != stage-sectors-off ]]; then
+    [[ -n "$FROZEN_IMAGE_DIGEST" ]] || die "$OPERATION requires frozen image repository, tag, and digest"
+  fi
+  if [[ -n "$FROZEN_IMAGE_DIGEST" ]]; then
+    [[ "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
+  fi
   EARLY_RENDER_ARGS+=(--set "image.repository=$FROZEN_IMAGE_REPOSITORY")
   EARLY_RENDER_ARGS+=(--set "image.tag=$FROZEN_IMAGE_TAG")
 fi
@@ -1329,6 +1572,10 @@ if [[ "$OPERATION" == deploy ]]; then
   fi
 else
   IMAGE_TAG="${IMAGE_TAG:-unused}"
+fi
+if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+  [[ "$IMAGE_REPOSITORY" == "$FROZEN_IMAGE_REPOSITORY" && "$IMAGE_TAG" == "$FROZEN_IMAGE_TAG" ]] \
+    || die 'stage-sectors-off IMAGE_REPOSITORY/IMAGE_TAG must equal the frozen image identity'
 fi
 validate_scalar IMAGE_TAG "$IMAGE_TAG"
 if [[ "$OPERATION" == deploy ]]; then
@@ -1517,7 +1764,36 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       report_effective_trigger "$PACKET_INSPECTION"
       GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       ;;
+    promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+      REQUIRED_SCHEDULING_STATE=disabled
+      if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
+        die "$OPERATION reviewed packet failed to render"
+      fi
+      inspect_scheduling_packet "$RENDERED_PACKET" disabled "$LOCAL_KUBERNETES_VERSION" >/dev/null \
+        || die "$OPERATION requires both application CronJobs absent"
+      GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
+      ;;
   esac
+fi
+
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  REVIEWED_OFF_RENDER="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_OFF_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
+    || die 'reviewed sectors-off packet failed to render'
+  REVIEWED_ENABLED_RENDER="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_ENABLED_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
+    || die 'reviewed sectors-enabled packet failed to render'
+  printf '%s\n' "$REVIEWED_OFF_RENDER" | python3 "$PACKET_VALIDATOR" validate-sectors-packet \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --require-enabled 0 >/dev/null \
+    || die 'reviewed sectors-off packet violates the disabled runtime contract'
+  printf '%s\n' "$REVIEWED_ENABLED_RENDER" | python3 "$PACKET_VALIDATOR" validate-sectors-packet \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --require-enabled 1 >/dev/null \
+    || die 'reviewed sectors-enabled packet violates the enabled runtime contract'
+  python3 "$PACKET_VALIDATOR" compare-sectors-config-only \
+    --current <(printf '%s\n' "$REVIEWED_OFF_RENDER") \
+    --desired <(printf '%s\n' "$REVIEWED_ENABLED_RENDER") \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" \
+    --from-enabled 0 --to-enabled 1 \
+    || die 'reviewed sectors profiles differ outside the enabled flag'
 fi
 
 chart_sha256() {
@@ -1542,7 +1818,26 @@ verify_hash() {
 # --activate-schedule, or --disable-schedule.
 assert_clean_worktree() {
   [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
-    || die 'scheduling operations require a clean working tree'
+    || die 'reviewed operations require a clean working tree'
+}
+
+verify_controlled_sectors_packet() {
+  [[ -n "$REVIEWED_GIT_HEAD" ]] || die 'REVIEWED_GIT_HEAD is required'
+  [[ "$(git rev-parse HEAD)" == "$REVIEWED_GIT_HEAD" ]] \
+    || die 'reviewed Git HEAD does not match the checked-out source'
+  verify_hash 'reviewed chart' "$REVIEWED_CHART_SHA256" "$(chart_sha256)"
+  verify_hash 'reviewed sectors-off values' "$REVIEWED_OFF_VALUES_SHA256" \
+    "$(sha256sum "$SECTORS_OFF_VALUES_FILE" | awk '{print $1}')"
+  verify_hash 'reviewed sectors-enabled values' "$REVIEWED_ENABLED_VALUES_SHA256" \
+    "$(sha256sum "$SECTORS_ENABLED_VALUES_FILE" | awk '{print $1}')"
+  verify_hash 'reviewed sectors-off render' "$REVIEWED_OFF_RENDER_SHA256" \
+    "$(sha256_text "$REVIEWED_OFF_RENDER")"
+  verify_hash 'reviewed sectors-enabled render' "$REVIEWED_ENABLED_RENDER_SHA256" \
+    "$(sha256_text "$REVIEWED_ENABLED_RENDER")"
+  if [[ "$CONTROLLED_SECTORS_OPERATION" == promote-sectors-capability ]]; then
+    verify_hash 'reviewed capability report' "$REVIEWED_REPORT_SHA256" \
+      "$(sha256sum "$CAPABILITY_REPORT_FILE" | awk '{print $1}')"
+  fi
 }
 
 validate_activation_window() {
@@ -1566,6 +1861,10 @@ case "$OPERATION" in
     assert_clean_worktree
     ;;
 esac
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  assert_clean_worktree
+  verify_controlled_sectors_packet
+fi
 
 case "$OPERATION" in
   activate-schedule)
@@ -1587,6 +1886,10 @@ else
 fi
 DEPLOY_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
 DEPLOY_IMAGE_TAG="$IMAGE_TAG"
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  DEPLOY_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
+  DEPLOY_IMAGE_TAG="$FROZEN_IMAGE_TAG"
+fi
 if [[ "$COMPONENT_NAME" == schedule ]]; then
   DEPLOY_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
   DEPLOY_IMAGE_TAG="$FROZEN_IMAGE_TAG"
@@ -1646,7 +1949,7 @@ OPERATION_CHART_DIR="$SOURCE_CHART_DIR"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 OPERATION_SCHEDULING_OVERLAY="$SCHEDULING_OVERLAY_FILE"
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     command -v flock >/dev/null 2>&1 || die 'required command not found: flock'
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
     if [[ "$COMMON_GIT_DIR" != /* ]]; then
@@ -1657,7 +1960,7 @@ case "$OPERATION" in
     ;;
 esac
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     SNAPSHOT_DIR="$TMP_DIR/release-packet"
     mkdir -p "$SNAPSHOT_DIR"
     cp -R "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart"
@@ -1670,6 +1973,20 @@ case "$OPERATION" in
     if [[ -n "$SCHEDULING_OVERLAY_FILE" ]]; then
       cp "$SCHEDULING_OVERLAY_FILE" "$SNAPSHOT_DIR/overlay.yaml"
       OPERATION_SCHEDULING_OVERLAY="$SNAPSHOT_DIR/overlay.yaml"
+    fi
+    if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+      cp "$SECTORS_OFF_VALUES_FILE" "$SNAPSHOT_DIR/sectors-off.yaml"
+      cp "$SECTORS_ENABLED_VALUES_FILE" "$SNAPSHOT_DIR/sectors-enabled.yaml"
+      SECTORS_OFF_VALUES_FILE="$SNAPSHOT_DIR/sectors-off.yaml"
+      SECTORS_ENABLED_VALUES_FILE="$SNAPSHOT_DIR/sectors-enabled.yaml"
+      case "$CONTROLLED_SECTORS_OPERATION" in
+        stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+          OPERATION_BASELINE_VALUES="$SECTORS_OFF_VALUES_FILE"
+          ;;
+        enable-sectors-config)
+          OPERATION_BASELINE_VALUES="$SECTORS_ENABLED_VALUES_FILE"
+          ;;
+      esac
     fi
     if [[ "$OPERATION" == deploy ]]; then
       require_generic_deploy_values "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" \
@@ -1684,6 +2001,18 @@ case "$OPERATION" in
     fi
     if ! inspect_scheduling_packet "$SNAPSHOT_RENDER" "$REQUIRED_SCHEDULING_STATE" "$LOCAL_KUBERNETES_VERSION" >/dev/null; then
       die 'frozen release packet failed scheduling validation'
+    fi
+    if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+      SNAPSHOT_OFF_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$SECTORS_OFF_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
+        || die 'frozen reviewed sectors-off packet failed to render'
+      SNAPSHOT_ENABLED_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$SECTORS_ENABLED_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
+        || die 'frozen reviewed sectors-enabled packet failed to render'
+      [[ "$(sha256_text "$SNAPSHOT_OFF_RENDER")" == "$REVIEWED_OFF_RENDER_SHA256" ]] \
+        || die 'frozen reviewed sectors-off packet hash drifted'
+      [[ "$(sha256_text "$SNAPSHOT_ENABLED_RENDER")" == "$REVIEWED_ENABLED_RENDER_SHA256" ]] \
+        || die 'frozen reviewed sectors-enabled packet hash drifted'
+      REVIEWED_OFF_RENDER="$SNAPSHOT_OFF_RENDER"
+      REVIEWED_ENABLED_RENDER="$SNAPSHOT_ENABLED_RENDER"
     fi
     chmod -R a-w "$SNAPSHOT_DIR"
     RENDERED_PACKET="$SNAPSHOT_RENDER"
@@ -1743,12 +2072,12 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
 fi
 
-if [[ "$OPERATION" == deploy ]]; then
+if [[ "$OPERATION" == deploy || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
   if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
     die 'could not resolve the release-derived application cronjob name'
   fi
   GENERIC_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
-  if [[ "$COMPONENT_SELECTED" == true && ( "$COMPONENT_NAME" == service || "$COMPONENT_NAME" == schedule ) ]]; then
+  if [[ "$OPERATION" == deploy && "$COMPONENT_SELECTED" == true && ( "$COMPONENT_NAME" == service || "$COMPONENT_NAME" == schedule ) ]]; then
     verify_component_schedule_state || die "component=$COMPONENT_NAME prerequisite failed: live scheduling must be disabled or suspended"
   else
     verify_generic_deploy_precondition
@@ -1758,6 +2087,155 @@ elif [[ "$OPERATION" == disable-schedule ]]; then
     die 'could not resolve the release-derived application cronjob name'
   fi
   DISABLE_CRONJOB_NAME="$RESOLVED_CRONJOB_NAME"
+fi
+
+if [[ -n "$CONTROLLED_SECTORS_OPERATION" && "$CONTROLLED_SECTORS_OPERATION" != stage-sectors-off ]]; then
+  [[ "$(helm_release_presence)" == present ]] \
+    || die "$CONTROLLED_SECTORS_OPERATION requires an existing Helm release"
+fi
+
+if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+  require_all_application_cronjobs_absent 'stage-sectors-off precondition' \
+    || die 'stage-sectors-off could not prove both application CronJobs absent'
+  require_namespace_jobs_absent 'stage-sectors-off precondition' \
+    || die 'stage-sectors-off requires namespace Jobs absent'
+  PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+    || die 'stage-sectors-off could not capture Secret/PVC metadata before execution'
+fi
+
+if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
+  FROZEN_IMAGE="$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG"
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die "$OPERATION could not prove the exact Ready frozen runtime image"
+  require_all_application_cronjobs_absent "$OPERATION precondition" \
+    || die "$OPERATION could not prove both application CronJobs absent"
+  require_namespace_jobs_absent "$OPERATION precondition" \
+    || die "$OPERATION requires namespace Jobs absent"
+  PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+    || die "$OPERATION could not capture Secret/PVC metadata before execution"
+
+  if [[ "$OPERATION" == promote-sectors-capability ]]; then
+    PROMOTION_CURRENT_MANIFEST="$TMP_DIR/promotion-current-manifest.yaml"
+    PROMOTION_DESIRED_MANIFEST="$TMP_DIR/promotion-desired-manifest.yaml"
+    PROMOTION_LIVE_MANIFEST="$TMP_DIR/promotion-live-manifest.yaml"
+    printf '%s\n' "$REVIEWED_OFF_RENDER" > "$PROMOTION_DESIRED_MANIFEST"
+    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$PROMOTION_CURRENT_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-release-exact \
+      --current "$PROMOTION_CURRENT_MANIFEST" --desired "$PROMOTION_DESIRED_MANIFEST"
+    kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$PROMOTION_LIVE_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-live-desired \
+      --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+      --desired "$PROMOTION_DESIRED_MANIFEST" < "$PROMOTION_LIVE_MANIFEST"
+    PROMOTION_POD="$(select_runtime_sectors_pod 0)" \
+      || die 'production promotion requires one exact Ready sectors-off Pod'
+    verify_hash 'reviewed capability report' "$REVIEWED_REPORT_SHA256" \
+      "$(sha256sum "$CAPABILITY_REPORT_FILE" | awk '{print $1}')"
+    PROMOTION_ARGS=(
+      python -m src.market_environment.cli capabilities promote
+      --input - --provider fuyao --dataset sectors --revision fuyao-market-v2
+    )
+    if [[ "$PROMOTION_APPLY" == true ]]; then
+      PROMOTION_ARGS+=(--apply)
+    fi
+    log "streaming reviewed capability report to exact Ready Pod $PROMOTION_POD (apply=$PROMOTION_APPLY)"
+    kubectl exec -i --namespace "$NAMESPACE" "$PROMOTION_POD" -c dashboard -- \
+      "${PROMOTION_ARGS[@]}" < "$CAPABILITY_REPORT_FILE"
+    verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+      || die 'promotion postcondition could not prove the frozen runtime image'
+    select_runtime_sectors_pod 0 >/dev/null \
+      || die 'promotion postcondition requires the exact Ready Pod to remain sectors-off'
+    require_all_application_cronjobs_absent 'promotion postcondition' \
+      || die 'promotion postcondition could not prove both application CronJobs absent'
+    require_namespace_jobs_absent 'promotion postcondition' \
+      || die 'promotion postcondition requires namespace Jobs absent'
+    PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+      || die 'promotion postcondition could not capture Secret/PVC metadata'
+    [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+      || die 'promotion changed preserved Secret/PVC metadata'
+    log "controlled promotion completed: pod=$PROMOTION_POD image=$FROZEN_IMAGE apply=$PROMOTION_APPLY"
+    exit 0
+  fi
+
+  CURRENT_MANIFEST="$TMP_DIR/sectors-current-manifest.yaml"
+  DESIRED_MANIFEST="$TMP_DIR/sectors-desired-manifest.yaml"
+  LIVE_BEFORE_MANIFEST="$TMP_DIR/sectors-live-before.yaml"
+  LIVE_AFTER_MANIFEST="$TMP_DIR/sectors-live-after.yaml"
+  POST_MANIFEST="$TMP_DIR/sectors-post-manifest.yaml"
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$CURRENT_MANIFEST"
+  if [[ "$OPERATION" == enable-sectors-config ]]; then
+    CONFIG_FROM=0
+    CONFIG_TO=1
+    CONFIG_VALUES="$SECTORS_ENABLED_VALUES_FILE"
+    CONFIG_RENDER="$REVIEWED_ENABLED_RENDER"
+    CONFIG_RENDER_SHA256="$REVIEWED_ENABLED_RENDER_SHA256"
+  else
+    CONFIG_FROM=1
+    CONFIG_TO=0
+    CONFIG_VALUES="$SECTORS_OFF_VALUES_FILE"
+    CONFIG_RENDER="$REVIEWED_OFF_RENDER"
+    CONFIG_RENDER_SHA256="$REVIEWED_OFF_RENDER_SHA256"
+  fi
+  printf '%s\n' "$CONFIG_RENDER" > "$DESIRED_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-sectors-config-only \
+    --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST" \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE" --from-enabled "$CONFIG_FROM" --to-enabled "$CONFIG_TO"
+  kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$LIVE_BEFORE_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_MANIFEST"
+  select_runtime_sectors_pod "$CONFIG_FROM" >/dev/null \
+    || die "$OPERATION live Pod does not match the expected pre-rollout sectors state"
+
+  assert_clean_worktree
+  PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$CONFIG_VALUES" "" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+    --set "image.repository=$FROZEN_IMAGE_REPOSITORY" --set "image.tag=$FROZEN_IMAGE_TAG")" \
+    || die "$OPERATION frozen packet failed immediately before Helm write"
+  [[ "$(sha256_text "$PRE_WRITE_RENDER")" == "$CONFIG_RENDER_SHA256" ]] \
+    || die "$OPERATION frozen packet hash drifted immediately before Helm write"
+  verify_generic_deploy_precondition
+  GENERIC_DEPLOY_IN_FLIGHT=true
+  log "applying hook-free same-image sectors config: $CONFIG_FROM -> $CONFIG_TO"
+  helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
+    --namespace "$NAMESPACE" \
+    --values "$CONFIG_VALUES" \
+    --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
+    --set "image.tag=$FROZEN_IMAGE_TAG" \
+    --set component=all \
+    --no-hooks \
+    --atomic \
+    --wait \
+    --timeout "$HELM_TIMEOUT"
+  DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  [[ -n "$DEPLOYMENT_NAME" ]] || die "$OPERATION postcondition found no Dashboard Deployment"
+  kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$POST_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-release-exact \
+    --current "$POST_MANIFEST" --desired "$DESIRED_MANIFEST"
+  kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$LIVE_AFTER_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired "$DESIRED_MANIFEST" < "$LIVE_AFTER_MANIFEST"
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die "$OPERATION postcondition could not prove the frozen runtime image"
+  select_runtime_sectors_pod "$CONFIG_TO" >/dev/null \
+    || die "$OPERATION postcondition Pod has the wrong sectors state"
+  require_all_application_cronjobs_absent "$OPERATION postcondition" \
+    || die "$OPERATION postcondition could not prove both application CronJobs absent"
+  require_namespace_jobs_absent "$OPERATION postcondition" \
+    || die "$OPERATION postcondition requires namespace Jobs absent"
+  PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$CONFIG_RENDER")" \
+    || die "$OPERATION postcondition could not capture Secret/PVC metadata"
+  [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+    || die "$OPERATION changed preserved Secret/PVC metadata"
+  GENERIC_DEPLOY_IN_FLIGHT=false
+  log "same-image sectors config completed: $CONFIG_FROM -> $CONFIG_TO image=$FROZEN_IMAGE"
+  exit 0
 fi
 
 if [[ "$OPERATION" == deploy ]]; then
@@ -1870,6 +2348,15 @@ sha256sum --check '$ARCHIVE_NAME.sha256'
 sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
 sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
+  if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+    DISCOVERED_IMAGE_DIGEST="$(capture_containerd_image_digest "$IMAGE")" \
+      || die 'stage-sectors-off could not resolve one exact containerd manifest digest after import'
+    if [[ -n "$FROZEN_IMAGE_DIGEST" && "$FROZEN_IMAGE_DIGEST" != "$DISCOVERED_IMAGE_DIGEST" ]]; then
+      die "stage-sectors-off imported image digest drift: expected $FROZEN_IMAGE_DIGEST, got $DISCOVERED_IMAGE_DIGEST"
+    fi
+    FROZEN_IMAGE_DIGEST="$DISCOVERED_IMAGE_DIGEST"
+    log "stage-sectors-off froze imported image identity: $IMAGE@$FROZEN_IMAGE_DIGEST"
+  fi
 fi
 
 if [[ "$COMPONENT_NAME" == all ]]; then
@@ -2004,6 +2491,32 @@ if ! POST_DEPLOY_CRONJOBS="$(capture_live_cronjobs)"; then
 fi
 require_generic_schedule_disabled 'post-deploy live release' "$POST_DEPLOY_CRONJOBS"
 
+if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+  STAGE_POST_MANIFEST="$TMP_DIR/sectors-stage-post-manifest.yaml"
+  STAGE_LIVE_MANIFEST="$TMP_DIR/sectors-stage-live.yaml"
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$STAGE_POST_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-release-exact \
+    --current "$STAGE_POST_MANIFEST" \
+    --desired <(printf '%s\n' "$REVIEWED_OFF_RENDER")
+  kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$STAGE_LIVE_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired <(printf '%s\n' "$REVIEWED_OFF_RENDER") < "$STAGE_LIVE_MANIFEST"
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die 'stage-sectors-off postcondition could not prove the frozen runtime image'
+  select_runtime_sectors_pod 0 >/dev/null \
+    || die 'stage-sectors-off postcondition requires one exact Ready sectors-off Pod'
+  require_all_application_cronjobs_absent 'stage-sectors-off postcondition' \
+    || die 'stage-sectors-off postcondition could not prove both application CronJobs absent'
+  require_namespace_jobs_absent 'stage-sectors-off postcondition' \
+    || die 'stage-sectors-off postcondition requires namespace Jobs absent'
+  PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+    || die 'stage-sectors-off postcondition could not capture Secret/PVC metadata'
+  [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+    || die 'stage-sectors-off changed preserved Secret/PVC metadata'
+fi
+
 GENERIC_DEPLOY_IN_FLIGHT=false
 
 log "staged component deployment: status=completed order=database->service->schedule completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
@@ -2065,7 +2578,8 @@ if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || 
   kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$REPLICASETS_JSON"
   kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$PODS_JSON"
   python3 "$PACKET_VALIDATOR" verify-runtime-image \
-    --release-name "$RELEASE_NAME" --image "$FROZEN_IMAGE" --digest "$FROZEN_IMAGE_DIGEST" \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE" --digest "$FROZEN_IMAGE_DIGEST" \
     --deployments "$DEPLOYMENTS_JSON" --replicasets "$REPLICASETS_JSON" --pods "$PODS_JSON"
   # TrueNAS k3s 1.26 bundles an older ctr without `images info`. Build the
   # narrow JSON contract from the exact row in the stable `images ls` table.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from sqlalchemy import Connection, text
 
@@ -386,27 +386,18 @@ class PostgresProviderCapabilityRepository:
         ).mappings().first()
         return self._from_row(row).to_dict() if row is not None else None
 
-    def put_capability(self, report: Mapping[str, Any]) -> None:
+    def put_capability(
+        self,
+        report: Mapping[str, Any],
+    ) -> Literal["inserted", "identical", "conflict"]:
         value = ProviderCapabilityReport.from_dict(report).normalized()
-        existing = self.connection.execute(
-            text(
-                "SELECT checksum FROM provider_capability_reports "
-                "WHERE provider = :provider AND dataset = :dataset "
-                "AND revision = :revision"
-            ),
-            {
-                "provider": value.provider,
-                "dataset": value.dataset,
-                "revision": value.revision,
-            },
-        ).scalar_one_or_none()
-        if existing is not None and str(existing) != value.checksum:
-            raise ValueError(
-                "capability revision already exists with a different checksum: "
-                f"{value.provider}/{value.dataset}/{value.revision}"
-            )
         payload = value.to_dict()
-        self.connection.execute(
+        identity = {
+            "provider": value.provider,
+            "dataset": value.dataset,
+            "revision": value.revision,
+        }
+        inserted = self.connection.execute(
             text(
                 """
                 INSERT INTO provider_capability_reports(
@@ -422,21 +413,8 @@ class PostgresProviderCapabilityRepository:
                     :rate_limit_evidence_json, :sample_count, :warnings_json,
                     :missing_evidence_json, :checked_at, :schema_version, :checksum
                 )
-                ON CONFLICT(provider, dataset, revision) DO UPDATE SET
-                    status = excluded.status,
-                    endpoint = excluded.endpoint,
-                    field_coverage_json = excluded.field_coverage_json,
-                    date_evidence_json = excluded.date_evidence_json,
-                    history_window_json = excluded.history_window_json,
-                    pagination_evidence_json = excluded.pagination_evidence_json,
-                    permission_evidence_json = excluded.permission_evidence_json,
-                    rate_limit_evidence_json = excluded.rate_limit_evidence_json,
-                    sample_count = excluded.sample_count,
-                    warnings_json = excluded.warnings_json,
-                    missing_evidence_json = excluded.missing_evidence_json,
-                    checked_at = excluded.checked_at,
-                    schema_version = excluded.schema_version,
-                    checksum = excluded.checksum
+                ON CONFLICT(provider, dataset, revision) DO NOTHING
+                RETURNING checksum
                 """
             ),
             {
@@ -450,7 +428,23 @@ class PostgresProviderCapabilityRepository:
                 "warnings_json": _canonical_json(payload["warnings"]),
                 "missing_evidence_json": _canonical_json(payload["missing_evidence"]),
             },
-        )
+        ).scalar_one_or_none()
+        if inserted is not None:
+            return "inserted"
+
+        existing = self.connection.execute(
+            text(
+                "SELECT checksum FROM provider_capability_reports "
+                "WHERE provider = :provider AND dataset = :dataset "
+                "AND revision = :revision"
+            ),
+            identity,
+        ).scalar_one_or_none()
+        if existing is None:
+            raise RuntimeError(
+                "capability insert conflict could not be resolved"
+            )
+        return "identical" if str(existing) == value.checksum else "conflict"
 
     def list_capabilities(
         self,

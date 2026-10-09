@@ -1,5 +1,17 @@
 """Typed market-environment domain values."""
 
+from .capability import (
+    CAPABILITY_DATASETS,
+    CAPABILITY_SCHEMA_VERSION,
+    MIGRATABLE_DATASETS,
+    CapabilityDataset,
+    CapabilityReport,
+    CapabilityStatus,
+    FuyaoCapabilityReport,
+    ProviderCapabilityReport,
+    redact as redact_capability,
+)
+
 from .values import (
     AcquisitionFailure,
     AcquisitionFailureCategory,
@@ -20,6 +32,9 @@ from .values import (
 )
 
 __all__ = [
+    "CAPABILITY_DATASETS",
+    "CAPABILITY_SCHEMA_VERSION",
+    "MIGRATABLE_DATASETS",
     "CacheMetadata",
     "CacheState",
     "AcquisitionFailure",
@@ -36,4 +51,10 @@ __all__ = [
     "MaterializationRevision",
     "QualityMetadata",
     "RedactedProvenance",
+    "CapabilityDataset",
+    "CapabilityReport",
+    "CapabilityStatus",
+    "FuyaoCapabilityReport",
+    "ProviderCapabilityReport",
+    "redact_capability",
 ]

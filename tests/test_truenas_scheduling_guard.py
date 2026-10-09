@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -20,6 +21,8 @@ COMPONENT_FIXTURE = ROOT / "tests" / "fixtures" / "truenas_component_baseline.ya
 SUSPENDED = ROOT / "deploy" / "truenas" / "values-scheduled-suspended.yaml"
 ACTIVE = ROOT / "deploy" / "truenas" / "values-scheduled-active.yaml"
 OFF = ROOT / "deploy" / "truenas" / "values-scheduled-off.yaml"
+SECTORS_OFF = ROOT / "deploy" / "truenas" / "values-fuyao-sectors-off.yaml"
+SECTORS_ENABLED = ROOT / "deploy" / "truenas" / "values-fuyao-sectors-enabled.yaml"
 HELM = shutil.which("helm")
 
 def _values_with_database_secret(tmp_path: Path) -> Path:
@@ -384,6 +387,462 @@ def _render(chart: Path, baseline: Path, overlay: Path, state: str) -> str:
         text=True,
         check=True,
     ).stdout
+
+
+def _render_sector_profile(
+    values: Path,
+    *,
+    chart: Path = CHART,
+    image_repository: str = "registry.local/frozen",
+    image_tag: str = "reviewed-20261009",
+) -> str:
+    assert HELM is not None
+    return subprocess.run(
+        [
+            HELM,
+            "template",
+            "a-stock",
+            str(chart),
+            "--namespace",
+            "a-stock",
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--values",
+            str(values),
+            "--set",
+            f"image.repository={image_repository}",
+            "--set",
+            f"image.tag={image_tag}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.rstrip("\n") + "\n"
+
+
+def _write_documents(path: Path, documents: list[dict]) -> None:
+    path.write_text(yaml.safe_dump_all(documents, sort_keys=False), encoding="utf-8")
+
+
+def _sector_runtime_payloads(rendered: str) -> tuple[dict, dict, dict]:
+    deployment = next(
+        item
+        for item in yaml.safe_load_all(rendered)
+        if item and item.get("kind") == "Deployment"
+    )
+    deployment = copy.deepcopy(deployment)
+    deployment["metadata"].update(
+        {
+            "namespace": "a-stock",
+            "uid": "deployment-reviewed",
+            "annotations": {"deployment.kubernetes.io/revision": "7"},
+        }
+    )
+    dashboard = copy.deepcopy(deployment["spec"]["template"]["spec"]["containers"][0])
+    labels = {"app.kubernetes.io/instance": "a-stock"}
+    replicaset = {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "metadata": {
+            "name": "a-stock-reviewed-7",
+            "namespace": "a-stock",
+            "uid": "replicaset-reviewed",
+            "labels": labels,
+            "annotations": {"deployment.kubernetes.io/revision": "7"},
+            "ownerReferences": [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": deployment["metadata"]["name"],
+                    "uid": "deployment-reviewed",
+                    "controller": True,
+                }
+            ],
+        },
+        "spec": {"template": {"spec": {"containers": [copy.deepcopy(dashboard)]}}},
+    }
+    pods = {
+        "apiVersion": "v1",
+        "kind": "PodList",
+        "items": [
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {
+                    "name": "a-stock-dashboard-reviewed",
+                    "namespace": "a-stock",
+                    "uid": "pod-reviewed",
+                    "labels": labels,
+                    "ownerReferences": [
+                        {
+                            "apiVersion": "apps/v1",
+                            "kind": "ReplicaSet",
+                            "name": "a-stock-reviewed-7",
+                            "uid": "replicaset-reviewed",
+                            "controller": True,
+                        }
+                    ],
+                },
+                "spec": {"containers": [dashboard]},
+                "status": {
+                    "phase": "Running",
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                    "containerStatuses": [
+                        {
+                            "name": "dashboard",
+                            "image": dashboard["image"],
+                            "imageID": f"containerd://sha256:{'e' * 64}",
+                            "ready": True,
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    return (
+        {"apiVersion": "apps/v1", "kind": "DeploymentList", "items": [deployment]},
+        {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": [replicaset]},
+        pods,
+    )
+
+
+def _run_promotion_pod_selector(
+    tmp_path: Path, payloads: tuple[dict, dict, dict]
+) -> subprocess.CompletedProcess[str]:
+    deployments, replicasets, pods = payloads
+    deployments_path = tmp_path / "deployments.json"
+    replicasets_path = tmp_path / "replicasets.json"
+    desired_path = tmp_path / "reviewed-off.yaml"
+    deployments_path.write_text(json.dumps(deployments), encoding="utf-8")
+    replicasets_path.write_text(json.dumps(replicasets), encoding="utf-8")
+    desired_path.write_text(_render_sector_profile(SECTORS_OFF), encoding="utf-8")
+    return _run_validator(
+        "select-disabled-promotion-pod",
+        json.dumps(pods),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--digest",
+        f"sha256:{'d' * 64}",
+        "--deployments",
+        str(deployments_path),
+        "--replicasets",
+        str(replicasets_path),
+        "--desired",
+        str(desired_path),
+    )
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("values", "enabled"),
+    [(SECTORS_OFF, "0"), (SECTORS_ENABLED, "1")],
+    ids=["off", "enabled"],
+)
+def test_reviewed_sectors_packet_validator_accepts_profiles(values: Path, enabled: str) -> None:
+    rendered = _render_sector_profile(values)
+
+    completed = _run_validator(
+        "validate-sectors-packet",
+        rendered,
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--require-enabled",
+        enabled,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "databaseSecret": "a-stock-postgresql",
+        "deployment": "a-stock",
+        "image": "registry.local/frozen:reviewed-20261009",
+        "providerSecret": "a-stock-market-provider",
+        "sectorsEnabled": enabled,
+    }
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_sectors_config_only_comparator_accepts_only_bidirectional_flag_flip(
+    tmp_path: Path,
+) -> None:
+    off = tmp_path / "off.yaml"
+    enabled = tmp_path / "enabled.yaml"
+    off.write_text(_render_sector_profile(SECTORS_OFF), encoding="utf-8")
+    enabled.write_text(_render_sector_profile(SECTORS_ENABLED), encoding="utf-8")
+
+    for current, desired, before, after in (
+        (off, enabled, "0", "1"),
+        (enabled, off, "1", "0"),
+    ):
+        completed = _run_validator(
+            "compare-sectors-config-only",
+            "",
+            "--current",
+            str(current),
+            "--desired",
+            str(desired),
+            "--release-name",
+            "a-stock",
+            "--namespace",
+            "a-stock",
+            "--image",
+            "registry.local/frozen:reviewed-20261009",
+            "--from-enabled",
+            before,
+            "--to-enabled",
+            after,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "image",
+        "revision",
+        "database-secret",
+        "provider-secret",
+        "replicas",
+        "service",
+        "pvc",
+        "environment",
+        "topology",
+        "namespace",
+        "resource-set",
+        "hook",
+    ],
+)
+def test_sectors_config_only_comparator_rejects_unrelated_drift(
+    tmp_path: Path, drift: str
+) -> None:
+    off_documents = [item for item in yaml.safe_load_all(_render_sector_profile(SECTORS_OFF)) if item]
+    enabled_documents = [
+        item for item in yaml.safe_load_all(_render_sector_profile(SECTORS_ENABLED)) if item
+    ]
+    deployment = next(item for item in enabled_documents if item["kind"] == "Deployment")
+    dashboard = deployment["spec"]["template"]["spec"]["containers"][0]
+    environment = {item["name"]: item for item in dashboard["env"]}
+    if drift == "image":
+        dashboard["image"] = "registry.local/drift:reviewed-20261009"
+    elif drift == "revision":
+        environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"]["value"] = "other"
+    elif drift == "database-secret":
+        environment["MARKET_ENVIRONMENT_DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"] = (
+            "other-database"
+        )
+    elif drift == "provider-secret":
+        environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] = (
+            "other-provider"
+        )
+    elif drift == "replicas":
+        deployment["spec"]["replicas"] = 2
+    elif drift == "service":
+        service = next(item for item in enabled_documents if item["kind"] == "Service")
+        service["spec"]["ports"][0]["port"] = 81
+    elif drift == "pvc":
+        pvc = next(item for item in enabled_documents if item["kind"] == "PersistentVolumeClaim")
+        pvc["spec"]["resources"]["requests"]["storage"] = "6Gi"
+    elif drift == "environment":
+        environment["MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"]["value"] = "0"
+    elif drift == "topology":
+        deployment["spec"]["template"]["spec"]["automountServiceAccountToken"] = True
+    elif drift == "namespace":
+        deployment["metadata"]["namespace"] = "wrong"
+    elif drift == "resource-set":
+        enabled_documents.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "unexpected",
+                    "namespace": "a-stock",
+                    "labels": {"app.kubernetes.io/instance": "a-stock"},
+                },
+            }
+        )
+    else:
+        enabled_documents.append(
+            {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "metadata": {
+                    "name": "unreviewed-hook",
+                    "namespace": "a-stock",
+                    "labels": {"app.kubernetes.io/instance": "a-stock"},
+                    "annotations": {"helm.sh/hook": "pre-upgrade"},
+                },
+                "spec": {},
+            }
+        )
+    off = tmp_path / "off.yaml"
+    enabled = tmp_path / "enabled.yaml"
+    _write_documents(off, off_documents)
+    _write_documents(enabled, enabled_documents)
+
+    completed = _run_validator(
+        "compare-sectors-config-only",
+        "",
+        "--current",
+        str(off),
+        "--desired",
+        str(enabled),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--from-enabled",
+        "0",
+        "--to-enabled",
+        "1",
+    )
+
+    assert completed.returncode != 0
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_sectors_config_only_comparator_rejects_noop_transition(tmp_path: Path) -> None:
+    off = tmp_path / "off.yaml"
+    off.write_text(_render_sector_profile(SECTORS_OFF), encoding="utf-8")
+
+    completed = _run_validator(
+        "compare-sectors-config-only",
+        "",
+        "--current",
+        str(off),
+        "--desired",
+        str(off),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--from-enabled",
+        "0",
+        "--to-enabled",
+        "0",
+    )
+
+    assert completed.returncode != 0
+    assert "must change the sectors enabled flag" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_compare_release_exact_rejects_hook_drift(tmp_path: Path) -> None:
+    reviewed = [item for item in yaml.safe_load_all(_render_sector_profile(SECTORS_OFF)) if item]
+    drifted = copy.deepcopy(reviewed)
+    hook = next(
+        item
+        for item in drifted
+        if "helm.sh/hook" in ((item.get("metadata") or {}).get("annotations") or {})
+    )
+    hook["spec"]["template"]["spec"]["containers"][0]["command"] = ["sh", "-c", "false"]
+    reviewed_path = tmp_path / "reviewed.yaml"
+    drifted_path = tmp_path / "drifted.yaml"
+    _write_documents(reviewed_path, reviewed)
+    _write_documents(drifted_path, drifted)
+
+    completed = _run_validator(
+        "compare-release-exact",
+        "",
+        "--current",
+        str(drifted_path),
+        "--desired",
+        str(reviewed_path),
+    )
+
+    assert completed.returncode != 0
+    assert "hook drift" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "duplicate",
+        "not-ready",
+        "image",
+        "enabled",
+        "database-secret",
+        "namespace",
+        "owner",
+        "image-id",
+        "disabled-env",
+        "provider-secret",
+        "extra-env",
+        "deleting",
+    ],
+)
+def test_promotion_pod_selector_rejects_unsafe_runtime(
+    tmp_path: Path, failure: str
+) -> None:
+    payloads = _sector_runtime_payloads(_render_sector_profile(SECTORS_OFF))
+    pod = payloads[2]["items"][0]
+    dashboard = pod["spec"]["containers"][0]
+    if failure == "duplicate":
+        duplicate = copy.deepcopy(pod)
+        duplicate["metadata"]["name"] = "a-stock-dashboard-duplicate"
+        payloads[2]["items"].append(duplicate)
+    elif failure == "not-ready":
+        pod["status"]["conditions"][0]["status"] = "False"
+    elif failure == "image":
+        dashboard["image"] = "registry.local/drift:reviewed-20261009"
+    elif failure == "enabled":
+        next(
+            item
+            for item in dashboard["env"]
+            if item["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
+        )["value"] = "1"
+    elif failure == "database-secret":
+        dashboard["env"] = [
+            item
+            for item in dashboard["env"]
+            if item["name"] != "MARKET_ENVIRONMENT_DATABASE_URL"
+        ]
+    elif failure == "namespace":
+        pod["metadata"]["namespace"] = "wrong"
+    elif failure == "owner":
+        pod["metadata"]["ownerReferences"][0]["uid"] = "wrong"
+    elif failure == "image-id":
+        pod["status"]["containerStatuses"][0]["imageID"] = "invalid"
+    elif failure == "disabled-env":
+        next(
+            item
+            for item in dashboard["env"]
+            if item["name"] == "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED"
+        )["value"] = "1"
+    elif failure == "provider-secret":
+        dashboard["env"] = [
+            item
+            for item in dashboard["env"]
+            if item["name"] != "MARKET_ENVIRONMENT_FUYAO_API_KEY"
+        ]
+    elif failure == "extra-env":
+        dashboard["env"].append({"name": "UNREVIEWED_RUNTIME_FLAG", "value": "1"})
+    else:
+        pod["metadata"]["deletionTimestamp"] = "2026-10-09T00:00:00Z"
+
+    completed = _run_promotion_pod_selector(tmp_path, payloads)
+
+    assert completed.returncode != 0
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_promotion_pod_selector_returns_exact_ready_disabled_pod(tmp_path: Path) -> None:
+    payloads = _sector_runtime_payloads(_render_sector_profile(SECTORS_OFF))
+
+    completed = _run_promotion_pod_selector(tmp_path, payloads)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "a-stock-dashboard-reviewed"
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_release_comparators_allow_only_add_suspended_and_suspend_flip(tmp_path: Path) -> None:
@@ -1371,7 +1830,10 @@ def _component_fake_repo(
     shutil.copy2(VALIDATOR, repo / "scripts" / VALIDATOR.name)
     shutil.copy2(COMPONENT_FIXTURE, repo / "tests" / "fixtures" / COMPONENT_FIXTURE.name)
     shutil.copy2(ROOT / "Dockerfile", repo / "Dockerfile")
-    sources = {path.name: path for path in (BASELINE, SUSPENDED, ACTIVE, OFF)}
+    sources = {
+        path.name: path
+        for path in (BASELINE, SUSPENDED, ACTIVE, OFF, SECTORS_OFF, SECTORS_ENABLED)
+    }
     copied: dict[str, Path] = {}
     for source in sources.values():
         destination = repo / "deploy" / "truenas" / source.name
@@ -1383,6 +1845,407 @@ def _component_fake_repo(
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
     return repo, repo / "scripts" / SCRIPT.name, copied[baseline_name], copied
+
+
+def _controlled_sector_packet(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, Path, dict[str, str]]:
+    repo, script, _, values = _component_fake_repo(tmp_path)
+    off = values[SECTORS_OFF.name]
+    enabled = values[SECTORS_ENABLED.name]
+    image_repository = "registry.local/frozen"
+    image_tag = "reviewed-20261009"
+    off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository=image_repository,
+        image_tag=image_tag,
+    )
+    enabled_render = _render_sector_profile(
+        enabled,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository=image_repository,
+        image_tag=image_tag,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    reviewed = {
+        "REVIEWED_GIT_HEAD": head,
+        "REVIEWED_CHART_SHA256": _chart_hash(repo),
+        "REVIEWED_OFF_VALUES_SHA256": hashlib.sha256(off.read_bytes()).hexdigest(),
+        "REVIEWED_ENABLED_VALUES_SHA256": hashlib.sha256(enabled.read_bytes()).hexdigest(),
+        "REVIEWED_OFF_RENDER_SHA256": hashlib.sha256(off_render.encode()).hexdigest(),
+        "REVIEWED_ENABLED_RENDER_SHA256": hashlib.sha256(enabled_render.encode()).hexdigest(),
+        "FROZEN_IMAGE_REPOSITORY": image_repository,
+        "FROZEN_IMAGE_TAG": image_tag,
+        "FROZEN_IMAGE_DIGEST": f"sha256:{'d' * 64}",
+    }
+    env_file = tmp_path / "controlled-sectors.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                *[f"{name}={value}" for name, value in reviewed.items()],
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return repo, script, env_file, off, enabled, reviewed
+
+
+def _run_controlled_sector_entry(
+    script: Path,
+    env_file: Path,
+    off: Path,
+    enabled: Path,
+    fake_bin: Path,
+    operation: str = "--enable-sectors-config",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            operation,
+            "--off-values",
+            str(off),
+            "--enabled-values",
+            str(enabled),
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--release-name",
+            "a-stock",
+            "--namespace",
+            "a-stock",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_HELM": HELM or "helm",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_controlled_sectors_operation_rejects_dirty_tree_before_target_access(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    (repo / "unreviewed.txt").write_text("dirty\n", encoding="utf-8")
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_sector_entry(script, env_file, off, enabled, fake_bin)
+
+    assert completed.returncode != 0
+    assert "clean working tree" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "REVIEWED_GIT_HEAD",
+        "REVIEWED_CHART_SHA256",
+        "REVIEWED_OFF_VALUES_SHA256",
+        "REVIEWED_ENABLED_VALUES_SHA256",
+        "REVIEWED_OFF_RENDER_SHA256",
+        "REVIEWED_ENABLED_RENDER_SHA256",
+    ],
+)
+def test_controlled_sectors_operation_rejects_reviewed_identity_drift_before_target_access(
+    tmp_path: Path, variable: str
+) -> None:
+    _, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    content = env_file.read_text(encoding="utf-8")
+    content = "\n".join(
+        f"{variable}={'0' * (40 if variable == 'REVIEWED_GIT_HEAD' else 64)}"
+        if line.startswith(f"{variable}=")
+        else line
+        for line in content.splitlines()
+    )
+    env_file.write_text(content + "\n", encoding="utf-8")
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_sector_entry(script, env_file, off, enabled, fake_bin)
+
+    assert completed.returncode != 0
+    assert "reviewed" in completed.stderr.lower()
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_controlled_sectors_operation_requires_complete_frozen_image_before_target_access(
+    tmp_path: Path,
+) -> None:
+    _, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8").replace(
+            f"FROZEN_IMAGE_DIGEST=sha256:{'d' * 64}\n", ""
+        ),
+        encoding="utf-8",
+    )
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_sector_entry(script, env_file, off, enabled, fake_bin)
+
+    assert completed.returncode != 0
+    assert "requires frozen image repository, tag, and digest" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_stage_sectors_off_does_not_require_digest_before_target_access(
+    tmp_path: Path,
+) -> None:
+    _, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    content = env_file.read_text(encoding="utf-8").replace(
+        f"FROZEN_IMAGE_DIGEST=sha256:{'d' * 64}\n", ""
+    )
+    env_file.write_text(
+        content
+        + "REMOTE_IMAGE_DIR=/unreachable\n"
+        + "IMAGE_REPOSITORY=registry.local/frozen\n"
+        + "IMAGE_TAG=reviewed-20261009\n",
+        encoding="utf-8",
+    )
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_sector_entry(
+        script, env_file, off, enabled, fake_bin, operation="--stage-sectors-off"
+    )
+
+    assert completed.returncode == 97
+    assert "requires frozen image repository, tag, and digest" not in completed.stderr
+    assert marker.read_text(encoding="utf-8").splitlines() == ["ssh"]
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_controlled_sectors_operation_rejects_profile_drift_before_target_access(
+    tmp_path: Path,
+) -> None:
+    _, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    enabled.write_text(
+        enabled.read_text(encoding="utf-8").replace(
+            "  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n    value: \"1\"",
+            "  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n    value: \"0\"",
+        ),
+        encoding="utf-8",
+    )
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_sector_entry(script, env_file, off, enabled, fake_bin)
+
+    assert completed.returncode != 0
+    assert "differ outside the enabled flag" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_controlled_promotion_rejects_report_hash_drift_before_kubectl_exec(
+    tmp_path: Path,
+) -> None:
+    _, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    report = tmp_path / "reviewed-report.json"
+    report.write_text('{"provider":"fuyao","reports":[]}\n', encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"REVIEWED_REPORT_SHA256={'0' * 64}\n")
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--promote-sectors-capability",
+            "--off-values",
+            str(off),
+            "--enabled-values",
+            str(enabled),
+            "--report",
+            str(report),
+            "--kube-version",
+            "1.26.6+k3s1",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_HELM": HELM,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "reviewed capability report SHA-256 drift" in completed.stderr
+    assert not marker.exists()
+
+
+def test_controlled_sectors_commands_are_narrow_and_hook_free() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    controlled = source.split(
+        'if [[ "$OPERATION" == promote-sectors-capability || '
+        '"$OPERATION" == enable-sectors-config || '
+        '"$OPERATION" == disable-sectors-config ]]; then',
+        1,
+    )[1].split('if [[ "$OPERATION" == deploy ]]; then', 1)[0]
+    promotion = controlled.split("PROMOTION_ARGS=(", 1)[1].split("exit 0", 1)[0]
+    config = controlled.split('log "applying hook-free same-image sectors config', 1)[1]
+
+    assert "kubectl exec -i --namespace" in promotion
+    assert "-c dashboard --" in promotion
+    assert "capabilities promote" in promotion
+    assert "--input - --provider fuyao --dataset sectors --revision fuyao-market-v2" in promotion
+    assert controlled.index("compare-release-exact") < controlled.index("kubectl exec -i")
+    assert controlled.index("compare-live-desired") < controlled.index("kubectl exec -i")
+    assert "kubectl cp" not in promotion
+    assert "sh -c" not in promotion
+    assert "helm upgrade \"$RELEASE_NAME\"" in config
+    assert "--set component=all" in config
+    assert "--no-hooks" in config
+    assert "--atomic" in config
+    assert "--wait" in config
+    assert "--install" not in config
+    for forbidden in ("podman build", "podman save", "scp ", "images import", "kubectl cp"):
+        assert forbidden not in controlled
+
+
+def test_stage_sectors_off_freezes_single_import_digest_before_helm_write() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    execution = source.split('log "building $IMAGE"', 1)[1].split(
+        'if [[ "$OPERATION" == read-only-discovery ]]; then', 1
+    )[0]
+
+    assert source.count("podman build \\") == 1
+    assert source.count("podman save --format docker-archive") == 1
+    assert source.count("images import '$ARCHIVE_NAME'") == 1
+    assert execution.index("images import '$ARCHIVE_NAME'") < execution.index(
+        'DISCOVERED_IMAGE_DIGEST="$(capture_containerd_image_digest "$IMAGE")"'
+    )
+    assert execution.index("DISCOVERED_IMAGE_DIGEST=") < execution.index(
+        'deploy_step_or_exit database'
+    )
+    assert "could not resolve one exact containerd manifest digest after import" in execution
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_stage_sectors_off_stops_before_helm_when_imported_digest_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository="registry.local/frozen",
+        image_tag="reviewed-20261009",
+    )
+    stored_manifest = tmp_path / "stored-off.yaml"
+    stored_manifest.write_text(off_render, encoding="utf-8")
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    content = env_file.read_text(encoding="utf-8").replace(
+        f"FROZEN_IMAGE_DIGEST=sha256:{'d' * 64}\n", ""
+    )
+    env_file.write_text(
+        content
+        + "REMOTE_IMAGE_DIR=/unreachable\n"
+        + "IMAGE_REPOSITORY=registry.local/frozen\n"
+        + "IMAGE_TAG=reviewed-20261009\n"
+        + f"KUBECONFIG={kubeconfig}\n",
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "stage-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "stage-calls"
+    helm_wrapper = fake_bin / "helm"
+    helm_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'helm %s\\n' \"$*\" >> {calls}\n"
+        "case \"$1\" in\n"
+        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
+        "  list) printf '[{\"name\":\"a-stock\"}]\\n' ;;\n"
+        f"  get) cat {stored_manifest} ;;\n"
+        "  upgrade) exit 93 ;;\n"
+        "  *) exit 94 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm_wrapper.chmod(0o755)
+    kubectl_wrapper = fake_bin / "kubectl"
+    kubectl_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
+        "if [[ \"$*\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == cronjob ]]; then exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == jobs ]]; then printf '{\"items\":[]}'; exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == secret ]]; then printf 'secret-uid|11'; exit 0; fi\n"
+        "if [[ \"$1\" == get && \"$2\" == pvc ]]; then printf 'pvc-uid|12|pv-reviewed|Bound|5Gi'; exit 0; fi\n"
+        "exit 95\n",
+        encoding="utf-8",
+    )
+    kubectl_wrapper.chmod(0o755)
+    podman_wrapper = fake_bin / "podman"
+    podman_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'podman %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$1\" == save ]]; then\n"
+        "  while (($#)); do\n"
+        "    if [[ \"$1\" == --output ]]; then : > \"$2\"; exit 0; fi\n"
+        "    shift\n"
+        "  done\n"
+        "  exit 96\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    podman_wrapper.chmod(0o755)
+    ssh_wrapper = fake_bin / "ssh"
+    ssh_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"matches += 1\"* ]]; then exit 91; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ssh_wrapper.chmod(0o755)
+    for name in ("nc", "scp", "curl"):
+        executable = fake_bin / name
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '{name} %s\\n' \"$*\" >> {calls}\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+
+    completed = _run_controlled_sector_entry(
+        script, env_file, off, enabled, fake_bin, operation="--stage-sectors-off"
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode != 0
+    assert "could not resolve one exact containerd manifest digest after import" in completed.stderr
+    assert call_log.count("podman build ") == 1
+    assert call_log.count("podman save ") == 1
+    assert call_log.count("scp ") == 1
+    assert call_log.count("images import") == 1
+    assert "helm upgrade" not in call_log
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize(

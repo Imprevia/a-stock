@@ -1,0 +1,61 @@
+# Configuration-only rollback for the reviewed Fuyao sectors profile. Keep this
+# file identical to values-fuyao-sectors-enabled.yaml except for sectors.enabled
+# so rollback retains the revision, Secret reference, PVC, and all other flags.
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20260905-1904b66
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  persistentCache: true
+  settlementTime: "15:10"
+  scrapling:
+    enabled: false
+    allowlist: []
+  tdx:
+    derivedActiveDirectionEnabled: true
+  limits:
+    v1Enabled: true
+    fuyao:
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  fuyao:
+    existingSecret: a-stock-market-provider
+    secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    datasets:
+      sectors:
+        enabled: false
+        approvedRevision: fuyao-market-v2
+        shadowEnabled: false
+  scheduledCollection:
+    enabled: false
+    suspend: true
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED
+    value: "0"

@@ -19,6 +19,8 @@ _ENV_DATASET_NAMES = {
     "activeDirection": "ACTIVE_DIRECTION",
 }
 
+FUYAO_SECTORS_RUNTIME_REVISION = "fuyao-market-v2"
+
 
 def _parse_bool(raw: str, *, name: str) -> bool:
     if not isinstance(raw, str):
@@ -48,7 +50,14 @@ class FuyaoDatasetConfig:
 
     @property
     def can_cutover(self) -> bool:
-        return self.enabled and bool(self.approved_revision)
+        return (
+            self.enabled
+            and bool(self.approved_revision)
+            and (
+                self.dataset != "sectors"
+                or self.approved_revision == FUYAO_SECTORS_RUNTIME_REVISION
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -101,6 +110,7 @@ FuyaoProviderConfig = FuyaoCollectionConfig
 
 
 __all__ = [
+    "FUYAO_SECTORS_RUNTIME_REVISION",
     "FuyaoCollectionConfig",
     "FuyaoConfigurationError",
     "FuyaoDatasetConfig",

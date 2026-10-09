@@ -5,7 +5,10 @@ import json
 import pytest
 
 from src.market_environment.collection import CollectionCoordinator
-from src.market_environment.fuyao_config import FuyaoCollectionConfig
+from src.market_environment.fuyao_config import (
+    FUYAO_SECTORS_RUNTIME_REVISION,
+    FuyaoCollectionConfig,
+)
 from src.market_environment.fuyao_market import FuyaoMarketResult
 from src.market_environment.provider_capability import ProviderCapabilityReport
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
@@ -110,9 +113,10 @@ class EnrichingSectorProvider(FailingSectorProvider):
 
 
 class FuyaoSectorAdapter:
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail=False, revision=FUYAO_SECTORS_RUNTIME_REVISION):
         self.calls = 0
         self.fail = fail
+        self.revision = revision
 
     def fetch_sectors(self, as_of):
         self.calls += 1
@@ -140,7 +144,7 @@ class FuyaoSectorAdapter:
                 "dataset": "industry-ranking",
                 "source": "fuyao",
                 "provider": "fuyao",
-                "providerRevision": "r1",
+                "providerRevision": self.revision,
                 "status": "fallback",
                 "observations": 1,
                 "asOf": as_of.isoformat(),
@@ -154,8 +158,20 @@ class FuyaoSectorAdapter:
         )
 
 
-def eligible_report(dataset: str) -> ProviderCapabilityReport:
-    return ProviderCapabilityReport(provider="fuyao", dataset=dataset, revision="r1", status="eligible")
+def eligible_report(
+    dataset: str,
+    *,
+    revision: str | None = None,
+) -> ProviderCapabilityReport:
+    selected_revision = revision or (
+        FUYAO_SECTORS_RUNTIME_REVISION if dataset == "sectors" else "r1"
+    )
+    return ProviderCapabilityReport(
+        provider="fuyao",
+        dataset=dataset,
+        revision=selected_revision,
+        status="eligible",
+    )
 
 
 def test_enabled_dataset_is_rejected_before_lease_when_revision_missing(tmp_path):
@@ -193,7 +209,7 @@ def test_sectors_prefers_eastmoney_when_it_is_healthy(tmp_path):
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     adapter = FuyaoSectorAdapter()
@@ -217,7 +233,7 @@ def test_sectors_shadow_failure_does_not_block_eastmoney_result(tmp_path):
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED": "1",
         }
     )
@@ -244,7 +260,7 @@ def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = FailingSectorProvider()
@@ -267,11 +283,65 @@ def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
     assert snapshot.payload["rows"][0]["mainNet"] is None
     assert "东方财富行业排名不可用" in (result.tasks[0].warning or "")
     assert "扶摇行业 provider fields unavailable" in (result.tasks[0].warning or "")
-    assert "capability revision: r1" in (result.tasks[0].warning or "")
+    assert f"capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}" in (result.tasks[0].warning or "")
     warning = result.tasks[0].warning or ""
     assert warning.index("扶摇行业 provider fields unavailable") < warning.index("东方财富行业排名不可用")
-    assert warning.index("东方财富行业排名不可用") < warning.index("capability revision: r1")
-    assert result.tasks[0].timings["sourceRevision"] == "r1"
+    assert warning.index("东方财富行业排名不可用") < warning.index(
+        f"capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}"
+    )
+    assert result.tasks[0].timings["sourceRevision"] == FUYAO_SECTORS_RUNTIME_REVISION
+
+
+def test_sectors_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp_path):
+    revision = "fuyao-market-v2"
+    store = SnapshotStore(tmp_path / "snapshots-v2.sqlite3")
+    store.put_capability_report(eligible_report("sectors", revision=revision))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": revision,
+        }
+    )
+    provider = FailingSectorProvider()
+    adapter = FuyaoSectorAdapter(revision=revision)
+
+    result = CollectionCoordinator(
+        provider,
+        store,
+        now=lambda: NOW,
+        fuyao_config=config,
+        fuyao_adapter=adapter,
+        rebuild_aggregate=lambda _date: None,
+    ).collect(AS_OF, ["sectors"])
+    task = result.tasks[0]
+    snapshot = store.get("sectors", AS_OF)
+
+    assert result.run.status == "partial"
+    assert task.status == "partial"
+    assert task.source == "fuyao"
+    assert task.timings["sourceRevision"] == revision
+    assert adapter.calls == 1
+    assert snapshot is not None
+    assert snapshot.as_of == AS_OF
+    assert snapshot.payload["quality"]["asOf"] == AS_OF.isoformat()
+    row = snapshot.payload["rows"][0]
+    assert {field: row[field] for field in ("code", "name", "changePct", "amount")} == {
+        "code": "881101.TI",
+        "name": "电子",
+        "changePct": 2.5,
+        "amount": 1000.0,
+    }
+    assert all(
+        row[field] is None
+        for field in ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
+    )
+    warning = task.warning or ""
+    assert warning.index("扶摇行业 provider fields unavailable") < warning.index(
+        "东方财富行业排名不可用"
+    )
+    assert warning.index("东方财富行业排名不可用") < warning.index(
+        f"capability revision: {revision}"
+    )
 
 
 def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_path):
@@ -280,7 +350,7 @@ def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = EnrichingSectorProvider()
@@ -316,7 +386,7 @@ def test_sector_enrichment_failure_commits_fuyao_base_and_does_not_fail_siblings
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = EnrichingSectorProvider(fail_enrichment=True)
@@ -348,7 +418,7 @@ def test_sector_enrichment_is_skipped_before_settlement_without_provider_call(tm
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = EnrichingSectorProvider()
@@ -378,7 +448,7 @@ def test_sector_enrichment_is_skipped_for_historical_date_without_provider_call(
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = EnrichingSectorProvider()
@@ -424,7 +494,7 @@ def test_sector_enrichment_settlement_boundary_is_inclusive(
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     provider = EnrichingSectorProvider()
@@ -453,7 +523,7 @@ def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     adapter = FuyaoSectorAdapter()
@@ -470,10 +540,40 @@ def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):
     assert "缺少批准报告" in (result.tasks[0].warning or "")
 
 
+@pytest.mark.parametrize("revision", ["fuyao-market-v1", "unknown-revision"])
+def test_sectors_matching_eligible_non_v2_report_still_blocks_fuyao_io(
+    tmp_path,
+    revision,
+):
+    store = SnapshotStore(tmp_path / f"snapshots-{revision}.sqlite3")
+    store.put_capability_report(eligible_report("sectors", revision=revision))
+    config = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": revision,
+        }
+    )
+    adapter = FuyaoSectorAdapter(revision=revision)
+
+    result = CollectionCoordinator(
+        FailingSectorProvider(),
+        store,
+        now=lambda: NOW,
+        fuyao_config=config,
+        fuyao_adapter=adapter,
+    ).collect(AS_OF, ["sectors"])
+
+    assert result.tasks[0].status == "failed-missing"
+    assert adapter.calls == 0
+    warning = result.tasks[0].warning or ""
+    assert f"仅接受 capability revision {FUYAO_SECTORS_RUNTIME_REVISION}" in warning
+    assert revision in warning
+
+
 @pytest.mark.parametrize(
     ("report", "expected_warning"),
     [
-        (ProviderCapabilityReport(provider="fuyao", dataset="sectors", revision="r1", status="ineligible"), "状态为 ineligible"),
+        (ProviderCapabilityReport(provider="fuyao", dataset="sectors", revision=FUYAO_SECTORS_RUNTIME_REVISION, status="ineligible"), "状态为 ineligible"),
         (ProviderCapabilityReport(provider="fuyao", dataset="sectors", revision="r2", status="eligible"), "revision 不匹配"),
     ],
 )
@@ -483,7 +583,7 @@ def test_sectors_capability_status_or_revision_mismatch_blocks_provider(tmp_path
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     adapter = FuyaoSectorAdapter()
@@ -519,7 +619,7 @@ def test_sectors_fallback_failure_retains_only_same_date_snapshot(tmp_path):
     config = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED": "1",
-            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": "r1",
+            "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
     result = CollectionCoordinator(
@@ -550,6 +650,10 @@ def test_offline_capability_probe_uses_fixture_only(monkeypatch, tmp_path, capsy
 
 
 def test_real_probe_dispatches_to_fuyao_and_persists_redacted_reports(monkeypatch, tmp_path, capsys):
+    class EmptyQuoteProvider:
+        def fetch_quotes(self, specs):
+            return {}
+
     class ProbeAdapter:
         def __init__(self, client):
             assert client is not None
@@ -589,6 +693,7 @@ def test_real_probe_dispatches_to_fuyao_and_persists_redacted_reports(monkeypatc
             return self._result("sectors", status="fallback")
 
     monkeypatch.setenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "probe-secret")
+    monkeypatch.setattr(market_cli, "MarketDataProvider", EmptyQuoteProvider)
     monkeypatch.setattr(market_cli, "FuyaoMarketAdapter", ProbeAdapter)
     monkeypatch.setattr(market_cli, "FuyaoMarketClient", lambda: object())
     output = tmp_path / "real-probe.json"
@@ -605,7 +710,8 @@ def test_real_probe_dispatches_to_fuyao_and_persists_redacted_reports(monkeypatc
             "--path",
             str(store_path),
             "--allow-real",
-        ]
+        ],
+        now=lambda: NOW,
     )
 
     assert exit_code == 0
@@ -620,7 +726,7 @@ def test_real_probe_dispatches_to_fuyao_and_persists_redacted_reports(monkeypatc
 
 def test_current_real_probe_passes_independent_quotes_to_core(monkeypatch, tmp_path, capsys):
     current_as_of = date(2026, 9, 29)
-    current_now = datetime(2026, 9, 29, 16, 31, tzinfo=MARKET_TIME_ZONE)
+    current_now = datetime(2026, 9, 29, 15, 10, tzinfo=MARKET_TIME_ZONE)
     quote_calls = []
     core_quote_args = []
 
@@ -691,3 +797,67 @@ def test_current_real_probe_passes_independent_quotes_to_core(monkeypatch, tmp_p
     assert quote_calls == [("sh000001", "sz399001", "sz399006", "sh000300", "sh000905")]
     assert core_quote_args and set(core_quote_args[0]) == set(quote_calls[0])
     assert "probe-secret" not in output.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("requested", "current", "expected_error"),
+    (
+        (
+            date(2026, 9, 18),
+            datetime(2026, 9, 18, 15, 9, tzinfo=MARKET_TIME_ZONE),
+            "after the configured settlement time",
+        ),
+        (
+            date(2026, 9, 17),
+            datetime(2026, 9, 18, 16, 0, tzinfo=MARKET_TIME_ZONE),
+            "current effective Shanghai market date",
+        ),
+        (
+            date(2026, 9, 18),
+            datetime(2026, 9, 19, 16, 0, tzinfo=MARKET_TIME_ZONE),
+            "Shanghai market weekday",
+        ),
+    ),
+)
+def test_real_probe_rejects_invalid_market_boundary_before_io(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    requested,
+    current,
+    expected_error,
+):
+    provider_construction = []
+
+    def fail_provider(*args, **kwargs):
+        provider_construction.append((args, kwargs))
+        raise AssertionError("provider construction must remain zero")
+
+    monkeypatch.setenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "probe-secret")
+    monkeypatch.setattr(market_cli, "FuyaoMarketClient", fail_provider)
+    monkeypatch.setattr(market_cli, "MarketDataProvider", fail_provider)
+    output = tmp_path / "real-probe.json"
+    store_path = tmp_path / "real-probe.sqlite3"
+
+    exit_code = cli_main(
+        [
+            "fuyao",
+            "real-probe",
+            "--as-of",
+            requested.isoformat(),
+            "--output",
+            str(output),
+            "--path",
+            str(store_path),
+            "--allow-real",
+        ],
+        now=lambda: current,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert expected_error in payload["error"]
+    assert "probe-secret" not in json.dumps(payload)
+    assert provider_construction == []
+    assert not output.exists()
+    assert not store_path.exists()

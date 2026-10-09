@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.pool import StaticPool
 
 from src.market_environment.application.ports import (
@@ -197,6 +197,16 @@ def test_provider_capability_repository_is_immutable_per_revision_and_filterable
     repository_connection,
 ) -> None:
     repository = PostgresProviderCapabilityRepository(repository_connection)
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(
+        repository_connection.engine,
+        "before_cursor_execute",
+        capture_statement,
+    )
     report = ProviderCapabilityReport(
         provider="fuyao",
         dataset="core",
@@ -207,12 +217,33 @@ def test_provider_capability_repository_is_immutable_per_revision_and_filterable
         checked_at=FETCHED_AT,
     ).normalized()
 
-    repository.put_capability(report.to_dict())
-    loaded = repository.get_capability("fuyao", "core", "r1")
+    try:
+        assert repository.put_capability(report.to_dict()) == "inserted"
+        loaded = repository.get_capability("fuyao", "core", "r1")
 
-    assert isinstance(repository, ProviderCapabilityRepository)
-    assert loaded == report.to_dict()
-    assert repository.list_capabilities(provider="fuyao") == (report.to_dict(),)
-    changed = {**report.to_dict(), "sample_count": 6, "checksum": ""}
-    with pytest.raises(ValueError, match="different checksum"):
-        repository.put_capability(changed)
+        assert isinstance(repository, ProviderCapabilityRepository)
+        assert loaded == report.to_dict()
+        assert repository.list_capabilities(provider="fuyao") == (report.to_dict(),)
+        assert repository.put_capability(report.to_dict()) == "identical"
+        changed = {**report.to_dict(), "sample_count": 6, "checksum": ""}
+        assert repository.put_capability(changed) == "conflict"
+        assert repository.get_capability("fuyao", "core", "r1") == report.to_dict()
+    finally:
+        event.remove(
+            repository_connection.engine,
+            "before_cursor_execute",
+            capture_statement,
+        )
+
+    inserts = [
+        statement.upper()
+        for statement in statements
+        if "INSERT INTO PROVIDER_CAPABILITY_REPORTS" in statement.upper()
+    ]
+    assert inserts
+    assert all(
+        "ON CONFLICT(PROVIDER, DATASET, REVISION) DO NOTHING" in statement
+        for statement in inserts
+    )
+    assert all("RETURNING CHECKSUM" in statement for statement in inserts)
+    assert all("DO UPDATE" not in statement for statement in inserts)

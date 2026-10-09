@@ -19,6 +19,19 @@ TRACKED_LIVE_KINDS = {
     "Deployment": "apps/v1",
     "CronJob": "batch/v1",
 }
+SECTORS_ENABLED_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
+SECTORS_REVISION_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"
+SECTORS_DISABLED_ENVS = (
+    "MARKET_ENVIRONMENT_SCRAPLING_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_BREADTH_SHADOW_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_ENABLED",
+    "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_SHADOW_ENABLED",
+    "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED",
+)
 SEMVER_PATTERN = re.compile(
     r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\."
     r"(?P<patch>0|[1-9]\d*)"
@@ -281,6 +294,323 @@ def without_helm_hooks(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def helm_hooks(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        document
+        for document in documents
+        if isinstance((document.get("metadata") or {}).get("annotations"), dict)
+        and "helm.sh/hook" in (document.get("metadata") or {}).get("annotations", {})
+    ]
+
+
+def _validate_resource_namespaces(
+    documents: list[dict[str, Any]], namespace: str, description: str
+) -> None:
+    for document in documents:
+        metadata = document.get("metadata")
+        actual = metadata.get("namespace") if isinstance(metadata, dict) else None
+        if actual not in {None, "", namespace}:
+            fail(f"{description} resource namespace must be {namespace}, got {actual}")
+
+
+def _validate_reviewed_hooks(
+    documents: list[dict[str, Any]], release_name: str, expected_image: str
+) -> list[dict[str, Any]]:
+    hooks = helm_hooks(documents)
+    if not hooks:
+        return hooks
+    if len(hooks) != 1:
+        fail("sectors packet may contain only the reviewed schema migration hook")
+    hook = hooks[0]
+    metadata = hook.get("metadata") or {}
+    annotations = metadata.get("annotations") or {}
+    labels = metadata.get("labels") or {}
+    containers = (((hook.get("spec") or {}).get("template") or {}).get("spec") or {}).get(
+        "containers", []
+    )
+    migration = [
+        item for item in containers if isinstance(item, dict) and item.get("name") == "schema-migration"
+    ]
+    if (
+        hook.get("kind") != "Job"
+        or release_label(hook) != release_name
+        or labels.get("app.kubernetes.io/component") != "database-migration"
+        or annotations.get("helm.sh/hook") != "post-install,post-upgrade"
+        or annotations.get("helm.sh/hook-weight") != "-5"
+        or annotations.get("helm.sh/hook-delete-policy")
+        != "before-hook-creation,hook-succeeded"
+        or len(migration) != 1
+        or migration[0].get("image") != expected_image
+        or migration[0].get("command") != ["alembic", "upgrade", "head"]
+    ):
+        fail("sectors packet contains an unreviewed Helm hook")
+    environment = _environment_index(migration[0], "schema migration hook")
+    _required_secret_reference(
+        environment, "MARKET_ENVIRONMENT_DATABASE_URL", "schema migration database URL"
+    )
+    return hooks
+
+
+def _dashboard_deployment(
+    documents: list[dict[str, Any]], release_name: str, description: str
+) -> dict[str, Any]:
+    deployments = [
+        document
+        for document in documents
+        if document.get("kind") == "Deployment" and release_label(document) == release_name
+    ]
+    if len(deployments) != 1:
+        fail(f"{description} must contain exactly one release Dashboard Deployment")
+    return deployments[0]
+
+
+def _dashboard_container(deployment: dict[str, Any], description: str) -> dict[str, Any]:
+    containers = named_entries(
+        deployment, ("spec", "template", "spec", "containers"), "dashboard"
+    )
+    if len(containers) != 1:
+        fail(f"{description} must contain exactly one dashboard container")
+    return containers[0]
+
+
+def _environment_index(container: dict[str, Any], description: str) -> dict[str, dict[str, Any]]:
+    environment = container.get("env")
+    if not isinstance(environment, list) or not all(isinstance(item, dict) for item in environment):
+        fail(f"{description} env must be a list of objects")
+    result: dict[str, dict[str, Any]] = {}
+    for item in environment:
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            fail(f"{description} env names must be non-empty strings")
+        if name in result:
+            fail(f"{description} contains duplicate env name {name}")
+        result[name] = item
+    return result
+
+
+def _required_secret_reference(
+    environment: dict[str, dict[str, Any]], name: str, description: str
+) -> dict[str, Any]:
+    item = environment.get(name)
+    value_from = item.get("valueFrom") if isinstance(item, dict) else None
+    secret_ref = value_from.get("secretKeyRef") if isinstance(value_from, dict) else None
+    if (
+        not isinstance(secret_ref, dict)
+        or not isinstance(secret_ref.get("name"), str)
+        or not secret_ref["name"]
+        or not isinstance(secret_ref.get("key"), str)
+        or not secret_ref["key"]
+        or "value" in item
+    ):
+        fail(f"{description} must use a named Secret key reference")
+    return secret_ref
+
+
+def _validate_sectors_environment(
+    environment: dict[str, dict[str, Any]], required_enabled: str, description: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    enabled = environment.get(SECTORS_ENABLED_ENV)
+    if not isinstance(enabled, dict) or enabled != {
+        "name": SECTORS_ENABLED_ENV,
+        "value": required_enabled,
+    }:
+        fail(f"{SECTORS_ENABLED_ENV} must equal {required_enabled}")
+    revision = environment.get(SECTORS_REVISION_ENV)
+    if not isinstance(revision, dict) or revision != {
+        "name": SECTORS_REVISION_ENV,
+        "value": "fuyao-market-v2",
+    }:
+        fail(f"{SECTORS_REVISION_ENV} must equal fuyao-market-v2")
+    for name in SECTORS_DISABLED_ENVS:
+        item = environment.get(name)
+        if not isinstance(item, dict) or item != {"name": name, "value": "0"}:
+            fail(f"{name} must equal 0")
+    database_ref = _required_secret_reference(
+        environment, "MARKET_ENVIRONMENT_DATABASE_URL", f"{description} database URL"
+    )
+    provider_ref = _required_secret_reference(
+        environment, "MARKET_ENVIRONMENT_FUYAO_API_KEY", f"{description} Fuyao API key"
+    )
+    if database_ref["name"] == provider_ref["name"]:
+        fail("database and Fuyao credentials must use independent Secrets")
+    return database_ref, provider_ref
+
+
+def validate_sectors_packet(
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    required_enabled: str,
+) -> dict[str, Any]:
+    if required_enabled not in {"0", "1"}:
+        fail("required sectors enabled value must be 0 or 1")
+    inspect(documents, release_name, namespace, "disabled")
+    _validate_resource_namespaces(documents, namespace, "sectors packet")
+    release_documents = without_helm_hooks(documents)
+    deployment = _dashboard_deployment(release_documents, release_name, "sectors packet")
+    spec = deployment.get("spec")
+    if not isinstance(spec, dict) or spec.get("replicas") != 1:
+        fail("sectors packet Dashboard Deployment must have exactly one replica")
+    container = _dashboard_container(deployment, "sectors packet Dashboard Deployment")
+    image = container.get("image")
+    if not isinstance(image, str) or not image:
+        fail("sectors packet Dashboard image must be non-empty")
+    _validate_reviewed_hooks(documents, release_name, image)
+    environment = _environment_index(container, "sectors packet Dashboard")
+    database_ref, provider_ref = _validate_sectors_environment(
+        environment, required_enabled, "runtime"
+    )
+    return {
+        "deployment": metadata_value(deployment, "name"),
+        "image": image,
+        "databaseSecret": database_ref["name"],
+        "providerSecret": provider_ref["name"],
+        "sectorsEnabled": required_enabled,
+    }
+
+
+def compare_sectors_config_only(
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    expected_from: str,
+    expected_to: str,
+) -> None:
+    current_summary = validate_sectors_packet(
+        current, release_name, namespace, expected_from
+    )
+    desired_summary = validate_sectors_packet(
+        desired, release_name, namespace, expected_to
+    )
+    if current_summary["image"] != expected_image or desired_summary["image"] != expected_image:
+        fail(f"config-only rollout must preserve frozen image {expected_image}")
+
+    current_index = indexed(without_helm_hooks(current))
+    desired_index = indexed(without_helm_hooks(desired))
+    current_hooks = helm_hooks(current)
+    desired_hooks = helm_hooks(desired)
+    if current_hooks and desired_hooks and indexed(current_hooks) != indexed(desired_hooks):
+        fail("config-only rollout contains Helm hook drift")
+    if current_index.keys() != desired_index.keys():
+        fail("config-only rollout must preserve the complete release resource set")
+
+    deployment_keys = [key for key in current_index if key[1] == "Deployment"]
+    if len(deployment_keys) != 1:
+        fail("config-only rollout must contain exactly one Deployment")
+    deployment_key = deployment_keys[0]
+    for key in current_index:
+        if key != deployment_key and current_index[key] != desired_index[key]:
+            fail(f"config-only rollout contains non-Deployment drift: {key}")
+
+    before = copy.deepcopy(current_index[deployment_key])
+    after = copy.deepcopy(desired_index[deployment_key])
+    before_container = _dashboard_container(before, "current Dashboard Deployment")
+    after_container = _dashboard_container(after, "desired Dashboard Deployment")
+    before_environment = _environment_index(before_container, "current Dashboard")
+    after_environment = _environment_index(after_container, "desired Dashboard")
+    if before_environment.keys() != after_environment.keys():
+        fail("config-only rollout must not add or remove environment variables")
+    for name in before_environment:
+        if name == SECTORS_ENABLED_ENV:
+            continue
+        if before_environment[name] != after_environment[name]:
+            fail(f"config-only rollout contains unrelated environment drift: {name}")
+    before_container.pop("env")
+    after_container.pop("env")
+    if before != after:
+        fail("config-only rollout contains Deployment drift outside dashboard env")
+
+
+def compare_release_exact(
+    current: list[dict[str, Any]], desired: list[dict[str, Any]]
+) -> None:
+    current_hooks = helm_hooks(current)
+    desired_hooks = helm_hooks(desired)
+    if current_hooks and desired_hooks and indexed(current_hooks) != indexed(desired_hooks):
+        fail("stored release contains Helm hook drift")
+    if indexed(without_helm_hooks(current)) != indexed(without_helm_hooks(desired)):
+        fail("stored release manifest differs from the reviewed packet")
+
+
+def select_disabled_promotion_pod(
+    payload: dict[str, Any],
+    deployments_payload: dict[str, Any],
+    replicasets_payload: dict[str, Any],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    digest: str,
+    required_enabled: str = "0",
+) -> str:
+    if required_enabled not in {"0", "1"}:
+        fail("required sectors enabled value must be 0 or 1")
+    verify_runtime_image(
+        deployments_payload,
+        replicasets_payload,
+        payload,
+        release_name,
+        namespace,
+        expected_image,
+        digest,
+    )
+    pods = kubernetes_json_items(payload, "Pod", "Pod")
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for pod in pods:
+        if release_label(pod) != release_name:
+            continue
+        dashboards = named_entries(pod, ("spec", "containers"), "dashboard")
+        if dashboards:
+            if len(dashboards) != 1:
+                fail("promotion Pod must contain exactly one dashboard container")
+            candidates.append((pod, dashboards[0]))
+    if len(candidates) != 1:
+        fail("promotion requires exactly one release Dashboard Pod")
+    pod, dashboard = candidates[0]
+    metadata = pod.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("namespace") != namespace
+        or metadata.get("deletionTimestamp") is not None
+    ):
+        fail(f"promotion Dashboard Pod must be live in namespace {namespace}")
+    status = pod.get("status")
+    ready_conditions = (
+        [item for item in status.get("conditions", []) if isinstance(item, dict) and item.get("type") == "Ready"]
+        if isinstance(status, dict)
+        else []
+    )
+    statuses = named_entries(pod, ("status", "containerStatuses"), "dashboard")
+    if (
+        not isinstance(status, dict)
+        or status.get("phase") != "Running"
+        or len(ready_conditions) != 1
+        or ready_conditions[0].get("status") != "True"
+        or len(statuses) != 1
+        or statuses[0].get("ready") is not True
+    ):
+        fail("promotion Dashboard Pod must be Running and Ready")
+    if dashboard.get("image") != expected_image:
+        fail(f"promotion Dashboard Pod must use frozen image {expected_image}")
+    environment = _environment_index(dashboard, "promotion Dashboard Pod")
+    _validate_sectors_environment(environment, required_enabled, "promotion runtime")
+    desired_deployment = _dashboard_deployment(
+        without_helm_hooks(desired), release_name, "reviewed promotion packet"
+    )
+    desired_environment = _environment_index(
+        _dashboard_container(desired_deployment, "reviewed promotion packet"),
+        "reviewed promotion packet",
+    )
+    if environment != desired_environment:
+        fail("promotion Dashboard Pod environment differs from the reviewed packet")
+    name = metadata_value(pod, "name")
+    if not isinstance(name, str) or not name:
+        fail("promotion Dashboard Pod metadata.name is missing")
+    return name
+
+
 def compare_add_suspended(
     current: list[dict[str, Any]], desired: list[dict[str, Any]], release_name: str, namespace: str
 ) -> None:
@@ -441,6 +771,7 @@ def verify_runtime_image(
     replicasets_payload: dict[str, Any],
     pods_payload: dict[str, Any],
     release_name: str,
+    namespace: str,
     image: str,
     digest: str,
 ) -> None:
@@ -454,6 +785,13 @@ def verify_runtime_image(
     if len(matching_deployments) != 1:
         fail("expected exactly one release Dashboard Deployment")
     deployment = matching_deployments[0]
+    deployment_metadata = deployment.get("metadata")
+    if (
+        not isinstance(deployment_metadata, dict)
+        or deployment_metadata.get("namespace") != namespace
+        or deployment_metadata.get("deletionTimestamp") is not None
+    ):
+        fail(f"release Dashboard Deployment must be live in namespace {namespace}")
     deployment_name = metadata_value(deployment, "name")
     deployment_uid = metadata_value(deployment, "uid")
     annotations = metadata_value(deployment, "annotations")
@@ -502,6 +840,13 @@ def verify_runtime_image(
     if len(current_replicasets) != 1:
         fail("expected exactly one current ReplicaSet for the release Dashboard Deployment")
     current_replicaset = current_replicasets[0]
+    replicaset_metadata = current_replicaset.get("metadata")
+    if (
+        not isinstance(replicaset_metadata, dict)
+        or replicaset_metadata.get("namespace") != namespace
+        or replicaset_metadata.get("deletionTimestamp") is not None
+    ):
+        fail(f"current Dashboard ReplicaSet must be live in namespace {namespace}")
     replicaset_name = metadata_value(current_replicaset, "name")
     replicaset_uid = metadata_value(current_replicaset, "uid")
     if not isinstance(replicaset_name, str) or not replicaset_name:
@@ -562,6 +907,13 @@ def verify_runtime_image(
     if len(dashboard_pods) != 1:
         fail("expected exactly one release Dashboard Pod")
     pod = dashboard_pods[0]
+    pod_metadata = pod.get("metadata")
+    if (
+        not isinstance(pod_metadata, dict)
+        or pod_metadata.get("namespace") != namespace
+        or pod_metadata.get("deletionTimestamp") is not None
+    ):
+        fail(f"Dashboard Pod must be live in namespace {namespace}")
     verify_controller_owner(pod, "ReplicaSet", replicaset_name, replicaset_uid, "Dashboard Pod")
 
     dashboard_specs = named_entries(pod, ("spec", "containers"), "dashboard")
@@ -1200,6 +1552,7 @@ def main() -> None:
     runtime.add_argument("--replicasets", type=Path, required=True)
     runtime.add_argument("--pods", type=Path, required=True)
     runtime.add_argument("--release-name", required=True)
+    runtime.add_argument("--namespace", required=True)
     runtime.add_argument("--image", required=True)
     runtime.add_argument("--digest", required=True)
 
@@ -1207,6 +1560,34 @@ def main() -> None:
     live_desired.add_argument("--desired", type=Path, required=True)
     live_desired.add_argument("--release-name", required=True)
     live_desired.add_argument("--namespace", required=True)
+
+    sectors_packet = subparsers.add_parser("validate-sectors-packet")
+    sectors_packet.add_argument("--release-name", required=True)
+    sectors_packet.add_argument("--namespace", required=True)
+    sectors_packet.add_argument("--require-enabled", choices=("0", "1"), required=True)
+
+    sectors_config = subparsers.add_parser("compare-sectors-config-only")
+    sectors_config.add_argument("--current", type=Path, required=True)
+    sectors_config.add_argument("--desired", type=Path, required=True)
+    sectors_config.add_argument("--release-name", required=True)
+    sectors_config.add_argument("--namespace", required=True)
+    sectors_config.add_argument("--image", required=True)
+    sectors_config.add_argument("--from-enabled", choices=("0", "1"), required=True)
+    sectors_config.add_argument("--to-enabled", choices=("0", "1"), required=True)
+
+    release_exact = subparsers.add_parser("compare-release-exact")
+    release_exact.add_argument("--current", type=Path, required=True)
+    release_exact.add_argument("--desired", type=Path, required=True)
+
+    promotion_pod = subparsers.add_parser("select-disabled-promotion-pod")
+    promotion_pod.add_argument("--release-name", required=True)
+    promotion_pod.add_argument("--namespace", required=True)
+    promotion_pod.add_argument("--image", required=True)
+    promotion_pod.add_argument("--digest", required=True)
+    promotion_pod.add_argument("--deployments", type=Path, required=True)
+    promotion_pod.add_argument("--replicasets", type=Path, required=True)
+    promotion_pod.add_argument("--desired", type=Path, required=True)
+    promotion_pod.add_argument("--require-enabled", choices=("0", "1"), default="0")
 
     args = parser.parse_args()
     if args.command == "parse-version":
@@ -1256,6 +1637,7 @@ def main() -> None:
             load_json_path(args.replicasets, "ReplicaSet"),
             load_json_path(args.pods, "Pod"),
             args.release_name,
+            args.namespace,
             args.image,
             args.digest,
         )
@@ -1265,6 +1647,43 @@ def main() -> None:
             load_path(args.desired),
             args.release_name,
             args.namespace,
+        )
+    elif args.command == "validate-sectors-packet":
+        result = validate_sectors_packet(
+            load_documents(sys.stdin),
+            args.release_name,
+            args.namespace,
+            args.require_enabled,
+        )
+        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+        sys.stdout.write("\n")
+    elif args.command == "compare-sectors-config-only":
+        if args.from_enabled == args.to_enabled:
+            fail("config-only rollout must change the sectors enabled flag")
+        compare_sectors_config_only(
+            load_path(args.current),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+            args.image,
+            args.from_enabled,
+            args.to_enabled,
+        )
+    elif args.command == "compare-release-exact":
+        compare_release_exact(load_path(args.current), load_path(args.desired))
+    elif args.command == "select-disabled-promotion-pod":
+        print(
+            select_disabled_promotion_pod(
+                load_json(sys.stdin, "Pod"),
+                load_json_path(args.deployments, "Deployment"),
+                load_json_path(args.replicasets, "ReplicaSet"),
+                load_path(args.desired),
+                args.release_name,
+                args.namespace,
+                args.image,
+                args.digest,
+                args.require_enabled,
+            )
         )
     else:
         payload = load_json(sys.stdin, "Kubernetes")

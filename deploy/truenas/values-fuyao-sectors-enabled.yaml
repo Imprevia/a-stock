@@ -1,0 +1,61 @@
+# Reviewed ordinary-deployment profile for the Fuyao THS sectors fallback.
+# The provider credential remains in the pre-created Secret; this file contains
+# only the Secret reference and the approved capability revision.
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20260905-1904b66
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  persistentCache: true
+  settlementTime: "15:10"
+  scrapling:
+    enabled: false
+    allowlist: []
+  tdx:
+    derivedActiveDirectionEnabled: true
+  limits:
+    v1Enabled: true
+    fuyao:
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  fuyao:
+    existingSecret: a-stock-market-provider
+    secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    datasets:
+      sectors:
+        enabled: true
+        approvedRevision: fuyao-market-v2
+        shadowEnabled: false
+  scheduledCollection:
+    enabled: false
+    suspend: true
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED
+    value: "0"

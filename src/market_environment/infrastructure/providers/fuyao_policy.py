@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .fuyao.config import FuyaoCollectionConfig
+from .fuyao.config import (
+    FUYAO_SECTORS_RUNTIME_REVISION,
+    FuyaoCollectionConfig,
+    FuyaoDatasetConfig,
+)
 
 
 class FuyaoCollectionPolicy:
@@ -25,7 +29,7 @@ class FuyaoCollectionPolicy:
         if dataset not in self.config.datasets:
             return False
         config = self.config.for_dataset(dataset)
-        if not config.enabled:
+        if not config.can_cutover:
             return False
         if dataset in {"core", "breadth"} and config.approved_revision == "fuyao-market-v1":
             return False
@@ -44,6 +48,8 @@ class FuyaoCollectionPolicy:
         config = self.config.datasets.get(dataset)
         if config is None or not config.enabled:
             return f"扶摇 {dataset} 未启用"
+        if revision_error := self._revision_error(config):
+            return revision_error
         report = self.capability_reports.get_capability_report(
             "fuyao",
             dataset,
@@ -80,7 +86,7 @@ class FuyaoCollectionPolicy:
         return (
             config.approved_revision
             if config and config.approved_revision
-            else "fuyao-market-v2"
+            else FUYAO_SECTORS_RUNTIME_REVISION
         )
 
     def _cutover_error(self, dataset: str) -> str | None:
@@ -89,6 +95,8 @@ class FuyaoCollectionPolicy:
         config = self.config.for_dataset(dataset)
         if not config.enabled:
             return None
+        if revision_error := self._revision_error(config):
+            return revision_error
         if dataset in {"core", "breadth"} and config.approved_revision == "fuyao-market-v1":
             return (
                 f"扶摇 {dataset} 不接受过时 capability revision fuyao-market-v1；"
@@ -116,6 +124,19 @@ class FuyaoCollectionPolicy:
             return (
                 f"扶摇 {dataset} capability revision 不匹配：批准 {config.approved_revision}，"
                 f"实际 {report.revision}"
+            )
+        return None
+
+    @staticmethod
+    def _revision_error(config: FuyaoDatasetConfig) -> str | None:
+        if (
+            config.dataset == "sectors"
+            and config.approved_revision != FUYAO_SECTORS_RUNTIME_REVISION
+        ):
+            return (
+                "扶摇 sectors 仅接受 capability revision "
+                f"{FUYAO_SECTORS_RUNTIME_REVISION}；配置为 "
+                f"{config.approved_revision or 'missing'}"
             )
         return None
 

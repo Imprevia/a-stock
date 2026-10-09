@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -34,6 +35,7 @@ from .fuyao.market import (
     FuyaoMarketResult,
     FuyaoMarketTransportError,
 )
+from .fuyao.config import FUYAO_SECTORS_RUNTIME_REVISION
 from .provenance import evidence_fingerprint, redact_provenance
 from .sector_enrichment import (
     ENRICHMENT_MAPPING_REVISION,
@@ -64,7 +66,7 @@ _SECTOR_ROW_FIELDS = (
     "downCount",
     "leader",
 )
-_FUYAO_FIELDS = ("rank", "code", "name", "changePct", "amount")
+_FUYAO_FIELDS = ("code", "name", "changePct", "amount")
 _SUCCESS_STATUSES = frozenset({"ok", "partial", "fallback", "fallback-derived"})
 _HISTORICAL_WARNING = "该数据源仅提供最新市场快照，历史日期不使用当前数据回填"
 _ENRICHMENT_GATE_WARNING = "东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用"
@@ -430,6 +432,67 @@ def _normalize_payload(
         )
 
 
+def _validate_fuyao_sector_rows(
+    payload: Mapping[str, Any],
+    request: SourceRequest,
+    capability: SourceCapability,
+    *,
+    fetched_at: datetime,
+    timings: AcquisitionTimings,
+    provenance: RedactedProvenance,
+) -> AcquisitionFailure | None:
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return None
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, Mapping):
+            return None
+        for field_name in ("code", "name"):
+            value = row.get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                return _failure(
+                    request,
+                    capability,
+                    AcquisitionFailureCategory.CONTRACT,
+                    f"{capability.source_id} sector row {index} has invalid {field_name}",
+                    fetched_at=fetched_at,
+                    timings=timings,
+                    provenance=provenance,
+                )
+        for field_name in ("changePct", "amount"):
+            value = row.get(field_name)
+            try:
+                finite = (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and math.isfinite(value)
+                )
+            except OverflowError:
+                finite = False
+            if not finite:
+                return _failure(
+                    request,
+                    capability,
+                    AcquisitionFailureCategory.CONTRACT,
+                    f"{capability.source_id} sector row {index} has invalid {field_name}",
+                    fetched_at=fetched_at,
+                    timings=timings,
+                    provenance=provenance,
+                )
+        for field_name in SUPPLEMENTAL_FIELDS:
+            if field_name not in row or row[field_name] is not None:
+                return _failure(
+                    request,
+                    capability,
+                    AcquisitionFailureCategory.CONTRACT,
+                    f"{capability.source_id} sector row {index} must keep {field_name} null",
+                    fetched_at=fetched_at,
+                    timings=timings,
+                    provenance=provenance,
+                )
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class EastmoneySectorPrimaryAdapter:
     provider: LegacySectorProvider
@@ -576,7 +639,7 @@ class EastmoneySectorDelayedAdapter:
 @dataclass(frozen=True, slots=True)
 class FuyaoSectorSourceAdapter:
     client: FuyaoSectorClient
-    revision: str = "fuyao-market-v2"
+    revision: str = FUYAO_SECTORS_RUNTIME_REVISION
     now: Callable[[], datetime] = _utc_now
     source_id: str = field(init=False, default=FUYAO_SECTOR_SOURCE_ID)
     capability: SourceCapability = field(init=False)
@@ -599,6 +662,14 @@ class FuyaoSectorSourceAdapter:
         invalid = _validate_request(request, self.capability)
         if invalid is not None:
             return invalid
+        if self.revision != FUYAO_SECTORS_RUNTIME_REVISION:
+            return _failure(
+                request,
+                self.capability,
+                AcquisitionFailureCategory.CONFIGURATION,
+                "Fuyao sectors requires capability revision "
+                f"{FUYAO_SECTORS_RUNTIME_REVISION}",
+            )
         started = time.perf_counter()
         fetched_at = self.now()
         try:
@@ -628,19 +699,32 @@ class FuyaoSectorSourceAdapter:
                 fetched_at=fetched_at,
                 timings=AcquisitionTimings(total_ms=_milliseconds(started)),
             )
-        return _normalize_payload(
-            result.as_dict(),
+        payload = result.as_dict()
+        timings = AcquisitionTimings(total_ms=_milliseconds(started))
+        provenance = RedactedProvenance(
+            endpoint=str(
+                result.quality.get("endpoint") or "/api/a-share/ths-index/snapshot"
+            ),
+            engine="requests",
+            attributes={"dateEvidenceKind": "provider-calendar-and-timestamp"},
+        )
+        invalid_rows = _validate_fuyao_sector_rows(
+            payload,
             request,
             self.capability,
             fetched_at=fetched_at,
-            timings=AcquisitionTimings(total_ms=_milliseconds(started)),
-            provenance=RedactedProvenance(
-                endpoint=str(
-                    result.quality.get("endpoint") or "/api/a-share/ths-index/snapshot"
-                ),
-                engine="requests",
-                attributes={"dateEvidenceKind": "provider-calendar-and-timestamp"},
-            ),
+            timings=timings,
+            provenance=provenance,
+        )
+        if invalid_rows is not None:
+            return invalid_rows
+        return _normalize_payload(
+            payload,
+            request,
+            self.capability,
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=provenance,
         )
 
 
@@ -792,7 +876,9 @@ class SectorsAcquisitionPlan:
         lambda _dataset: "扶摇 sectors provider 未启用或缺少批准 capability"
     )
     fuyao_shadow_enabled: Callable[[str], bool] = lambda _dataset: False
-    fuyao_revision: Callable[[str], str] = lambda _dataset: "fuyao-market-v2"
+    fuyao_revision: Callable[[str], str] = (
+        lambda _dataset: FUYAO_SECTORS_RUNTIME_REVISION
+    )
     market_today: Callable[[], date] = _market_today
     is_settled: Callable[[date], bool] = lambda _as_of: True
     dataset_id: str = field(init=False, default="sectors")
