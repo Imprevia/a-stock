@@ -43,10 +43,11 @@ Stage 4 — 扩展后的仓库实现与全量离线门禁完成；生产操作�
 - 生产 before-image：Dashboard 镜像 tag `20261008-235342-36aba3b`、imageID `sha256:d0b1fefe8408ef07c45e53fec14a31902077a6638a188deefdae2c7509a8ec30`；`a-stock-data` 2Gi 与 `a-stock-postgresql-data` 5Gi 均 Bound/RWO；调度 `enabled=false/suspend=true`；Fuyao sectors enabled/shadow 均为 0、approved revision 为空。只核对 Secret 引用和键名，未读取值。
 - PostgreSQL 只读检查确认 `provider_capability_reports` 表存在、总行数 0，目标 `fuyao/sectors/fuyao-market-v2` 行数 0。preflight 退出后临时 k3s API 隧道已关闭；未调用 provider、collection，未执行集群或数据库写入。
 - 扩展后的产品规格、架构、runbook、status 和 active plan/index 已同步；runbook 的所有生产 promotion/config 命令统一走受控部署入口，不再展示可绕过 packet/Pod 门禁的裸 Helm 或裸 `kubectl exec` 写路径。
+- 仓库实现和离线证据已冻结为本地 reviewed source commit `8e83125`（分支 `codex/activate-fuyao-sector-fallback`，未推送）；生产 5.1 将从该 commit 的独立 clean worktree 构建，后续证据文档提交不改变镜像源码。
 
 ## Remaining Gaps（剩余缺口）
 
-- 当前 HEAD/origin main 为 `e8fa65a`，实现、CLI、values 和计划仍在 dirty/untracked 工作树；生产 revision 87 镜像是旧 `36aba3b`，不含 `capabilities promote`。尚未冻结 clean reviewed HEAD、image tag/digest、chart/values/render hashes 或 production packet。
+- reviewed source commit 已冻结为 `8e83125`，但生产 revision 87 镜像仍是旧 `36aba3b`，不含 `capabilities promote`。尚未冻结 image tag/digest、chart/values/render hashes 或完整 production packet，也尚未执行 5.1。
 - 真实 v2 报告尚未生成，运行时 PostgreSQL 目标行仍为 0；旧 v1 隔离证据不能作为资格。任务 5.1–5.6 的生产操作均未执行；5.2 不得在上海 15:10 前执行。
 
 ## Next Step（下一步）
