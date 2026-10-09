@@ -186,6 +186,9 @@ python -m src.market_environment.cli fuyao real-probe --allow-real \
    `FROZEN_IMAGE_SOURCE_GIT_HEAD` 记录；repair 不得把新 control-plane HEAD 冒充为镜像构建来源。repair
    完成后的 promotion/enable/off 继续使用新的 clean reviewed control-plane HEAD 和原 frozen image
    repository/tag/digest；除 repair 外不要求再次提供 source HEAD，但所有 render/hash 绑定仍须相同。
+   Kubernetes 1.26 可能在 Pod read-back 中省略 chart 显式渲染的空字符串 env 值；exact Pod gate 只把
+   “desired 同名项为 `value: ""` 且 live 同项无 `value`/`valueFrom`”视为等价。非空值、Secret key/name、
+   变量集合或其他差异仍必须在 Helm write 前拒绝。
 2. **盘后隔离 probe**：仅在上述 pre-I/O 时间门禁通过后运行 real probe。使用权限受限的新目录保存
    SQLite 与 JSON，记录 JSON envelope 文件 SHA-256，并人工核对 canonical checksum、
    `provider=fuyao`、`dataset=sectors`、`revision=fuyao-market-v2`、`status=eligible`、请求/日历/

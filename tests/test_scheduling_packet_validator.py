@@ -602,6 +602,158 @@ def _run_runtime(
     )
 
 
+def _promotion_environment() -> list[dict[str, Any]]:
+    disabled = (
+        "MARKET_ENVIRONMENT_SCRAPLING_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_BREADTH_SHADOW_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_ENABLED",
+        "MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_SHADOW_ENABLED",
+        "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED",
+    )
+    return [
+        {"name": "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED", "value": "0"},
+        {
+            "name": "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION",
+            "value": "fuyao-market-v2",
+        },
+        *({"name": name, "value": "0"} for name in disabled),
+        {
+            "name": "MARKET_ENVIRONMENT_DATABASE_URL",
+            "valueFrom": {
+                "secretKeyRef": {"name": "a-stock-postgresql", "key": "database-url"}
+            },
+        },
+        {
+            "name": "MARKET_ENVIRONMENT_FUYAO_API_KEY",
+            "valueFrom": {
+                "secretKeyRef": {"name": "a-stock-market-provider", "key": "fuyao-api-key"}
+            },
+        },
+        {"name": "EMPTY_OPTIONAL", "value": ""},
+        {"name": "NONEMPTY_OPTIONAL", "value": "configured"},
+    ]
+
+
+def _promotion_environment_item(
+    environment: list[dict[str, Any]], name: str
+) -> dict[str, Any]:
+    return next(item for item in environment if item.get("name") == name)
+
+
+def _run_promotion_pod_selection(
+    tmp_path: Path,
+    *,
+    desired_environment: list[dict[str, Any]],
+    live_environment: list[dict[str, Any]],
+) -> subprocess.CompletedProcess[str]:
+    deployments, replicasets, pods = _runtime_payloads()
+    pods["items"][0]["spec"]["containers"][0]["env"] = live_environment
+    desired = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": "a-stock", "namespace": "a-stock", "labels": LABELS},
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "dashboard",
+                            "image": IMAGE,
+                            "env": desired_environment,
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    deployments_path = tmp_path / "promotion-deployments.json"
+    replicasets_path = tmp_path / "promotion-replicasets.json"
+    desired_path = tmp_path / "promotion-desired.yaml"
+    _write_json(deployments_path, deployments)
+    _write_json(replicasets_path, replicasets)
+    desired_path.write_text(yaml.safe_dump(desired), encoding="utf-8")
+    return _run(
+        "select-disabled-promotion-pod",
+        json.dumps(pods),
+        "--deployments",
+        str(deployments_path),
+        "--replicasets",
+        str(replicasets_path),
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        IMAGE,
+        "--digest",
+        DIGEST,
+    )
+
+
+def test_promotion_pod_accepts_api_server_omitted_empty_env_value(
+    tmp_path: Path,
+) -> None:
+    desired_environment = _promotion_environment()
+    live_environment = copy.deepcopy(desired_environment)
+    _promotion_environment_item(live_environment, "EMPTY_OPTIONAL").pop("value")
+
+    completed = _run_promotion_pod_selection(
+        tmp_path,
+        desired_environment=desired_environment,
+        live_environment=live_environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "a-stock-current-abc"
+
+
+def _omit_nonempty_promotion_value(environment: list[dict[str, Any]]) -> None:
+    _promotion_environment_item(environment, "NONEMPTY_OPTIONAL").pop("value")
+
+
+def _drift_promotion_secret_reference(environment: list[dict[str, Any]]) -> None:
+    provider = _promotion_environment_item(
+        environment, "MARKET_ENVIRONMENT_FUYAO_API_KEY"
+    )
+    provider["valueFrom"]["secretKeyRef"]["key"] = "other-key"
+
+
+def _add_promotion_environment_variable(environment: list[dict[str, Any]]) -> None:
+    environment.append({"name": "UNREVIEWED_EXTRA", "value": "1"})
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(_omit_nonempty_promotion_value, id="nonempty-value"),
+        pytest.param(_drift_promotion_secret_reference, id="secret-reference"),
+        pytest.param(_add_promotion_environment_variable, id="variable-set"),
+    ],
+)
+def test_promotion_pod_rejects_real_environment_drift(
+    tmp_path: Path,
+    mutation: Callable[[list[dict[str, Any]]], None],
+) -> None:
+    desired_environment = _promotion_environment()
+    live_environment = copy.deepcopy(desired_environment)
+    mutation(live_environment)
+
+    completed = _run_promotion_pod_selection(
+        tmp_path,
+        desired_environment=desired_environment,
+        live_environment=live_environment,
+    )
+
+    assert completed.returncode != 0
+    assert "environment differs from the reviewed packet" in completed.stderr
+
+
 def test_runtime_image_accepts_current_dashboard_and_ignores_retained_collector(
     tmp_path: Path,
 ) -> None:

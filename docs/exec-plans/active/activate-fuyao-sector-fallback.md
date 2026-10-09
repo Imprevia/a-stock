@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Stage 5 — 真实 Helm metadata/hooks gate 修正及全量离线门禁已完成；准备冻结第二个 clean repair-control commit 并重试生产 repair，真实 probe 继续受上海 15:10 门禁约束。
+Stage 5 — exact Pod 空 env 规范化与最终 6.1 全量门禁已完成；准备冻结第三个 clean repair-control commit 并重试生产 repair，真实 probe 继续受上海 15:10 门禁约束。
 
 ## Status（状态）
 
-`production-stage-repair-retry-ready` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `17/24`；任务 3.4 与修正后的 6.1 已完成，6.2 保持打开。首次 repair 尝试在任何 Helm write 前退出，revision 91 与 live runtime 未改变。真实 Helm 3.21.4 metadata/hooks 读取契约已修正并通过全量门禁；下一步冻结新的 clean repair-control commit 并重新只读绑定后重试 repair。尚未完成生产 repair、调用真实 provider、写 capability、启用 sectors 或执行 production collection。
+`production-stage-repair-pod-gate-ready` · 2026-10-09 用户已明确授权扩展当前 change，并保留对 probe、生产 capability 写入、rollout、一次 collection 和条件回滚的授权。OpenSpec 当前 `17/24`；任务 3.4 与最终 6.1 已完成，6.2 保持打开。metadata/hooks 修正后的 repair 已通过 release/stored/live gates，但在 Helm write 前拒绝 Kubernetes 1.26 省略显式空字符串的等价 Pod 环境；revision 91 与 live runtime 未改变。该窄等价规范化及最终全量门禁均已通过；下一步冻结新的 clean repair-control commit 并重新只读绑定后重试 repair。尚未完成生产 repair、调用真实 provider、写 capability、启用 sectors 或执行 production collection。
 
 ## Scope（范围）
 
@@ -51,6 +51,9 @@ Stage 5 — 真实 Helm metadata/hooks gate 修正及全量离线门禁已完成
 - repair 扩展后的 6.1 验证完成：focused `384 passed, 1 warning`；后端全量 `1233 passed, 6 skipped, 1 warning`；前端 Vitest `20 files / 129 tests` 全部通过，Vite production build 成功并仅保留既有单 chunk 大于 500 kB 提示。`rules validate`（49 rules）、`rules coverage`（330 documented / 49 executable）、`docs sync-check`、两份 Fuyao profile 的 Helm strict lint/template、OpenSpec strict、`bash -n`、`git diff --check` 与 docs-contract full（代码 1 / 文档 6 / plan 1）均通过；唯一 pytest warning 是既有 Starlette `BlockingPortal` deprecation。
 - repair-control commit `3975d717b0fe7a478dd617a4965dc5e738bc72de` 的生产前只读重绑确认 revision 91 deployed、stored manifest 为 1 byte 且 SHA-256 `01ba4719…546b`，Dashboard/PostgreSQL 1/1 Ready、Pod 0 重启、frozen application imageID `sha256:853a8a…d03`、CronJob/Job absent、capability 总行数/目标行数 `0/0`，Secret/PVC UID 未漂移。首次 repair 尝试随后因脚本假设 `helm status -o json` 含 chart/hooks 而在前置 identity gate 安全退出；未调用 `helm upgrade`，revision 仍为 91。真实 Helm 3.21.4 需改用 `helm get metadata` 校验 chart/revision/status，并以 `helm get hooks` 证明 stored hooks 为空。
 - metadata/hooks 修正后的最终 6.1 验证完成：repair focused `10 passed`、部署 guard `105 passed`、完整 focused `385 passed, 1 warning`、后端全量 `1234 passed, 6 skipped, 1 warning`；前端 Vitest `20 files / 129 tests` 全部通过且 Vite build 成功。规则三门禁、两份 Fuyao profile Helm strict lint/template、OpenSpec strict、`bash -n` 与 `git diff --check` 均通过；pytest warning 仍仅为既有 Starlette deprecation，Vite 仍仅有既有大 chunk 提示。
+- 第二个 repair-control commit `4bd72f70fd5790f4789dc2be288f7306af84f3de` 的重复只读绑定仍确认 revision 91 与所有运行时 identity 未漂移。一次命令因人工传入错误 full SHA 在目标访问前拒绝；改正 SHA 后，metadata/values/hooks、stored manifest、tracked live Deployment/Service、PostgreSQL 和 image gates 均通过，但 exact Pod selector 把 Kubernetes 1.26 对显式 `value: ""` 的省略误判为环境漂移，仍在 `helm upgrade` 前退出。该修复只能规范化“desired 明确空字符串且 live 同项无 value/valueFrom”，不得弱化非空值、Secret reference 或变量集合比较。
+- exact Pod selector 已复用 API read-back 空值规范化：仅当 desired 同名项明确为 `value: ""` 且 live 同项同时缺少 `value`/`valueFrom` 时补为空字符串后再精确比较；非空值省略、Secret key 漂移和变量集合新增测试均 fail closed。packet validator 更新后为 `77 passed`。
+- exact Pod 修正后的最终 6.1 验证完成：完整 focused `389 passed, 1 warning`、后端全量 `1238 passed, 6 skipped, 1 warning`、前端 Vitest `20 files / 129 tests` 与 Vite build 通过；规则三门禁、两份 Fuyao profile Helm strict lint/template、OpenSpec strict、`bash -n` 和 `git diff --check` 均通过。warning 仍仅为既有 Starlette deprecation，Vite 仍仅有既有大 chunk 提示。
 
 ## Remaining Gaps（剩余缺口）
 

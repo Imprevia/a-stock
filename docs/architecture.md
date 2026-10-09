@@ -430,6 +430,8 @@ source HEAD、tag 和 manifest digest；写前通过 `helm get metadata`、`helm
 `component=all` 的 `helm upgrade --no-hooks`；禁止 build/save/copy/transfer/import、provider、probe、promotion、collection
 和 Job。写后必须证明紧邻的下一 revision 为 deployed、stored manifest/computed values 为完整 off release、tracked live Deployment/Service 精确一致、exact Ready Pod/image、sectors-off、CronJob/Job absent 及 Secret/PVC
 identity 不变。任何其他 partial/drift 形态都在 Helm write 前拒绝。
+exact Pod 环境比较只规范化 Kubernetes 1.26 API read-back 对 desired 显式空字符串的省略：仅当同名 live 项同时缺少
+`value` 与 `valueFrom` 时补为 `value: ""` 再比较；非空值、Secret reference、变量集合和其他字段仍必须精确一致。
 
 off-first 发布成功后，受审 real-probe envelope 另以文件 SHA-256 和 canonical capability checksum 冻结。生产 promotion
 解析 exact Ready application Pod，证明它属于该 Deployment、运行冻结镜像、sectors 为关闭状态且两个 application

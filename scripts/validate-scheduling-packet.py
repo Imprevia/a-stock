@@ -388,6 +388,18 @@ def _environment_index(container: dict[str, Any], description: str) -> dict[str,
     return result
 
 
+def _normalize_omitted_empty_environment_value(
+    live_item: dict[str, Any], desired_item: dict[str, Any]
+) -> None:
+    if (
+        desired_item.get("value") == ""
+        and "value" not in live_item
+        and "valueFrom" not in live_item
+    ):
+        # Kubernetes 1.26 can omit an explicitly empty env value on read-back.
+        live_item["value"] = ""
+
+
 def _required_secret_reference(
     environment: dict[str, dict[str, Any]], name: str, description: str
 ) -> dict[str, Any]:
@@ -603,7 +615,12 @@ def select_disabled_promotion_pod(
         _dashboard_container(desired_deployment, "reviewed promotion packet"),
         "reviewed promotion packet",
     )
-    if environment != desired_environment:
+    normalized_environment = copy.deepcopy(environment)
+    for name, live_item in normalized_environment.items():
+        desired_item = desired_environment.get(name)
+        if isinstance(desired_item, dict):
+            _normalize_omitted_empty_environment_value(live_item, desired_item)
+    if normalized_environment != desired_environment:
         fail("promotion Dashboard Pod environment differs from the reviewed packet")
     name = metadata_value(pod, "name")
     if not isinstance(name, str) or not name:
@@ -1089,13 +1106,7 @@ def _normalize_container(live: dict[str, Any], desired: dict[str, Any]) -> None:
             if not isinstance(live_item, dict):
                 continue
             desired_item = _matching_named_item(desired_env, live_item.get("name"))
-            if (
-                desired_item.get("value") == ""
-                and "value" not in live_item
-                and "valueFrom" not in live_item
-            ):
-                # Kubernetes 1.26 can omit an explicitly empty env value on read-back.
-                live_item["value"] = ""
+            _normalize_omitted_empty_environment_value(live_item, desired_item)
     for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
         live_probe = live.get(probe_name)
         desired_probe = desired.get(probe_name)
