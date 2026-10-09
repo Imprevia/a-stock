@@ -417,7 +417,18 @@ version 和 image repository/tag 的 source packet，再把包含 promotion CLI 
 入口从目标 containerd 的 exact tag 读取唯一 manifest digest，在任何 Helm write 前完成不可变 image identity 和 production
 packet；预填 digest 若存在必须与读取值一致。发布前因 dirty source、source packet hash/identity drift、可选 engine 开启、
 CronJob 存在或候选 sectors 已启用而失败时，必须在网络或集群写入前停止；import 后无法证明 exact digest 时必须在 Helm
-write 前停止。随后才以 sectors-off 完整 release 发布。
+write 前停止。随后才以 sectors-off 完整 release 发布。调度关闭时，database/service 分段写入后的 `component=all` 完整
+release 收敛是 stage 的终点；即使此时已经解析出 `FROZEN_IMAGE_*`，也不得再执行 schedule component 写入并把 stored
+manifest 缩窄。
+
+若历史中断恰好留下预期 deployed revision 的受审 empty non-hook disabled schedule-component stored manifest 与 computed values，但 live Deployment→ReplicaSet→Ready Pod 仍证明 exact
+frozen image、sectors-off，且两个 application CronJob 与 namespace Job 均 absent，可通过独立
+`repair-sectors-off-release` 恢复。该入口从新的 clean reviewed control-plane HEAD 运行，但复用原 stage 已记录的 image
+source HEAD、tag 和 manifest digest；写前必须证明 revision/status/chart/hooks/computed values 与 stored manifest 精确等于受审 failure shape、tracked live Deployment/Service 精确
+等于受审完整 off release 的持续资源子集、Secret/PVC identity 未漂移。唯一写操作是带 reviewed off values、exact image 和
+`component=all` 的 `helm upgrade --no-hooks`；禁止 build/save/copy/transfer/import、provider、probe、promotion、collection
+和 Job。写后必须证明紧邻的下一 revision 为 deployed、stored manifest/computed values 为完整 off release、tracked live Deployment/Service 精确一致、exact Ready Pod/image、sectors-off、CronJob/Job absent 及 Secret/PVC
+identity 不变。任何其他 partial/drift 形态都在 Helm write 前拒绝。
 
 off-first 发布成功后，受审 real-probe envelope 另以文件 SHA-256 和 canonical capability checksum 冻结。生产 promotion
 解析 exact Ready application Pod，证明它属于该 Deployment、运行冻结镜像、sectors 为关闭状态且两个 application

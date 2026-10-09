@@ -10,6 +10,16 @@ present but empty. Therefore promotion cannot precede every rollout: the reviewe
 must first be staged with sectors disabled, after which promotion and activation remain
 separate controlled operations.
 
+The first authorized stage built and imported image
+`localhost/a-stock-market-environment:20261009-102618-8e83125` once and froze digest
+`sha256:8ca1614e6bd69879b56070b9157cfda2cb5e7b38a3de02d7dc54f6a21866cf42`.
+Revisions 88, 89, and 90 applied the database component, service component, and complete
+sectors-off release. The generic `component=all` tail then incorrectly treated the now-populated
+`FROZEN_IMAGE_*` values as authorization to apply a disabled schedule component, creating
+revision 91 with the reviewed empty, non-hook disabled schedule-component stored manifest. The live Dashboard remained Ready on the
+frozen image with sectors disabled and no CronJob/Job, but the exact stored-release gate
+correctly rejected promotion. No probe, capability write, activation, or collection followed.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -90,7 +100,33 @@ the reviewed HEAD or source packet hashes differ, scheduling is not disabled, or
 values enable sectors, enrichment, shadow, Scrapling, or an unrelated Fuyao dataset. If the
 exact imported tag does not resolve to one valid manifest digest, it must stop before Helm writes.
 
-### 5. Enable Fuyao sectors with a same-image config-only rollout
+When the reviewed values keep scheduling disabled, the staged database and service writes end
+with exactly one `component=all` convergence. The generic schedule-component tail is not part of
+that flow even after the stage discovers and freezes the image digest.
+
+### 5. Repair an interrupted sectors-off release without rebuilding
+
+An explicit `repair-sectors-off-release` operation exists only for the observed partial-stage
+shape: the stored release must be the exact expected deployed revision and equal the reviewed empty,
+non-hook disabled schedule-component render; its chart, hooks, and computed values must also match
+while the live tracked Deployment/Service declarative state equals the reviewed complete off
+release and its Deployment/ReplicaSet/Ready Pod chain proves the exact frozen image and
+sectors-off environment. Both application CronJobs and every namespace Job must be absent, the reviewed
+source/chart/values/full renders and image digest must match, and preserved Secret/PVC identities
+must be captured before any write.
+
+Repair performs one `helm upgrade --no-hooks` with `component=all`, the reviewed sectors-off
+values, and the exact existing image repository/tag. It does not build, save, copy, transfer,
+import, retag, execute a hook, invoke a provider, promote a report, or run a collection. The
+postcondition requires the immediately following revision to be deployed with the reviewed complete
+off stored manifest and computed values, the tracked live Deployment/Service state to equal that release,
+the exact Pod/image and sectors-off state to remain intact, CronJob/Job absence, and unchanged
+Secret/PVC identities. Any other stored-manifest or live-state shape fails before Helm writes.
+The repair-control source HEAD is reviewed independently from the already-frozen image source
+HEAD; immutable image identity remains the imported tag plus manifest digest recorded by the
+original stage.
+
+### 6. Enable Fuyao sectors with a same-image config-only rollout
 
 Add a TrueNAS values overlay that references the existing `a-stock-market-provider` Secret key and sets only the sectors enabled flag and approved `fuyao-market-v2` revision. The overlay explicitly keeps sector shadow/enrichment and Scrapling disabled. The ordinary deployment contract continues to render no CronJob, and the rollout packet must prove both exact CronJob names absent.
 
@@ -104,7 +140,7 @@ Scrapling, and unrelated provider settings must be identical.
 
 The first collection is a one-dataset manual run after settlement. Acceptance requires exact date, Fuyao source/revision, stable ranking, fallback/partial quality, four supported fields, five unsupported fields as `null`, and the preceding Eastmoney failures in warnings.
 
-### 6. Reject provider I/O before the settlement gate
+### 7. Reject provider I/O before the settlement gate
 
 `fuyao real-probe` validates the requested date against the current effective Shanghai market
 date, weekday, and configured settlement time before constructing any provider/client or creating
@@ -112,7 +148,7 @@ the JSON/SQLite output. There is no force bypass. The one production collection 
 settlement-gated, one-dataset `snapshots scheduled-refresh --dataset sectors` path rather than a
 general refresh command.
 
-### 7. Roll back by configuration only
+### 8. Roll back by configuration only
 
 Rollback runs the same config-only operation against the reviewed off profile and the exact same
 staged image. The only permitted semantic difference is the sectors enabled flag from `"1"` to
@@ -128,6 +164,7 @@ cross-date substitution remains prohibited.
 - [Fuyao restores only part of `SectorRow`] -> Keep unsupported fields `null`, quality fallback/partial, and visible warnings.
 - [A rollout accidentally reactivates scheduling or optional engines] -> Use a dedicated overlay and deployment tests that prove both CronJobs absent and unrelated switches false.
 - [The old runtime cannot execute promotion] -> Stage the reviewed image with sectors off before promotion and prove zero Fuyao I/O during that rollout.
+- [A partial stage narrows the stored release after the live service is healthy] -> Skip the schedule tail whenever scheduling is disabled and allow only the expected deployed revision with the exact reviewed empty non-hook disabled schedule-component failure shape to enter a same-image, hook-free complete-release repair.
 - [Production credentials escape to the host] -> Execute promotion in the exact Ready Pod and stream only the redacted report over stdin.
 - [Config rollback changes the image or another resource] -> Freeze the image identity and reject every live/desired semantic diff except the sectors enabled flag before Helm writes.
 - [An operator starts the current-date probe before settlement] -> Enforce the date/weekday/settlement check in the CLI before provider or output I/O; provide no force escape.
@@ -136,9 +173,10 @@ cross-date substitution remains prohibited.
 
 1. Complete the existing unified-adapter application deployment with all new provider switches disabled and both CronJobs absent.
 2. Implement stdin promotion, the pre-I/O settlement gate, packet validation, and frozen-image config-only rollout; run all offline gates.
-3. Freeze a clean reviewed source/values/render/repository-tag packet, build and import the image once, resolve and freeze its exact containerd manifest digest before any Helm write, and deploy the complete sectors-off release. Verify health, image identity, Secret references, PVC identities, disabled optional engines, and CronJob/Job absence.
-4. After settlement and explicit authorization, run the current code's real probe into a new isolated SQLite path and redacted JSON file. Review the exact-date v2 sectors report, envelope SHA-256, canonical checksum, 320/320 coverage, and redaction equality.
-5. Stream the reviewed report to the exact Ready staged Pod. Run promotion dry-run, review its single-row masked plan, then run explicit apply and verify the checksum and database before/after counts without exporting database credentials.
-6. Run the config-only enable operation with the frozen image and reviewed enabled profile. Require an exact one-field semantic diff, hooks disabled, complete release resource preservation, healthy rollout, and both CronJobs absent.
-7. Start exactly one settlement-gated current-date sectors collection and verify task, snapshot, status, and chapter response evidence.
-8. On any rollout or observation failure, run the same config-only operation with the off profile and frozen image, then retain all reports, snapshots, task history, Jobs, Secrets, and PVCs.
+3. Freeze a clean reviewed source/values/render/repository-tag packet, build and import the image once, resolve and freeze its exact containerd manifest digest before any Helm write, and deploy the complete sectors-off release. Verify health, image identity, Secret references, PVC identities, disabled optional engines, and CronJob/Job absence. A disabled stage stops after complete-release convergence and does not apply a schedule component.
+4. If an interrupted stage has the expected deployed revision with the exact reviewed empty non-hook disabled schedule-component stored manifest and computed values, while tracked live Deployment/Service state equals the complete off release and the exact frozen sectors-off Pod is healthy, run the reviewed same-image hook-free repair once and prove the immediately following revision restores the complete sectors-off release. Do not repair any other drift shape.
+5. After settlement and explicit authorization, run the current code's real probe into a new isolated SQLite path and redacted JSON file. Review the exact-date v2 sectors report, envelope SHA-256, canonical checksum, 320/320 coverage, and redaction equality.
+6. Stream the reviewed report to the exact Ready staged Pod. Run promotion dry-run, review its single-row masked plan, then run explicit apply and verify the checksum and database before/after counts without exporting database credentials.
+7. Run the config-only enable operation with the frozen image and reviewed enabled profile. Require an exact one-field semantic diff, hooks disabled, complete release resource preservation, healthy rollout, and both CronJobs absent.
+8. Start exactly one settlement-gated current-date sectors collection and verify task, snapshot, status, and chapter response evidence.
+9. On any rollout or observation failure, run the same config-only operation with the off profile and frozen image, then retain all reports, snapshots, task history, Jobs, Secrets, and PVCs.

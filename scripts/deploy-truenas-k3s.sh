@@ -43,6 +43,7 @@ Explicit scheduling write modes never build, copy, import, or retag an image:
 
 Controlled Fuyao sectors modes:
   --stage-sectors-off --off-values PATH --enabled-values PATH --kube-version VERSION
+  --repair-sectors-off-release --off-values PATH --enabled-values PATH --kube-version VERSION
   --promote-sectors-capability --off-values PATH --enabled-values PATH --report PATH [--apply]
   --enable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
   --disable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
@@ -144,6 +145,10 @@ while (($#)); do
       ;;
     --stage-sectors-off)
       set_operation stage-sectors-off
+      shift
+      ;;
+    --repair-sectors-off-release)
+      set_operation repair-sectors-off-release
       shift
       ;;
     --promote-sectors-capability)
@@ -366,10 +371,9 @@ component_required_scheduling_state() {
       printf '%s\n' disabled
       ;;
     schedule)
-      # The reviewed baseline permits either a disabled packet (no CronJob) or
-      # a safely suspended CronJob.  Active scheduling is still rejected by the
-      # chart and by the scheduling operations reviewed paths.
-      printf '%s\n' any
+      # A disabled schedule component is an empty Helm manifest and would
+      # narrow the stored release without changing the kept live resources.
+      printf '%s\n' suspended
       ;;
     *)
       die "unsupported --component: $component"
@@ -861,14 +865,13 @@ verify_schedule_component() {
 import sys, yaml
 items = [i for i in yaml.safe_load_all(sys.stdin) if i is not None]
 cronjobs = [i for i in items if isinstance(i, dict) and i.get("kind") == "CronJob"]
-if cronjobs:
-    assert len(cronjobs) == 1, "schedule component must render exactly one CronJob; got " + str(len(cronjobs))
-    spec = cronjobs[0].get("spec", {})
-    assert spec.get("suspend") is True, "schedule component must render suspended CronJob"
+assert len(cronjobs) == 1, "schedule component must render exactly one suspended CronJob; got " + str(len(cronjobs))
+spec = cronjobs[0].get("spec", {})
+assert spec.get("suspend") is True, "schedule component must render suspended CronJob"
 '; then
     return 1
   fi
-  log "component=schedule verified: disabled or suspended CronJob rendered"
+  log "component=schedule verified: exactly one suspended CronJob rendered"
   return 0
 }
 
@@ -1318,7 +1321,7 @@ COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE="${COMPONENT_BASELINE_FIELDS[20]}"
 
 CONTROLLED_SECTORS_OPERATION=""
 case "$OPERATION" in
-  stage-sectors-off|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  stage-sectors-off|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
     CONTROLLED_SECTORS_OPERATION="$OPERATION"
     COMPONENT_NAME=all
@@ -1365,6 +1368,8 @@ ACTIVATION_CATCH_UP_MODE="${ACTIVATION_CATCH_UP_MODE:-}"
 FROZEN_IMAGE_REPOSITORY="${FROZEN_IMAGE_REPOSITORY:-}"
 FROZEN_IMAGE_TAG="${FROZEN_IMAGE_TAG:-}"
 FROZEN_IMAGE_DIGEST="${FROZEN_IMAGE_DIGEST:-}"
+FROZEN_IMAGE_SOURCE_GIT_HEAD="${FROZEN_IMAGE_SOURCE_GIT_HEAD:-}"
+EXPECTED_REPAIR_HELM_REVISION="${EXPECTED_REPAIR_HELM_REVISION:-}"
 SECTORS_OFF_VALUES_FILE="${CLI_SECTORS_OFF_VALUES_FILE:-${SECTORS_OFF_VALUES_FILE:-}}"
 SECTORS_ENABLED_VALUES_FILE="${CLI_SECTORS_ENABLED_VALUES_FILE:-${SECTORS_ENABLED_VALUES_FILE:-}}"
 CAPABILITY_REPORT_FILE="${CLI_CAPABILITY_REPORT_FILE:-${CAPABILITY_REPORT_FILE:-}}"
@@ -1391,7 +1396,7 @@ if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
   [[ -n "$SECTORS_OFF_VALUES_FILE" ]] || die "$CONTROLLED_SECTORS_OPERATION requires --off-values"
   [[ -n "$SECTORS_ENABLED_VALUES_FILE" ]] || die "$CONTROLLED_SECTORS_OPERATION requires --enabled-values"
   case "$CONTROLLED_SECTORS_OPERATION" in
-    stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+    stage-sectors-off|repair-sectors-off-release|promote-sectors-capability|disable-sectors-config)
       HELM_VALUES_FILE="$SECTORS_OFF_VALUES_FILE"
       ;;
     enable-sectors-config)
@@ -1414,7 +1419,7 @@ if [[ "$OPERATION" == deploy ]]; then
   esac
 fi
 case "$CONTROLLED_SECTORS_OPERATION" in
-  promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     for command_name in ssh kubectl nc; do
       command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
     done
@@ -1454,7 +1459,7 @@ if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
   [[ -f "$SECTORS_OFF_VALUES_FILE" ]] || die "sectors off values file does not exist: $SECTORS_OFF_VALUES_FILE"
   [[ -f "$SECTORS_ENABLED_VALUES_FILE" ]] || die "sectors enabled values file does not exist: $SECTORS_ENABLED_VALUES_FILE"
   case "$CONTROLLED_SECTORS_OPERATION" in
-    stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+    stage-sectors-off|repair-sectors-off-release|promote-sectors-capability|disable-sectors-config)
       HELM_VALUES_FILE="$SECTORS_OFF_VALUES_FILE"
       ;;
     enable-sectors-config)
@@ -1673,7 +1678,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
             COMPLETED_COMPONENTS=""
             FAILED_COMPONENT=""
             FAILED_REASON=""
-            for step in database service schedule; do
+            for step in database service; do
               case "$step" in
                 database|service)
                   step_repo="$IMAGE_REPOSITORY"
@@ -1764,7 +1769,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       report_effective_trigger "$PACKET_INSPECTION"
       GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       ;;
-    promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+    repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
       REQUIRED_SCHEDULING_STATE=disabled
       if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
         die "$OPERATION reviewed packet failed to render"
@@ -1838,6 +1843,98 @@ verify_controlled_sectors_packet() {
     verify_hash 'reviewed capability report' "$REVIEWED_REPORT_SHA256" \
       "$(sha256sum "$CAPABILITY_REPORT_FILE" | awk '{print $1}')"
   fi
+  if [[ "$CONTROLLED_SECTORS_OPERATION" == repair-sectors-off-release ]]; then
+    [[ "$FROZEN_IMAGE_SOURCE_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+      || die 'repair-sectors-off-release requires FROZEN_IMAGE_SOURCE_GIT_HEAD as a full commit SHA'
+    git cat-file -e "$FROZEN_IMAGE_SOURCE_GIT_HEAD^{commit}" 2>/dev/null \
+      || die 'frozen image source Git HEAD is not available in the reviewed repository'
+    git merge-base --is-ancestor "$FROZEN_IMAGE_SOURCE_GIT_HEAD" "$REVIEWED_GIT_HEAD" \
+      || die 'repair control HEAD must descend from the frozen image source HEAD'
+    [[ "$EXPECTED_REPAIR_HELM_REVISION" =~ ^[1-9][0-9]*$ ]] \
+      || die 'repair-sectors-off-release requires EXPECTED_REPAIR_HELM_REVISION as a positive integer'
+  fi
+}
+
+verify_repair_release_state() {
+  local expected_revision="$1"
+  local expected_component="$2"
+  local status_file="$TMP_DIR/sectors-repair-release-status.json"
+  local values_file="$TMP_DIR/sectors-repair-release-values.json"
+  helm status "$RELEASE_NAME" --namespace "$NAMESPACE" --output json > "$status_file" \
+    || return 1
+  helm get values "$RELEASE_NAME" --namespace "$NAMESPACE" --all --output json > "$values_file" \
+    || return 1
+  python3 - "$status_file" "$values_file" "$OPERATION_CHART_DIR/Chart.yaml" \
+    "$OPERATION_CHART_DIR/values.yaml" "$SECTORS_OFF_VALUES_FILE" \
+    "$RELEASE_NAME" "$NAMESPACE" "$expected_revision" "$expected_component" \
+    "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" <<'PYEOF'
+import json
+import sys
+
+import yaml
+
+(
+    status_path,
+    values_path,
+    chart_path,
+    defaults_path,
+    overlay_path,
+    release_name,
+    namespace,
+    revision,
+    component,
+    image_repository,
+    image_tag,
+) = sys.argv[1:]
+
+with open(status_path, encoding="utf-8") as stream:
+    status = json.load(stream)
+with open(values_path, encoding="utf-8") as stream:
+    stored_values = json.load(stream)
+with open(chart_path, encoding="utf-8") as stream:
+    chart = yaml.safe_load(stream)
+with open(defaults_path, encoding="utf-8") as stream:
+    expected_values = yaml.safe_load(stream)
+with open(overlay_path, encoding="utf-8") as stream:
+    overlay = yaml.safe_load(stream)
+
+
+def merge(target, source):
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge(target[key], value)
+        else:
+            target[key] = value
+
+
+if not all(
+    isinstance(item, dict)
+    for item in (status, stored_values, chart, expected_values, overlay)
+):
+    raise SystemExit("repair release state must use JSON/YAML mappings")
+merge(expected_values, overlay)
+expected_values["component"] = component
+expected_values.setdefault("image", {})["repository"] = image_repository
+expected_values["image"]["tag"] = image_tag
+
+metadata = ((status.get("chart") or {}).get("metadata") or {})
+info = status.get("info") or {}
+if (
+    status.get("name") != release_name
+    or status.get("namespace") != namespace
+    or status.get("version") != int(revision)
+    or info.get("status") != "deployed"
+    or metadata.get("name") != chart.get("name")
+    or metadata.get("version") != chart.get("version")
+):
+    raise SystemExit("repair requires the exact deployed Helm release identity")
+if stored_values != expected_values:
+    raise SystemExit(
+        "repair requires the exact reviewed disabled schedule-component stored values"
+    )
+if status.get("hooks") not in (None, []):
+    raise SystemExit("repair requires a release revision without stored hooks")
+PYEOF
 }
 
 validate_activation_window() {
@@ -1949,7 +2046,7 @@ OPERATION_CHART_DIR="$SOURCE_CHART_DIR"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 OPERATION_SCHEDULING_OVERLAY="$SCHEDULING_OVERLAY_FILE"
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     command -v flock >/dev/null 2>&1 || die 'required command not found: flock'
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
     if [[ "$COMMON_GIT_DIR" != /* ]]; then
@@ -1960,7 +2057,7 @@ case "$OPERATION" in
     ;;
 esac
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     SNAPSHOT_DIR="$TMP_DIR/release-packet"
     mkdir -p "$SNAPSHOT_DIR"
     cp -R "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart"
@@ -1980,7 +2077,7 @@ case "$OPERATION" in
       SECTORS_OFF_VALUES_FILE="$SNAPSHOT_DIR/sectors-off.yaml"
       SECTORS_ENABLED_VALUES_FILE="$SNAPSHOT_DIR/sectors-enabled.yaml"
       case "$CONTROLLED_SECTORS_OPERATION" in
-        stage-sectors-off|promote-sectors-capability|disable-sectors-config)
+        stage-sectors-off|repair-sectors-off-release|promote-sectors-capability|disable-sectors-config)
           OPERATION_BASELINE_VALUES="$SECTORS_OFF_VALUES_FILE"
           ;;
         enable-sectors-config)
@@ -2072,7 +2169,7 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
 fi
 
-if [[ "$OPERATION" == deploy || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
+if [[ "$OPERATION" == deploy || "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
   if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
     die 'could not resolve the release-derived application cronjob name'
   fi
@@ -2103,7 +2200,7 @@ if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     || die 'stage-sectors-off could not capture Secret/PVC metadata before execution'
 fi
 
-if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
+if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
   FROZEN_IMAGE="$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG"
   verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
     || die "$OPERATION could not prove the exact Ready frozen runtime image"
@@ -2154,6 +2251,120 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
     [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
       || die 'promotion changed preserved Secret/PVC metadata'
     log "controlled promotion completed: pod=$PROMOTION_POD image=$FROZEN_IMAGE apply=$PROMOTION_APPLY"
+    exit 0
+  fi
+
+  if [[ "$OPERATION" == repair-sectors-off-release ]]; then
+    REPAIR_CURRENT_MANIFEST="$TMP_DIR/sectors-repair-current-manifest.yaml"
+    REPAIR_EXPECTED_PARTIAL_MANIFEST="$TMP_DIR/sectors-repair-expected-partial.yaml"
+    REPAIR_DESIRED_MANIFEST="$TMP_DIR/sectors-repair-desired.yaml"
+    REPAIR_LIVE_BEFORE_MANIFEST="$TMP_DIR/sectors-repair-live-before.yaml"
+    REPAIR_LIVE_AFTER_MANIFEST="$TMP_DIR/sectors-repair-live-after.yaml"
+    REPAIR_POST_MANIFEST="$TMP_DIR/sectors-repair-post-manifest.yaml"
+
+    verify_repair_release_state "$EXPECTED_REPAIR_HELM_REVISION" schedule \
+      || die 'repair-sectors-off-release requires exact deployed revision and stored values'
+    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_CURRENT_MANIFEST"
+    render_scheduling_packet "$OPERATION_CHART_DIR" "$SECTORS_OFF_VALUES_FILE" "" \
+      "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+      --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
+      --set "image.tag=$FROZEN_IMAGE_TAG" \
+      --set component=schedule > "$REPAIR_EXPECTED_PARTIAL_MANIFEST" \
+      || die 'repair-sectors-off-release could not render the reviewed schedule-only failure shape'
+    printf '%s\n' "$REVIEWED_OFF_RENDER" > "$REPAIR_DESIRED_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-release-exact \
+      --current "$REPAIR_CURRENT_MANIFEST" --desired "$REPAIR_EXPECTED_PARTIAL_MANIFEST" \
+      || die 'repair-sectors-off-release requires the exact reviewed schedule-only stored manifest'
+
+    kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$REPAIR_LIVE_BEFORE_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-live-desired \
+      --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+      --desired "$REPAIR_DESIRED_MANIFEST" < "$REPAIR_LIVE_BEFORE_MANIFEST"
+    verify_live_database_contract \
+      || die 'repair-sectors-off-release requires a healthy reviewed PostgreSQL runtime'
+    select_runtime_sectors_pod 0 >/dev/null \
+      || die 'repair-sectors-off-release requires one exact Ready sectors-off Pod'
+
+    assert_clean_worktree
+    REPAIR_PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$SECTORS_OFF_VALUES_FILE" "" \
+      "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+      --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
+      --set "image.tag=$FROZEN_IMAGE_TAG")" \
+      || die 'repair-sectors-off-release complete off packet failed immediately before Helm write'
+    [[ "$(sha256_text "$REPAIR_PRE_WRITE_RENDER")" == "$REVIEWED_OFF_RENDER_SHA256" ]] \
+      || die 'repair-sectors-off-release complete off packet hash drifted immediately before Helm write'
+    verify_generic_deploy_precondition
+
+    # Rebind every mutable target fact immediately before the only Helm write.
+    verify_repair_release_state "$EXPECTED_REPAIR_HELM_REVISION" schedule \
+      || die 'repair-sectors-off-release release identity drifted before Helm write'
+    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_CURRENT_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-release-exact \
+      --current "$REPAIR_CURRENT_MANIFEST" --desired "$REPAIR_EXPECTED_PARTIAL_MANIFEST" \
+      || die 'repair-sectors-off-release stored manifest drifted before Helm write'
+    kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$REPAIR_LIVE_BEFORE_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-live-desired \
+      --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+      --desired "$REPAIR_DESIRED_MANIFEST" < "$REPAIR_LIVE_BEFORE_MANIFEST"
+    verify_live_database_contract \
+      || die 'repair-sectors-off-release PostgreSQL runtime drifted before Helm write'
+    verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+      || die 'repair-sectors-off-release frozen runtime image drifted before Helm write'
+    select_runtime_sectors_pod 0 >/dev/null \
+      || die 'repair-sectors-off-release sectors-off Pod drifted before Helm write'
+    require_all_application_cronjobs_absent 'repair-sectors-off-release immediate pre-write' \
+      || die 'repair-sectors-off-release scheduling drifted before Helm write'
+    require_namespace_jobs_absent 'repair-sectors-off-release immediate pre-write' \
+      || die 'repair-sectors-off-release found a namespace Job before Helm write'
+    PRESERVED_IDENTITIES_PRE_WRITE="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+      || die 'repair-sectors-off-release could not recapture Secret/PVC metadata before Helm write'
+    [[ "$PRESERVED_IDENTITIES_PRE_WRITE" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+      || die 'repair-sectors-off-release Secret/PVC metadata drifted before Helm write'
+
+    GENERIC_DEPLOY_IN_FLIGHT=true
+    log "repairing complete sectors-off release without rebuilding image=$FROZEN_IMAGE sourceHead=$FROZEN_IMAGE_SOURCE_GIT_HEAD"
+    helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
+      --namespace "$NAMESPACE" \
+      --values "$SECTORS_OFF_VALUES_FILE" \
+      --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
+      --set "image.tag=$FROZEN_IMAGE_TAG" \
+      --set component=all \
+      --no-hooks \
+      --wait \
+      --timeout "$HELM_TIMEOUT"
+    DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+      -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+      -o jsonpath='{.items[0].metadata.name}')"
+    [[ -n "$DEPLOYMENT_NAME" ]] || die 'repair-sectors-off-release postcondition found no Dashboard Deployment'
+    kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s
+    helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$REPAIR_POST_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-release-exact \
+      --current "$REPAIR_POST_MANIFEST" --desired "$REPAIR_DESIRED_MANIFEST"
+    verify_repair_release_state "$((EXPECTED_REPAIR_HELM_REVISION + 1))" all \
+      || die 'repair-sectors-off-release postcondition requires the next deployed complete-off revision and stored values'
+    kubectl get deployment,service,cronjob --namespace "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$REPAIR_LIVE_AFTER_MANIFEST"
+    python3 "$PACKET_VALIDATOR" compare-live-desired \
+      --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+      --desired "$REPAIR_DESIRED_MANIFEST" < "$REPAIR_LIVE_AFTER_MANIFEST"
+    verify_live_database_contract \
+      || die 'repair-sectors-off-release postcondition requires a healthy reviewed PostgreSQL runtime'
+    verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+      || die 'repair-sectors-off-release postcondition could not prove the frozen runtime image'
+    select_runtime_sectors_pod 0 >/dev/null \
+      || die 'repair-sectors-off-release postcondition requires one exact Ready sectors-off Pod'
+    require_all_application_cronjobs_absent 'repair-sectors-off-release postcondition' \
+      || die 'repair-sectors-off-release postcondition could not prove both application CronJobs absent'
+    require_namespace_jobs_absent 'repair-sectors-off-release postcondition' \
+      || die 'repair-sectors-off-release postcondition requires namespace Jobs absent'
+    PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
+      || die 'repair-sectors-off-release postcondition could not capture Secret/PVC metadata'
+    [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+      || die 'repair-sectors-off-release changed preserved Secret/PVC metadata'
+    GENERIC_DEPLOY_IN_FLIGHT=false
+    log "complete sectors-off release repaired: image=$FROZEN_IMAGE sourceHead=$FROZEN_IMAGE_SOURCE_GIT_HEAD"
     exit 0
   fi
 
@@ -2460,7 +2671,7 @@ if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 
   log 'component=all complete Helm release manifest consolidated'
 fi
 
-if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "schedule" || "$COMPONENT_NAME" == "all" ) ]]; then
+if [[ -z "$FAILED_COMPONENT" && "$COMPONENT_NAME" == "schedule" ]]; then
   SCHEDULE_REPO="$FROZEN_IMAGE_REPOSITORY"
   SCHEDULE_TAG="$FROZEN_IMAGE_TAG"
   if [[ -z "$SCHEDULE_REPO" || -z "$SCHEDULE_TAG" ]]; then
@@ -2469,6 +2680,10 @@ if [[ -z "$FAILED_COMPONENT" && ( "$COMPONENT_NAME" == "schedule" || "$COMPONENT
     deploy_step_or_exit schedule "$SCHEDULE_REPO" "$SCHEDULE_TAG"
     COMPLETED_COMPONENTS+=" schedule"
   fi
+fi
+
+if [[ -z "$FAILED_COMPONENT" && "$COMPONENT_NAME" == "all" ]]; then
+  log 'staged component deployment: schedule phase=skipped reason=baseline_disabled complete_release_converged'
 fi
 
 if [[ "$COMPONENT_NAME" == "database" ]]; then

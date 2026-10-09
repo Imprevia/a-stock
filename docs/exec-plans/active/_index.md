@@ -49,7 +49,7 @@
 | `consolidate-market-environment-module-layout` | Codex | in-progress | 2026-10-07 |
 | `unify-market-data-acquisition-adapters` | Codex | completed-without-real-provider-or-production-write | 2026-10-08 |
 | `deploy-unified-market-data-adapters-20261008` | Codex | completed-with-production-write | 2026-10-09 |
-| `activate-fuyao-sector-fallback` | Codex | authorized-extension-offline-verified-production-pending（17/23） | 2026-10-09 |
+| `activate-fuyao-sector-fallback` | Codex | production-stage-repair-ready（17/24） | 2026-10-09 |
 | `add-tushare-sector-fallback` | Codex | planned-awaiting-implementation | 2026-10-09 |
 
 ## 说明

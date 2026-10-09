@@ -47,6 +47,33 @@ application CronJobs absent before and after the write.
 - **WHEN** the diff includes an image, Secret, PVC, schedule, revision, enrichment, shadow, Scrapling, unrelated provider, topology, service, database, or other environment change
 - **THEN** the operation fails before Helm writes and the live release remains unchanged
 
+### Requirement: Interrupted sectors-off staging is repairable without rebuilding
+When scheduled collection is disabled, a complete `component=all` stage MUST NOT perform a
+trailing schedule-component Helm write after the complete release has converged. If an
+interrupted stage has already left the stored Helm manifest narrowed to the reviewed empty,
+non-hook disabled schedule component while the live Deployment/Service declarative state equals
+the reviewed complete sectors-off release and the Dashboard still runs the exact frozen image
+with sectors disabled, the system SHALL provide an explicit repair operation that binds the exact
+deployed source revision and writes the reviewed complete sectors-off release with `--no-hooks`.
+The repair MUST reject revision, status, chart, hook, or computed-value drift before the write and
+prove that the result is the immediately following deployed complete-release revision. The repair MUST NOT build, save, transfer,
+import, retag, probe, promote capability evidence, invoke a provider, collect market data, or
+run a Job. It MUST preserve Secret/PVC identities and prove the exact live image, disabled
+sectors state, absent application CronJobs, absent namespace Jobs, and reviewed packet hashes
+before and after the write.
+
+#### Scenario: Disabled stage converges once to the complete release
+- **WHEN** `component=all` staging uses reviewed values with scheduled collection disabled and suspended
+- **THEN** database and service component writes are followed by exactly one complete-release convergence and no schedule-component Helm revision is created
+
+#### Scenario: Reviewed schedule-only stored manifest is repaired
+- **WHEN** the expected deployed revision is exactly the reviewed empty non-hook disabled schedule-only packet, its status/chart/hooks/computed values match the reviewed failure shape, the tracked live Deployment/Service state equals the reviewed complete off release, the Dashboard is the exact Ready sectors-off frozen image, and all repair preconditions pass
+- **THEN** one hook-free Helm upgrade restores the reviewed complete sectors-off manifest and computed values in the next deployed revision without changing the image, Secrets, PVCs, scheduling, capability rows, snapshots, collection runs, or provider state
+
+#### Scenario: Repair provenance or runtime state is not exact
+- **WHEN** the source revision/status/chart/hooks/computed values or stored manifest differ from the reviewed empty non-hook disabled schedule-only packet, tracked live Deployment/Service state differs from the reviewed complete off release, the live image or sectors state differs, a CronJob or Job exists, or a reviewed hash/identity differs
+- **THEN** repair fails before Helm writes and does not attempt any build, import, provider, capability, or collection operation
+
 ### Requirement: Current-date provider writes are settlement-gated before I/O
 The system MUST reject a Fuyao real probe unless its requested date is the current effective
 Shanghai trading date, the date is a weekday, and the configured settlement time has been

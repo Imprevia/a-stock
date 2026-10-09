@@ -155,6 +155,36 @@ python -m src.market_environment.cli fuyao real-probe --allow-real \
    `fuyao-sectors-packet.env` 是 operator-owned 审核输入，必须包含受审 HEAD、chart、两份 values、两份
    render、image repository/tag 的绑定值；stage 只构建和导入一次镜像，并在任何 Helm write 前从目标
    containerd 的 exact tag 冻结 manifest digest。该文件不得提交，也不得包含 provider 或数据库凭据。
+
+   调度关闭时，`component=all` 在完整 release 收敛后必须停止，不得因 stage 已填充 `FROZEN_IMAGE_*`
+   再执行 schedule component。若旧实现已经形成“live Dashboard 为 exact frozen-image sectors-off，但 Helm
+   stored manifest 精确等于受审 empty non-hook disabled schedule-only render”的中断形态，先停止步骤 2–6，只允许从
+   clean reviewed repair-control HEAD 执行以下恢复。入口必须验证原 image source HEAD/tag/digest、完整 packet
+   hashes、tracked live Deployment/Service 与完整 off release 一致、exact Ready Pod、sectors-off、
+   CronJob/Job absent 和 Secret/PVC identity；其他 stored/live drift
+   一律拒绝。该操作只允许一次 `helm upgrade --no-hooks` 恢复 `component=all` 完整 off release，不 build、
+   transfer、import、probe、promote、collect 或运行 Job：
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh \
+     --env-file /secure/path/fuyao-sectors-packet.env \
+     --repair-sectors-off-release \
+     --off-values deploy/truenas/values-fuyao-sectors-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-sectors-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE"
+   ```
+
+   repair 前把同一个 operator-owned packet 的 `REVIEWED_GIT_HEAD` 更新为 clean repair-control commit，并增加
+   `FROZEN_IMAGE_SOURCE_GIT_HEAD=<原 40 位 image source commit>` 与
+   `EXPECTED_REPAIR_HELM_REVISION=91`；该 revision 必须仍为 deployed，chart/hooks/computed values 与受审 empty
+   non-hook disabled schedule-component failure shape 精确一致，任何漂移都在 Helm write 前拒绝。chart/values/render
+   hashes 和 frozen image tag/digest 保持不变。repair 完成后必须核对紧邻的 revision 92 为 deployed、stored manifest/computed values 为完整 off render、tracked live Deployment/Service 与完整 off release 精确一致、Pod imageID/digest 与 sectors-off 状态不变、
+   两个 CronJob 和 namespace Job absent、Secret/PVC identity 不变，才可把步骤 1 视为完成。repair-control
+   commit 以 `REVIEWED_GIT_HEAD` 记录，原 image source commit 以
+   `FROZEN_IMAGE_SOURCE_GIT_HEAD` 记录；repair 不得把新 control-plane HEAD 冒充为镜像构建来源。repair
+   完成后的 promotion/enable/off 继续使用新的 clean reviewed control-plane HEAD 和原 frozen image
+   repository/tag/digest；除 repair 外不要求再次提供 source HEAD，但所有 render/hash 绑定仍须相同。
 2. **盘后隔离 probe**：仅在上述 pre-I/O 时间门禁通过后运行 real probe。使用权限受限的新目录保存
    SQLite 与 JSON，记录 JSON envelope 文件 SHA-256，并人工核对 canonical checksum、
    `provider=fuyao`、`dataset=sectors`、`revision=fuyao-market-v2`、`status=eligible`、请求/日历/

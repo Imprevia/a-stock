@@ -1884,6 +1884,8 @@ def _controlled_sector_packet(
         "FROZEN_IMAGE_REPOSITORY": image_repository,
         "FROZEN_IMAGE_TAG": image_tag,
         "FROZEN_IMAGE_DIGEST": f"sha256:{'d' * 64}",
+        "FROZEN_IMAGE_SOURCE_GIT_HEAD": head,
+        "EXPECTED_REPAIR_HELM_REVISION": "91",
     }
     env_file = tmp_path / "controlled-sectors.env"
     env_file.write_text(
@@ -1936,6 +1938,189 @@ def _run_controlled_sector_entry(
         text=True,
         check=False,
     )
+
+
+def _repair_target_stubs(
+    tmp_path: Path,
+    *,
+    reviewed_off_render: str,
+    stored_manifest: str = "",
+    release_revision: int = 91,
+    release_status: str = "deployed",
+    chart_name: str | None = None,
+    chart_version: str | None = None,
+    stored_component: str = "schedule",
+) -> tuple[Path, Path]:
+    fake_bin = tmp_path / "repair-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "repair-calls.log"
+    state = tmp_path / "repair-upgraded"
+    full_manifest = tmp_path / "repair-full.yaml"
+    current_manifest = tmp_path / "repair-current.yaml"
+    live_manifest = tmp_path / "repair-live.yaml"
+    deployments_path = tmp_path / "repair-deployments.json"
+    replicasets_path = tmp_path / "repair-replicasets.json"
+    pods_path = tmp_path / "repair-pods.json"
+    pvc_path = tmp_path / "repair-postgresql-pvc.json"
+    statefulset_path = tmp_path / "repair-postgresql-statefulset.json"
+    release_status_path = tmp_path / "repair-release-status.json"
+    post_release_status_path = tmp_path / "repair-post-release-status.json"
+    release_values_path = tmp_path / "repair-release-values.json"
+    post_release_values_path = tmp_path / "repair-post-release-values.json"
+
+    full_manifest.write_text(reviewed_off_render, encoding="utf-8")
+    current_manifest.write_text(stored_manifest, encoding="utf-8")
+    live_documents = []
+    for document in yaml.safe_load_all(reviewed_off_render):
+        if not document or document.get("kind") not in {"Deployment", "Service", "CronJob"}:
+            continue
+        document = copy.deepcopy(document)
+        document.setdefault("metadata", {})["namespace"] = "a-stock"
+        live_documents.append(document)
+    live_manifest.write_text(
+        yaml.safe_dump(
+            {"apiVersion": "v1", "kind": "List", "items": live_documents},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    deployments, replicasets, pods = _sector_runtime_payloads(reviewed_off_render)
+    deployments_path.write_text(json.dumps(deployments), encoding="utf-8")
+    replicasets_path.write_text(json.dumps(replicasets), encoding="utf-8")
+    pods_path.write_text(json.dumps(pods), encoding="utf-8")
+    pvc_path.write_text(
+        json.dumps(
+            {
+                "metadata": {"name": "a-stock-postgresql-data", "namespace": "a-stock"},
+                "spec": {"accessModes": ["ReadWriteOnce"], "volumeName": "pv-postgresql"},
+                "status": {"phase": "Bound"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    statefulset_path.write_text(
+        json.dumps(
+            {
+                "metadata": {"name": "a-stock-postgresql", "namespace": "a-stock"},
+                "spec": {"replicas": 1},
+                "status": {"readyReplicas": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    release_values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    overlay_values = yaml.safe_load(SECTORS_OFF.read_text(encoding="utf-8"))
+
+    def merge(target: dict, source: dict) -> None:
+        for key, value in source.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                merge(target[key], value)
+            else:
+                target[key] = value
+
+    merge(release_values, overlay_values)
+    release_values["component"] = stored_component
+    release_values["image"]["repository"] = "registry.local/frozen"
+    release_values["image"]["tag"] = "reviewed-20261009"
+    release_values_path.write_text(json.dumps(release_values), encoding="utf-8")
+    post_release_values = copy.deepcopy(release_values)
+    post_release_values["component"] = "all"
+    post_release_values_path.write_text(
+        json.dumps(post_release_values), encoding="utf-8"
+    )
+    chart_metadata = yaml.safe_load((CHART / "Chart.yaml").read_text(encoding="utf-8"))
+
+    def write_release_status(path: Path, *, revision: int, status: str) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "name": "a-stock",
+                    "namespace": "a-stock",
+                    "version": revision,
+                    "info": {"status": status},
+                    "chart": {
+                        "metadata": {
+                            "name": chart_name or chart_metadata["name"],
+                            "version": chart_version or chart_metadata["version"],
+                        }
+                    },
+                    "hooks": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_release_status(
+        release_status_path, revision=release_revision, status=release_status
+    )
+    write_release_status(post_release_status_path, revision=92, status="deployed")
+
+    helm_wrapper = fake_bin / "helm"
+    helm_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'helm %s\\n' \"$*\" >> {calls}\n"
+        "case \"$1\" in\n"
+        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
+        "  list) printf '[{\"name\":\"a-stock\"}]\\n' ;;\n"
+        f"  status) if [[ -f {state} ]]; then cat {post_release_status_path}; else cat {release_status_path}; fi ;;\n"
+        f"  get) if [[ \"$2\" == values ]]; then if [[ -f {state} ]]; then cat {post_release_values_path}; else cat {release_values_path}; fi; elif [[ -f {state} ]]; then cat {full_manifest}; else cat {current_manifest}; fi ;;\n"
+        "  upgrade)\n"
+        "    [[ \" $* \" == *\" --no-hooks \"* ]] || exit 81\n"
+        "    [[ \" $* \" == *\" --set component=all \"* ]] || exit 82\n"
+        "    [[ \" $* \" != *\" --install \"* ]] || exit 83\n"
+        f"    touch {state} ;;\n"
+        "  *) exit 84 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm_wrapper.chmod(0o755)
+
+    kubectl_wrapper = fake_bin / "kubectl"
+    kubectl_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
+        "args=\"$*\"\n"
+        "if [[ \"$args\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment,service,cronjob\"* ]]; then cat {live_manifest}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment --namespace\"* && \"$args\" == *\"-o json\"* ]]; then cat {deployments_path}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get replicasets --namespace\"* ]]; then cat {replicasets_path}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get pods --namespace\"* ]]; then cat {pods_path}; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get jobs --namespace\"* ]]; then printf '{\"items\":[]}'; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get cronjob \"* ]]; then exit 0; fi\n"
+        "if [[ \"$args\" == *\"get secret \"* ]]; then printf 'secret-uid|11'; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get pvc \"* && \"$args\" == *\"jsonpath\"* ]]; then printf 'pvc-uid|12|pv-reviewed|Bound|5Gi'; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get pvc a-stock-postgresql-data\"* && \"$args\" == *\"-o json\"* ]]; then cat {pvc_path}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get statefulset a-stock-postgresql\"* ]]; then cat {statefulset_path}; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get deployment\"* && \"$args\" == *\"jsonpath\"* ]]; then printf a-stock; exit 0; fi\n"
+        "if [[ \"$args\" == *\"rollout status deployment/a-stock\"* ]]; then exit 0; fi\n"
+        "exit 85\n",
+        encoding="utf-8",
+    )
+    kubectl_wrapper.chmod(0o755)
+
+    ssh_wrapper = fake_bin / "ssh"
+    ssh_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"images ls\"* ]]; then\n"
+        f"  printf '{{\"Name\":\"registry.local/frozen:reviewed-20261009\",\"Target\":{{\"digest\":\"sha256:{'d' * 64}\"}}}}\\n'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ssh_wrapper.chmod(0o755)
+    for name in ("nc", "podman", "scp", "curl"):
+        executable = fake_bin / name
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '{name} %s\\n' \"$*\" >> {calls}\n"
+            + ("exit 0\n" if name == "nc" else "exit 86\n"),
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+    return fake_bin, calls
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2098,12 +2283,16 @@ def test_controlled_promotion_rejects_report_hash_drift_before_kubectl_exec(
 def test_controlled_sectors_commands_are_narrow_and_hook_free() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     controlled = source.split(
-        'if [[ "$OPERATION" == promote-sectors-capability || '
+        'if [[ "$OPERATION" == repair-sectors-off-release || '
+        '"$OPERATION" == promote-sectors-capability || '
         '"$OPERATION" == enable-sectors-config || '
         '"$OPERATION" == disable-sectors-config ]]; then',
         1,
     )[1].split('if [[ "$OPERATION" == deploy ]]; then', 1)[0]
     promotion = controlled.split("PROMOTION_ARGS=(", 1)[1].split("exit 0", 1)[0]
+    repair = controlled.split(
+        'if [[ "$OPERATION" == repair-sectors-off-release ]]; then', 1
+    )[1].split("exit 0", 1)[0]
     config = controlled.split('log "applying hook-free same-image sectors config', 1)[1]
 
     assert "kubectl exec -i --namespace" in promotion
@@ -2120,8 +2309,177 @@ def test_controlled_sectors_commands_are_narrow_and_hook_free() -> None:
     assert "--atomic" in config
     assert "--wait" in config
     assert "--install" not in config
+    assert 'helm upgrade "$RELEASE_NAME"' in repair
+    assert "--set component=all" in repair
+    assert "--no-hooks" in repair
+    assert "--install" not in repair
+    assert "compare-release-exact" in repair
+    assert "compare-live-desired" in repair
+    assert "verify_live_database_contract" in repair
+    assert "capabilities promote" not in repair
+    assert "scheduled-refresh" not in repair
+    assert "kubectl exec" not in repair
     for forbidden in ("podman build", "podman save", "scp ", "images import", "kubectl cp"):
         assert forbidden not in controlled
+
+
+def test_disabled_all_component_stage_stops_after_complete_release_convergence() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "component=all complete Helm release manifest consolidated" in source
+    assert '&& ( "$COMPONENT_NAME" == "schedule" || "$COMPONENT_NAME" == "all" )' not in source
+    assert 'if [[ -z "$FAILED_COMPONENT" && "$COMPONENT_NAME" == "schedule" ]]; then' in source
+    assert "schedule phase=skipped reason=baseline_disabled complete_release_converged" in source
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_repair_sectors_off_restores_only_complete_release_without_image_or_data_work(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    reviewed_off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository="registry.local/frozen",
+        image_tag="reviewed-20261009",
+    )
+    fake_bin, calls = _repair_target_stubs(
+        tmp_path, reviewed_off_render=reviewed_off_render
+    )
+    kubeconfig = tmp_path / "repair-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+
+    completed = _run_controlled_sector_entry(
+        script,
+        env_file,
+        off,
+        enabled,
+        fake_bin,
+        operation="--repair-sectors-off-release",
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode == 0, completed.stderr
+    upgrade_calls = [line for line in call_log.splitlines() if line.startswith("helm upgrade ")]
+    status_calls = [line for line in call_log.splitlines() if line.startswith("helm status ")]
+    values_calls = [
+        line for line in call_log.splitlines() if line.startswith("helm get values ")
+    ]
+    assert len(upgrade_calls) == 1
+    assert len(status_calls) == 3
+    assert len(values_calls) == 3
+    assert "--set image.repository=registry.local/frozen" in upgrade_calls[0]
+    assert "--set image.tag=reviewed-20261009" in upgrade_calls[0]
+    assert "--set component=all" in upgrade_calls[0]
+    assert "--no-hooks" in upgrade_calls[0]
+    assert "--install" not in upgrade_calls[0]
+    assert "--atomic" not in upgrade_calls[0]
+    assert "complete sectors-off release repaired" in completed.stdout
+    for forbidden in (
+        "podman ",
+        "scp ",
+        "curl ",
+        "kubectl exec",
+        "capabilities promote",
+        "scheduled-refresh",
+        "images import",
+    ):
+        assert forbidden not in call_log
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "stub_overrides",
+    [
+        pytest.param({"release_revision": 90}, id="revision-drift"),
+        pytest.param({"release_status": "failed"}, id="status-drift"),
+        pytest.param({"chart_name": "unexpected-chart"}, id="chart-name-drift"),
+        pytest.param({"chart_version": "0.0.0-drift"}, id="chart-version-drift"),
+        pytest.param({"stored_component": "all"}, id="stored-values-drift"),
+    ],
+)
+def test_repair_sectors_off_rejects_release_identity_drift_before_helm_write(
+    tmp_path: Path,
+    stub_overrides: dict[str, object],
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    reviewed_off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository="registry.local/frozen",
+        image_tag="reviewed-20261009",
+    )
+    fake_bin, calls = _repair_target_stubs(
+        tmp_path,
+        reviewed_off_render=reviewed_off_render,
+        **stub_overrides,
+    )
+    kubeconfig = tmp_path / "repair-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+
+    completed = _run_controlled_sector_entry(
+        script,
+        env_file,
+        off,
+        enabled,
+        fake_bin,
+        operation="--repair-sectors-off-release",
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode != 0
+    assert "requires exact deployed revision and stored values" in completed.stderr
+    assert "helm upgrade " not in call_log
+    for forbidden in (
+        "podman ",
+        "scp ",
+        "kubectl exec",
+        "capabilities promote",
+        "scheduled-refresh",
+        "images import",
+    ):
+        assert forbidden not in call_log
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_repair_sectors_off_rejects_nonexact_stored_manifest_before_helm_write(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, off, enabled, _ = _controlled_sector_packet(tmp_path)
+    reviewed_off_render = _render_sector_profile(
+        off,
+        chart=repo / "deploy" / "helm" / "a-stock",
+        image_repository="registry.local/frozen",
+        image_tag="reviewed-20261009",
+    )
+    fake_bin, calls = _repair_target_stubs(
+        tmp_path,
+        reviewed_off_render=reviewed_off_render,
+        stored_manifest=reviewed_off_render,
+    )
+    kubeconfig = tmp_path / "repair-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+
+    completed = _run_controlled_sector_entry(
+        script,
+        env_file,
+        off,
+        enabled,
+        fake_bin,
+        operation="--repair-sectors-off-release",
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode != 0
+    assert "requires the exact reviewed schedule-only stored manifest" in completed.stderr
+    assert "helm upgrade " not in call_log
+    assert "podman " not in call_log
+    assert "scp " not in call_log
 
 
 def test_stage_sectors_off_freezes_single_import_digest_before_helm_write() -> None:
