@@ -515,7 +515,15 @@ def test_default_runtime_commits_complete_core_and_exposes_local_details(tmp_pat
     result = coordinator.collect(AS_OF, ("core",))
 
     assert coordinator.typed_cutover_datasets == frozenset(
-        {"core", "breadth", "limits", "sectors", "activeDirection"}
+        {
+            "core",
+            "breadth",
+            "limits",
+            "industry-ranking",
+            "sector-turnover",
+            "sector-breadth",
+            "activeDirection",
+        }
     )
     assert isinstance(
         container.registries.collectors.get("core"),

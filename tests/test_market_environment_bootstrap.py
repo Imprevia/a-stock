@@ -21,7 +21,18 @@ from src.market_environment.bootstrap.container import (
     build_container,
 )
 from src.market_environment.domain.models import DATASET_IDS
-from src.market_environment.infrastructure.collection import AcquisitionPlanCollector
+from src.market_environment.infrastructure.collection import (
+    AcquisitionPlanCollector,
+    ThsIndustryRankingCollector,
+    ThsIndustryRankingCommitter,
+    ThsIndustryRankingProjector,
+    ThsSectorBreadthCollector,
+    ThsSectorBreadthCommitter,
+    ThsSectorBreadthProjector,
+    ThsSectorTurnoverCollector,
+    ThsSectorTurnoverCommitter,
+    ThsSectorTurnoverProjector,
+)
 from src.market_environment.infrastructure.providers.breadth_acquisition import (
     EASTMONEY_BREADTH_SOURCE_ID,
     FUYAO_BREADTH_SOURCE_ID,
@@ -267,10 +278,11 @@ def test_container_and_cli_expose_complete_shared_runtime_registries() -> None:
     assert container.registries.acquisition_plans.dataset_ids == DATASET_IDS
     assert container.registries.committers.dataset_ids == DATASET_IDS
     assert container.registries.detail_projectors.dataset_ids == DATASET_IDS
-    assert tuple(
+    source_ids = tuple(
         adapter.capability.source_id
         for adapter in container.registries.source_adapters
-    ) == (
+    )
+    assert source_ids[:13] == (
         TENCENT_CORE_QUOTE_SOURCE_ID,
         FUYAO_CORE_HISTORY_SOURCE_ID,
         MOOTDX_CORE_HISTORY_SOURCE_ID,
@@ -284,14 +296,13 @@ def test_container_and_cli_expose_complete_shared_runtime_registries() -> None:
         FUYAO_LIMITS_SOURCE_ID,
         EASTMONEY_LIMITS_SOURCE_ID,
         LEGACY_LIMITS_SUMMARY_SOURCE_ID,
-        "sectors-eastmoney-clist",
-        "sectors-eastmoney-clist-delay",
-        "sectors-fuyao",
-        "sectors-eastmoney-dataapi-enrichment",
+    )
+    assert source_ids[-3:] == (
         "active-direction-eastmoney-primary",
         "active-direction-eastmoney-delayed",
         "active-direction-tdx-derived",
     )
+    assert not any(source_id.startswith("sectors-") for source_id in source_ids)
     assert container.registries.transport_engines.names == ("requests",)
     assert (
         container.registries.transport_policy_gateway.engine_registry
@@ -326,7 +337,43 @@ def test_container_and_cli_expose_complete_shared_runtime_registries() -> None:
             container.registries.collectors.get(dataset),
             AcquisitionPlanCollector,
         )
-        for dataset in DATASET_IDS
+        for dataset in ("core", "breadth", "limits", "activeDirection")
+    )
+    assert isinstance(
+        container.registries.collectors.get("industry-ranking"),
+        ThsIndustryRankingCollector,
+    )
+    assert isinstance(
+        container.registries.collectors.get("sector-turnover"),
+        ThsSectorTurnoverCollector,
+    )
+    assert isinstance(
+        container.registries.collectors.get("sector-breadth"),
+        ThsSectorBreadthCollector,
+    )
+    assert isinstance(
+        container.registries.committers.get("industry-ranking"),
+        ThsIndustryRankingCommitter,
+    )
+    assert isinstance(
+        container.registries.committers.get("sector-turnover"),
+        ThsSectorTurnoverCommitter,
+    )
+    assert isinstance(
+        container.registries.committers.get("sector-breadth"),
+        ThsSectorBreadthCommitter,
+    )
+    assert isinstance(
+        container.registries.detail_projectors.get("industry-ranking"),
+        ThsIndustryRankingProjector,
+    )
+    assert isinstance(
+        container.registries.detail_projectors.get("sector-turnover"),
+        ThsSectorTurnoverProjector,
+    )
+    assert isinstance(
+        container.registries.detail_projectors.get("sector-breadth"),
+        ThsSectorBreadthProjector,
     )
     assert cli.registries is container.registries
     assert isinstance(

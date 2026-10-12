@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from src.market_environment.bootstrap.app import create_app
 from src.market_environment.collection import CollectionCoordinator
+from src.market_environment.domain.models import DATASET_IDS
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.service import MarketEnvironmentService
 from src.market_environment.schemas import CollectionTaskResponse
@@ -98,6 +99,30 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
         ("/api/market-environment/collection-runs/{run_id}", "get"): (
             "200",
             "CollectionRunResponse",
+        ),
+        ("/api/market-environment/ths/catalog", "get"): (
+            "200",
+            "ThsCatalogResponse",
+        ),
+        ("/api/market-environment/ths/sectors/{thscode}/bars", "get"): (
+            "200",
+            "ThsSectorBarsResponse",
+        ),
+        ("/api/market-environment/ths/operations/{run_id}", "get"): (
+            "200",
+            "ThsOperationResponse",
+        ),
+        ("/api/market-environment/ths/catalog/sync", "post"): (
+            "202",
+            "QueuedThsOperationResponse",
+        ),
+        ("/api/market-environment/ths/turnover/backfills", "post"): (
+            "202",
+            "QueuedThsOperationResponse",
+        ),
+        ("/api/market-environment/ths/member-facts/imports", "post"): (
+            "202",
+            "QueuedThsOperationResponse",
         ),
         ("/api/preferences/timezone", "get"): ("200", "TimezonePreferencesResponse"),
         ("/api/preferences/timezone", "put"): ("200", "TimezonePreferencesResponse"),
@@ -286,7 +311,7 @@ def test_collection_status_is_provider_free_and_reports_exact_date(monkeypatch, 
     assert rows["core"]["available"] is False
 
 
-def test_collection_status_exposes_stored_sector_enrichment_without_provider_call(monkeypatch, tmp_path) -> None:
+def test_collection_status_does_not_project_legacy_sectors_evidence(monkeypatch, tmp_path) -> None:
     provider = CollectionProvider()
     coordinator = collection_coordinator(tmp_path, provider)
     enrichment = {
@@ -335,9 +360,16 @@ def test_collection_status_exposes_stored_sector_enrichment_without_provider_cal
     )
 
     assert response.status_code == 200
-    sectors = next(item for item in response.json()["datasets"] if item["dataset"] == "sectors")
-    assert sectors["quality"]["sectorEnrichment"]["source"] == "eastmoney-dataapi"
-    assert sectors["quality"]["sectorEnrichment"]["matchedRows"] == 1
+    rows = {item["dataset"]: item for item in response.json()["datasets"]}
+    assert tuple(rows) == DATASET_IDS
+    assert "sectors" not in rows
+    assert all(
+        rows[dataset]["available"] is False
+        for dataset in ("industry-ranking", "sector-turnover", "sector-breadth")
+    )
+    legacy = coordinator.store.get("sectors", AS_OF)
+    assert legacy is not None
+    assert legacy.payload["quality"]["sectorEnrichment"] == enrichment
     assert provider.calls == []
 
 
@@ -435,27 +467,21 @@ def test_collection_single_run_is_enabled_by_default_and_can_be_polled(monkeypat
     assert polled.json()["completedTasks"] == 1
 
 
-def test_collection_task_timings_accept_fallback_metadata() -> None:
+def test_collection_task_timings_accept_ths_revision_metadata() -> None:
     response = CollectionTaskResponse(
         taskId="task-1",
-        dataset="sectors",
+        dataset="industry-ranking",
         asOf=AS_OF,
         status="partial",
-        source="fuyao",
+        source="fuyao-ths",
         observations=10,
-        warning="provider fallback",
+        warning="snapshot coverage incomplete",
         timings={
             "providerCollectionMs": 12.5,
-            "sourceRevision": "fuyao-market-v1",
-            "capabilityRevision": "fuyao-market-v1",
-            "eastmoneyFailure": "controlled outage",
-            "sectorEnrichment": {
-                "status": "partial",
-                "source": "eastmoney-dataapi",
-                "sameVendor": True,
-                "matchedRows": 1,
-                "unmatchedRows": 2,
-            },
+            "sourceRevision": "fuyao-ths-catalog-v1",
+            "capabilityRevision": "fuyao-ths-catalog-v1",
+            "catalogRevision": "catalog-fixture-r1",
+            "requestBudget": 12,
         },
         queuedAt=None,
         startedAt=None,
@@ -465,17 +491,14 @@ def test_collection_task_timings_accept_fallback_metadata() -> None:
     )
 
     assert response.timings["providerCollectionMs"] == 12.5
-    assert response.timings["sourceRevision"] == "fuyao-market-v1"
-    assert response.timings["eastmoneyFailure"] == "controlled outage"
-    assert response.timings["sectorEnrichment"]["sameVendor"] is True
+    assert response.timings["sourceRevision"] == "fuyao-ths-catalog-v1"
+    assert response.timings["catalogRevision"] == "catalog-fixture-r1"
+    assert response.timings["requestBudget"] == 12
 
 
 def test_collection_full_run_reports_partial_and_keeps_successes(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "true")
-    coordinator = collection_coordinator(
-        tmp_path,
-        CollectionProvider(failing_datasets={"sectors"}),
-    )
+    coordinator = collection_coordinator(tmp_path)
     client = TestClient(
         build_test_app(
             collection_queries=coordinator,
@@ -494,7 +517,11 @@ def test_collection_full_run_reports_partial_and_keeps_successes(monkeypatch, tm
 
     tasks = {item["dataset"]: item for item in polled.json()["tasks"]}
     assert polled.json()["status"] == "partial"
-    assert tasks["sectors"]["status"] == "failed-missing"
+    assert set(tasks) == set(DATASET_IDS)
+    assert "sectors" not in tasks
+    assert tasks["industry-ranking"]["status"] == "failed-missing"
+    assert tasks["sector-turnover"]["status"] == "blocked"
+    assert tasks["sector-breadth"]["status"] == "blocked"
     assert tasks["breadth"]["status"] == "success"
 
 

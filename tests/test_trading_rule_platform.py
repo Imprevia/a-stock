@@ -16,6 +16,7 @@ from jsonschema import ValidationError
 from src.trading_system.backtest.runner import run_backtest, validate_validation_evidence
 from src.trading_system.cli import run
 from src.trading_system.data.canonical import canonical_json_bytes, load_snapshot, sha256_value, validate_event
+from src.trading_system.data.canonical import validate_snapshot
 from src.trading_system.data.providers import (
     EastmoneyClient,
     FallbackChain,
@@ -318,6 +319,125 @@ def test_after_market_provider_failure_emits_insufficient_snapshot() -> None:
     assert snapshot["status"] == "insufficient"
     assert snapshot["providerQuality"][0]["status"] == "failed"
     assert snapshot["metrics"] == {}
+    assert snapshot["schemaVersion"] == 2
+    assert snapshot["metricProvenance"] == {}
+
+
+def _sector_provenance(as_of: str, revision: str = "calc-v1") -> dict:
+    return {
+        "sourceDataset": "sector-continuity-analysis",
+        "actualDate": as_of,
+        "analysisQuality": "ok",
+        "historyCoverage": 1.0,
+        "constituentCoverage": 0.98,
+        "dataVersion": "tdx-v1",
+        "classificationVersion": "sw-2021",
+        "membershipVersion": "membership-v1",
+        "universeVersion": "ordinary-a-share-v1",
+        "adjustmentVersion": "qfq-v1",
+        "benchmarkVersion": "ordinary-a-share-equal-weight-v1",
+        "calculationVersion": revision,
+        "evidenceReferences": ["evidence:fixture"],
+        "upstreamEvidenceChecksums": ["abc123"],
+    }
+
+
+def test_snapshot_v2_requires_closed_sector_metric_provenance() -> None:
+    snapshot = complete_snapshot()
+    snapshot["schemaVersion"] = 2
+    snapshot["metrics"] = {"sector.relative_strength_percentile": 0.8}
+    snapshot["metricProvenance"] = {
+        "sector.relative_strength_percentile": _sector_provenance(snapshot["asOf"])
+    }
+    validate_snapshot(snapshot, ROOT)
+    missing = copy.deepcopy(snapshot)
+    missing["metricProvenance"] = {}
+    with pytest.raises(ValidationError):
+        validate_snapshot(missing, ROOT)
+    unknown = copy.deepcopy(snapshot)
+    unknown["metricProvenance"]["unknown.metric"] = _sector_provenance(snapshot["asOf"])
+    with pytest.raises(ValidationError):
+        validate_snapshot(unknown, ROOT)
+
+
+def test_sector_provenance_changes_snapshot_identity_without_bundle_reference_cycle() -> None:
+    first = complete_snapshot()
+    first["schemaVersion"] = 2
+    first["metrics"] = {"sector.relative_strength_percentile": 0.8}
+    first["metricProvenance"] = {
+        "sector.relative_strength_percentile": _sector_provenance(first["asOf"], "calc-v1")
+    }
+    second = copy.deepcopy(first)
+    second["metricProvenance"]["sector.relative_strength_percentile"]["calculationVersion"] = "calc-v2"
+    assert sha256_value(first) != sha256_value(second)
+    assert "bundle" not in canonical_json_bytes(first).decode("utf-8").lower()
+
+
+def test_after_market_snapshot_bridges_only_same_date_sector_analysis() -> None:
+    as_of = date(2026, 8, 28)
+    source = complete_snapshot()
+
+    class LocalService:
+        def get(self, requested):
+            assert requested == as_of
+            return {
+                "asOf": as_of.isoformat(),
+                "generatedAt": source["createdAt"],
+                "indices": [],
+                "summary": {"warnings": []},
+                "chapter01": {
+                    "industryRanking": {
+                        "asOf": as_of.isoformat(),
+                        "provider": "fuyao",
+                        "tags": [],
+                    },
+                    "sectorAnalysis": {
+                        "asOf": as_of.isoformat(),
+                        "status": "ok",
+                        "quality": {"status": "ok", "coverage": 1.0, "constituentCoverage": 0.98},
+                        "history": {"coverage": 1.0},
+                        "lineage": {
+                            "dataVersion": "tdx-v1",
+                            "classificationVersion": "sw-2021",
+                            "membershipVersion": "membership-v1",
+                            "universeVersion": "ordinary-a-share-v1",
+                            "adjustmentVersion": "qfq-v1",
+                            "benchmarkVersion": "ordinary-a-share-equal-weight-v1",
+                            "calculationVersion": "calc-v1",
+                            "evidenceReferences": ["evidence:fixture"],
+                            "evidenceChecksums": ["abc123"],
+                        },
+                        "candidates": [{
+                            "industryId": "801080",
+                            "ruleTraces": [
+                                {"ruleId": "QTS-01-05-01", "value": 0.8, "percentile": 0.8, "status": "ok", "raw": {"constituentCoverage": 0.98}},
+                                {"ruleId": "QTS-01-05-02", "value": 4, "percentile": None, "status": "ok", "raw": {"constituentCoverage": 0.98}},
+                            ],
+                        }],
+                        "metricTraces": [{"ruleId": "QTS-01-05-05", "value": 0.7, "percentile": 0.75, "status": "ok", "raw": {"constituentCoverage": 0.98}}],
+                    },
+                },
+            }
+
+    snapshot = create_after_market_snapshot(as_of, LocalService())
+    validate_snapshot(snapshot, ROOT)
+    assert snapshot["metrics"]["sector.relative_strength_percentile"] == 0.8
+    assert snapshot["metrics"]["sector.top_turnover_days"] == 4
+    assert snapshot["metrics"]["sector.top5_turnover_concentration_percentile"] == 0.75
+    assert set(snapshot["metricProvenance"]) == {
+        "sector.relative_strength_percentile", "sector.top_turnover_days",
+        "sector.top5_turnover_concentration_percentile",
+    }
+
+    class ThsOnlyService(LocalService):
+        def get(self, requested):
+            payload = super().get(requested)
+            payload["chapter01"].pop("sectorAnalysis")
+            return payload
+
+    ths_only = create_after_market_snapshot(as_of, ThsOnlyService())
+    assert not any(name.startswith("sector.") for name in ths_only["metrics"])
+    assert ths_only["metricProvenance"] == {}
 
 
 def test_evidence_bundle_detects_tampering(tmp_path: Path) -> None:

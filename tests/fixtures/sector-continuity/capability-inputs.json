@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "asOf": "2026-08-28",
+  "taxonomyHistory": [
+    {
+      "taxonomyVersion": "shenwan-l1-2021",
+      "effectiveFrom": "2021-12-13",
+      "effectiveTo": "2026-07-01",
+      "industryId": "801010",
+      "displayName": "农林牧渔"
+    },
+    {
+      "taxonomyVersion": "shenwan-l1-2026",
+      "effectiveFrom": "2026-07-01",
+      "effectiveTo": null,
+      "industryId": "801010",
+      "displayName": "农林牧渔"
+    }
+  ],
+  "membershipHistory": [
+    {
+      "securityId": "sh.600001",
+      "industryId": "801010",
+      "validFrom": "2021-12-13",
+      "validTo": "2026-07-01"
+    },
+    {
+      "securityId": "sh.600001",
+      "industryId": "801020",
+      "validFrom": "2026-07-01",
+      "validTo": null
+    },
+    {
+      "securityId": "bj.920001",
+      "industryId": "801010",
+      "validFrom": "2025-10-09",
+      "validTo": null
+    },
+    {
+      "securityId": "sz.000999",
+      "industryId": "801010",
+      "validFrom": "2021-12-13",
+      "validTo": "2026-08-20",
+      "state": "delisted"
+    }
+  ],
+  "adjustedPrices": [
+    {
+      "securityId": "sh.600001",
+      "market": "sh",
+      "asOf": "2026-08-28",
+      "adjustedClose": 10.5,
+      "previousAdjustedClose": 10.0,
+      "originalClose": 5.25,
+      "originalAmount": 100000000,
+      "adjustmentRevision": "corp-action-fixture-v1"
+    },
+    {
+      "securityId": "bj.920001",
+      "market": "bj",
+      "asOf": "2026-08-28",
+      "adjustedClose": 21.0,
+      "previousAdjustedClose": 20.0,
+      "originalClose": 21.0,
+      "originalAmount": 30000000,
+      "adjustmentRevision": "corp-action-fixture-v1"
+    },
+    {
+      "securityId": "sz.000002",
+      "market": "sz",
+      "asOf": "2026-08-28",
+      "adjustedClose": null,
+      "previousAdjustedClose": null,
+      "originalClose": 8.0,
+      "originalAmount": 0,
+      "state": "suspended",
+      "adjustmentRevision": "corp-action-fixture-v1"
+    }
+  ],
+  "tdxOriginalFacts": [
+    {
+      "securityId": "sh.600001",
+      "market": "sh",
+      "asOf": "2026-08-28",
+      "open": 5.1,
+      "high": 5.3,
+      "low": 5.0,
+      "close": 5.25,
+      "previousClose": 5.0,
+      "volume": 19000000,
+      "amount": 100000000
+    },
+    {
+      "securityId": "bj.920001",
+      "market": "bj",
+      "asOf": "2026-08-28",
+      "open": 20.0,
+      "high": 21.2,
+      "low": 19.9,
+      "close": 21.0,
+      "previousClose": 20.0,
+      "volume": 1450000,
+      "amount": 30000000
+    }
+  ],
+  "benchmarkNegativeCases": {
+    "missingSession": "2026-08-27",
+    "mixedDateRow": {
+      "securityId": "sh.600001",
+      "market": "sh",
+      "asOf": "2026-08-27",
+      "adjustedClose": 10.0,
+      "previousAdjustedClose": 9.8
+    },
+    "duplicateSecurityId": "sh.600001"
+  }
+}

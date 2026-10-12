@@ -2,6 +2,7 @@ fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 requests>=2.32,<3
 pandas>=2.2,<3
+pyarrow>=17,<24
 mootdx>=0.11.7,<1
 pytest>=8,<10
 # mootdx 0.11.7 requires httpx >=0.25,<0.26; keep the clean CI solve consistent.

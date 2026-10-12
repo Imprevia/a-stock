@@ -49,6 +49,8 @@ EASTMONEY_SECTOR_PRIMARY_SOURCE_ID = "sectors-eastmoney-clist"
 EASTMONEY_SECTOR_DELAYED_SOURCE_ID = "sectors-eastmoney-clist-delay"
 FUYAO_SECTOR_SOURCE_ID = "sectors-fuyao"
 EASTMONEY_SECTOR_ENRICHMENT_SOURCE_ID = "sectors-eastmoney-dataapi-enrichment"
+EASTMONEY_SECTOR_HTML_SINA_SOURCE_ID = "sectors-sina-html"
+EASTMONEY_SECTOR_HTML_XUEQIU_SOURCE_ID = "sectors-xueqiu-html"
 
 _EASTMONEY_PRIMARY_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _EASTMONEY_DELAYED_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
@@ -868,7 +870,13 @@ class EastmoneySectorEnrichmentAdapter:
 
 @dataclass(frozen=True, slots=True)
 class SectorsAcquisitionPlan:
-    """Preserve Eastmoney -> approved Fuyao -> fill-only dataapi policy."""
+    """Preserve Eastmoney -> approved Fuyao -> HTML static fallback policy.
+
+    The HTML tier is opt-in: when ``html_tier_is_enabled`` returns False for a
+    given host the adapter is not registered and the corresponding step is
+    omitted, so a default-disabled container still passes
+    ``adapter.validate_references``.
+    """
 
     adapters: SourceAdapterRegistry
     fuyao_is_enabled: Callable[[str], bool] = lambda _dataset: False
@@ -879,6 +887,7 @@ class SectorsAcquisitionPlan:
     fuyao_revision: Callable[[str], str] = (
         lambda _dataset: FUYAO_SECTORS_RUNTIME_REVISION
     )
+    html_tier_is_enabled: Callable[[str], bool] = lambda _host: False
     market_today: Callable[[], date] = _market_today
     is_settled: Callable[[date], bool] = lambda _as_of: True
     dataset_id: str = field(init=False, default="sectors")
@@ -886,6 +895,16 @@ class SectorsAcquisitionPlan:
     steps: tuple[AcquisitionPlanStep, ...] = field(init=False)
 
     def __post_init__(self) -> None:
+        html_sina_step = (
+            self._step(EASTMONEY_SECTOR_HTML_SINA_SOURCE_ID, "fallback")
+            if self.html_tier_is_enabled("sina")
+            else None
+        )
+        html_xueqiu_step = (
+            self._step(EASTMONEY_SECTOR_HTML_XUEQIU_SOURCE_ID, "fallback")
+            if self.html_tier_is_enabled("xueqiu")
+            else None
+        )
         steps = (
             self._step(EASTMONEY_SECTOR_PRIMARY_SOURCE_ID, "formal"),
             self._step(EASTMONEY_SECTOR_DELAYED_SOURCE_ID, "fallback"),
@@ -899,6 +918,7 @@ class SectorsAcquisitionPlan:
                 approved_fields=SUPPLEMENTAL_FIELDS,
             ),
             self._step(FUYAO_SECTOR_SOURCE_ID, "shadow"),
+            *(step for step in (html_sina_step, html_xueqiu_step) if step is not None),
         )
         object.__setattr__(self, "steps", steps)
         self.adapters.validate_references((self,))
@@ -979,17 +999,27 @@ class SectorsAcquisitionPlan:
         if formal_candidate is None:
             if not self.fuyao_is_enabled(self.dataset_id):
                 assert eastmoney_failure is not None
-                warning = (
-                    f"{eastmoney_failure.message}；"
-                    f"{self.fuyao_gate_warning(self.dataset_id)}"
+                html_candidate, html_warnings = self._attempt_html_tier(
+                    identity,
+                    current_market_date=current_market_date,
+                    settled=settled,
+                    attempts=attempts,
                 )
-                return CollectionOutcome(
-                    identity=identity,
-                    state=CollectionTaskState.FAILED_MISSING,
-                    warning=warning,
-                    failure=replace(eastmoney_failure, message=warning),
-                    attempts=tuple(attempts),
-                )
+                if html_candidate is not None:
+                    formal_candidate = html_candidate
+                else:
+                    warning = (
+                        f"{eastmoney_failure.message}；"
+                        f"{self.fuyao_gate_warning(self.dataset_id)}；"
+                        f"{_html_tier_fallback_warning(html_warnings)}"
+                    )
+                    return CollectionOutcome(
+                        identity=identity,
+                        state=CollectionTaskState.FAILED_MISSING,
+                        warning=warning,
+                        failure=replace(eastmoney_failure, message=warning),
+                        attempts=tuple(attempts),
+                    )
             fuyao = self._attempt(
                 identity,
                 FUYAO_SECTOR_SOURCE_ID,
@@ -1001,17 +1031,27 @@ class SectorsAcquisitionPlan:
             )
             if isinstance(fuyao, AcquisitionFailure):
                 assert eastmoney_failure is not None
-                warning = (
-                    f"{eastmoney_failure.message}；"
-                    f"扶摇行业 fallback 不可用：{fuyao.message}"
+                html_candidate, html_warnings = self._attempt_html_tier(
+                    identity,
+                    current_market_date=current_market_date,
+                    settled=settled,
+                    attempts=attempts,
                 )
-                return CollectionOutcome(
-                    identity=identity,
-                    state=CollectionTaskState.FAILED_MISSING,
-                    warning=warning,
-                    failure=replace(fuyao, message=warning),
-                    attempts=tuple(attempts),
-                )
+                if html_candidate is not None:
+                    formal_candidate = html_candidate
+                else:
+                    warning = (
+                        f"{eastmoney_failure.message}；"
+                        f"扶摇行业 fallback 不可用：{fuyao.message}；"
+                        f"{_html_tier_fallback_warning(html_warnings)}"
+                    )
+                    return CollectionOutcome(
+                        identity=identity,
+                        state=CollectionTaskState.FAILED_MISSING,
+                        warning=warning,
+                        failure=replace(fuyao, message=warning),
+                        attempts=tuple(attempts),
+                    )
             assert eastmoney_failure is not None
             formal_candidate = _append_candidate_warnings(
                 fuyao,
@@ -1175,6 +1215,42 @@ class SectorsAcquisitionPlan:
             if warning
             else candidate
         )
+
+    def _attempt_html_tier(
+        self,
+        identity: DatasetDate,
+        *,
+        current_market_date: date,
+        settled: bool,
+        attempts: list[AttemptEvidence],
+    ) -> tuple[CollectionCandidate | None, tuple[str, ...]]:
+        """Try the static-HTML fallback chain (sina then xueqiu).
+
+        Returns ``(candidate, attempted_hosts)``. ``candidate`` is the first
+        successful adapter result; if both adapters fail the tuple is
+        ``(None, ('sina', 'xueqiu'))`` and the caller threads the appended
+        warnings into the FAILED_MISSING path. The HTML tier is a no-op
+        when both ``html_tier_is_enabled`` predicates return False.
+        """
+        attempted: list[str] = []
+        for host, source_id in (
+            ("sina", EASTMONEY_SECTOR_HTML_SINA_SOURCE_ID),
+            ("xueqiu", EASTMONEY_SECTOR_HTML_XUEQIU_SOURCE_ID),
+        ):
+            if not self.html_tier_is_enabled(host):
+                continue
+            attempted.append(host)
+            result = self._attempt(
+                identity,
+                source_id,
+                role="fallback",
+                current_market_date=current_market_date,
+                settled=settled,
+                attempts=attempts,
+            )
+            if isinstance(result, CollectionCandidate):
+                return result, tuple(attempted)
+        return None, tuple(attempted)
 
     def _attempt(
         self,
@@ -1433,6 +1509,8 @@ __all__ = [
     "EASTMONEY_SECTOR_DELAYED_SOURCE_ID",
     "EASTMONEY_SECTOR_ENRICHMENT_SOURCE_ID",
     "EASTMONEY_SECTOR_PRIMARY_SOURCE_ID",
+    "EASTMONEY_SECTOR_HTML_SINA_SOURCE_ID",
+    "EASTMONEY_SECTOR_HTML_XUEQIU_SOURCE_ID",
     "EastmoneySectorDelayedAdapter",
     "EastmoneySectorEnrichmentAdapter",
     "EastmoneySectorPrimaryAdapter",
@@ -1440,3 +1518,13 @@ __all__ = [
     "FuyaoSectorSourceAdapter",
     "SectorsAcquisitionPlan",
 ]
+
+def _html_tier_warning(host: str, message: str | None) -> str:
+    """Format the HTML-tier attempt warning that surfaces in the failure chain."""
+    return f"{host} 静态 HTML 源不可用：{message or 'capability gate 未满足'}"
+
+
+def _html_tier_fallback_warning(hosts: tuple[str, ...]) -> str:
+    if not hosts:
+        return "末层 HTML 静态源未启用或全部 capability gate 未满足"
+    return "末层 HTML 静态源不可用：" + "、".join(hosts)

@@ -130,10 +130,31 @@
         },
         "fuyao": {
           "type": "object",
-          "required": ["existingSecret", "secretKey", "datasets"],
+          "required": ["existingSecret", "secretKey", "ths", "datasets"],
           "properties": {
             "existingSecret": {"type": "string"},
             "secretKey": {"type": "string", "minLength": 1},
+            "ths": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["writesAuthorized", "catalog", "membership", "history", "dumps"],
+              "properties": {
+                "writesAuthorized": {"type": "boolean"},
+                "catalog": {"$ref": "#/definitions/fuyaoThsCapability"},
+                "membership": {"$ref": "#/definitions/fuyaoThsCapability"},
+                "history": {"$ref": "#/definitions/fuyaoThsCapability"},
+                "dumps": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["dailyEnabled", "incrementalEnabled", "adjustmentEnabled"],
+                  "properties": {
+                    "dailyEnabled": {"type": "boolean"},
+                    "incrementalEnabled": {"type": "boolean"},
+                    "adjustmentEnabled": {"type": "boolean"}
+                  }
+                }
+              }
+            },
             "datasets": {
               "type": "object",
               "required": ["core", "breadth", "sectors", "activeDirection"],
@@ -190,6 +211,15 @@
         "enabled": {"type": "boolean"},
         "approvedRevision": {"type": "string"},
         "shadowEnabled": {"type": "boolean"}
+      }
+    },
+    "fuyaoThsCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "revision"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "revision": {"type": "string"}
       }
     }
   }

@@ -35,8 +35,12 @@ def map_collection_status(payload, *, manual_refresh_enabled):
         "asOf": payload["asOf"],
         "manualRefreshEnabled": bool(manual_refresh_enabled),
         "datasets": payload["datasets"],
+        "sectorAnalysis": payload.get("sectorAnalysis"),
     }
-    return CollectionStatusResponse.model_validate(merged).model_dump()
+    result = CollectionStatusResponse.model_validate(merged).model_dump()
+    if result.get("sectorAnalysis") is None:
+        result.pop("sectorAnalysis", None)
+    return result
 
 
 __all__ = [
@@ -47,4 +51,3 @@ __all__ = [
     "map_next_session",
     "map_timezone_preferences",
 ]
-

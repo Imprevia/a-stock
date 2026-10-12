@@ -30,7 +30,7 @@ from src.market_environment.infrastructure.providers.provenance import (
 
 
 AS_OF = date(2026, 9, 30)
-IDENTITY = DatasetDate("sectors", AS_OF)
+IDENTITY = DatasetDate("industry-ranking", AS_OF)
 
 
 @dataclass
@@ -99,8 +99,8 @@ def test_plan_preserves_fallback_shadow_and_fill_only_enrichment_lineage() -> No
     enrichment = Adapter("enrichment", candidate("enrichment", {"value": 777, "filled": 20, "blocked": 30}))
     registry = SourceAdapterRegistry((primary, fallback, shadow, enrichment))
     plan = DeterministicAcquisitionPlan(
-        dataset_id="sectors",
-        plan_id="sectors-v1",
+        dataset_id="industry-ranking",
+        plan_id="industry-ranking-v1",
         adapters=registry,
         steps=(
             AcquisitionPlanStep("primary", role="formal", capability_revision="v1"),
@@ -136,8 +136,8 @@ def test_shadow_failure_never_downgrades_formal_candidate() -> None:
     formal = Adapter("formal", candidate("formal", {"value": 1}))
     shadow = Adapter("shadow", failure("shadow"))
     plan = DeterministicAcquisitionPlan(
-        "sectors",
-        "sectors-shadow-v1",
+        "industry-ranking",
+        "industry-ranking-shadow-v1",
         (
             AcquisitionPlanStep("formal", capability_revision="v1"),
             AcquisitionPlanStep("shadow", role="shadow", capability_revision="v1"),
@@ -225,7 +225,7 @@ def test_cross_date_cache_and_mismatched_package_cannot_prove_requested_date() -
             }
         ),
     )
-    other_identity = DatasetDate("sectors", date(2026, 9, 29))
+    other_identity = DatasetDate("industry-ranking", date(2026, 9, 29))
     mismatched_package = CollectionCandidate(
         identity=other_identity,
         payload={"value": 1},

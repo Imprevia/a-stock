@@ -19,6 +19,40 @@ _REPOSITORY_NAMES = (
     "provider_capabilities",
     "limit_details",
     "timezone_preferences",
+    "sector_continuity",
+    "sector_taxonomy",
+    "sector_memberships",
+    "sector_security_facts",
+    "sector_benchmarks",
+    "sector_industry_aggregates",
+    "sector_results",
+    "sector_backfill",
+    "ths_sectors",
+)
+_OPTIONAL_REPOSITORY_NAMES = frozenset(
+    {
+        "sector_continuity",
+        "sector_taxonomy",
+        "sector_memberships",
+        "sector_security_facts",
+        "sector_benchmarks",
+        "sector_industry_aggregates",
+        "sector_results",
+        "sector_backfill",
+        "ths_sectors",
+    }
+)
+
+_SECTOR_REPOSITORY_ALIASES = frozenset(
+    {
+        "sector_taxonomy",
+        "sector_memberships",
+        "sector_security_facts",
+        "sector_benchmarks",
+        "sector_industry_aggregates",
+        "sector_results",
+        "sector_backfill",
+    }
 )
 
 
@@ -52,7 +86,13 @@ class MarketEnvironmentUnitOfWork:
             transaction = connection.begin()
             repositories = self._repository_factory(connection)
             for name in _REPOSITORY_NAMES:
-                setattr(self, name, getattr(repositories, name))
+                if name in _OPTIONAL_REPOSITORY_NAMES:
+                    value = getattr(repositories, name, None)
+                    if value is None and name in _SECTOR_REPOSITORY_ALIASES:
+                        value = getattr(repositories, "sector_continuity", None)
+                    setattr(self, name, value)
+                else:
+                    setattr(self, name, getattr(repositories, name))
         except BaseException:
             rollback = locals().get("transaction")
             if rollback is not None:

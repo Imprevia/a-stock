@@ -24,6 +24,8 @@ _EXPORTS = {
     "PostgresSnapshotRepository": ".repositories",
     "PostgresTradingSessionRepository": ".repositories",
     "PostgresTimezonePreferenceRepository": ".timezone_repository",
+    "PostgresSectorContinuityRepository": ".sector_continuity_repository",
+    "PostgresThsSectorRepository": ".ths_sector_repository",
 }
 
 

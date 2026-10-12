@@ -390,11 +390,240 @@ export interface SectorRow {
   mainNetPct?: number | null
 }
 
-export interface SectorAnalysis {
+export type ThsSectorTag = 'industry' | 'cn_concept' | 'region' | 'tszs'
+
+export interface ThsIndustryRankingRow {
+  tag: ThsSectorTag
+  rank: number
+  thscode: string
+  name: string
+  changePct: number
+  volume: number | null
+  turnover: number | null
+  catalogRevision: string
+  asOf: string
+}
+
+export interface ThsIndustryRanking {
+  state: string
+  asOf?: string | null
+  revisionId?: string | null
+  rows: ThsIndustryRankingRow[]
+  quality: DataSetQuality
+}
+
+export interface ThsSectorBar {
+  thscode?: string | null
+  name?: string | null
+  tradingDate: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  volume: number | null
+  turnover: number | null
+  quality: string
+  source: string
+  sourceRevision: string
+  warnings: string[]
+}
+
+export interface ThsSectorTurnover {
+  state: string
+  asOf?: string | null
+  rows: ThsSectorBar[]
+  quality: DataSetQuality
+}
+
+export interface ThsMemberRanking {
+  securityId: string
+  name?: string | null
+  value: number
+}
+
+export interface ThsSectorBreadthRow {
+  thscode: string
+  name?: string | null
+  tag?: ThsSectorTag | null
+  asOf: string
+  selectionReasons: string[]
+  memberCount: number
+  validDirectionCount: number
+  advanceCount: number
+  declineCount: number
+  flatCount: number
+  advanceRatio: number | null
+  advanceDeclineSpreadRatio: number | null
+  medianChangePct: number | null
+  validMa20Count: number
+  closeAboveMa20Count: number
+  ma20Breadth: number | null
+  limitUpCount: number | null
+  limitDownCount: number | null
+  topByTurnover: ThsMemberRanking[]
+  topByGain: ThsMemberRanking[]
+  maxMemberTurnoverContribution: number | null
+  diffusionRate: number | null
+  quality: string
+  warnings: string[]
+  lineage: Record<string, string>
+}
+
+export interface ThsSectorBreadth {
+  state: string
+  asOf?: string | null
+  rows: ThsSectorBreadthRow[]
+  quality: DataSetQuality
+}
+
+export type SectorContinuityStatus =
+  | 'ok'
+  | 'partial'
+  | 'degraded'
+  | 'reduced-confidence'
+  | 'insufficient'
+  | 'missing'
+  | 'failed'
+  | string
+
+export type SectorCandidateStage =
+  | 'insufficient'
+  | 'high-level-crowding'
+  | 'mainline-confirmed'
+  | 'mainline-candidate'
+  | 'one-day-pulse'
+  | 'rotation-or-ebb'
+
+export interface SectorAnalysisQuality {
+  status: SectorContinuityStatus
+  confidence: 'high' | 'medium' | 'low' | 'insufficient' | string
+  coverage: number | null
+  asOf: string
+  requiredObservations: number
+  availableObservations: number
+  warnings: string[]
+  missingInputs: string[]
+}
+
+export interface SectorAnalysisHistory {
+  requiredObservations: number
+  windowDays: number
+  validObservations: number
+  actualDateRange: string[]
+  gaps: string[]
+  quality?: MetricQuality | null
+}
+
+export interface SectorMetricTrace {
+  ruleId: string
+  value: number | null
+  percentile: number | null
+  score: number | null
+  status: MetricQualityStatus
+  weight: number
+  originalWeight: number
+  normalizedWeight: number | null
+  observations: number
+  requiredObservations: number
+  windowDays: number
+  missingReason: string | null
+  sampleDates: string[]
+  actualDateRange: string[]
+  gaps: string[]
+  raw: Record<string, unknown>
+}
+
+export interface SectorStructureSecurity {
+  securityId?: string | null
+  code?: string | null
+  name?: string | null
+  rank?: number | null
+  amount?: number | null
+  returnPct?: number | null
+  contribution?: number | null
+  [key: string]: unknown
+}
+
+export interface SectorInternalStructure {
+  effectiveMemberCount: number
+  advancingCount: number | null
+  decliningCount: number | null
+  flatCount: number | null
+  limitUpCount: number | null
+  limitDownCount: number | null
+  topByTurnover: SectorStructureSecurity[]
+  topByReturn: SectorStructureSecurity[]
+  topSecurityTurnoverContribution: number | null
+  diffusionRatio: number | null
+}
+
+export interface SectorCandidate {
+  industryId: string
+  displayName: string
+  stage: SectorCandidateStage
+  totalScore: number | null
+  coreScores: Record<string, number | null>
+  ruleTraces: SectorMetricTrace[]
+  crowdingRisk: boolean | null
+  vetoes: string[]
+  internalStructure: SectorInternalStructure | null
+  confirmationStreak: number
+}
+
+export interface SectorUniqueValidation {
+  candidateIndustry: string | null
+  candidateName: string | null
+  stage: SectorCandidateStage
+  persistenceEvidence: string
+  breadthEvidence: string
+  turnoverEvidence: string
+  internalStructure: string
+  target: string
+  confirmationCondition: string
+  invalidationCondition: string
+}
+
+export interface SectorAnalysisAttempt {
+  runId: string | null
+  status: 'success' | 'partial' | 'failed-retained' | 'failed-missing' | 'insufficient' | string
+  retryEligible: boolean
+  warning: string | null
+  compatibleResultChecksum: string | null
+}
+
+export interface SectorContinuityRisk {
+  status?: string | null
+  crowdingRisk?: boolean | null
+  concentrationPercentile?: number | null
+  breadthPercentile?: number | null
+  vetoes?: string[]
+  warnings?: string[]
+  [key: string]: unknown
+}
+
+export interface SectorContinuityAnalysis {
+  asOf: string
+  status: SectorContinuityStatus
+  quality: SectorAnalysisQuality
+  history: SectorAnalysisHistory | null
+  metricTraces: SectorMetricTrace[]
+  candidates: SectorCandidate[]
+  validation: SectorUniqueValidation
+  risk: SectorContinuityRisk
+  lineage: Record<string, unknown>
+  latestAttempt: SectorAnalysisAttempt | null
+  warnings: string[]
+}
+
+export interface SectorObservation {
   state: string
   rows: SectorRow[]
   quality: DataSetQuality
+  analysis?: SectorContinuityAnalysis | null
 }
+
+/** Backward-compatible name used by existing chapter consumers. */
+export type SectorAnalysis = SectorObservation
 
 export interface ActiveStock {
   code: string | null
@@ -449,7 +678,10 @@ export interface Chapter01Analysis {
   documents?: ChapterDocument[]
   breadth?: BreadthAnalysis
   limits?: LimitAnalysis
-  sectors?: SectorAnalysis
+  industryRanking?: ThsIndustryRanking
+  sectorTurnover?: ThsSectorTurnover
+  sectorBreadth?: ThsSectorBreadth
+  sectorAnalysis?: SectorContinuityAnalysis
   activeDirection?: ActiveDirectionAnalysis
   events?: EventAnalysis
   combinationOverview: CombinationOverview

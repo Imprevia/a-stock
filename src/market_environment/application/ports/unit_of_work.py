@@ -12,7 +12,9 @@ from .repositories import (
     LimitDetailRepository,
     MaterializedAggregateRepository,
     ProviderCapabilityRepository,
+    SectorContinuityRepository,
     SnapshotRepository,
+    ThsSectorRepository,
     TimezonePreferenceRepository,
     TradingSessionRepository,
 )
@@ -30,6 +32,17 @@ class MarketEnvironmentUnitOfWork(Protocol):
     provider_capabilities: ProviderCapabilityRepository
     limit_details: LimitDetailRepository
     timezone_preferences: TimezonePreferenceRepository
+    sector_continuity: SectorContinuityRepository
+    # Explicit aliases keep the six logical evidence families discoverable
+    # while the adapter remains one transaction-scoped repository.
+    sector_taxonomy: SectorContinuityRepository
+    sector_memberships: SectorContinuityRepository
+    sector_security_facts: SectorContinuityRepository
+    sector_benchmarks: SectorContinuityRepository
+    sector_industry_aggregates: SectorContinuityRepository
+    sector_results: SectorContinuityRepository
+    sector_backfill: SectorContinuityRepository
+    ths_sectors: ThsSectorRepository
 
     def __enter__(self) -> Self: ...
 

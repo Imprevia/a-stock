@@ -114,7 +114,7 @@ def test_plan_collectors_return_normalized_outcomes_without_persistence(state) -
 
 def test_plan_collector_rejects_mismatched_outcome_before_commit() -> None:
     sources = SourceAdapterRegistry((Adapter(),))
-    wrong = outcome("sectors", CollectionTaskState.SUCCESS)
+    wrong = outcome("industry-ranking", CollectionTaskState.SUCCESS)
     plans = AcquisitionPlanRegistry(
         (Plan("breadth", wrong),),
         source_adapters=sources,

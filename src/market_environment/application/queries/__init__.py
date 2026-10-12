@@ -10,6 +10,12 @@ from .market_environment import (
 )
 from .timezone_preferences import GetTimezonePreferenceQuery
 from .limit_ecosystem import LimitEcosystemComposer
+from .ths_sector import (
+    GetThsOperationProgressQuery,
+    GetThsSectorBarCoverageQuery,
+    GetThsSectorBarsQuery,
+    ListThsCatalogQuery,
+)
 
 __all__ = [
     "BreadthHistoryReader",
@@ -20,5 +26,9 @@ __all__ = [
     "GetMarketEnvironmentQuery",
     "GetNextSessionComparisonQuery",
     "GetTimezonePreferenceQuery",
+    "GetThsOperationProgressQuery",
+    "GetThsSectorBarCoverageQuery",
+    "GetThsSectorBarsQuery",
     "LimitEcosystemComposer",
+    "ListThsCatalogQuery",
 ]

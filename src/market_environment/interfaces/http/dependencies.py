@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Any, Protocol
@@ -31,6 +32,22 @@ class CollectionCommands(Protocol):
     def submit_run(self, run_id: str): ...
 
 
+class ThsSectorQueries(Protocol):
+    def list_catalog(self, **kwargs) -> dict[str, Any]: ...
+
+    def get_bars(self, thscode: str, **kwargs) -> dict[str, Any]: ...
+
+    def get_operation(self, run_id: str) -> dict[str, Any]: ...
+
+
+class ThsSectorCommands(Protocol):
+    def start_catalog_sync(self, **kwargs) -> dict[str, str]: ...
+
+    def start_turnover_backfill(self, **kwargs) -> dict[str, str]: ...
+
+    def start_member_import(self, **kwargs) -> dict[str, str]: ...
+
+
 class TimezonePreferenceQueries(Protocol):
     def get(self, *args, **kwargs): ...
 
@@ -51,6 +68,14 @@ def get_collection_commands(request: Request) -> CollectionCommands:
     return _request_container(request).commands.collection
 
 
+def get_ths_sector_queries(request: Request) -> ThsSectorQueries:
+    return _request_container(request).reads.ths_sectors
+
+
+def get_ths_sector_commands(request: Request) -> ThsSectorCommands:
+    return _request_container(request).commands.ths_sectors
+
+
 def get_timezone_queries(request: Request) -> TimezonePreferenceQueries:
     return _request_container(request).reads.timezone_preferences
 
@@ -63,6 +88,15 @@ def get_effective_market_date() -> date:
     from ...refresh import effective_market_date
 
     return effective_market_date(datetime.now())
+
+
+def get_manual_write_enabled() -> bool:
+    return os.getenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _request_container(request: Request):
@@ -79,10 +113,15 @@ __all__ = [
     "MarketEnvironmentQueries",
     "TimezonePreferenceCommands",
     "TimezonePreferenceQueries",
+    "ThsSectorCommands",
+    "ThsSectorQueries",
     "get_collection_commands",
     "get_collection_queries",
     "get_effective_market_date",
     "get_market_queries",
+    "get_manual_write_enabled",
+    "get_ths_sector_commands",
+    "get_ths_sector_queries",
     "get_timezone_commands",
     "get_timezone_queries",
 ]

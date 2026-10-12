@@ -21,7 +21,15 @@ from ...domain.models import DATASET_IDS, CollectionCandidate, CollectionTaskSta
 from ...snapshot_store import LIMIT_DETAIL_CHECKSUM_KEY, payload_checksum
 
 
-STANDARD_SNAPSHOT_DATASETS = frozenset({"breadth", "sectors", "activeDirection"})
+STANDARD_SNAPSHOT_DATASETS = frozenset(
+    {
+        "breadth",
+        "industry-ranking",
+        "sector-turnover",
+        "sector-breadth",
+        "activeDirection",
+    }
+)
 
 
 class StandardSnapshotCommitter:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 import pytest
@@ -10,7 +11,6 @@ from src.market_environment.application.ports import SourceRequest
 from src.market_environment.domain.models import (
     AcquisitionFailureCategory,
     CollectionTaskState,
-    DatasetDate,
 )
 from src.market_environment.infrastructure.providers.fuyao.market import FuyaoMarketResult
 from src.market_environment.infrastructure.providers.fuyao.config import (
@@ -35,6 +35,29 @@ from src.market_environment.infrastructure.providers.sectors_acquisition import 
 
 AS_OF = date(2026, 9, 18)
 NOW = datetime(2026, 9, 18, 16, 0, tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class LegacyDatasetDate:
+    """Retired acquisition-plan identity excluded from the public enum."""
+
+    dataset: str
+    as_of: date
+
+
+class LegacySourceAdapterRegistry(SourceAdapterRegistry):
+    """Exercise the retired plan without reopening the public registry."""
+
+    def validate_references(self, plans) -> None:
+        for candidate in plans:
+            assert candidate.dataset_id == "sectors"
+            assert candidate.plan_id
+            assert candidate.steps
+            for step in candidate.steps:
+                adapter = self.get(step.adapter_id)
+                assert adapter.capability.available
+                if step.capability_revision is not None:
+                    assert step.capability_revision == adapter.capability.revision
 
 
 def eastmoney_rows(*, change: float = 2.5) -> list[dict]:
@@ -271,7 +294,7 @@ def plan(
     enrichment_enabled: bool = False,
     settled: bool = True,
 ) -> SectorsAcquisitionPlan:
-    adapters = SourceAdapterRegistry(
+    adapters = LegacySourceAdapterRegistry(
         (
             EastmoneySectorPrimaryAdapter(provider, now=lambda: NOW),
             EastmoneySectorDelayedAdapter(provider, now=lambda: NOW),
@@ -300,7 +323,7 @@ def plan(
 
 def fuyao_request(*, revision: str = FUYAO_SECTORS_RUNTIME_REVISION) -> SourceRequest:
     return SourceRequest(
-        identity=DatasetDate("sectors", AS_OF),
+        identity=LegacyDatasetDate("sectors", AS_OF),
         source_id=FUYAO_SECTOR_SOURCE_ID,
         role="fallback",
         capability_revision=revision,
@@ -384,7 +407,7 @@ def test_primary_sector_candidate_stops_before_fallback_and_keeps_source():
     provider = SectorProvider()
     fuyao = FuyaoClient()
 
-    outcome = plan(provider, fuyao).collect(DatasetDate("sectors", AS_OF))
+    outcome = plan(provider, fuyao).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.state is CollectionTaskState.PARTIAL
     assert outcome.candidate is not None
@@ -399,7 +422,7 @@ def test_primary_sector_candidate_stops_before_fallback_and_keeps_source():
 def test_delayed_sector_candidate_retains_primary_failure_and_order():
     provider = SectorProvider(primary_error=RuntimeError("primary disconnected"))
 
-    outcome = plan(provider, FuyaoClient()).collect(DatasetDate("sectors", AS_OF))
+    outcome = plan(provider, FuyaoClient()).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.candidate is not None
     assert outcome.candidate.source == "eastmoney-clist-delay"
@@ -428,7 +451,7 @@ def test_eastmoney_plan_payload_matches_legacy_primary_and_delayed_fixture(
     legacy_calls = tuple(calls)
     calls.clear()
 
-    outcome = plan(provider, FuyaoClient()).collect(DatasetDate("sectors", AS_OF))
+    outcome = plan(provider, FuyaoClient()).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.candidate is not None
     assert outcome.candidate.payload == legacy
@@ -447,7 +470,7 @@ def test_fuyao_fallback_and_dataapi_enrichment_are_ordered_and_fill_only():
         fuyao,
         fuyao_enabled=True,
         enrichment_enabled=True,
-    ).collect(DatasetDate("sectors", AS_OF))
+    ).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.state is CollectionTaskState.PARTIAL
     assert outcome.candidate is not None
@@ -504,7 +527,7 @@ def test_default_disabled_enrichment_records_metadata_without_provider_call():
     )
 
     outcome = plan(provider, FuyaoClient(), fuyao_enabled=True).collect(
-        DatasetDate("sectors", AS_OF)
+        LegacyDatasetDate("sectors", AS_OF)
     )
 
     assert outcome.candidate is not None
@@ -528,7 +551,7 @@ def test_unsettled_fuyao_candidate_skips_enrichment_without_call():
         fuyao_enabled=True,
         enrichment_enabled=True,
         settled=False,
-    ).collect(DatasetDate("sectors", AS_OF))
+    ).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.candidate is not None
     assert provider.calls == ["primary", "delayed"]
@@ -559,7 +582,7 @@ def test_enrichment_failure_preserves_fuyao_base_and_classifies_attempt():
         FuyaoClient(),
         fuyao_enabled=True,
         enrichment_enabled=True,
-    ).collect(DatasetDate("sectors", AS_OF))
+    ).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.candidate is not None
     assert outcome.candidate.source == "fuyao"
@@ -579,7 +602,7 @@ def test_fuyao_gate_failure_stops_before_fallback_request():
     )
     fuyao = FuyaoClient()
 
-    outcome = plan(provider, fuyao).collect(DatasetDate("sectors", AS_OF))
+    outcome = plan(provider, fuyao).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert outcome.candidate is None
@@ -598,7 +621,7 @@ def test_historical_sector_request_is_rejected_before_any_source_call():
         fuyao_enabled=True,
         shadow_enabled=True,
         enrichment_enabled=True,
-    ).collect(DatasetDate("sectors", date(2026, 9, 17)))
+    ).collect(LegacyDatasetDate("sectors", date(2026, 9, 17)))
 
     assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert outcome.failure is not None
@@ -617,7 +640,7 @@ def test_shadow_difference_never_changes_formal_sector_candidate():
         fuyao,
         fuyao_enabled=True,
         shadow_enabled=True,
-    ).collect(DatasetDate("sectors", AS_OF))
+    ).collect(LegacyDatasetDate("sectors", AS_OF))
 
     assert outcome.candidate is not None
     assert outcome.candidate.source == "eastmoney-clist"

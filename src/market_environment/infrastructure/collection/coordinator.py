@@ -50,14 +50,40 @@ SUPPORTED_COLLECTION_DATASETS = (
     "core",
     "breadth",
     "limits",
-    "sectors",
+    "industry-ranking",
+    "sector-turnover",
+    "sector-breadth",
     "activeDirection",
 )
-LATEST_ONLY_DATASETS = frozenset({"breadth", "sectors", "activeDirection"})
+LATEST_ONLY_DATASETS = frozenset(
+    {
+        "breadth",
+        "industry-ranking",
+        "sector-turnover",
+        "sector-breadth",
+        "activeDirection",
+    }
+)
+DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "sector-turnover": ("industry-ranking",),
+    "sector-breadth": ("industry-ranking", "sector-turnover"),
+}
 SUCCESSFUL_TASK_STATUSES = frozenset({"success", "partial"})
 TERMINAL_TASK_STATUSES = frozenset(
-    {"success", "partial", "failed-retained", "failed-missing", "busy"}
+    {"success", "partial", "failed-retained", "failed-missing", "busy", "blocked"}
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnavailableThsCollector:
+    dataset_id: str
+
+    def collect_task(self, task: CollectionTaskRecord, *_args: Any, **_kwargs: Any):
+        raise RuntimeError(
+            f"{self.dataset_id} requires the normalized Fuyao THS collector configuration"
+        )
+
+
 @dataclass(frozen=True)
 class CollectionStartResult:
     run: CollectionRunRecord
@@ -93,6 +119,7 @@ class CollectionCoordinator:
         detail_projector_registry: DatasetDetailProjectorRegistry | None = None,
         limit_history_preparer: LimitHistoryPreparer | None = None,
         typed_cutover_datasets: Iterable[str] = (),
+        sector_analysis_readiness: Callable[[date], dict[str, Any] | None] | None = None,
     ) -> None:
         if provider is None and collector_registry is None:
             raise ValueError("CollectionCoordinator requires an explicit collector provider")
@@ -107,6 +134,9 @@ class CollectionCoordinator:
         self._commit_request_factories = dict(commit_request_factories or {})
         self._commit_preparers = dict(commit_preparers or {})
         self.typed_cutover_datasets = frozenset(typed_cutover_datasets)
+        self._sector_analysis_readiness = sector_analysis_readiness or getattr(
+            store, "sector_analysis_readiness", None
+        )
         unknown_cutovers = self.typed_cutover_datasets - set(
             SUPPORTED_COLLECTION_DATASETS
         )
@@ -160,17 +190,6 @@ class CollectionCoordinator:
                     is_settled=self._is_settled,
                 )
             )
-            sectors_collector = sectors_collector or SectorsCollector(
-                self.provider,
-                self.store,
-                market_now=self._market_now,
-                is_settled=self._is_settled,
-                fuyao_adapter=self.fuyao_adapter,
-                fuyao_is_enabled=self.fuyao_policy.is_enabled,
-                fuyao_gate_warning=self.fuyao_policy.gate_warning,
-                fuyao_shadow_enabled=self.fuyao_policy.shadow_enabled,
-                fuyao_revision=self.fuyao_policy.revision,
-            )
             limits_collector = limits_collector or LimitsCollector(
                 self.provider,
                 self.store,
@@ -187,7 +206,9 @@ class CollectionCoordinator:
                     core_collector,
                     breadth_collector,
                     limits_collector,
-                    sectors_collector,
+                    _UnavailableThsCollector("industry-ranking"),
+                    _UnavailableThsCollector("sector-turnover"),
+                    _UnavailableThsCollector("sector-breadth"),
                     active_direction_collector,
                 )
             )
@@ -214,12 +235,13 @@ class CollectionCoordinator:
         *,
         allow_historical_latest_only: bool = False,
     ) -> CollectionStartResult:
-        selected = tuple(dict.fromkeys(datasets or SUPPORTED_COLLECTION_DATASETS))
+        requested = tuple(dict.fromkeys(datasets or SUPPORTED_COLLECTION_DATASETS))
         self.validate_request(
             as_of,
-            selected,
+            requested,
             allow_historical_latest_only=allow_historical_latest_only,
         )
+        selected = self._expand_dependencies(as_of, requested)
         current = self._market_now()
         self.store.expire_inactive_collection_tasks(now=current.astimezone(ZoneInfo("UTC")))
         run_id = uuid.uuid4().hex
@@ -320,8 +342,35 @@ class CollectionCoordinator:
         run = self.store.get_collection_run(run_id)
         if run is None:
             raise KeyError(f"unknown collection run: {run_id}")
-        for task in self.store.list_collection_tasks(run_id):
+        task_order = {
+            dataset: index for index, dataset in enumerate(SUPPORTED_COLLECTION_DATASETS)
+        }
+        pending_tasks = sorted(
+            self.store.list_collection_tasks(run_id),
+            key=lambda item: task_order[item.dataset],
+        )
+        for task in pending_tasks:
             if task.status == "queued":
+                blocked_by = self._blocked_dependencies(task, run_id)
+                if blocked_by:
+                    lease = self.store.get_lease_token(
+                        task.dataset,
+                        task.as_of,
+                        owner=task.task_id,
+                    )
+                    task = self.store.transition_collection_task(
+                        task.task_id,
+                        "blocked",
+                        expected_statuses=("queued",),
+                        warning=(
+                            "blocked by incompatible sector prerequisites: "
+                            + ", ".join(blocked_by)
+                        ),
+                        completed_at=self._market_now(),
+                    )
+                    if lease is not None:
+                        self.store.release_lease(task.dataset, task.as_of, lease=lease)
+                    continue
                 self._execute_task(
                     task,
                     fetch_previous_limit_details=fetch_previous_limit_details,
@@ -427,7 +476,16 @@ class CollectionCoordinator:
                     "detail": self._collection_detail(dataset, snapshot, as_of),
                 }
             )
-        return {"asOf": as_of, "datasets": datasets}
+        readiness = (
+            self._sector_analysis_readiness(as_of)
+            if callable(self._sector_analysis_readiness)
+            else None
+        )
+        if isinstance(readiness, dict):
+            actual = readiness.get("asOf")
+            if actual not in (None, as_of, as_of.isoformat()):
+                readiness = None
+        return {"asOf": as_of, "datasets": datasets, "sectorAnalysis": readiness}
 
     def _collection_detail(
         self,
@@ -450,6 +508,11 @@ class CollectionCoordinator:
         selected = tuple(datasets)
         unknown = sorted(set(selected) - set(SUPPORTED_COLLECTION_DATASETS))
         if unknown:
+            if "sectors" in unknown:
+                raise ValueError(
+                    "unsupported collection dataset: sectors; use industry-ranking, "
+                    "sector-turnover, or sector-breadth"
+                )
             raise ValueError(f"unsupported collection datasets: {', '.join(unknown)}")
         if not selected:
             raise ValueError("at least one collection dataset is required")
@@ -462,6 +525,38 @@ class CollectionCoordinator:
                 "latest-only datasets require the selected date to match the Shanghai market date: "
                 + ", ".join(restricted)
             )
+
+    def _expand_dependencies(
+        self,
+        as_of: date,
+        selected: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        expanded = set(selected)
+        for dataset in reversed(SUPPORTED_COLLECTION_DATASETS):
+            if dataset not in expanded:
+                continue
+            for dependency in DATASET_DEPENDENCIES.get(dataset, ()):
+                if self.store.get(dependency, as_of) is None:
+                    expanded.add(dependency)
+        return tuple(dataset for dataset in SUPPORTED_COLLECTION_DATASETS if dataset in expanded)
+
+    def _blocked_dependencies(
+        self,
+        task: CollectionTaskRecord,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        dependencies = DATASET_DEPENDENCIES.get(task.dataset, ())
+        if not dependencies:
+            return ()
+        tasks = {item.dataset: item for item in self.store.list_collection_tasks(run_id)}
+        blocked: list[str] = []
+        for dependency in dependencies:
+            if self.store.get(dependency, task.as_of) is not None:
+                continue
+            prerequisite = tasks.get(dependency)
+            if prerequisite is None or prerequisite.status not in SUCCESSFUL_TASK_STATUSES:
+                blocked.append(dependency)
+        return tuple(blocked)
 
     def _execute_task(
         self,

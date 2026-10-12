@@ -43,22 +43,24 @@
 - 已修正干净环境依赖冲突：`httpx` 采用 mootdx 0.11.7 支持的 `>=0.25,<0.26` 区间，保证 CI 可解析安装。
 - 交易规则工程平台已实现：330 条覆盖清单、第 01 章 49 条 YAML 规则、确定性执行、证据、回测骨架、CLI 和两条 GitHub Actions workflow。
 - 固定快照生成 49 条 trace；新增三条规则不进入 `QTS-01-00-01`，既有规则 trace 保持不变。
-- `rework-market-breadth-page`（2026-09-16）已完成第 02 页复盘重构：`BreadthEvidence` 与 `BreadthAnalysis` 同步扩展 11 个字段（`declineRatio` / `advanceDeclineSpread` / 3 个 250 日分位 / `momentum` / `momentumPercentile` / `indexConsistent` / `widthLabel` / `widthLabelReason` / `history` / `percentile250`），新增 `BreadthHistoryPoint` 模型；`_enrich_breadth` 通过 `snapshot_store.get("breadth", date)` 拉取最近 5 个交易日历史快照计算 250 日滚动分位、5 日动量、指数广度一致性与 6 档宽度标签（含自然语言依据）；02 页由 2 section 替换为 5 section（复盘卡 / 量化证据 / 近 5 日趋势 / 指数一致性矩阵 / 次交易日验证项 + 质量元数据），新增独立 `breadthChart` ECharts 双轴折线；前端测试 46 项通过（含 7 项新增 breadth-page 渲染 + 390px viewport），Python 测试 278 项通过（市场环境 + 交易规则），docs-contract fast/full 通过；不修改 `QTS-01-02-01..05` 规则 ID、阈值与权重，`rules validate` 仍输出 49 条规则，不引入新 provider、新 API 路由、新 PostgreSQL schema 或新采集任务。
+- `activate-fuyao-sector-fallback`（2026-10-09）已获用户授权扩展当前 change，并保留对真实 probe、生产 capability 写入、配置 rollout、单次 collection 和条件回滚的授权。`select_runtime_sectors_pod` 在 commit `4eb55dd` 中按 `require_enabled` 选取 reviewed render；production 部署至 Helm revision 95（sectors enabled=1、approved revision `fuyao-market-v2`、frozen image `sha256:853a8a…d03`、其他 Fuyao/Scrapling/limits/limits.fuyao/limits.v1 仍按 off 设定、enrichment/Scrapling 关闭），随后 5.5 一次 `snapshots scheduled-refresh --dataset sectors` 成功（runId `e7c06da411124f5097f26c44b08f3820`、source=fuyao、status=fallback、10 obs、5 unsupported fields、双 Eastmoney push2/push2delay failure）。`provider_capability_reports` 唯一行 checksum `b763a32e…b2a`。CronJob/Job 仍 absent，Secret/PVC identity 不变。OpenSpec `22/24`：5.2/5.3/5.4/5.5/5.6 完成，6.2 已就绪待最终验证后勾选。
 
-## 进行中
-
-- `activate-fuyao-sector-fallback`（2026-10-09）已获用户授权扩展当前 change，并保留对真实 probe、生产 capability 写入、配置 rollout、单次 collection 和条件回滚的授权。第三个 repair-control commit 已通过全部写前 gates，唯一一次 `helm upgrade --no-hooks` 成功创建 revision 92 deployed complete-off；post-hook 精确比较已修正并通过最终全量门禁。OpenSpec 当前 `18/24`：任务 3.4、5.1、6.1 完成，6.2 保持打开；revision 92 的 stored/live/image/Secret/PVC/Jobs/`0/0` capability 证据已收口，尚未 probe、写 capability、启用 sectors 或采集。
 - `unify-market-data-acquisition-adapters`（2026-10-08）已完成五数据集 typed `CollectionOutcome`、dataset acquisition plan、source adapter、typed committer/local projector 与进程内共享 transport policy gateway 的实现和离线验证；normal runtime 不再继承 legacy provider，Fuyao raw HTTP 已纳入共享 gateway，稳定 alias 与有调用者的兼容路径按退役矩阵保留。`requests` 保持默认；Scrapling 仅为独立、默认关闭、空生产 allowlist 的静态 HTTP profile。focused 为 `448 passed, 3 skipped`，全量为 `1104 passed, 6 skipped`，规则三门禁和 OpenSpec strict 通过；未访问真实 provider、写生产 PostgreSQL/PVC、部署 Kubernetes、修改 Secret 或激活调度。
 
 - `refactor-market-environment-backend-architecture`（2026-10-07）已完成 OpenSpec 1–7.4：应用/领域/基础设施分层、provider-free 查询、五类 collector、PostgreSQL repository/UoW、aggregate CAS、API boundary mapper、架构 AST/import 门禁和兼容矩阵均已落地。兼容矩阵为 API/provider/exact-date/failure-retention/lease/CAS/import `152 passed, 2 skipped`，调度/部署/验证器矩阵 `206 passed, 100 skipped`；当前进入文档同步、全量 pytest 和最终门禁。未访问真实 provider、生产 PostgreSQL、Kubernetes 写入口或激活调度。
 
 - `unify-provider-http-collection` 已完成现有 requests-bound host policy 基线：腾讯、百度、新浪、TDX 和 Eastmoney 的已接入路径具备现代 session UA、请求门与抖动、连接/读取/408/429/5xx 有界重试、`Retry-After`、single-flight、短成功缓存、日期隔离、请求预算和失败冷却探测；Fuyao 与部分兼容调用仍保留专用 session/API-key request gate，待 `unify-market-data-acquisition-adapters` 纳入 composition-root gateway。focused transport/provider 回归为 105 passed，OpenSpec strict、docs-contract full 和规则门禁通过；全量 pytest 的 4 个失败是本机缺少 `mcp` 依赖及 Windows bash 路径兼容问题。默认不引入代理池、Cookie 伪造或 TLS 指纹模拟，真实网络 smoke 仍需授权的盘后隔离环境。
 - `evaluate-fuyao-market-data-provider` 已完成 Fuyao v2 core/breadth 契约、共享请求门、分数据集路由、activeDirection 保持 Eastmoney/TDX、离线 fixture/回归和架构/runbook/产品规格同步；真实 probe、core shadow 差异归因、breadth/sectors 日期与字段完整性修复，以及隔离 PostgreSQL capability/shadow smoke 均已完成并记录在 active plan。所有新开关保持关闭，未批准生产 revision；全量测试本轮 735 passed、3 skipped，另有 2 个既有性能阈值抖动失败（非本变更逻辑）。
-- `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当前 `fuyao-market-v2` fallback 证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。`FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0` 保持关闭，未写入正式 sectors 主源快照。
+- `restore-sector-data-via-independent-provider` 代码、离线验证和 2026-09-29 受控隔离观察已完成：扶摇 `THS` 行业目录/快照/交易日历适配、Eastmoney 双端点失败后的 capability-gated fallback、同日期失败留存、provider-free status/run API 和前端日期归一均已落地。当次 `fuyao-market-v2` 隔离证据为 320/320 覆盖、10 行结果、精确 `asOf=2026-09-29`、四个已证明字段；`mainNet/mainNetPct/upCount/downCount/leader` 全部保持 null 并记录 warning。**截至 2026-09-29 该观察时点** `FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0`，未写入正式 sectors 主源快照；该历史关闭状态已被 2026-10-09 Helm revision 95 的受控启用与一次正式 collection 取代，不代表当前生产开关。
 - `enrich-fuyao-sector-fields-from-eastmoney-dataapi` 已完成离线实现：扶摇行业成功后可选调用东方财富 `dataapi/bkzj/getbkzj`，固定字段为 `f3,f6,f62,f104,f105,f128,f184`、过滤为 `m:90+s:4`；共享 host policy、latest-only/结算后门禁、严格身份匹配、百分比归一、fill-only 合并和 same-vendor lineage 已通过 focused 测试。默认 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`，尚未执行真实 probe 或正式快照写入。
 - `activate-scheduled-collection-20260929` 的历史 revision 70 已被 2026-09-30 应用发布取代；当前激活与首个自然触发证据统一记录在 `activate-scheduled-collection-20260930`，包括五类质量和 `collection_runs`。
 - `restore-limit-ecosystem-data-availability` 正在接入扶摇三类池和交易日历，拆分 membership 与高级分层质量，补齐六日回填、证券明细以及第 03/04 页真实 limits 数据消费；生产部署和生产写入不在范围内。
 - `document-truenas-podman-k3s-deployment` 仍为 active exec plan；`schedule-after-market-data-collection` 实现已完成，OpenSpec change 已归档。
+
+## 进行中
+
+- `add-fuyao-ths-sector-datasets`（2026-10-12）OpenSpec 为 `30/32`：离线实现与原验收已完成，并在用户明确授权后于上海 15:10 结算边界后执行隔离真实 probe。`sector-membership/fuyao-ths-membership-v1`（203 个成员）和 `sector-turnover-history/fuyao-ths-history-v1`（24 根 K 线）为 `eligible` 且通过本地 promotion policy；`industry-ranking` 因真实快照 `883401.TI` 缺少 `changePct` 为 `ineligible`，三类 dump 因 metadata 无 SHA-256 为 `ineligible`，adjustment 还缺复权推导证据。未 apply capability、未写生产事实或数据库。生产只读预检确认 DB 仍在 migration `0003`、新表不存在、CronJob/Job absent；因工作树非 clean reviewed commit、无候选镜像/render hash、无 pg_dump+隔离恢复演练，9.2 保持 NO-GO。THS focused `310 passed`，前端全量 `139 passed`。
+- `add-sector-continuity-metrics`（2026-10-12）已完成 Stage 10 离线实现与验证；OpenSpec 为 `56/60`。task 11.1 已获用户授权，但上海时间 `10:57` 尚未到 `15:30` 盘后窗口，且 CLI 未配置 source-specific 真实 probe adapter。四类默认 dry-run 均证明 `networkCalls=0`、`formalWrites=0`，真实 taxonomy/membership/adjusted-price/benchmark probe 未运行，候选源继续为 `unverified`。tasks 11.2–11.4 未授权，经验阈值保持 `needs-backtest`。
 
 ## 最近完成
 
@@ -86,6 +88,7 @@
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
 - 扶摇行业 fallback 虽已确认 320/320 目录和快照覆盖，但其接口不提供资金流、市场宽度和领涨股；即使正式开关获批，行业结果也只能解释为带 warning 的降级指数排名，不能冒充完整行业事实。
+- 当前仓库没有保存 Fuyao 四类 THS 全量编号；2026-10-09 的生产证据只证明 `industry` 320/320 目录/快照覆盖，正式 `sectors` 快照仍只保留 Top 10 兼容行。`cn_concept`/`region`/`tszs` 完整目录、按编号的 OHLC/`volume`/`turnover` 历史和成员 dump 均仍为 `unverified`/未入库，不得从 Top 10、名称或当前成员推断补齐。
 - 东方财富 dataapi 行业补充为 latest-only、同供应商且仅观测到 128 行；扶摇 THS 与东方财富 BK 分类不同，必须保守匹配并显示覆盖缺口，不能将补充结果解释为独立 provider 或历史数据证据。
 - 手工采集接口仍无应用级认证或 TLS。TrueNAS NodePort 候选上线后，所有能路由到 `192.168.1.20:32001` 的客户端均可匿名触发 provider 调用和 PostgreSQL 写入；持久共享入口仍需后续接入认证授权，异常时先将 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0`，再按现场捕获的 pre-release 网络与 release 基线回退。
 - 第一版定时任务不维护交易所节假日日历；周一至周五节假日会留下 failed/partial 审计记录，但精确日期校验禁止跨日期落盘。
@@ -98,7 +101,9 @@
 
 ## 下一步
 
-- `activate-fuyao-sector-fallback` 下一步先冻结 clean reviewed production packet并执行已授权 5.1 off-first 预发布；达到上海 15:10 settlement gate 后依次执行 5.2 盘后 probe、5.3 Pod stdin promotion、5.4 hook-free enable 和 5.5 一次 sectors-only collection，失败时走 5.6 同镜像 off rollback。生产操作目前均未执行。
+- `add-fuyao-ths-sector-datasets` 下一步等待上海盘后再次明确授权 task 9.1，在隔离路径执行四类 catalog/snapshot、单编号历史与 dump/复权 capability probe；审阅并批准精确 revisions 后，task 9.2 的生产 migration、小批写入、部署和观察仍需单独授权。默认调度保持 `enabled=false / suspend=true`，历史 `sectors` 证据不改写。
+- `add-sector-continuity-metrics` 下一步先补齐并审阅 source-specific 真实 probe adapters，再于上海工作日 15:30 后继续已授权的 task 11.1；四类报告未完成前保持 `56/60` 和 `unverified`。非测试数据库 migration/backfill、生产部署和调度激活继续分别授权。
+- `activate-fuyao-sector-fallback` 下一步运行 6.1 全量复测（focused、pytest、`rules validate/coverage`、`docs sync-check`、`openspec validate --strict`、`scripts/check-docs-contract.py --mode=full`）后归档本次 change；自动采集保持 absent，sectors 仍按 enabled 状态提供 fallback/partial 数据。
 - `deploy-unified-market-data-adapters-20261008` 已完成 revision 87 生产发布；保持当前不可变镜像、PVC 和调度 disabled/absent 基线，调度恢复或真实 provider probe 必须另行授权。
 - 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
@@ -114,8 +119,19 @@
 
 ## 最后更新
 
+2026-10-12
+  - **Fuyao THS 真实 probe 与生产 NO-GO**：新增六能力 `ths-real-probe`、promotion policy、official Parquet reader、membership 写路径和点选宽度链路。15:21 隔离 probe 仅 membership/history eligible；catalog 与三 dump ineligible，未晋升。生产 migration/写入/部署未执行，原因是 clean commit、备份恢复、镜像与 render hash 门禁未满足；官方动态接口入口为 `https://fuyao.aicubes.cn/llms-full.txt`（最后核对 2026-10-12）。
+  - **task 11.1 授权后的安全预检**：用户已明确授权真实 capability probe；执行时上海时间为 `10:57`，未通过 15:30 盘后门禁，且当前 CLI 未注入真实 provider-neutral adapter。已生成 taxonomy、membership、adjusted-price、benchmark 四份隔离 dry-run 报告，均为零网络、零正式写入；未执行真实 provider 请求，未获得 revision/checksum/覆盖或数据条款证据，11.1 仍未勾选，所有真实来源开关保持关闭。tasks 11.2–11.4 未授权。
+
+2026-10-11
+  - **第 05 页申万一级主线持续性离线实现完成**：OpenSpec `add-sector-continuity-metrics` 已完成 tasks 1.1–10.5；申万一级时点事实、五项指标、唯一验证项、显式 backfill、PostgreSQL 持久化、API/前端和 snapshot v2 bridge 已通过 focused、三类 golden 双重 replay、隔离 PostgreSQL migration/UoW 与全库 `1335 passed`。真实 provider、非测试数据库、Kubernetes/Helm/PVC/Secret 和调度均未操作，tasks 11.1–11.4 等待额外授权。
+
+2026-10-10
+  - **第 05 页申万一级主线持续性规划**：OpenSpec `add-sector-continuity-metrics` 进入 Stage 1，仅固化产品、架构、仓库归属和运维事实；现有 provider observation 与待实现 canonical analysis 分离，真实数据源、生产写入与调度状态均未改变。
+
 2026-10-09
-  - **扶摇行业 fallback 生产预发布与 repair 扩展**：第三个 repair-control commit 已完成唯一一次 hook-free Helm write，revision 92 deployed 并恢复 complete-off stored release；schema-migration hook 只被存储且未执行，namespace Jobs absent。post-hook 精确比较与最终全量门禁均通过，OpenSpec/事实文档当前为 `18/24`；任务 5.2–5.6 尚未执行。
+  - **扶摇行业 fallback 生产预发布与 repair 扩展（当日早期 checkpoint）**：第三个 repair-control commit 完成唯一一次 hook-free Helm write，revision 92 deployed 并恢复 complete-off stored release；schema-migration hook 只被存储且未执行，namespace Jobs absent。该 checkpoint 时 OpenSpec/事实文档为 `18/24`，任务 5.2–5.6 尚未执行；这是同日后续启用前的历史状态，不代表当前生产开关。
+  - **扶摇行业 sectors enable + 一次 collection（当日后续 production 结果）**：commit `4eb55dd` 修复 `select_runtime_sectors_pod` 后，部署到 Helm revision 95（sectors enabled=1、approved revision `fuyao-market-v2`、frozen image `sha256:853a8a…d03`、其他 Fuyao/Scrapling/limits/limits.fuyao/limits.v1 仍按 off 设定、enrichment/Scrapling 关闭）；随后 5.5 一次 `snapshots scheduled-refresh --dataset sectors` 成功（runId `e7c06da411124f5097f26c44b08f3820`、source=fuyao、status=fallback、10 obs、5 unsupported fields、双 Eastmoney push2/push2delay failure）。`provider_capability_reports` 唯一行 checksum `b763a32e…b2a`；CronJob/Job absent、Secret/PVC identity 未变。
   - **TrueNAS k3s 生产发布**：统一市场数据采集适配器随 `main=36aba3b` 发布；受控调度关闭为 revisions 83/84，database/service/完整 release 为 revisions 85/86/87。镜像 `localhost/a-stock-market-environment:20261008-235342-36aba3b` 的 containerd digest 为 `sha256:7d7a2762e274aad710257ad66224ddf782831b156a3bd56eafbf0f93cb219978`；Dashboard/PostgreSQL/PVC/健康与 provider-free GET 后置条件通过，CronJob/Job absent，未触发 provider。
 
 2026-10-08
@@ -129,3 +145,4 @@
   - 16:30 首个自然 Job `a-stock-data-collection-29845950` 已执行并保留真实 `partial` 结果：core/breadth success，limits/activeDirection partial，sectors failed-missing；`runId=8a3a60fb61d347d8b3930c9ae7318273`，exact-date API 与五类质量记录均已读回。Job exit code 2 是质量状态的真实非零结果，不作为调度发布失败；后续继续观察 provider 恢复。
 
 2026-09-29
+  - **Fuyao 行业 fallback 隔离观察时点**：已证明 `industry` 目录/快照 320/320 覆盖和精确日期，但当时 `FUYAO_SECTORS_ENABLED=0`、`FUYAO_SECTORS_SHADOW_ENABLED=0`，只保留脱敏隔离证据，未写正式 sectors 快照。该时点状态已被 2026-10-09 revision 95 的受控启用与一次 collection 取代；历史证据仍保留，不回写或重标。

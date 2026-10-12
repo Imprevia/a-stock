@@ -1,8 +1,9 @@
 """Golden API contracts captured before the market-environment refactor."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from fastapi.testclient import TestClient
+import pytest
 
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.refresh import MARKET_TIME_ZONE
@@ -160,10 +161,7 @@ def test_characterizes_missing_chapter_quality_and_exact_date(monkeypatch) -> No
 
 def test_characterizes_partial_run_and_sibling_success(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "1")
-    coordinator = _coordinator(
-        tmp_path,
-        CollectionProvider(failing_datasets={"sectors"}),
-    )
+    coordinator = _coordinator(tmp_path)
     client = TestClient(
         build_test_app(
             collection_queries=coordinator,
@@ -191,9 +189,11 @@ def test_characterizes_partial_run_and_sibling_success(monkeypatch, tmp_path) ->
     assert tasks["breadth"]["status"] == "success"
     assert tasks["breadth"]["source"] == "fixture"
     assert tasks["breadth"]["observations"] == 3
-    assert tasks["sectors"]["status"] == "failed-missing"
-    assert tasks["sectors"]["source"] == "none"
-    assert "sectors unavailable" in tasks["sectors"]["warning"]
+    assert tasks["industry-ranking"]["status"] == "failed-missing"
+    assert tasks["industry-ranking"]["source"] == "none"
+    assert "normalized Fuyao THS collector" in tasks["industry-ranking"]["warning"]
+    assert tasks["sector-turnover"]["status"] == "blocked"
+    assert tasks["sector-breadth"]["status"] == "blocked"
 
 
 def test_characterizes_degraded_local_status_without_provider_call(monkeypatch, tmp_path) -> None:
@@ -258,18 +258,29 @@ def test_characterizes_degraded_local_status_without_provider_call(monkeypatch, 
 
 def test_characterizes_failed_retained_attempt_and_snapshot(monkeypatch, tmp_path) -> None:
     provider = CollectionProvider()
-    current = [datetime(2026, 9, 3, 16, tzinfo=MARKET_TIME_ZONE)]
+    current = datetime(2026, 9, 3, 16, tzinfo=MARKET_TIME_ZONE)
+    store = SnapshotStore(tmp_path / "characterization.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="sectors",
+            as_of=AS_OF,
+            payload={"rows": [], "quality": {"status": "ok"}},
+            source="legacy-fixture",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=current,
+            settled=True,
+        )
+    )
     coordinator = CollectionCoordinator(
         provider,
-        SnapshotStore(tmp_path / "characterization.sqlite3"),
-        now=lambda: current[0],
+        store,
+        now=lambda: current,
     )
-    first = coordinator.collect(AS_OF, ["sectors"])
-    assert first.tasks[0].status == "success"
-    current[0] += timedelta(minutes=1)
-    provider.failing_datasets.add("sectors")
-    failed = coordinator.collect(AS_OF, ["sectors"])
-    assert failed.tasks[0].status == "failed-retained"
+
+    with pytest.raises(ValueError, match="industry-ranking, sector-turnover, or sector-breadth"):
+        coordinator.collect(AS_OF, ["sectors"])
     provider.calls.clear()
 
     response = TestClient(
@@ -283,15 +294,16 @@ def test_characterizes_failed_retained_attempt_and_snapshot(monkeypatch, tmp_pat
     )
 
     assert response.status_code == 200
-    sectors = _dataset(response, "sectors")
-    assert sectors["available"] is True
-    assert sectors["source"] == "fixture"
-    assert sectors["observations"] == 3
-    assert sectors["quality"]["status"] == "ok"
-    assert sectors["quality"]["asOf"] == AS_OF.isoformat()
-    assert "sectors unavailable" in sectors["refreshWarning"]
-    assert sectors["latestAttempt"]["status"] == "failed-retained"
-    assert "sectors unavailable" in sectors["latestAttempt"]["warning"]
+    assert {item["dataset"] for item in response.json()["datasets"]} == {
+        "core",
+        "breadth",
+        "limits",
+        "industry-ranking",
+        "sector-turnover",
+        "sector-breadth",
+        "activeDirection",
+    }
+    assert store.get("sectors", AS_OF).source == "legacy-fixture"
     assert provider.calls == []
 
 

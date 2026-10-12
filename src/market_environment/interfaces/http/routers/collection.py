@@ -167,7 +167,11 @@ def _collection_status_response_payload(queries: CollectionQueries, as_of: date)
                 "detail": detail,
             }
         )
-    return {"asOf": raw["asOf"], "datasets": datasets}
+    return {
+        "asOf": raw["asOf"],
+        "datasets": datasets,
+        "sectorAnalysis": raw.get("sectorAnalysis"),
+    }
 
 
 @router.get(

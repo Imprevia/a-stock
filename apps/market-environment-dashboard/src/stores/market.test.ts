@@ -80,6 +80,59 @@ function limitsSectionResponse(asOf = '2026-09-03', limitUpCount = 10) {
   }
 }
 
+function sectorSectionResponse(asOf = '2026-09-03') {
+  const response = sectionResponse(asOf)
+  const quality = (dataset: string) => ({ dataset, source: 'fixture', status: 'ok', observations: 1, asOf })
+  return {
+    ...response,
+    chapter01: {
+      ...response.chapter01,
+      industryRanking: {
+        state: 'ok',
+        revisionId: 'catalog-r1',
+        rows: [{
+          tag: 'industry', rank: 1, thscode: '885001.TI', name: '样本行业',
+          changePct: 1.2, volume: 100, turnover: 200, catalogRevision: 'catalog-r1', asOf,
+        }],
+        quality: quality('industry-ranking'),
+      },
+      sectorTurnover: {
+        state: 'ok',
+        rows: [],
+        quality: quality('sector-turnover'),
+      },
+      sectorBreadth: {
+        state: 'partial',
+        rows: [],
+        quality: { ...quality('sector-breadth'), status: 'partial' },
+      },
+      sectorAnalysis: {
+        asOf,
+        status: 'ok',
+        quality: {
+          status: 'ok', confidence: 'medium', coverage: 0.8, asOf,
+          requiredObservations: 60, availableObservations: 120, warnings: [], missingInputs: [],
+        },
+        history: {
+          requiredObservations: 60, windowDays: 250, validObservations: 120,
+          actualDateRange: [asOf], gaps: [], quality: null,
+        },
+        metricTraces: [],
+        candidates: [],
+        validation: {
+          candidateIndustry: null, candidateName: null, stage: 'insufficient',
+          persistenceEvidence: '', breadthEvidence: '', turnoverEvidence: '',
+          internalStructure: '', target: '', confirmationCondition: '', invalidationCondition: '',
+        },
+        risk: {},
+        lineage: { calculationVersion: 'sector-continuity-v1' },
+        latestAttempt: null,
+        warnings: [],
+      },
+    },
+  }
+}
+
 describe('market store — loadCore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -251,6 +304,25 @@ describe('market store — loadSection', () => {
     expect(store.data?.chapter01?.coverage).toBe(0.8)
   })
 
+  it('merges all four sector fields without restoring the legacy sectors payload', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => sectorSectionResponse(),
+    })) as unknown as typeof fetch)
+    await store.loadSection('sectors')
+
+    expect(store.chapter?.industryRanking?.revisionId).toBe('catalog-r1')
+    expect(store.chapter?.sectorTurnover?.quality.dataset).toBe('sector-turnover')
+    expect(store.chapter?.sectorBreadth?.quality.status).toBe('partial')
+    expect(store.chapter?.sectorAnalysis?.lineage.calculationVersion).toBe('sector-continuity-v1')
+    expect(store.loadedSections).toContain('sectors')
+    expect('sectors' in (store.chapter as unknown as Record<string, unknown>)).toBe(false)
+  })
+
   it('uses refreshing for forced reloads and retains evidence when they fail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
     const store = useMarketStore()
@@ -342,6 +414,15 @@ describe('market store — refresh retention', () => {
     return store
   }
 
+  async function loadSectorFixture() {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+    const store = useMarketStore()
+    await store.loadCore()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => sectorSectionResponse() })) as unknown as typeof fetch)
+    await store.loadSection('sectors')
+    return store
+  }
+
   it('retains loaded same-date evidence when core refresh succeeds without section fields', async () => {
     const store = await loadLimitsFixture()
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
@@ -350,6 +431,19 @@ describe('market store — refresh retention', () => {
 
     expect(store.limits?.limitUpCount).toBe(10)
     expect(store.loadedSections).toContain('limits')
+  })
+
+  it('retains all four same-date sector fields when core refresh omits lazy evidence', async () => {
+    const store = await loadSectorFixture()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => coreResponse() })) as unknown as typeof fetch)
+
+    await store.loadCore()
+
+    expect(store.chapter?.industryRanking?.revisionId).toBe('catalog-r1')
+    expect(store.chapter?.sectorTurnover?.quality.status).toBe('ok')
+    expect(store.chapter?.sectorBreadth?.quality.status).toBe('partial')
+    expect(store.chapter?.sectorAnalysis?.lineage.calculationVersion).toBe('sector-continuity-v1')
+    expect(store.loadedSections).toContain('sectors')
   })
 
   it('retains loaded same-date evidence when core refresh fails', async () => {

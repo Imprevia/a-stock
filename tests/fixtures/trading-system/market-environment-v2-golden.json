@@ -1,0 +1,171 @@
+{
+  "complete-v2": {
+    "bundleFiles": {
+      "manifest.json": "0c5a6d4c7290e8c6746e01f125d05cd27185c8f4a280d644006439560f710498",
+      "result.json": "a3a04241d91bb2bfacc87511ee246f725d3a4c003a2c3ece65ea795abb81b90a",
+      "snapshot.json": "3e35369b7e1314b57579e8cd2745e7101936e1faa4c405a8f0d2f5dd78ce551e",
+      "traces.json": "0ef82d5eeb5d0a5316dbf3efac2d8d91bf1fe04c8014b0adbc101a36ddc40d03"
+    },
+    "evidenceId": "2026-08-28-market-environment-3e35369b7e13",
+    "resultBytesSha256": "56fd4da29d3fa7c9dcc6e9b57e0900fd6cc1f0b7535f8218bd3c02ab18f4daaf",
+    "resultHash": "e248b1d32fcead15f8d72c7af1e14357d845fbde1af3965e2794caa8b828e7ad",
+    "sectorTraces": [
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-01",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      },
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-02",
+        "score": 100,
+        "status": "ok",
+        "value": 5
+      },
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-03",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      },
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-04",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      },
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-05",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      }
+    ],
+    "snapshotFile": "market-environment-v2-complete.json",
+    "snapshotHash": "3e35369b7e1314b57579e8cd2745e7101936e1faa4c405a8f0d2f5dd78ce551e",
+    "tracesSha256": "0ef82d5eeb5d0a5316dbf3efac2d8d91bf1fe04c8014b0adbc101a36ddc40d03"
+  },
+  "observation-only-v2": {
+    "bundleFiles": {
+      "manifest.json": "688f40443644f92de9bff095d321d0d65674819bd29949468ece83560582bc7c",
+      "result.json": "ea2b3b3a431dbddf687c8f4dc8b663cbbbc31cd747d44863eb5f299baab86854",
+      "snapshot.json": "41b40a04dd497f82ab9b8f113ac37c0ee399af3080427476ff9b6899ff86e001",
+      "traces.json": "06df9b025e827a63553c7e1b9658832e622b24fb847fd899fecce11f79d6343c"
+    },
+    "evidenceId": "2026-08-28-market-environment-41b40a04dd49",
+    "resultBytesSha256": "80da9b143affb260dde7482a764f2f8ebbae168bffc9e320aec3040f343055ab",
+    "resultHash": "fcf8ac55fc37c4f842f43aa74e0058f9ff2db3ff19982f4f6f788a23fa052c3b",
+    "sectorTraces": [
+      {
+        "missingInputs": [
+          "sector.relative_strength_percentile"
+        ],
+        "ruleId": "QTS-01-05-01",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.top_turnover_days"
+        ],
+        "ruleId": "QTS-01-05-02",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.above_ma20_ratio_percentile"
+        ],
+        "ruleId": "QTS-01-05-03",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.disagreement_recovery_percentile"
+        ],
+        "ruleId": "QTS-01-05-04",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.top5_turnover_concentration_percentile"
+        ],
+        "ruleId": "QTS-01-05-05",
+        "score": null,
+        "status": "missing",
+        "value": null
+      }
+    ],
+    "snapshotFile": "market-environment-v2-observation-only.json",
+    "snapshotHash": "41b40a04dd497f82ab9b8f113ac37c0ee399af3080427476ff9b6899ff86e001",
+    "tracesSha256": "06df9b025e827a63553c7e1b9658832e622b24fb847fd899fecce11f79d6343c"
+  },
+  "partial-sector-v2": {
+    "bundleFiles": {
+      "manifest.json": "cffdade378a5e62ed7daa8d1e5d539c1e077f8a74f804db1119975219497bb7d",
+      "result.json": "260b91d942cdf0acc3c184940c22a89e982334f9e1689c956d03e81f2d02e0ef",
+      "snapshot.json": "3d15ca15817d1af9e0a65a81ef51a42503eb04d04ac854fcbdb406599cec7a9d",
+      "traces.json": "1f3bb6cccaa1317ae7d2f0862bc8062ac5700eb6bdc5f544daa1c6d768f1f24e"
+    },
+    "evidenceId": "2026-08-28-market-environment-3d15ca15817d",
+    "resultBytesSha256": "05282b64d9e577684a83b8db88e6f673ab08d1d493d68eee2bbbe535f5da8f7e",
+    "resultHash": "f6fe65f25f7919cb113a3b97acbdd880e487fb92a2f98adba217d3b4d4abdd30",
+    "sectorTraces": [
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-01",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      },
+      {
+        "missingInputs": [
+          "sector.top_turnover_days"
+        ],
+        "ruleId": "QTS-01-05-02",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.above_ma20_ratio_percentile"
+        ],
+        "ruleId": "QTS-01-05-03",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [
+          "sector.disagreement_recovery_percentile"
+        ],
+        "ruleId": "QTS-01-05-04",
+        "score": null,
+        "status": "missing",
+        "value": null
+      },
+      {
+        "missingInputs": [],
+        "ruleId": "QTS-01-05-05",
+        "score": 100,
+        "status": "ok",
+        "value": 0.85
+      }
+    ],
+    "snapshotFile": "market-environment-v2-partial-sector.json",
+    "snapshotHash": "3d15ca15817d1af9e0a65a81ef51a42503eb04d04ac854fcbdb406599cec7a9d",
+    "tracesSha256": "1f3bb6cccaa1317ae7d2f0862bc8062ac5700eb6bdc5f544daa1c6d768f1f24e"
+  }
+}

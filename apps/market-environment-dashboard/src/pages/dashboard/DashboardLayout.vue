@@ -79,7 +79,13 @@ const sectionWarning = computed(() => {
   const current = section.value
   if (!current || !market.loadedSections.includes(current)) return ''
   if (current === 'breadth' && market.breadth?.quality) return market.breadth.quality.warning ?? ''
-  if (current === 'sectors' && market.chapter?.sectors?.rows?.length) return market.chapter.sectors.quality.warning ?? ''
+  if (current === 'sectors') {
+    return market.chapter?.industryRanking?.quality.warning
+      ?? market.chapter?.sectorBreadth?.quality.warning
+      ?? market.chapter?.sectorTurnover?.quality.warning
+      ?? market.chapter?.sectorAnalysis?.quality.warnings?.[0]
+      ?? ''
+  }
   if (current === 'activeDirection' && market.chapter?.activeDirection?.topStocks?.length) return market.chapter.activeDirection.quality.warning ?? ''
   return ''
 })

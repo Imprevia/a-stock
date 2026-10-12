@@ -475,7 +475,7 @@ def test_service_accepts_fallback_derived_active_direction_quality() -> None:
     documents = MarketEnvironmentService._chapter_documents(
         chapter["breadth"],
         chapter["limits"],
-        chapter["sectors"],
+        chapter["industryRanking"],
         chapter["activeDirection"],
     )
     assert next(item for item in documents if item["id"] == "06")["status"] == "partial"
@@ -663,8 +663,11 @@ def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path
     assert provider.fetch_calls == 0
     assert provider.chapter_calls == []
     assert payload["chapter01"]["breadth"]["advanceCount"] == 2
-    assert payload["chapter01"]["sectors"]["quality"]["sectorEnrichment"]["matchedRows"] == 1
-    assert payload["chapter01"]["sectors"]["rows"][0]["leader"] == "样本股"
+    ranking = payload["chapter01"]["industryRanking"]
+    assert ranking["quality"]["status"] == "missing"
+    assert ranking["rows"] == []
+    assert "sectors" not in payload["chapter01"]
+    assert store.get("sectors", selected).payload["rows"][0]["leader"] == "样本股"
     MarketEnvironmentResponse.model_validate(payload)
 
 

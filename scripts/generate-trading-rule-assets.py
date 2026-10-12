@@ -60,8 +60,8 @@ def documented_rules() -> dict[str, dict[str, str]]:
             match = RULE_PATTERN.match(line)
             if match:
                 result[match.group(1)] = {"title": match.group(2).strip(), "documentRef": document_ref}
-    if len(result) != 46:
-        raise RuntimeError(f"expected 46 chapter 01 rules, found {len(result)}")
+    if len(result) != 49:
+        raise RuntimeError(f"expected 49 chapter 01 rules, found {len(result)}")
     return result
 
 
@@ -75,6 +75,17 @@ def base_specs() -> dict[str, dict[str, Any]]:
         "QTS-01-01-03": {"metric": "index.range_position_60", "windows": [60], "weight": 0.15, "bands": ratio, "provenance": "fixed"},
         "QTS-01-01-04": {"metric": "market.turnover_ratio_20", "windows": [20], "weight": 0.20, "bands": [{"lte": 0.8, "score": 25}, {"lte": 1.0, "score": 50}, {"lte": 1.2, "score": 75}, {"gt": 1.2, "score": 100}]},
         "QTS-01-01-05": {"metric": "index.volume_price_efficiency_percentile", "windows": [20, 250], "weight": 0.20, "bands": positive, "vetoes": [("risk.volume_breakdown_unrecovered", "truthy", True, "放量跌破 MA20 且次日未收回")]},
+        "QTS-01-01-06": {
+            "metric": "index.sync_pattern",
+            "windows": [1],
+            "weight": 0,
+            "bands": [{"lte": 0, "score": 0}, {"lte": 25, "score": 25}, {"lte": 50, "score": 50}, {"lte": 75, "score": 75}, {"lte": 100, "score": 100}],
+            "direction": "neutral",
+            "provenance": "empirical-initial",
+            "parameters": {"provenance": "empirical-initial"},
+        },
+        "QTS-01-01-07": {"metric": "index.range_position_20", "windows": [20], "weight": 0, "bands": ratio_bands(), "provenance": "fixed", "direction": "neutral"},
+        "QTS-01-01-08": {"metric": "market.turnover_ratio_5", "windows": [5], "weight": 0, "bands": [{"lte": 0.8, "score": 25}, {"lte": 1.0, "score": 50}, {"lte": 1.2, "score": 75}, {"gt": 1.2, "score": 100}], "provenance": "fixed", "direction": "neutral"},
         "QTS-01-02-01": {"metric": "breadth.advance_ratio_percentile", "windows": [250], "weight": 0.30, "bands": positive},
         "QTS-01-02-02": {"metric": "breadth.advance_decline_spread_percentile", "windows": [250], "weight": 0.20, "bands": positive},
         "QTS-01-02-03": {"metric": "breadth.median_return_percentile", "windows": [250], "weight": 0.30, "bands": positive},
@@ -89,11 +100,72 @@ def base_specs() -> dict[str, dict[str, Any]]:
         "QTS-01-04-02": {"metric": "risk.middle_tier_loss_percentile", "windows": [250], "weight": 0.35, "bands": positive},
         "QTS-01-04-03": {"metric": "risk.low_tier_feedback_percentile", "windows": [250], "weight": 0.15, "bands": positive},
         "QTS-01-04-04": {"metric": "risk.failure_repair_ratio_percentile", "windows": [250], "weight": 0.10, "bands": negative, "direction": "negative"},
-        "QTS-01-05-01": {"metric": "sector.relative_strength_percentile", "windows": [5, 20, 250], "weight": 0.25, "bands": positive},
-        "QTS-01-05-02": {"metric": "sector.top_turnover_days", "windows": [5], "weight": 0.20, "bands": [{"equals": 0, "score": 0}, {"equals": 1, "score": 25}, {"equals": 2, "score": 50}, {"equals": 3, "score": 75}, {"gte": 4, "score": 100}]},
-        "QTS-01-05-03": {"metric": "sector.above_ma20_ratio_percentile", "windows": [250], "weight": 0.20, "bands": positive},
-        "QTS-01-05-04": {"metric": "sector.disagreement_recovery_percentile", "windows": [20, 250], "weight": 0.20, "bands": positive},
-        "QTS-01-05-05": {"metric": "sector.top5_turnover_concentration_percentile", "windows": [250], "weight": 0.15, "bands": positive, "vetoes": [("risk.sector_crowding_without_breadth", "truthy", True, "成交集中但板块宽度不足，标记抱团风险")]},
+        "QTS-01-05-01": {
+            "metric": "sector.relative_strength_percentile",
+            "windows": [5, 20, 250],
+            "weight": 0.25,
+            "bands": positive,
+            "parameters": {
+                "scope": "shenwan-level-1",
+                "benchmark": "ordinary-a-share-equal-weight-v1",
+                "returnAggregation": "equal-weight-valid-front-adjusted-close-to-close",
+                "percentileMethod": "midrank",
+                "windowCombination": "minimum-of-5d-and-20d-percentiles",
+                "requireBothWindows": True,
+            },
+        },
+        "QTS-01-05-02": {
+            "metric": "sector.top_turnover_days",
+            "windows": [5],
+            "weight": 0.20,
+            "bands": [{"equals": 0, "score": 0}, {"equals": 1, "score": 25}, {"equals": 2, "score": 50}, {"equals": 3, "score": 75}, {"gte": 4, "score": 100}],
+            "parameters": {
+                "scope": "shenwan-level-1",
+                "topCountRule": "max(1,ceil(0.20*N))",
+                "rankingTieBreak": "original-turnover-desc,stable-industry-id-asc",
+                "completeCrossSection": True,
+            },
+        },
+        "QTS-01-05-03": {
+            "metric": "sector.above_ma20_ratio_percentile",
+            "windows": [250],
+            "weight": 0.20,
+            "bands": positive,
+            "parameters": {
+                "scope": "shenwan-level-1",
+                "priceConvention": "front-adjusted-close",
+                "breadthFormula": "valid-close-above-ma20/valid-ma20-members",
+                "denominatorPolicy": "valid-ma20-members-only",
+            },
+        },
+        "QTS-01-05-04": {
+            "metric": "sector.disagreement_recovery_percentile",
+            "windows": [20, 250],
+            "weight": 0.20,
+            "bands": positive,
+            "parameters": {
+                "scope": "shenwan-level-1",
+                "eventDefinition": "industry-close-to-close-return-lt-0",
+                "maturitySessions": 2,
+                "recoveryThreshold": 0.5,
+                "recoveryWindow": "either-of-next-two-complete-closes",
+            },
+        },
+        "QTS-01-05-05": {
+            "metric": "sector.top5_turnover_concentration_percentile",
+            "windows": [250],
+            "weight": 0.15,
+            "bands": positive,
+            "vetoes": [("risk.sector_crowding_without_breadth", "truthy", True, "成交集中但板块宽度不足，标记抱团风险")],
+            "parameters": {
+                "scope": "shenwan-level-1",
+                "topCountRule": "min(5,N)",
+                "rankingTieBreak": "original-turnover-desc,stable-industry-id-asc",
+                "amountConvention": "original-same-date-yuan",
+                "denominatorConvention": "same-date-same-universe-all-market-original-amount",
+                "dedupeNumerator": True,
+            },
+        },
         "QTS-01-06-01": {"metric": "active.direction_cluster_percentile", "windows": [250], "weight": 0.25, "bands": positive},
         "QTS-01-06-02": {"metric": "active.turnover_expansion_percentile", "windows": [20, 250], "weight": 0.20, "bands": positive},
         "QTS-01-06-03": {"metric": "active.excess_return_percentile", "windows": [250], "weight": 0.20, "bands": positive},
@@ -138,7 +210,7 @@ def make_rule(rule_id: str, documented: dict[str, dict[str, str]], spec: dict[st
         parameters = {key: value for key, value in spec.items() if key in {"members", "memberWeights", "invert"}}
     else:
         inputs = [spec["metric"]]
-        parameters = {"formulaSource": metadata["documentRef"]}
+        parameters = {"formulaSource": metadata["documentRef"], **spec.get("parameters", {})}
     return {
         "ruleId": rule_id,
         "version": 1,

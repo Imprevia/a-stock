@@ -1,0 +1,4 @@
+[
+  {"code": "S123456", "name": "消费电子", "changePct": 0.78, "amount": 67000000.0, "leader": "立讯精密"},
+  {"code": "S789012", "name": "医药", "changePct": -1.20, "amount": 89000000.0, "leader": "恒瑞医药"}
+]

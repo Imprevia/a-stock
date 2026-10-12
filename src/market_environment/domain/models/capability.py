@@ -12,13 +12,41 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 CapabilityStatus = Literal["eligible", "ineligible", "unverified"]
-CapabilityDataset = Literal["core", "breadth", "sectors", "activeDirection", "limits"]
+CapabilityDataset = Literal[
+    "core",
+    "breadth",
+    "sectors",
+    "activeDirection",
+    "limits",
+    "shenwan-taxonomy",
+    "shenwan-point-in-time-membership",
+    "stock-adjusted-price",
+    "tdx-original-daily-facts",
+    "benchmark-history",
+    "industry-ranking",
+    "sector-membership",
+    "sector-turnover-history",
+    "sector-member-daily-dump",
+    "sector-member-incremental-dump",
+    "sector-member-adjustment-dump",
+]
 CAPABILITY_DATASETS: tuple[str, ...] = (
     "core",
     "breadth",
     "sectors",
     "activeDirection",
     "limits",
+    "shenwan-taxonomy",
+    "shenwan-point-in-time-membership",
+    "stock-adjusted-price",
+    "tdx-original-daily-facts",
+    "benchmark-history",
+    "industry-ranking",
+    "sector-membership",
+    "sector-turnover-history",
+    "sector-member-daily-dump",
+    "sector-member-incremental-dump",
+    "sector-member-adjustment-dump",
 )
 MIGRATABLE_DATASETS: tuple[str, ...] = (
     "core",
@@ -27,6 +55,15 @@ MIGRATABLE_DATASETS: tuple[str, ...] = (
     "activeDirection",
 )
 CAPABILITY_SCHEMA_VERSION = 1
+
+THS_CAPABILITY_REVISIONS: Mapping[str, str] = {
+    "industry-ranking": "fuyao-ths-catalog-v1",
+    "sector-membership": "fuyao-ths-membership-v1",
+    "sector-turnover-history": "fuyao-ths-history-v1",
+    "sector-member-daily-dump": "fuyao-ths-daily-dump-v1",
+    "sector-member-incremental-dump": "fuyao-ths-incremental-dump-v1",
+    "sector-member-adjustment-dump": "fuyao-ths-adjustment-dump-v1",
+}
 
 
 def _canonical_json(value: Any) -> str:

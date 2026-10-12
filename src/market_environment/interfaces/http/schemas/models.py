@@ -9,7 +9,15 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 
 from ....timezone_preferences import validate_timezone
 
-CollectionDataset = Literal["core", "breadth", "limits", "sectors", "activeDirection"]
+CollectionDataset = Literal[
+    "core",
+    "breadth",
+    "limits",
+    "industry-ranking",
+    "sector-turnover",
+    "sector-breadth",
+    "activeDirection",
+]
 CollectionRunState = Literal["queued", "collecting", "success", "partial", "failed"]
 CollectionTaskState = Literal[
     "queued",
@@ -19,6 +27,7 @@ CollectionTaskState = Literal[
     "failed-retained",
     "failed-missing",
     "busy",
+    "blocked",
 ]
 EvidenceQualityStatus = Literal[
     "ok",
@@ -32,6 +41,15 @@ EvidenceQualityStatus = Literal[
 ]
 CacheState = Literal["fresh", "stale", "missing"]
 MetricQualityStatus = Literal["ok", "insufficient", "degraded", "failed"]
+SectorMetricQualityStatus = Literal[
+    "ok",
+    "partial",
+    "insufficient",
+    "degraded",
+    "reduced-confidence",
+    "failed",
+    "missing",
+]
 LimitMetricField = Literal["todayPromoted", "yesterdayLimitUpEligible", "promotionRatio"]
 PromotionSampleRule = Literal[
     "previous eligible close-limit-up -> current close-limit-up",
@@ -308,6 +326,12 @@ class MetricQuality(BaseModel):
     @classmethod
     def validate_as_of(cls, value: str | None) -> str | None:
         return _validate_iso_date(value)
+
+
+class SectorMetricQuality(MetricQuality):
+    """Sector-analysis metric quality without widening legacy limit contracts."""
+
+    status: SectorMetricQualityStatus
 
 
 class LimitSecurityDetailRow(BaseModel):
@@ -592,6 +616,21 @@ class LimitEvidence(BaseModel):
         return self
 
 
+class SectorIdentityAssociation(BaseModel):
+    providerId: str
+    providerName: str | None = None
+    shenwanIndustryId: str
+    shenwanIndustryName: str
+    mappingRevision: str
+    validFrom: str
+    validTo: str | None = None
+
+    @field_validator("validFrom", "validTo")
+    @classmethod
+    def validate_mapping_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value)
+
+
 class SectorRow(BaseModel):
     rank: int
     code: str | None
@@ -603,10 +642,143 @@ class SectorRow(BaseModel):
     upCount: int | None
     downCount: int | None
     leader: str | None
+    exactDateAssociation: SectorIdentityAssociation | None = None
+
+
+class SectorAnalysisQuality(BaseModel):
+    status: Literal["ok", "partial", "degraded", "reduced-confidence", "insufficient", "missing", "failed"]
+    confidence: Literal["high", "medium", "low", "insufficient"]
+    coverage: float | None = Field(default=None, ge=0, le=1)
+    asOf: str
+    requiredObservations: int = Field(default=60, ge=0)
+    availableObservations: int = Field(default=0, ge=0)
+    warnings: list[str] = Field(default_factory=list)
+    missingInputs: list[str] = Field(default_factory=list)
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_analysis_date(cls, value: str) -> str:
+        return _validate_iso_date(value) or value
+
+
+class SectorHistory(BaseModel):
+    requiredObservations: int = Field(default=60, ge=0)
+    windowDays: int = Field(default=250, ge=1)
+    validObservations: int = Field(default=0, ge=0)
+    actualDateRange: list[str] | None = None
+    gaps: list[str] = Field(default_factory=list)
+    quality: SectorMetricQuality | None = None
+
+
+class SectorMetricTrace(BaseModel):
+    ruleId: str
+    value: float | int | None = None
+    percentile: float | None = Field(default=None, ge=0, le=1)
+    score: float | int | None = None
+    status: SectorMetricQualityStatus
+    weight: float = Field(ge=0)
+    originalWeight: float = Field(ge=0)
+    normalizedWeight: float | None = Field(default=None, ge=0)
+    observations: int = Field(default=0, ge=0)
+    requiredObservations: int = Field(default=60, ge=0)
+    windowDays: int = Field(default=250, ge=1)
+    missingReason: str | None = None
+    sampleDates: list[str] = Field(default_factory=list)
+    actualDateRange: list[str] | None = None
+    gaps: list[str] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class SectorInternalStructure(BaseModel):
+    effectiveMemberCount: int = Field(ge=0)
+    advancingCount: int | None = Field(default=None, ge=0)
+    decliningCount: int | None = Field(default=None, ge=0)
+    flatCount: int | None = Field(default=None, ge=0)
+    limitUpCount: int | None = Field(default=None, ge=0)
+    limitDownCount: int | None = Field(default=None, ge=0)
+    topByTurnover: list[dict[str, Any]] = Field(default_factory=list)
+    topByReturn: list[dict[str, Any]] = Field(default_factory=list)
+    topSecurityTurnoverContribution: float | None = Field(default=None, ge=0, le=1)
+    diffusionRatio: float | None = Field(default=None, ge=0, le=1)
+
+
+class SectorCandidate(BaseModel):
+    industryId: str
+    displayName: str
+    stage: Literal[
+        "insufficient", "high-level-crowding", "mainline-confirmed",
+        "mainline-candidate", "one-day-pulse", "rotation-or-ebb",
+    ]
+    totalScore: float | None = None
+    coreScores: dict[str, float | None] = Field(default_factory=dict)
+    ruleTraces: list[SectorMetricTrace] = Field(default_factory=list)
+    crowdingRisk: bool | None = None
+    vetoes: list[str] = Field(default_factory=list)
+    internalStructure: SectorInternalStructure | None = None
+    confirmationStreak: int = Field(default=0, ge=0)
+
+
+class SectorUniqueValidation(BaseModel):
+    candidateIndustry: str | None = None
+    candidateName: str | None = None
+    stage: Literal[
+        "insufficient", "high-level-crowding", "mainline-confirmed",
+        "mainline-candidate", "one-day-pulse", "rotation-or-ebb",
+    ]
+    persistenceEvidence: str
+    breadthEvidence: str
+    turnoverEvidence: str
+    internalStructure: str
+    target: str
+    confirmationCondition: str
+    invalidationCondition: str
+
+
+class SectorAnalysisAttempt(BaseModel):
+    runId: str | None = None
+    status: Literal["success", "partial", "failed-retained", "failed-missing", "insufficient"]
+    retryEligible: bool = True
+    warning: str | None = None
+    compatibleResultChecksum: str | None = None
+
+
+class SectorAnalysis(BaseModel):
+    asOf: str
+    status: Literal["ok", "partial", "degraded", "reduced-confidence", "insufficient", "missing", "failed"]
+    quality: SectorAnalysisQuality
+    history: SectorHistory | None = None
+    metricTraces: list[SectorMetricTrace] = Field(default_factory=list)
+    candidates: list[SectorCandidate] = Field(default_factory=list, max_length=3)
+    validation: SectorUniqueValidation
+    risk: dict[str, Any] = Field(default_factory=dict)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    latestAttempt: SectorAnalysisAttempt | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("asOf")
+    @classmethod
+    def validate_analysis_as_of(cls, value: str) -> str:
+        return _validate_iso_date(value) or value
+
+    @model_validator(mode="after")
+    def validate_single_validation(self) -> "SectorAnalysis":
+        if self.validation.candidateIndustry is not None:
+            if not self.candidates or self.candidates[0].industryId != self.validation.candidateIndustry:
+                raise ValueError("validation must target first candidate")
+        if self.validation.candidateIndustry is None and self.validation.stage != "insufficient":
+            raise ValueError("null candidate requires insufficient validation stage")
+        return self
 
 
 class SectorEvidence(BaseModel):
     rows: list[SectorRow]
+    state: str
+    quality: EvidenceQuality
+    analysis: SectorAnalysis | None = None
+
+
+class ThsDatasetEvidence(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list)
     state: str
     quality: EvidenceQuality
 
@@ -766,7 +938,10 @@ class Chapter01Evidence(BaseModel):
     documents: list[ChapterDocument]
     breadth: BreadthEvidence
     limits: LimitEvidence
-    sectors: SectorEvidence
+    industryRanking: ThsDatasetEvidence
+    sectorTurnover: ThsDatasetEvidence
+    sectorBreadth: ThsDatasetEvidence
+    sectorAnalysis: SectorAnalysis | None = None
     activeDirection: ActiveDirectionEvidence
     events: EventEvidence
     combinationOverview: CombinationOverview
@@ -842,7 +1017,32 @@ class NextSessionComparisonResponse(NextSessionComparison):
 
 class CollectionRunRequest(BaseModel):
     asOf: date
-    datasets: list[CollectionDataset] | None = None
+    datasets: list[str] | None = None
+
+    @field_validator("datasets")
+    @classmethod
+    def validate_datasets(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        supported = {
+            "core",
+            "breadth",
+            "limits",
+            "industry-ranking",
+            "sector-turnover",
+            "sector-breadth",
+            "activeDirection",
+        }
+        if "sectors" in value:
+            raise ValueError(
+                "sectors 已退役；请使用 industry-ranking、sector-turnover 或 sector-breadth"
+            )
+        unknown = sorted(set(value) - supported)
+        if unknown:
+            raise ValueError("不支持的数据集：" + "、".join(unknown))
+        if not value:
+            raise ValueError("至少选择一个数据集")
+        return value
 
 
 class CoreIndexCollectionResult(BaseModel):
@@ -926,10 +1126,166 @@ class DatasetCollectionStatus(BaseModel):
     detail: LimitsCollectionDetail | None = None
 
 
+class SectorBackfillProgress(BaseModel):
+    runId: str | None = None
+    status: Literal["queued", "running", "success", "partial", "failed"] | None = None
+    completedSessions: int = Field(default=0, ge=0)
+    totalSessions: int = Field(default=0, ge=0)
+    failedSessions: int = Field(default=0, ge=0)
+
+
+class SectorAnalysisReadiness(BaseModel):
+    asOf: date
+    status: Literal["ok", "partial", "insufficient", "failed", "missing"]
+    requiredHistory: int = Field(ge=0)
+    availableHistory: int = Field(ge=0)
+    missingSessions: list[date] = Field(default_factory=list)
+    coverage: float = Field(ge=0, le=1)
+    versions: dict[str, str] = Field(default_factory=dict)
+    latestAttempt: SectorAnalysisAttempt | None = None
+    backfill: SectorBackfillProgress | None = None
+    warnings: list[str] = Field(default_factory=list)
+    retryEligible: bool = True
+
+
 class CollectionStatusResponse(BaseModel):
     asOf: date
     manualRefreshEnabled: bool
     datasets: list[DatasetCollectionStatus]
+    sectorAnalysis: SectorAnalysisReadiness | None = None
+
+
+ThsTag = Literal["industry", "cn_concept", "region", "tszs"]
+ThsOperationStatus = Literal[
+    "queued",
+    "running",
+    "success",
+    "partial",
+    "failed",
+    "conflict",
+]
+
+
+class ThsCatalogRevisionResponse(BaseModel):
+    revisionId: str
+    capabilityRevision: str
+    providerTimestamp: datetime
+    fetchedAt: datetime
+    tagCounts: dict[ThsTag, int]
+    checksum: str
+
+
+class ThsCatalogItemResponse(BaseModel):
+    tag: ThsTag
+    thscode: str
+    name: str
+
+
+class ThsCatalogResponse(BaseModel):
+    revision: ThsCatalogRevisionResponse | None
+    items: list[ThsCatalogItemResponse]
+    page: int = Field(ge=1)
+    pageSize: int = Field(ge=1, le=500)
+    total: int = Field(ge=0)
+
+
+class ThsBarCoverageResponse(BaseModel):
+    firstDate: date | None
+    lastDate: date | None
+    storedRows: int = Field(ge=0)
+    gaps: list[str] = Field(default_factory=list)
+
+
+class ThsSectorBarResponse(BaseModel):
+    tradingDate: date
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    volume: float | None
+    turnover: float | None
+    quality: str
+    source: str
+    sourceRevision: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ThsSectorBarsResponse(BaseModel):
+    thscode: str
+    requestedStart: date | None
+    requestedEnd: date | None
+    coverage: ThsBarCoverageResponse
+    items: list[ThsSectorBarResponse]
+    page: int = Field(ge=1)
+    pageSize: int = Field(ge=1, le=1000)
+    total: int = Field(ge=0)
+
+
+class ThsOperationProgressCounts(BaseModel):
+    completed: int = Field(ge=0)
+    total: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    conflicts: int = Field(ge=0)
+
+
+class ThsOperationCheckpointResponse(BaseModel):
+    thscode: str | None = None
+    windowStart: date | None = None
+    windowEnd: date | None = None
+    status: str
+    rowsWritten: int | None = Field(default=None, ge=0)
+    rowsSkipped: int | None = Field(default=None, ge=0)
+    conflicts: int | None = Field(default=None, ge=0)
+    warning: str | None = None
+
+
+class ThsOperationResponse(BaseModel):
+    runId: str
+    kind: str
+    status: ThsOperationStatus
+    progress: ThsOperationProgressCounts
+    warning: str | None = None
+    checkpoints: list[ThsOperationCheckpointResponse] = Field(default_factory=list)
+
+
+class QueuedThsOperationResponse(BaseModel):
+    runId: str
+    status: Literal["queued"] = "queued"
+
+
+class ThsCatalogSyncRequest(BaseModel):
+    asOf: date | None = None
+    capabilityRevision: str | None = Field(default=None, min_length=1)
+    membershipCapabilityRevision: str | None = Field(default=None, min_length=1)
+    membershipThscodes: list[str] = Field(default_factory=list, max_length=60)
+    requestBudget: int | None = Field(default=None, ge=1)
+
+
+class ThsTurnoverBackfillRequest(BaseModel):
+    thscodes: list[str] = Field(min_length=1, max_length=60)
+    startDate: date
+    endDate: date
+    capabilityRevision: str | None = Field(default=None, min_length=1)
+    requestBudget: int | None = Field(default=None, ge=1)
+
+
+class ThsDumpFileRequest(BaseModel):
+    path: str = Field(min_length=1)
+    dumpId: str = Field(min_length=1)
+    schemaRevision: str = Field(min_length=1)
+    capabilityRevision: str = Field(min_length=1)
+    checksum: str = Field(min_length=1)
+    startDate: date
+    endDate: date
+
+
+class ThsMemberFactsImportRequest(BaseModel):
+    asOf: date
+    sourceRevision: str = Field(min_length=1)
+    requestBudget: int | None = Field(default=None, ge=1)
+    daily: ThsDumpFileRequest
+    adjustment: ThsDumpFileRequest
+    incremental: ThsDumpFileRequest | None = None
 
 
 def schema_extra(value: Any) -> Any:

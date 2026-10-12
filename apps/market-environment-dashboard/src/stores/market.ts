@@ -35,6 +35,15 @@ function createSectionStates(): Record<Chapter01Section, SectionState> {
   ) as Record<Chapter01Section, SectionState>
 }
 
+function hasSectorEvidence(chapter: Chapter01Analysis): boolean {
+  return [
+    chapter.industryRanking?.quality.status,
+    chapter.sectorTurnover?.quality.status,
+    chapter.sectorBreadth?.quality.status,
+    chapter.sectorAnalysis?.quality.status,
+  ].some((status) => status != null && status !== 'missing')
+}
+
 function mergeChapterSection(
   current: Chapter01Analysis | undefined,
   incoming: Chapter01Analysis,
@@ -47,7 +56,12 @@ function mergeChapterSection(
   if (incoming.documents) merged.documents = incoming.documents
   if (section === 'breadth' || incoming.breadth?.quality.status !== 'missing') merged.breadth = incoming.breadth
   if (section === 'limits' || incoming.limits?.quality.status !== 'missing') merged.limits = incoming.limits
-  if (section === 'sectors' || incoming.sectors?.quality.status !== 'missing') merged.sectors = incoming.sectors
+  if (section === 'sectors' || hasSectorEvidence(incoming)) {
+    merged.industryRanking = incoming.industryRanking
+    merged.sectorTurnover = incoming.sectorTurnover
+    merged.sectorBreadth = incoming.sectorBreadth
+    merged.sectorAnalysis = incoming.sectorAnalysis
+  }
   if (section === 'activeDirection' || incoming.activeDirection?.quality.status !== 'missing') {
     merged.activeDirection = incoming.activeDirection
   }
@@ -60,7 +74,7 @@ function completedChapterSections(chapter: Chapter01Analysis, requested: Chapter
   const completed: Chapter01Section[] = [requested]
   if (chapter.breadth?.quality.status !== 'missing') completed.push('breadth')
   if (chapter.limits?.quality.status !== 'missing') completed.push('limits')
-  if (chapter.sectors?.quality.status !== 'missing') completed.push('sectors')
+  if (hasSectorEvidence(chapter)) completed.push('sectors')
   if (chapter.activeDirection?.quality.status !== 'missing') completed.push('activeDirection')
   if (requested === 'summary') completed.push('summary')
   return completed
@@ -88,7 +102,12 @@ function retainLoadedChapterEvidence(
   }
   if (loaded.includes('breadth')) retained.breadth = previous.chapter01.breadth
   if (loaded.includes('limits')) retained.limits = previous.chapter01.limits
-  if (loaded.includes('sectors')) retained.sectors = previous.chapter01.sectors
+  if (loaded.includes('sectors')) {
+    retained.industryRanking = previous.chapter01.industryRanking
+    retained.sectorTurnover = previous.chapter01.sectorTurnover
+    retained.sectorBreadth = previous.chapter01.sectorBreadth
+    retained.sectorAnalysis = previous.chapter01.sectorAnalysis
+  }
   if (loaded.includes('activeDirection')) retained.activeDirection = previous.chapter01.activeDirection
   return { ...incoming, chapter01: retained }
 }

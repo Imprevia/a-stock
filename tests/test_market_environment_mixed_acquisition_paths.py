@@ -187,7 +187,7 @@ class LegacyTaskCollector:
 
 
 def test_parent_run_keeps_public_parity_across_mixed_adapter_paths(tmp_path) -> None:
-    calls = {"compatibility": 0}
+    calls = {"compatibility": 0, "legacy-audit": 0}
     typed = TypedAdapter(
         "typed-breadth",
         SourceCapability("typed-breadth", "fixture", "r1"),
@@ -197,10 +197,20 @@ def test_parent_run_keeps_public_parity_across_mixed_adapter_paths(tmp_path) -> 
         calls["compatibility"] += 1
         return request.identity
 
+    def fetch_legacy_audit(request):
+        calls["legacy-audit"] += 1
+        return request.identity
+
     compatibility = CompatibilitySourceAdapter(
-        "legacy-sectors",
-        SourceCapability("legacy-sectors", "fixture", "r1"),
+        "compatibility-industry-ranking",
+        SourceCapability("compatibility-industry-ranking", "fixture", "r1"),
         fetch=fetch_compatibility,
+        normalize=lambda raw, _request: candidate(raw),
+    )
+    legacy_sectors_audit = CompatibilitySourceAdapter(
+        "legacy-sectors-audit",
+        SourceCapability("legacy-sectors-audit", "fixture", "r1"),
+        fetch=fetch_legacy_audit,
         normalize=lambda raw, _request: candidate(raw),
     )
     failing = FailingAdapter(
@@ -210,15 +220,15 @@ def test_parent_run_keeps_public_parity_across_mixed_adapter_paths(tmp_path) -> 
 
     adapter_by_dataset = {
         "breadth": typed,
-        "sectors": compatibility,
+        "industry-ranking": compatibility,
         "activeDirection": failing,
     }
-    for dataset in ("core", "limits"):
+    for dataset in ("core", "limits", "sector-turnover", "sector-breadth"):
         adapter_by_dataset[dataset] = TypedAdapter(
             f"typed-{dataset}",
             SourceCapability(f"typed-{dataset}", "fixture", "r1"),
         )
-    adapters = SourceAdapterRegistry(adapter_by_dataset.values())
+    adapters = SourceAdapterRegistry((*adapter_by_dataset.values(), legacy_sectors_audit))
     plans = AcquisitionPlanRegistry.complete(
         (
             DeterministicAcquisitionPlan(
@@ -246,14 +256,14 @@ def test_parent_run_keeps_public_parity_across_mixed_adapter_paths(tmp_path) -> 
 
     result = coordinator.collect(
         AS_OF,
-        ("breadth", "sectors", "activeDirection"),
+        ("breadth", "industry-ranking", "activeDirection"),
     )
     public = coordinator.get_run(result.run.run_id)
     assert public is not None
     tasks = {task.dataset: task for task in public.tasks}
 
     assert public.run.status == "partial"
-    for dataset in ("breadth", "sectors"):
+    for dataset in ("breadth", "industry-ranking"):
         task = tasks[dataset]
         assert task.status == "partial"
         assert task.source == "parity-source"
@@ -274,23 +284,35 @@ def test_parent_run_keeps_public_parity_across_mixed_adapter_paths(tmp_path) -> 
         tasks["breadth"].observations,
         tasks["breadth"].warning,
     ) == (
-        tasks["sectors"].status,
-        tasks["sectors"].source,
-        tasks["sectors"].observations,
-        tasks["sectors"].warning,
+        tasks["industry-ranking"].status,
+        tasks["industry-ranking"].source,
+        tasks["industry-ranking"].observations,
+        tasks["industry-ranking"].warning,
     )
     assert tasks["activeDirection"].status == "failed-missing"
     assert tasks["activeDirection"].warning == "isolated sibling failure"
     assert store.get("breadth", AS_OF) is not None
-    assert store.get("sectors", AS_OF) is not None
+    assert store.get("industry-ranking", AS_OF) is not None
+    assert calls["legacy-audit"] == 0
+    assert legacy_sectors_audit.source_id == "legacy-sectors-audit"
 
-    call_counts = (typed.calls, calls["compatibility"], failing.calls)
+    call_counts = (
+        typed.calls,
+        calls["compatibility"],
+        calls["legacy-audit"],
+        failing.calls,
+    )
     status = coordinator.collection_status(AS_OF)
 
-    assert (typed.calls, calls["compatibility"], failing.calls) == call_counts
+    assert (
+        typed.calls,
+        calls["compatibility"],
+        calls["legacy-audit"],
+        failing.calls,
+    ) == call_counts
     status_by_dataset = {item["dataset"]: item for item in status["datasets"]}
     assert status_by_dataset["breadth"]["source"] == "parity-source"
-    assert status_by_dataset["sectors"]["source"] == "parity-source"
+    assert status_by_dataset["industry-ranking"]["source"] == "parity-source"
     assert status_by_dataset["activeDirection"]["available"] is False
 
 
@@ -302,7 +324,9 @@ def test_parent_run_mixes_typed_cutover_with_legacy_siblings_provider_free(
         SourceCapability("typed-breadth", "fixture", "r1"),
     )
     adapter_by_dataset = {"breadth": typed}
-    for dataset in ("core", "limits", "sectors", "activeDirection"):
+    for dataset in DATASET_IDS:
+        if dataset == "breadth":
+            continue
         adapter_by_dataset[dataset] = TypedAdapter(
             f"unused-{dataset}",
             SourceCapability(f"unused-{dataset}", "fixture", "r1"),
@@ -347,7 +371,7 @@ def test_parent_run_mixes_typed_cutover_with_legacy_siblings_provider_free(
 
     result = coordinator.collect(
         AS_OF,
-        ("breadth", "sectors", "activeDirection"),
+        ("breadth", "industry-ranking", "activeDirection"),
     )
     public = coordinator.get_run(result.run.run_id)
     assert public is not None
@@ -360,11 +384,11 @@ def test_parent_run_mixes_typed_cutover_with_legacy_siblings_provider_free(
     assert tasks["breadth"].warning == "shared warning"
     assert tasks["breadth"].timings["normalizeMs"] == 2.0
     assert tasks["breadth"].timings["providerCollectionMs"] == 12.5
-    assert tasks["sectors"].status == "success"
-    assert tasks["sectors"].source == "legacy-sectors"
-    assert tasks["sectors"].observations == 5
-    assert tasks["sectors"].warning == "legacy warning"
-    assert tasks["sectors"].timings["providerCollectionMs"] == 7.0
+    assert tasks["industry-ranking"].status == "success"
+    assert tasks["industry-ranking"].source == "legacy-industry-ranking"
+    assert tasks["industry-ranking"].observations == 5
+    assert tasks["industry-ranking"].warning == "legacy warning"
+    assert tasks["industry-ranking"].timings["providerCollectionMs"] == 7.0
     assert tasks["activeDirection"].status == "failed-missing"
     assert tasks["activeDirection"].source == "none"
     assert tasks["activeDirection"].observations == 0
@@ -373,22 +397,22 @@ def test_parent_run_mixes_typed_cutover_with_legacy_siblings_provider_free(
     assert "providerCollectionMs" not in tasks["activeDirection"].timings
     assert typed.calls == 1
     assert committers[1].calls == 1
-    assert legacy_collectors["sectors"].calls == 1
+    assert legacy_collectors["industry-ranking"].calls == 1
     assert legacy_collectors["activeDirection"].calls == 1
 
     calls_before_poll = (
         typed.calls,
-        legacy_collectors["sectors"].calls,
+        legacy_collectors["industry-ranking"].calls,
         legacy_collectors["activeDirection"].calls,
     )
     status = coordinator.collection_status(AS_OF)
 
     assert calls_before_poll == (
         typed.calls,
-        legacy_collectors["sectors"].calls,
+        legacy_collectors["industry-ranking"].calls,
         legacy_collectors["activeDirection"].calls,
     )
     status_by_dataset = {item["dataset"]: item for item in status["datasets"]}
     assert status_by_dataset["breadth"]["source"] == "parity-source"
-    assert status_by_dataset["sectors"]["source"] == "legacy-sectors"
+    assert status_by_dataset["industry-ranking"]["source"] == "legacy-industry-ranking"
     assert status_by_dataset["activeDirection"]["available"] is False

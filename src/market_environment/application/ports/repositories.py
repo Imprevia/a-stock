@@ -11,6 +11,29 @@ from ...domain.models import (
     DatasetDate,
     MaterializationRevision,
 )
+from ...domain.models.sector_continuity import (
+    BackfillDateAttempt,
+    BackfillRun,
+    BenchmarkFact,
+    IndustryAggregate,
+    IndustryIdentity,
+    MembershipInterval,
+    SecurityDailyFact,
+    SectorContinuityResult,
+    TaxonomyRevision,
+)
+from ...domain.models.ths_sector import (
+    ThsBackfillCheckpoint,
+    ThsBackfillRun,
+    ThsCatalogRelation,
+    ThsCatalogRevision,
+    ThsMemberDailyFact,
+    ThsOperation,
+    ThsRankingRow,
+    ThsSectorBar,
+    ThsSectorBreadth,
+    ThsSectorMembership,
+)
 
 
 @runtime_checkable
@@ -178,6 +201,129 @@ class TimezonePreferenceRepository(
     pass
 
 
+@runtime_checkable
+class SectorContinuityRepository(Protocol):
+    """Application port for immutable point-in-time continuity evidence."""
+
+    def put_taxonomy(self, revision: TaxonomyRevision) -> TaxonomyRevision: ...
+    def put_taxonomy_revision(self, revision: TaxonomyRevision) -> TaxonomyRevision: ...
+    def get_taxonomy_revision(self, taxonomy_version: str, source_revision: str) -> TaxonomyRevision | None: ...
+    def put_industry(self, identity: IndustryIdentity) -> IndustryIdentity: ...
+    def list_industries(self, taxonomy_version: str) -> Sequence[IndustryIdentity]: ...
+    def put_membership(self, interval: MembershipInterval) -> MembershipInterval: ...
+    def list_memberships(self, as_of: date, *, industry_id: str | None = None) -> Sequence[MembershipInterval]: ...
+    def put_security_fact(self, fact: SecurityDailyFact) -> SecurityDailyFact: ...
+    def get_security_fact(self, security_id: str, as_of: date) -> SecurityDailyFact | None: ...
+    def list_security_facts(self, as_of: date) -> Sequence[SecurityDailyFact]: ...
+    def put_benchmark_fact(self, fact: BenchmarkFact) -> BenchmarkFact: ...
+    def get_benchmark_fact(self, as_of: date, benchmark_id: str = "ordinary-a-share-equal-weight-v1") -> BenchmarkFact | None: ...
+    def put_industry_aggregate(self, aggregate: IndustryAggregate) -> IndustryAggregate: ...
+    def get_industry_aggregate(self, industry_id: str, as_of: date) -> IndustryAggregate | None: ...
+    def list_industry_aggregates(self, as_of: date) -> Sequence[IndustryAggregate]: ...
+    def put_result(self, result: SectorContinuityResult) -> SectorContinuityResult: ...
+    def get_result(self, as_of: date, calculation_version: str | None = None) -> SectorContinuityResult | None: ...
+    def put_backfill_run(self, run: BackfillRun) -> BackfillRun: ...
+    def put_backfill_attempt(self, attempt: BackfillDateAttempt) -> BackfillDateAttempt: ...
+    def list_backfill_attempts(self, run_id: str) -> Sequence[BackfillDateAttempt]: ...
+
+
+@runtime_checkable
+class ThsSectorRepository(Protocol):
+    """Normalized local persistence for provider-observed THS sector facts."""
+
+    def put_catalog_revision(
+        self,
+        revision: ThsCatalogRevision,
+        relations: Sequence[ThsCatalogRelation],
+    ) -> ThsCatalogRevision: ...
+    def get_catalog_revision(self, revision_id: str) -> ThsCatalogRevision | None: ...
+    def latest_catalog_revision(self) -> ThsCatalogRevision | None: ...
+    def list_catalog(
+        self,
+        *,
+        tag: str | None = None,
+        search: str | None = None,
+        revision_id: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Sequence[ThsCatalogRelation]: ...
+    def count_catalog(
+        self,
+        *,
+        tag: str | None = None,
+        search: str | None = None,
+        revision_id: str | None = None,
+    ) -> int: ...
+    def put_rankings(self, rankings: Iterable[ThsRankingRow]) -> Mapping[str, int]: ...
+    def list_rankings(
+        self,
+        as_of: date,
+        *,
+        tag: str | None = None,
+        revision_id: str | None = None,
+    ) -> Sequence[ThsRankingRow]: ...
+
+    def put_sector_bar(self, bar: ThsSectorBar) -> Literal["inserted", "identical", "conflict"]: ...
+    def put_sector_bars(self, bars: Iterable[ThsSectorBar]) -> Mapping[str, int]: ...
+    def list_sector_bars(
+        self,
+        thscode: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Sequence[ThsSectorBar]: ...
+    def count_sector_bars(
+        self,
+        thscode: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> int: ...
+    def sector_bar_coverage(
+        self,
+        thscode: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> Mapping[str, Any]: ...
+
+    def put_backfill_run(self, run: ThsBackfillRun) -> ThsBackfillRun: ...
+    def get_backfill_run(self, run_id: str) -> ThsBackfillRun | None: ...
+    def list_backfill_runs(self, *, offset: int = 0, limit: int = 100) -> Sequence[ThsBackfillRun]: ...
+    def put_backfill_checkpoint(self, checkpoint: ThsBackfillCheckpoint) -> ThsBackfillCheckpoint: ...
+    def list_backfill_checkpoints(self, run_id: str) -> Sequence[ThsBackfillCheckpoint]: ...
+
+    def put_member_fact(self, fact: ThsMemberDailyFact) -> Literal["inserted", "identical", "conflict"]: ...
+    def list_member_facts(self, trading_date: date) -> Sequence[ThsMemberDailyFact]: ...
+    def put_sector_memberships(
+        self,
+        memberships: Iterable[ThsSectorMembership],
+    ) -> Mapping[str, int]: ...
+    def list_sector_memberships(
+        self,
+        thscode: str,
+        *,
+        as_of: date | None = None,
+        source_revision: str | None = None,
+    ) -> Sequence[ThsSectorMembership]: ...
+    def put_sector_breadth(self, breadth: ThsSectorBreadth) -> Literal["inserted", "identical", "conflict"]: ...
+    def list_sector_breadth(self, as_of: date) -> Sequence[ThsSectorBreadth]: ...
+
+    def put_operation(self, operation: ThsOperation) -> ThsOperation: ...
+    def update_operation(self, operation: ThsOperation) -> ThsOperation: ...
+    def get_operation(self, run_id: str) -> ThsOperation | None: ...
+    def list_operations(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Sequence[ThsOperation]: ...
+
+
 __all__ = [
     "CollectionRunRepository",
     "CollectionStatusReader",
@@ -193,6 +339,8 @@ __all__ = [
     "TimezonePreferenceReader",
     "TimezonePreferenceRepository",
     "TimezonePreferenceWriter",
+    "ThsSectorRepository",
     "TradingSessionReader",
     "TradingSessionRepository",
+    "SectorContinuityRepository",
 ]

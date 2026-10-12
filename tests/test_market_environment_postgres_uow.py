@@ -24,6 +24,21 @@ from src.market_environment.infrastructure.persistence.postgres import (
 )
 
 
+THS_RUNTIME_TABLES = {
+    "ths_catalog_revisions",
+    "ths_sector_identities",
+    "ths_catalog_relations",
+    "ths_industry_rankings",
+    "ths_sector_daily_bars",
+    "ths_sector_memberships",
+    "ths_member_daily_facts",
+    "ths_operations",
+    "ths_backfill_runs",
+    "ths_backfill_checkpoints",
+    "ths_sector_breadth_evidence",
+}
+
+
 class FakeScalarResult:
     def __init__(self, value) -> None:
         self.value = value
@@ -127,6 +142,15 @@ class FakeRepositories:
     provider_capabilities: object = "provider-capabilities"
     limit_details: object = "limit-details"
     timezone_preferences: object = "timezone-preferences"
+    sector_continuity: object = "sector-continuity"
+    sector_taxonomy: object = "sector-continuity"
+    sector_memberships: object = "sector-continuity"
+    sector_security_facts: object = "sector-continuity"
+    sector_benchmarks: object = "sector-continuity"
+    sector_industry_aggregates: object = "sector-continuity"
+    sector_results: object = "sector-continuity"
+    sector_backfill: object = "sector-continuity"
+    ths_sectors: object = "ths-sectors"
 
 
 def test_runtime_factory_checks_connectivity_and_schema_with_select_only() -> None:
@@ -140,6 +164,8 @@ def test_runtime_factory_checks_connectivity_and_schema_with_select_only() -> No
     )
 
     assert factory.validate_runtime().version == MINIMUM_SCHEMA_VERSION
+    assert MINIMUM_SCHEMA_VERSION == 8
+    assert THS_RUNTIME_TABLES <= REQUIRED_RUNTIME_TABLES
     assert connection.closed is True
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in connection.statements)
     assert not any(
@@ -180,6 +206,8 @@ def test_unit_of_work_commits_one_shared_read_committed_transaction() -> None:
         assert isinstance(active, UnitOfWorkPort)
         assert active.snapshots == "snapshots"
         assert active.collection_tasks == "collection-tasks"
+        assert active.sector_continuity == "sector-continuity"
+        assert active.ths_sectors == "ths-sectors"
         active.commit()
 
     assert seen_connections == [connection]

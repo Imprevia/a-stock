@@ -883,6 +883,12 @@ rules:
   - 250
   parameters:
     formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+    scope: shenwan-level-1
+    benchmark: ordinary-a-share-equal-weight-v1
+    returnAggregation: equal-weight-valid-front-adjusted-close-to-close
+    percentileMethod: midrank
+    windowCombination: minimum-of-5d-and-20d-percentiles
+    requireBothWindows: true
   thresholds:
     provenance: empirical-initial
     bands: *id002
@@ -909,6 +915,10 @@ rules:
   - 5
   parameters:
     formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+    scope: shenwan-level-1
+    topCountRule: max(1,ceil(0.20*N))
+    rankingTieBreak: original-turnover-desc,stable-industry-id-asc
+    completeCrossSection: true
   thresholds:
     provenance: empirical-initial
     bands:
@@ -945,6 +955,10 @@ rules:
   - 250
   parameters:
     formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+    scope: shenwan-level-1
+    priceConvention: front-adjusted-close
+    breadthFormula: valid-close-above-ma20/valid-ma20-members
+    denominatorPolicy: valid-ma20-members-only
   thresholds:
     provenance: empirical-initial
     bands: *id002
@@ -972,6 +986,11 @@ rules:
   - 250
   parameters:
     formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+    scope: shenwan-level-1
+    eventDefinition: industry-close-to-close-return-lt-0
+    maturitySessions: 2
+    recoveryThreshold: 0.5
+    recoveryWindow: either-of-next-two-complete-closes
   thresholds:
     provenance: empirical-initial
     bands: *id002
@@ -998,6 +1017,12 @@ rules:
   - 250
   parameters:
     formulaSource: 搭建交易系统-量化版/01-如何判断市场环境/05.主线持续性和成交额集中度.md
+    scope: shenwan-level-1
+    topCountRule: min(5,N)
+    rankingTieBreak: original-turnover-desc,stable-industry-id-asc
+    amountConvention: original-same-date-yuan
+    denominatorConvention: same-date-same-universe-all-market-original-amount
+    dedupeNumerator: true
   thresholds:
     provenance: empirical-initial
     bands: *id002

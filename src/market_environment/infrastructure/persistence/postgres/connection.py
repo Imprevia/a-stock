@@ -10,7 +10,7 @@ from sqlalchemy import Engine, text
 from ....database import DatabaseSettings, create_database_engine
 
 
-MINIMUM_SCHEMA_VERSION = 6
+MINIMUM_SCHEMA_VERSION = 8
 REQUIRED_RUNTIME_TABLES = frozenset(
     {
         "collection_runs",
@@ -21,9 +21,29 @@ REQUIRED_RUNTIME_TABLES = frozenset(
         "materialization_component_versions",
         "materialized_market_environment",
         "provider_capability_reports",
+        "sector_taxonomy_revisions",
+        "sector_industries",
+        "sector_membership_intervals",
+        "sector_security_daily_facts",
+        "sector_benchmark_facts",
+        "sector_industry_aggregates",
+        "sector_continuity_results",
+        "sector_backfill_runs",
+        "sector_backfill_attempts",
         "refresh_leases",
         "snapshot_entries",
         "timezone_preferences",
+        "ths_backfill_checkpoints",
+        "ths_backfill_runs",
+        "ths_catalog_relations",
+        "ths_catalog_revisions",
+        "ths_industry_rankings",
+        "ths_member_daily_facts",
+        "ths_operations",
+        "ths_sector_breadth_evidence",
+        "ths_sector_daily_bars",
+        "ths_sector_identities",
+        "ths_sector_memberships",
         "trading_sessions",
     }
 )

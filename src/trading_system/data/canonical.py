@@ -53,7 +53,20 @@ def validate_event(event: dict[str, Any], root: Path | None = None) -> None:
 
 def validate_snapshot(snapshot: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     schema = _load_schema("snapshot.schema.json", root)
-    schema["properties"]["events"]["items"] = {"type": "object"}
+
+    def inline_event_placeholder(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                if key == "$ref" and item == "event.schema.json":
+                    value.clear()
+                    value["type"] = "object"
+                    return
+                inline_event_placeholder(item)
+        elif isinstance(value, list):
+            for item in value:
+                inline_event_placeholder(item)
+
+    inline_event_placeholder(schema)
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     validator.validate(snapshot)
     for event in snapshot["events"]:

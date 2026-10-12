@@ -32,23 +32,18 @@ import {
   toggleCoreExpansion,
 } from './collection-view-model'
 import { formatLocalDate } from './date-util'
-import {
-  sectorEnrichmentCoverage,
-  sectorEnrichmentDateLabel,
-  sectorEnrichmentFromQuality,
-  sectorEnrichmentSourceLabel,
-  sectorEnrichmentStatusLabel,
-  sectorEnrichmentWarnings,
-} from './sector-enrichment'
 import { formatDateTime, formatDateTimeTitle, MARKET_TIME_ZONE } from './timezone'
 
 const DATASET_LABELS: Record<CollectionDataset, string> = {
   core: '核心指数',
   breadth: '市场广度',
   limits: '涨跌停生态',
-  sectors: '行业板块',
+  'industry-ranking': 'THS 分类排名',
+  'sector-turnover': 'THS 板块量价',
+  'sector-breadth': 'THS 板块宽度',
   activeDirection: '容量方向',
 }
+const SECTOR_DATASETS = new Set<CollectionDataset>(['industry-ranking', 'sector-turnover', 'sector-breadth'])
 const selectedDate = ref('')
 const dateInitialized = ref(false)
 const status = ref<CollectionStatusResponse | null>(null)
@@ -69,6 +64,8 @@ const fullCollectionAllowed = computed(() => (
     ? canCollectAll(status.value.manualRefreshEnabled, status.value.datasets, activeRun.value)
     : false
 ))
+const sectorAnalysisReadiness = computed(() => status.value?.sectorAnalysis ?? null)
+const thsOperations = computed(() => status.value?.operations ?? [])
 
 function formatDuration(value: number | null | undefined) {
   if (value == null) return '--'
@@ -142,18 +139,22 @@ function qualityLabel(value?: string | null) {
 }
 
 function collectionQuality(item: DatasetCollectionStatus) {
-  const quality = item.quality as { status?: string; rankingMethod?: string; industryMappingCoverage?: number } | null | undefined
+  const quality = item.quality as {
+    status?: string
+    rankingMethod?: string
+    industryMappingCoverage?: number
+    catalogRevision?: string
+    sourceRevision?: string
+    coverage?: number
+    dependency?: string
+  } | null | undefined
   if (!quality) return null
-  if (item.dataset === 'sectors') {
-    const enrichment = sectorEnrichmentFromQuality(quality)
-    if (!enrichment) return null
-    const details = [`字段补充 ${sectorEnrichmentStatusLabel(enrichment.status)}`]
-    const source = sectorEnrichmentSourceLabel(enrichment)
-    if (source) details.push(source)
-    details.push(...sectorEnrichmentCoverage(enrichment))
-    if (enrichment.mappingRevision) details.push(`映射版本 ${enrichment.mappingRevision}`)
-    const date = sectorEnrichmentDateLabel(enrichment)
-    if (date) details.push(date)
+  if (SECTOR_DATASETS.has(item.dataset)) {
+    const details = [quality.status ? qualityLabel(quality.status) : null]
+    const revision = quality.catalogRevision ?? quality.sourceRevision
+    if (revision) details.push(`版本 ${revision}`)
+    if (quality.coverage != null) details.push(`覆盖 ${(quality.coverage * 100).toFixed(0)}%`)
+    if (quality.dependency) details.push(`依赖 ${quality.dependency}`)
     return details.join(' · ')
   }
   if (item.dataset !== 'activeDirection') return null
@@ -165,10 +166,52 @@ function collectionQuality(item: DatasetCollectionStatus) {
 
 function collectionWarning(item: DatasetCollectionStatus) {
   const warnings = [item.latestAttempt?.warning, item.refreshWarning, item.restriction]
-  if (item.dataset === 'sectors') {
-    warnings.push(...sectorEnrichmentWarnings(sectorEnrichmentFromQuality(item.quality)))
-  }
   return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))].join('；')
+}
+
+function operationStatusLabel(value?: string | null) {
+  return ({
+    queued: '等待执行', running: '执行中', success: '成功', partial: '部分完成',
+    failed: '失败', conflict: '存在冲突', blocked: '依赖阻塞',
+  } as Record<string, string>)[value ?? ''] ?? value ?? '未知'
+}
+
+function readinessStatusLabel(value?: string | null) {
+  return ({
+    ok: '已就绪',
+    partial: '部分覆盖',
+    degraded: '降级保留',
+    'reduced-confidence': '低置信度',
+    insufficient: '数据不足',
+    missing: '缺失',
+    failed: '失败',
+  } as Record<string, string>)[value ?? ''] ?? value ?? '数据不足'
+}
+
+function readinessAttemptLabel(value?: string | null) {
+  return ({
+    success: '成功',
+    partial: '部分完成',
+    'failed-retained': '失败，保留旧结果',
+    'failed-missing': '失败，缺少结果',
+    insufficient: '数据不足',
+  } as Record<string, string>)[value ?? ''] ?? value ?? '尚无尝试'
+}
+
+function formatReadinessCoverage(value: number | null | undefined) {
+  return value == null ? '--' : `${(value * 100).toFixed(0)}%`
+}
+
+function readinessVersionEntries() {
+  const versions = sectorAnalysisReadiness.value?.versions
+  if (!versions) return []
+  const labels: Record<string, string> = {
+    data: '数据', classification: '分类', membership: '成员', universe: '范围',
+    adjustment: '复权', benchmark: '基准', calculation: '计算',
+  }
+  return Object.entries(versions)
+    .filter(([, value]) => Boolean(value))
+    .map(([key, value]) => `${labels[key] ?? key} ${value}`)
 }
 
 onMounted(loadStatus)
@@ -208,6 +251,47 @@ onMounted(loadStatus)
       <div class="progress-track" aria-hidden="true"><i :style="{ width: `${activeRun.totalTasks ? activeRun.completedTasks / activeRun.totalTasks * 100 : 0}%` }" /></div>
     </div>
 
+    <section v-if="sectorAnalysisReadiness" class="sector-readiness-panel" aria-labelledby="sector-readiness-title">
+      <div class="sector-readiness-heading">
+        <div><span>独立历史分析</span><h2 id="sector-readiness-title">Sector continuity readiness</h2></div>
+        <span class="collection-badge" :class="sectorAnalysisReadiness.status === 'ok' ? 'success' : sectorAnalysisReadiness.status === 'failed' ? 'failed' : 'warning'">{{ readinessStatusLabel(sectorAnalysisReadiness.status) }}</span>
+      </div>
+      <p class="sector-readiness-readonly">只读状态 · 申万历史回填需单独授权，不属于七个每日数据集，也不会由本页触发。</p>
+      <div class="sector-readiness-grid">
+        <div><span>分析日期</span><strong>{{ sectorAnalysisReadiness.asOf }}</strong></div>
+        <div><span>历史覆盖</span><strong>{{ sectorAnalysisReadiness.availableHistory }} / {{ sectorAnalysisReadiness.requiredHistory }}（{{ formatReadinessCoverage(sectorAnalysisReadiness.coverage) }}）</strong></div>
+        <div><span>缺失交易日</span><strong>{{ sectorAnalysisReadiness.missingSessions.length ? sectorAnalysisReadiness.missingSessions.join('、') : '无' }}</strong></div>
+        <div><span>最近尝试</span><strong>{{ readinessAttemptLabel(sectorAnalysisReadiness.latestAttempt?.status) }}</strong></div>
+        <div><span>重试资格</span><strong>{{ sectorAnalysisReadiness.retryEligible ? '可由授权流程处理' : '不可重试' }}</strong></div>
+        <div v-if="sectorAnalysisReadiness.backfill"><span>回填进度</span><strong>{{ sectorAnalysisReadiness.backfill.completedSessions ?? 0 }} / {{ sectorAnalysisReadiness.backfill.totalSessions ?? '--' }}（{{ sectorAnalysisReadiness.backfill.status || '--' }}）</strong></div>
+      </div>
+      <div v-if="readinessVersionEntries().length" class="sector-readiness-versions">
+        <span v-for="entry in readinessVersionEntries()" :key="entry">{{ entry }}</span>
+      </div>
+      <ul v-if="sectorAnalysisReadiness.warnings.length || sectorAnalysisReadiness.latestAttempt?.warning" class="sector-readiness-warnings">
+        <li v-for="warning in [...sectorAnalysisReadiness.warnings, sectorAnalysisReadiness.latestAttempt?.warning].filter(Boolean)" :key="warning">{{ warning }}</li>
+      </ul>
+    </section>
+
+    <section v-if="thsOperations.length" class="ths-operation-panel" aria-labelledby="ths-operation-title">
+      <div class="sector-readiness-heading">
+        <div><span>显式操作</span><h2 id="ths-operation-title">THS 目录、历史与成员事实进度</h2></div>
+        <span class="collection-badge warning">{{ thsOperations.length }} 项</span>
+      </div>
+      <div class="ths-operation-list">
+        <article v-for="operation in thsOperations" :key="operation.runId">
+          <div><strong>{{ operation.kind }}</strong><span>{{ operation.runId }}</span></div>
+          <span class="collection-badge" :class="['success'].includes(operation.status) ? 'success' : ['failed'].includes(operation.status) ? 'failed' : 'warning'">{{ operationStatusLabel(operation.status) }}</span>
+          <div class="ths-operation-progress">
+            <span>{{ operation.progress.completed }} / {{ operation.progress.total }}</span>
+            <span>失败 {{ operation.progress.failed }}</span>
+            <span>冲突 {{ operation.progress.conflicts }}</span>
+          </div>
+          <p v-if="operation.warning">{{ operation.warning }}</p>
+        </article>
+      </div>
+    </section>
+
     <section v-if="error" class="state-panel error-panel collection-error" role="alert">
       <CircleAlert :size="20" />
       <div><strong>数据管理暂时不可用</strong><p>{{ error }}</p></div>
@@ -225,7 +309,7 @@ onMounted(loadStatus)
           <thead><tr><th>数据集</th><th>可用状态</th><th>最近尝试</th><th>来源 / 样本</th><th>最近成功</th><th>耗时</th><th>提示</th><th>操作</th></tr></thead>
           <tbody>
             <template v-for="item in status.datasets" :key="item.dataset">
-              <tr>
+              <tr :class="{ 'sector-dataset-row': SECTOR_DATASETS.has(item.dataset) }">
                 <td data-label="数据集">
                   <button v-if="item.dataset === 'core'" class="expand-button" type="button" :aria-expanded="expandedCore" @click="expandedCore = toggleCoreExpansion(expandedCore)">
                     <ChevronDown v-if="expandedCore" :size="16" /><ChevronRight v-else :size="16" />

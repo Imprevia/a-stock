@@ -61,6 +61,9 @@ Codex 通过 MCP stdio 调用五个只读工具：`search_trading_knowledge`、`
 | 5 | 腾讯历史 K 线 | 最后的非东方财富历史降级；历史成交额可能不可用 |
 | 6 | 东方财富历史 K 线 | 最终历史降级；显式市场 `secid` 并提供指数历史成交额 |
 | 7 | 腾讯财经实时行情 | 当前报价、涨跌幅、成交额和当前日期 Fuyao 价格交叉校验；历史日期不调用 |
+| 8（末层, opt-in） | 静态 HTML 末层 — `sectors-sina-html` (`finance.sina.com.cn`) | sina 行业卡片：name、changePct、amount、leader 名（HTML 文本,经 `strip_leader_label` 处理后写入）；其余字段强制 `null + dom-source-unsupported:<field>` warning,绝不从成分股数 / 计数 / inflow 数值合成 mainNet / upCount 等不可见字段;revision `crawl-html-sina-v1`,capability-gated,默认禁用,只在前 6 步全部失败后启用 |
+| 9（末层, opt-in） | 静态 HTML 末层 — `sectors-xueqiu-html` (`xueqiu.com`) | xueqiu 行业卡片,与 sina 同口径;revision `crawl-html-xueqiu-v1`,capability-gated,默认禁用,在 sina 失败或未启用后尝试;登录墙频率高于 sina,通常降级为 `degraded` |
+
 
 市场环境 API 通过可选的 `chapter01` 对象扩展第 01 章证据。市场广度在批准 v2 revision 并显式启用时先完整分页拉取扶摇最新快照，再按开关进入 TDX 精确日期盘后包，最后才用东方财富 `push2delay` 涨跌幅排序分页；未启用 Fuyao 时仍从既有 TDX/Eastmoney 链开始。容量方向按成交额排序请求 Top-N 股票，`push2` 主域恢复失败或返回无效载荷后降级到同口径 `push2delay`，两个来源统一校验代码、名称、成交额、至少 30 个有效样本和成交额非递增排序，必要时才进入独立开关控制的 TDX derived，绝不调用 Fuyao。涨跌停生态以扶摇日期化三类池为 membership 主源、东方财富为降级和交叉核对源；扶摇分页必须覆盖 `pagination.total`，请求日期先由交易日历确认并记录 `dateEvidence=request-parameter`，两源按规范证券身份取并集，差异行和整日质量标记 `degraded`。扶摇 limits 与通用行情客户端共享进程级请求门和最小间隔；HTTP 429、`code=4001` 和 `code=5003` 使用较慢的有界指数退避，并在最终 warning 中保留脱敏业务码、message 和 request_id。该节流与退避只降低重复请求压力，不改变 exact-date、source revision、membership 完整性或失败保留门禁。行业板块排名继续使用东方财富主域到延迟域降级，行业领涨股名称取 `f128`，`f140` 仅为代码。当前快照型 provider 仅允许在上海时区的有效市场日采集；已持久化的精确快照可用于对应历史日期，禁止拿其他日期或今日数据回填。未接入的独立亏钱收益和事件输入保持 `null` / `insufficient`，并附 provider quality 和 warning。
 
@@ -80,6 +83,19 @@ Codex 通过 MCP stdio 调用五个只读工具：`search_trading_knowledge`、`
 指数代码始终使用 `sh000001`、`sz399001` 等显式前缀。对百度/mootdx 存在沪市代码歧义的指数，必须有腾讯价格交叉校验，否则拒绝该源，避免股票数据静默冒充指数。
 
 ## 市场环境后端分层边界（2026-10-07）
+
+
+## 末层 HTML 静态源（2026-10-09）
+
+为 `sectors` 数据集新增两条互不相关的 **末层** 静态 HTML source adapter，与现有 4 步同名链解耦：
+
+- `infrastructure/providers/html_common/` 拥有跨 host 共享的 DriftDetector、文本归一、HTML 选择器、fixture loader 和 SourceAdapter 基类；不依赖 `lxml`/`parsel`/`selectolax`，运行时仅要求标准库。
+- `infrastructure/providers/sina_html/` 与 `infrastructure/providers/xueqiu_html/` 各自拥有一份 `SourceCapability`（revision 分别为 `crawl-html-sina-v1` 与 `crawl-html-xueqiu-v1`，`latest_only=True`，`available=True`），通过 `sectors_acquisition.SectorsAcquisitionPlan` 的 `_attempt_html_tier` 在 Eastmoney（主 + 延迟 + enrichment）+ Tushare + Fuyao 之后接入。
+- 字段权威：`code` / `name` / `changePct` / `amount` / `leader` 五项可选；SUPPLEMENTAL_FIELDS（`mainNet` / `mainNetPct` / `upCount` / `downCount`）永远 `null` 并附带 `dom-source-unsupported:<field>` warning；原始页面把 leader 暴露成代码或数字徽标时 adapter 立即把 `leader` 改成 `null` 并追加 `leader-identifier-not-name` warning，绝不写入代码或数字。
+- 失败路径与现有 `failed-retained` / `failed-missing` 一致：sina 失败 → xueqiu；都失败 → 既有 `FAILED_MISSING` 与前序 warning。
+- 显式 host allowlist + 401/403/challenge 立即 fail-closed，禁止 engine 升级、retry、`requests` 后退或浏览器/SPA 渲染。
+- 与 `bootstrap/settings.CrawlFallbackConfig`（`MARKET_ENVIRONMENT_CRAWL_FALLBACK_ENABLED` / `MARKET_ENVIRONMENT_CRAWL_FALLBACK_HOSTS`）以及 `bootstrap/registries.build_runtime_acquisition_registries(..., crawl_fallback_is_enabled=...)` 联动；`enabled=False` 时 container 完全跳过 adapter 注册，plan 步骤不出现，`openspec validate add-static-html-sector-fallback` 通过。
+- capability promotion 与真实 probe 均不在本次代码路径内：`python -m src.market_environment.cli sectors-html real-probe --source <sina|xueqiu>-html --as-of ... --output ...` 默认 dry-run，只有 `--allow-real` + `MARKET_ENVIRONMENT_PROBE_ALLOW_REAL=1` 才发单次 bodyless GET，且输出 envelope 永不包含 token / cookie / body。
 
 `src/market_environment/` 保持单体进程和单镜像部署，但内部依赖改为可执行的单向分层，不再由扁平模块互相构造具体实现：
 
@@ -134,9 +150,40 @@ application command
 
 ## 运行时流
 
+### 第 05 页申万一级行业持续性数据流（规划边界）
+
+第 05 页的 canonical analysis 与现有 provider observation 是两条独立但可关联的证据链：
+
+```text
+taxonomy revision + point-in-time membership
+        + security daily facts (adjusted price, original amount)
+        + ordinary-a-share benchmark + trading calendar
+                         │
+                         ▼
+               industry aggregate (exact as-of)
+                         │
+                         ▼
+                 continuity analysis (5 metrics)
+                         │
+                         ├── up to 3 canonical candidates
+                         └── exactly 1 unique validation item
+
+provider sector observation ──(optional exact-date mapping)──► association only
+```
+
+只允许申万一级行业。`taxonomy`、`membership`、`security_daily_fact`、`benchmark_fact`、`industry_aggregate`、`continuity_result`、`backfill_run` 和 `backfill_date_attempt` 是独立的、带版本/checksum/精确日期或有效区间的领域事实；概念/题材、当前成分股、跨日期排名和按名称猜测均不能进入 canonical analysis。五项指标分别是 5/20 日相对强度较低分位、近 5 日成交额横截面前 20% 天数、前复权站上 MA20 比例分位、负收益分歧两日 50% 修复承接率和申万一级前五成交集中度。分析最多三个候选，且只渲染一个下一交易日验证项；不自动赋予龙头/中军/补涨角色。
+
+实现时保持单向依赖：`domain/models` 与 `domain/analysis` 只保存不可变值对象和纯计算；`application/ports` 定义 repository、unit-of-work、backfill、capability 和 provider-free query 契约；`application/commands` 才能编排显式 backfill/写入；`application/queries` 只能读本地结果；`infrastructure/persistence/postgres` 提供 additive migration、repository、UoW、lease/fencing；`infrastructure/providers` 只负责 capability-gated source adapter 和导入，不写快照或分析。普通 GET、状态读取和启动不获得 backfill 或 provider 能力；七数据集日常采集与默认调度也不得隐式触发历史回填或 dump 导入。
+
+`SectorEvidence.analysis` 是可选扩展，原有 provider observation 的 `rows/state/quality` 必须原样保留。observation quality、canonical analysis quality 和 backfill attempt 状态分别记录；分析成功而 observation 缺失、observation 成功而分析 `insufficient`、同日兼容结果 `failed-retained` 与无兼容结果 `failed-missing` 不得相互覆盖。provider observation 只有在精确日期、版本化、唯一 mapping 通过时才保留双身份关联，模糊/冲突时保持未关联。
+
+历史回填是独立、显式、有界、可恢复的 application workflow，默认预热 272 个交易日，也可请求小范围修复或更长研究区间。它按权威交易日历逐日运行输入、聚合、分析阶段，持久化 parent run 与 per-date attempt；成功日期幂等复用，失败日期可恢复重试，不加入 `SUPPORTED_COLLECTION_DATASETS`，不改变现有五类采集任务语义。
+
+交易规则桥接采用 snapshot v2：新增 closed `metricProvenance`，从同日 materialized continuity result 复制五个 canonical 指标（前四项取第一候选，集中度取市场级值），不重算、不发 provider 请求；冻结 v1 snapshot 继续可 replay。taxonomy/data/membership/universe/adjustment/benchmark/calculation 及上游 immutable evidence revision 进入规范化 hash，但当前输出 evidence bundle ID 不得自引用。
+
 普通读取流为：浏览器 → Vite `/api` 代理 → FastAPI `src/market_environment/api.py` 稳定入口 → HTTP router → provider-free query use case → PostgreSQL materialized aggregate / read repository。`/api/market-environment`、`/core`、`/chapter-01`、`/next-session` 和 collection status 只读取精确日期本地结果；缺失、陈旧或活动采集不得在普通 GET 中启动外部 provider。
 
-手工采集流为：`/data-collection` → collection command use case → `TaskExecutor` 端口的有界进程内实现 → collection coordinator → 五个独立 dataset task → collector registry → dataset acquisition plan → source adapter → normalized outcome → typed committer → 最多一次聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，单项失败不停止后续任务，也不覆盖同日期成功快照。不同 task 可以由 executor 调度，但同一进程的所有 HTTP adapter 共用唯一 policy gateway；CLI 与 HTTP 复用同一 application command，不通过 shell 启动子进程。TDX 包/TCP 等非 HTTP 来源仍通过 source adapter 返回同一 outcome，普通 GET、状态查询和 provider-free 读取绝不触发任何外部来源。
+手工采集流为：`/data-collection` → collection command use case → `TaskExecutor` 端口的有界进程内实现 → collection coordinator → 七个独立 dataset task → collector registry → dataset acquisition plan / THS 专用 collector → normalized outcome → typed committer → 成功提交后聚合响应重建。父批次只汇总 `success` / `partial` / `failed`；`core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection` 各自持有 `(dataset, as_of)` lease，三项 THS 任务按 `industry-ranking -> sector-turnover -> sector-breadth` 执行，单项失败不停止无关任务，也不覆盖同日期成功快照。旧 `sectors` 不再进入公共 coordinator，只能通过审计路径读取历史证据。不同 task 可以由 executor 调度，但同一进程的所有 HTTP adapter 共用唯一 policy gateway；CLI 与 HTTP 复用同一 application command，不通过 shell 启动子进程。TDX 包/TCP 等非 HTTP 来源仍通过 source adapter 返回同一 outcome，普通 GET、状态查询和 provider-free 读取绝不触发任何外部来源。
 
 盘后定时采集流为：k3s/Helm CronJob → `python -m src.market_environment.cli snapshots scheduled-refresh` → collection coordinator → 同一组五类独立 task → PostgreSQL Service。CLI 在 Python 内按 `Asia/Shanghai` 解析日期，周末无 provider 调用并返回 skipped，结算边界前拒绝执行；CronJob 使用显式 timezone strategy：Kubernetes 1.27+ 的 native strategy 才输出 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 controller strategy 省略该字段且只允许经验证的 `Etc/UTC` 或 `Asia/Shanghai` 映射。CronJob 默认业务目标为工作日 16:30、`concurrencyPolicy: Forbid` 且不对 `partial` 自动整批重试；controller strategy 在获授权 no-provider canary 证明之前必须保持 suspend。CronJob 与人工触发并发时由 PostgreSQL dataset/date lease 作为最终去重边界。第一版不维护交易所节假日日历，工作日节假日可能留下 failed/partial 记录，但精确日期校验禁止把其他交易日数据写成当天。
 
@@ -465,6 +512,50 @@ host policy、单飞、短缓存、有限重试和按上海市场日隔离的缓
 历史日期、上海结算前或缺少当前日期证据时零次 dataapi 调用。补充失败只降低质量并保留有效扶摇基础快照，
 不改变正式 Eastmoney → Fuyao 回退顺序，不构成独立 provider 交叉确认；Tushare 当前 token 无相关
 行业资金流/指数接口权限，因此不进入运行时路径。
+
+### Fuyao THS 目录、量价历史与内部结构边界（2026-10-12，离线实现完成）
+
+`add-fuyao-ths-sector-datasets` 的目标公共契约把兼容 `sectors` 拆为
+`industry-ranking`、`sector-turnover` 和 `sector-breadth` 三个顶层数据集。旧 `sectors`
+快照、任务和聚合行继续作为不可改写的审计证据保留，但新 API、TypeScript 契约、调度和 Chapter 01
+不再投影或接受该标识，也不得把历史行重命名为任一新数据集。
+
+目录层保存 Fuyao `industry`、`cn_concept`、`region`、`tszs` 四类 THS 编号，记录 `tag`、
+`thscode`、名称、provider/fetch 时间、数量、checksum 和 revision。单个 tag 内编号必须唯一；同一编号跨
+tag 出现时保留分类关系和共享代码身份，不按名称、排名或模糊匹配擅自合并。跨 revision 的新增、删除、
+改名和跨 tag 冲突必须形成可审计差异，身份无法唯一证明时 fail closed，不能用旧目录或其他分类补齐。
+
+三个数据集的职责和依赖固定如下：
+
+- `industry-ranking` 从四类完整目录和同一上海交易日的完整快照生成稳定分类排名；目录、编号身份、日期或
+  100% 覆盖任一不足时不发布正式结果。
+- `sector-turnover` 保存逐 `thscode` 日线的 `open`、`high`、`low`、`close`、`volume` 和
+  `turnover`。每日快照追加全部目录编号，历史接口按单编号请求；产品回填窗口最多近五年，每批最多
+  60 个编号，以 checkpoint 记录编号、日期区间、revision、预算消耗和完成状态。重试必须幂等且可恢复，
+  不得用空值、零值、其他日期或较低质量响应覆盖已验证事实。
+- `sector-breadth` 只计算当日四类 Top 10 与用户点选编号的内部结构。成员和个股事实以 Fuyao 全市场日 K、
+  最近 10 日增量和复权因子 dump 为主，TDX 精确日期盘后事实为降级；不足或混合来源必须保留质量与
+  lineage，禁止用当前成员回算历史宽度。
+
+current membership 由显式 `catalog-sync` 在 provider I/O 前同时解析 `industry-ranking` 与
+`sector-membership` 两个 exact capability revisions，并按 capability 中的目录规模/四类计数为 snapshot
+分片、每类 Top 10 和显式点选编号预留总预算。目录和当日日线先事务提交；去重后的成员编号随后逐编号独立
+提交，单编号失败只令 operation 为 `partial`，不得回滚目录或已成功兄弟 membership。membership 开关与
+revision 独立于 catalog，默认关闭/空值。
+
+执行依赖为 `industry-ranking -> sector-turnover -> sector-breadth`，依赖失败时下游保持真实失败或不足，
+已经成功的兄弟任务和同日期结果不得被抹除。每个新数据集首次成功提交后均可触发 Chapter 01 原子重建；
+聚合删除旧 `sectors` 字段，新增 `industryRanking`、`sectorTurnover`、`sectorBreadth`，并把申万一级结果
+保留在独立 `sectorAnalysis`。THS 行业、概念、区域和特色指数 observation 不得进入申万一级
+`QTS-01-05-*` 规则输入，也不得改变 `core` 五指数、申万 taxonomy/membership 或 continuity backfill。
+
+普通目录、K 线、回填进度、任务状态和 Chapter 01 GET 只读本地 PostgreSQL，必须保持 provider-free。
+目录同步、单编号历史回填、dump 导入和任何 provider 请求只能从显式 CLI 或受保护的 POST 入口触发，并在
+发起网络或正式写入前通过盘后时间、调用授权、capability revision 和请求预算门禁。默认 dry-run 为零网络、
+零正式写入；真实 provider probe、生产 migration、首次生产同步/回填、部署和调度激活仍需分别授权。
+real-probe 的 dump 证据按官方 schema 检验；daily/incremental 使用 `thscode`、`date_ms` 与 `*_price` 字段，
+adjustment 仅提供公司行动事件项。后者在复权公式和前收盘证据未冻结前保持 `ineligible`，不能把 synthetic
+`adjustment_factor` fixture 晋升为生产能力。
 
 ### 统一 provider 请求层边界（2026-10-08，已完成）
 

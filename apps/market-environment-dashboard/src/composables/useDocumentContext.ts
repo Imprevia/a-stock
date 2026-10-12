@@ -83,7 +83,10 @@ const QUALITY_TONE_FALLBACK: ReadonlyArray<QualityStatus> = ['fallback', 'fallba
 
 const METRIC_QUALITY_LABEL: Record<string, string> = {
   ok: '正常',
+  partial: '部分覆盖',
+  'reduced-confidence': '低置信度',
   insufficient: '数据不足',
+  missing: '缺失',
   degraded: '降级',
   failed: '失败',
 }
@@ -377,7 +380,7 @@ export function useDocumentContext(): DocumentContext {
   }
   function metricQualityTone(status?: MetricStatus): 'ok' | 'fallback' | 'missing' {
     if (status === 'ok') return 'ok'
-    if (status === 'degraded') return 'fallback'
+    if (status === 'degraded' || status === 'partial' || status === 'reduced-confidence') return 'fallback'
     return 'missing'
   }
   function qualityCodeLabel(quality?: DataSetQuality): string {

@@ -20,6 +20,7 @@ from src.market_environment.application.commands import (
     PromoteCapabilityReportCommand,
 )
 from src.market_environment.domain.models.capability import (
+    THS_CAPABILITY_REVISIONS,
     ProviderCapabilityReport,
 )
 from src.market_environment.infrastructure.persistence.postgres import (
@@ -101,6 +102,155 @@ def _envelope(report: ProviderCapabilityReport | None = None):
         "asOf": AS_OF.isoformat(),
         "reports": [selected.to_dict()],
     }
+
+
+def _ths_report(dataset: str, **changes) -> ProviderCapabilityReport:
+    common = {
+        "provider": "fuyao",
+        "dataset": dataset,
+        "revision": THS_CAPABILITY_REVISIONS[dataset],
+        "status": "eligible",
+        "endpoint": {
+            "industry-ranking": "/api/a-share-index/prices/snapshot",
+            "sector-membership": "/api/a-share-index/constituents/ths-stock-list",
+            "sector-turnover-history": "/api/a-share-index/prices/historical",
+            "sector-member-daily-dump": "/api/dump/market-dumps/daily-k/download-url",
+            "sector-member-incremental-dump": "/api/dump/market-dumps/daily-k-10d/download-url",
+            "sector-member-adjustment-dump": "/api/dump/market-dumps/adjustment-factors/download-url",
+        }[dataset],
+        "date_evidence": {"requested": AS_OF.isoformat(), "exact": True},
+        "permission_evidence": {
+            "configured": True,
+            "approved": True,
+            "mode": "explicit-real-probe",
+        },
+        "rate_limit_evidence": {"requestBudget": 80, "requestsUsed": 1},
+        "sample_count": 2,
+        "checked_at": datetime(2026, 10, 8, 8, tzinfo=timezone.utc),
+    }
+    if dataset == "industry-ranking":
+        timestamp = datetime(2026, 10, 8, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai")).isoformat()
+        common.update(
+            field_coverage={
+                "endpoints": {
+                    "catalog": "/api/a-share-index/catalog/ths-index-list",
+                    "snapshot": "/api/a-share-index/prices/snapshot",
+                },
+                "tags": ["industry", "cn_concept", "region", "tszs"],
+                "tagCounts": {
+                    "industry": 1,
+                    "cn_concept": 1,
+                    "region": 1,
+                    "tszs": 1,
+                },
+                "uniqueCodes": 2,
+                "snapshotRows": 2,
+                "requiredFieldsComplete": True,
+                "ohlcPresent": True,
+                "volumePresent": True,
+                "turnoverPresent": True,
+            },
+            date_evidence={
+                "requested": AS_OF.isoformat(),
+                "exact": True,
+                "providerTimestamp": timestamp,
+                "catalogTimestamps": [timestamp] * 4,
+                "snapshotTimestamps": [timestamp],
+            },
+            pagination_evidence={
+                "catalogIdentityUnique": True,
+                "snapshotIdentityUnique": True,
+                "snapshotCoverage": 1.0,
+                "snapshotBatchCount": 1,
+                "snapshotTimestampCount": 1,
+                "snapshotTimestampDateConsistent": True,
+            },
+        )
+    elif dataset == "sector-membership":
+        common.update(
+            field_coverage={
+                "thscode": "885001.TI",
+                "memberIdentity": True,
+                "memberName": True,
+                "identityUnique": True,
+            },
+            pagination_evidence={"memberCount": 2},
+        )
+    elif dataset == "sector-turnover-history":
+        common.update(
+            field_coverage={
+                "thscode": "885001.TI",
+                "ohlcComplete": True,
+                "volumeComplete": True,
+                "turnoverComplete": True,
+                "dateUnique": True,
+            },
+            history_window={
+                "requestedStart": "2026-10-07",
+                "requestedEnd": AS_OF.isoformat(),
+                "observedStart": "2026-10-07",
+                "observedEnd": AS_OF.isoformat(),
+                "withinFiveYears": True,
+            },
+            pagination_evidence={"proven": True, "rowCount": 2},
+        )
+    else:
+        is_adjustment = dataset == "sector-member-adjustment-dump"
+        columns = (
+            {
+                "thscode",
+                "ticker",
+                "ex_date_ms",
+                "dividend_per_share",
+                "per_share_bonus",
+                "allotment_ratio",
+                "allotment_price",
+                "currency",
+            }
+            if is_adjustment
+            else {
+                "thscode",
+                "date_ms",
+                "open_price",
+                "high_price",
+                "low_price",
+                "close_price",
+                "volume",
+                "turnover",
+                "currency",
+                "interval",
+                "adjusted",
+            }
+        )
+        common.update(
+            field_coverage={
+                "dumpId": {
+                    "sector-member-daily-dump": "a_share_daily_k_1d_none_10y",
+                    "sector-member-incremental-dump": "a_share_daily_k_1d_none_10d",
+                    "sector-member-adjustment-dump": "a_share_adjustment_factors_event_none_all",
+                }[dataset],
+                "columns": sorted(columns),
+                "requiredColumnsPresent": True,
+                "checksumMatchesMetadata": True,
+                "temporaryFile": True,
+                "temporaryFileRemovedAfterProbe": True,
+                "presignedUrlPersisted": False,
+                "rawResponsePersisted": False,
+                "primaryKeyUnique": True,
+                "sha256": "a" * 64,
+                "sizeBytes": 1024,
+                "currencyCny": True,
+                "interval": "not-applicable" if is_adjustment else "1d",
+                "adjusted": "not-applicable" if is_adjustment else "none",
+                "intervalDaily": None if is_adjustment else True,
+                "adjustedNone": None if is_adjustment else True,
+                "adjustmentFactorDerived": False if is_adjustment else None,
+                "previousCloseEvidence": False if is_adjustment else None,
+            },
+            pagination_evidence={"downloadComplete": True, "schemaInspected": True},
+        )
+    common.update(changes)
+    return ProviderCapabilityReport(**common).normalized()
 
 
 class FakeCapabilityRepository:
@@ -261,6 +411,48 @@ def test_dry_run_reads_conflict_state_and_writes_nothing() -> None:
     assert uow.commits == 0
     assert uow.rollbacks == 1
     assert factory.rows == {}
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    (
+        "industry-ranking",
+        "sector-membership",
+        "sector-turnover-history",
+        "sector-member-daily-dump",
+        "sector-member-incremental-dump",
+    ),
+)
+def test_ths_capability_policy_accepts_complete_redacted_evidence(dataset: str) -> None:
+    report = _ths_report(dataset)
+    command, factory = _command()
+    result = command.execute(
+        {"provider": "fuyao", "asOf": AS_OF.isoformat(), "reports": [report.to_dict()]},
+        provider="fuyao",
+        dataset=dataset,
+        revision=THS_CAPABILITY_REVISIONS[dataset],
+        target_backend="masked",
+    )
+    assert result.result == "validated"
+    assert factory.rows == {}
+
+
+def test_ths_adjustment_capability_cannot_promote_without_formula_evidence() -> None:
+    report = _ths_report("sector-member-adjustment-dump")
+    command, factory = _command()
+    with pytest.raises(CapabilityPromotionValidationError, match="adjustment-factor"):
+        command.execute(
+            {
+                "provider": "fuyao",
+                "asOf": AS_OF.isoformat(),
+                "reports": [report.to_dict()],
+            },
+            provider="fuyao",
+            dataset="sector-member-adjustment-dump",
+            revision=THS_CAPABILITY_REVISIONS["sector-member-adjustment-dump"],
+            target_backend="masked",
+        )
+    assert factory.instances == []
 
 
 def test_apply_is_transactional_idempotent_and_preserves_unrelated_rows() -> None:

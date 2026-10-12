@@ -1,0 +1,51 @@
+{
+  "asOf": "2026-10-12",
+  "providerTimestamp": "2026-10-12T16:00:00+08:00",
+  "capabilityRevision": "fixture-ths-catalog-v1",
+  "catalogs": {
+    "industry": [
+      {"thscode": "000001.TI", "name": "合成行业甲"},
+      {"thscode": "000005.TI", "name": "合成共享板块"}
+    ],
+    "cn_concept": [
+      {"thscode": "000002.TI", "name": "合成概念乙"},
+      {"thscode": "000005.TI", "name": "合成共享板块"}
+    ],
+    "region": [
+      {"thscode": "000003.TI", "name": "合成区域丙"}
+    ],
+    "tszs": [
+      {"thscode": "000004.TI", "name": "合成特色丁"}
+    ]
+  },
+  "snapshot": [
+    {"thscode": "000001.TI", "name": "合成行业甲", "changePct": 1.5, "open": 10.0, "high": 10.8, "low": 9.8, "close": 10.5, "volume": 1010.0, "turnover": 10010.0},
+    {"thscode": "000002.TI", "name": "合成概念乙", "changePct": 2.0, "open": 20.0, "high": 20.9, "low": 19.7, "close": 20.4, "volume": 2020.0, "turnover": 20020.0},
+    {"thscode": "000003.TI", "name": "合成区域丙", "changePct": -0.5, "open": 30.0, "high": 30.2, "low": 29.4, "close": 29.8, "volume": 3030.0, "turnover": 30030.0},
+    {"thscode": "000004.TI", "name": "合成特色丁", "changePct": 0.0, "open": 40.0, "high": 40.5, "low": 39.5, "close": 40.0, "volume": 4040.0, "turnover": 40040.0},
+    {"thscode": "000005.TI", "name": "合成共享板块", "changePct": 1.5, "open": 50.0, "high": 51.0, "low": 49.5, "close": 50.7, "volume": 5050.0, "turnover": 50050.0}
+  ],
+  "history": {
+    "thscode": "000001.TI",
+    "bars": [
+      {"date": "2026-10-10", "open": 9.8, "high": 10.1, "low": 9.6, "close": 10.0, "volume": 900.0, "turnover": 9000.0},
+      {"date": "2026-10-12", "open": 10.0, "high": 10.8, "low": 9.8, "close": 10.5, "volume": 1010.0, "turnover": 10010.0}
+    ]
+  },
+  "dumpManifest": {
+    "dumpId": "synthetic-daily-v1",
+    "schema": "fixture-ths-member-facts-v1",
+    "checksum": "synthetic-checksum-not-provider-data",
+    "dateRange": ["2026-09-14", "2026-10-12"]
+  },
+  "invalidCases": {
+    "duplicateCatalog": [
+      {"thscode": "000001.TI", "name": "合成行业甲"},
+      {"thscode": "000001.TI", "name": "合成行业冲突名"}
+    ],
+    "incompleteSnapshotCodes": ["000004.TI"],
+    "snapshotDateDrift": "2026-10-11T16:00:00+08:00",
+    "historyMissingFields": {"date": "2026-10-12", "close": 10.5},
+    "dumpSchemaDrift": "fixture-unknown-schema-v2"
+  }
+}

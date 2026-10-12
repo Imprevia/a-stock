@@ -2,11 +2,11 @@
 
 ## Status
 
-`active` · 版本 `0.15`
+`active` · 版本 `0.16`
 
 后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
 
-采集适配器统一已完成：五个数据集统一消费 typed `CollectionOutcome`，provider 差异由 dataset acquisition plan 与 source adapter 隔离，task/lease/同日留存/提交/聚合由 coordinator 和 typed committer 统一处理。`requests` 保持默认 HTTP engine；可选 Scrapling static engine 默认不安装、不启用且 host/source allowlist 为空，不构成生产数据源批准。
+采集适配器统一已完成；本版本将公共采集集合由五项迁移为 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth`、`activeDirection` 七项。各数据集统一消费 typed `CollectionOutcome`，provider 差异由 dataset acquisition plan 与 source adapter 隔离，task/lease/同日留存/提交/聚合由 coordinator 和 typed committer 统一处理。`requests` 保持默认 HTTP engine；可选 Scrapling static engine 默认不安装、不启用且 host/source allowlist 为空，不构成生产数据源批准。
 
 ## 目标
 
@@ -21,7 +21,7 @@
 - 首屏先展示指数结构；扩展章节证据按当前二级文档需要加载，切换页面不应被未访问数据集阻塞。
 - 每个数据集同时展示来源、状态和 warning；缺失或未核实证据保持 `null` / `insufficient` / `unverified`。
 - 日期时间统一按生效时区显示本地日期、时间和 UTC 偏移，悬停可查看原始 UTC ISO8601；解析优先级为个人偏好、工作区偏好、浏览器 IANA 时区，均不可用时显式显示 UTC。数据采集页“最近尝试”是市场运行审计字段，固定使用 `Asia/Shanghai`，不随浏览器或个人时区切换。偏好设置页支持 IANA 时区选择、持久化以及无效值、权限不足、离线和接口失败状态。
-- 开发阶段通过独立的 `/data-collection` 数据管理页查看精确日期的五类数据状态，可单项重新采集或一键采集全部数据；普通研究页面不承担数据采集职责。
+- 开发阶段通过独立的 `/data-collection` 数据管理页查看精确日期的七类数据状态，可单项重新采集或一键采集全部数据；`industry-ranking`、`sector-turnover`、`sector-breadth` 使用三个独立任务卡，历史回填和成员事实导入另列 operation 进度，不伪装成普通每日重试。普通研究页面不承担自动采集职责；第 05 页仅可通过明确操作发起板块历史回填。
 - 数据采集页首次打开时由后端按上海时区解析有效市场日：开市前（09:30 前）选择上一工作日对应的真实交易日并跳过周末；节假日或实际日期无证据时返回 `insufficient`/拒绝，provider 返回的实际日期必须与目标日期一致；开市后才选择上海当天。这样不会把尚未开始的当日误标为已完成，也不会把上一交易日行情伪装成当天；用户手工选择历史日期后仍严格展示 provider 日期限制。
 - 已确认的盘前误标必须显式选择后端：生产运行时只允许在受控停写窗口对目标 PostgreSQL 使用 `snapshots relabel-date --database-url ...`，先 dry-run 再显式 `--apply`；隔离 SQLite 副本仅用于迁移/回归演练。流程同步快照、任务、涨跌停事实与聚合，校验 checksum/目标冲突并留下可回滚审计，不允许普通采集路径自动跨日期改名、静默回退 SQLite 或覆盖目标日期已有成功值。
 - k3s/Helm 部署的业务触发目标为上海时区工作日 16:30；Kubernetes 1.27+ 的 `native` 策略使用 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 `controller` 策略省略该字段并只接受经证据验证的 UTC/上海 controller 映射。定时任务与手工采集共享同一任务、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采。
@@ -35,9 +35,8 @@
 - 第 01 页实现“指数、位置和成交额结合判断”：展示所选指数命中的六类典型组合、触发证据和交易模式，并汇总市场强弱、阶段、资金认可和交易模式四项输出。
 - 当前交易日的全 A 上涨/下跌/平盘数量、上涨占比和涨跌幅中位数。
 - 日期化涨停、跌停、炸板与最高连板生态。
-- 行业排名和大成交额个股方向线索。
-- 行业主线允许在东方财富 `push2` 与 `push2delay` 均失败后使用经过 capability 门禁的扶摇同花顺行业指数 fallback。扶摇只提供行业指数代码、名称、涨跌幅和成交额；主力净流入、主力净流入比例、上涨/下跌家数和领涨股保持 `null`，并显示 `fallback`/`partial` 质量与字段 warning，不得冒充完整行业资金流或宽度事实。
-- 扶摇行业基础结果接受后，可在 `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=1` 下使用东方财富 `data.eastmoney.com/dataapi/bkzj/getbkzj` 做同供应商字段补充。该接口固定请求 `key=f3,f6,f62,f104,f105,f128,f184` 与 `m:90+s:4`，仅允许当前上海市场日结算后调用；历史日期、日期证据不足、百分比 scale 不明确、身份冲突或未匹配行业继续保持 `null`。页面和采集状态展示 source、same-vendor、mapping revision、行/字段覆盖与 warning，不能将其显示为独立 provider；扶摇四个基础字段始终权威，补充失败不使基础快照失效。
+- THS 行业、概念、区域和特色指数的完整目录、当日排名、板块量价与当日内部宽度；这些内容仅属于 provider observation，不以名称相似性映射为申万一级身份，也不进入 `QTS-01-05-*` 输入。
+- 历史 Eastmoney-first/Fuyao-fallback `sectors` 契约从公共 API、调度、前端和新采集任务中退役。既有快照、任务、warning、checksum 和 capability report 原样保留为审计证据，不删除、不改名，也不投影成任一新数据集。
 - `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。
 - `breadth` 的 Fuyao v2 主源只允许当前上海交易日的 `/api/a-share/prices/snapshot` 完整分页；所有页的 `total`、`timestamp` 和规范证券身份必须稳定，涨跌家数、平盘和中位数由 `price_change_ratio_pct` 派生。Fuyao 失败后才按显式开关使用 TDX 精确日期包，最终回退东方财富；历史日期只能读取本地精确快照，不能用 latest-only 响应回填。
 - `activeDirection` 本阶段不由 Fuyao 替换，继续使用现有东方财富/TDX 语义；Fuyao capability 仅记录为 `unverified`，不得把旧 `fuyao-market-v1` 报告当成切换批准。limits 继续使用扶摇主源与东方财富交叉核对/降级。
@@ -46,27 +45,37 @@
 - 完整聚合接口继续兼容既有调用；网页使用核心接口和章节按需接口渐进展示数据。
 - 市场广度和容量方向按交易日持久化并可在盘后预计算；服务重启或同机 worker 切换后仍可复用精确日期快照。
 - 数据质量允许附加缓存状态、快照抓取时间、后台刷新状态和刷新 warning；陈旧快照必须显式标记，不能伪装为刚获取的数据。
-- 数据采集页覆盖核心指数、市场广度、涨跌停生态、行业板块和容量方向，并分别展示当前可用状态与最近采集结果；核心指数可展开查看五个指数子项。
+- 数据采集页覆盖核心指数、市场广度、涨跌停生态、行业排名、板块量价、板块宽度和容量方向，并分别展示当前可用状态与最近采集结果；核心指数可展开查看五个指数子项。
 - 数据采集页从本地状态读取并显示容量方向的 `tdx-daily-package-derived` 来源、本地排序和行业映射覆盖率；`fallback-derived` 标记为本地派生降级，不能被显示为普通成功。
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
-- 五个数据集对 application 暴露同一个 `collect(DatasetDate) -> CollectionOutcome` 产品契约；业务流程只消费 normalized candidate/failure/evidence，不根据 Eastmoney、Fuyao、TDX、requests 或 Scrapling 类型分支。数据源优先级、日期能力、fallback、shadow 和 enrichment 由可审计 acquisition plan 决定，不能由 UI、coordinator 或 transport engine 临时改序。
+- 七个数据集对 application 暴露同一个 `collect(DatasetDate) -> CollectionOutcome` 产品契约；业务流程只消费 normalized candidate/failure/evidence，不根据 Eastmoney、Fuyao、TDX、requests 或 Scrapling 类型分支。数据源优先级、日期能力、fallback、shadow 和 enrichment 由可审计 acquisition plan 决定，不能由 UI、coordinator 或 transport engine 临时改序。
 - source attempt 必须展示真实来源、revision、requested/actual date、fetch time、field availability、timings、分类失败和脱敏 provenance。shadow 不改变正式结果；同供应商 enrichment 不得显示为独立确认；成功缺少 candidate 或身份时必须 fail closed。
 - 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 PostgreSQL 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。两条 Eastmoney 路径均失败后，只有 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才允许使用精确日期 TDX 包本地派生容量方向，质量显示为 `fallback-derived`，记录本地成交额排序、TDX revision、行业映射覆盖率和前序 warning；该开关独立于 breadth 的 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED`，默认关闭。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
 - 所有 HTTP source adapter 共用一个进程内 transport policy gateway；gateway 统一 host 限速、预算、重试、single-flight、缓存和熔断，engine 只执行一个已授权 attempt。请求身份必须隔离 engine、精确日期、完整参数和认证/tenant scope，且诊断不得泄露 credential、Cookie、proxy 或 challenge body。
 - 可选 Scrapling 仅提供静态 HTTP engine：默认关闭、空 allowlist、独立依赖/镜像，不启用 Spider、浏览器、Chromium、代理轮换、内部重试、blocked-request escalation 或 challenge solving；401/403/CAPTCHA 不得触发 requests 到 Scrapling 的自动升级。是否为某个真实 host 启用必须由后续证据和独立 rollout 批准。
-- 行业扶摇 fallback 仅允许使用 `https://fuyao.aicubes.cn/api/a-share/calendar/trading-days`、`/api/a-share-index/catalog/ths-index-list?tag=industry` 和 `/api/a-share-index/prices/snapshot?thscodes=...`。目录、快照批次和交易日历必须共同证明请求日期；目录/快照覆盖不足、身份重复、批次时间不一致或日期不可证明时 fail closed，不把最新快照包装为历史日期。正式启用要求 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1`、capability report `eligible` 和完全匹配的 approved revision；默认关闭，失败时保留同日期 `failed-retained`/`failed-missing`。
+- Fuyao THS 的 catalog/snapshot、单编号历史和 dump/复权分别使用独立 capability policy；任一操作只有在 exact revision `eligible`、对应开关开启、权限和请求预算有效且上海盘后日期门禁通过后才能构造 provider client。旧 `fuyao/sectors/fuyao-market-v2` 报告不能授权新的历史或 dump 操作。
 - capability report 从隔离 probe 进入正式运行时只能通过通用 `capabilities promote` 边界：显式选择 provider/dataset/revision，校验原始 checksum、`eligible`、脱敏一致性和数据集证据策略，默认 dry-run；只有显式 `--apply` 才在运行时 PostgreSQL 的单个事务中写入一条报告。同 checksum 重复操作幂等，同 revision 不同 checksum 冲突拒绝；该命令不得调用 provider、触发采集、写快照/聚合、修改 Secret、调度或任何 provider 开关。
-- `fuyao/sectors/fuyao-market-v2` 的晋升证据必须证明三个允许 endpoint、请求/交易日历/快照日期一致、320 个唯一目录与 320 个唯一快照全覆盖、批次时间均属于同一上海交易日、代码/名称/涨跌幅/成交额四字段完整、`mainNet`/`mainNetPct`/`upCount`/`downCount`/`leader` 五字段明确缺失，以及权限已配置且请求数处于正的有界预算内。旧 `fuyao-market-v1`、混合日期、部分覆盖或含凭据的报告不得晋升。
-- 生产恢复采用 off-first 的六步受控序列：冻结 clean reviewed source/chart/values/render/image packet 并先把新镜像以 Fuyao sectors 关闭状态发布；达到上海结算时间后执行当前有效交易日 real probe；把受审报告通过 stdin 流式传给该冻结镜像的 exact Ready Pod，先 dry-run 再显式 apply；复用同一镜像执行 hook-free config-only enable；只通过 `snapshots scheduled-refresh --dataset sectors` 触发一次当日采集；失败时复用同一镜像执行 config-only off。real probe 必须在构造 provider/client 和创建 JSON/SQLite 文件前拒绝结算前、非当前有效日期和周末请求，且没有 force 绕过。
-- sectors-off 预发布必须绑定 clean reviewed HEAD、chart、off/enabled values、两份 render、release、namespace、Kubernetes version 和不可变 image identity。enable/off 不得 build、传输或 import 镜像，不得运行 Helm hook、migration 或 provider-backed Job；live/desired 之间唯一允许的语义差异是 `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED` 的 `0`/`1` 翻转。promotion 只允许使用 Pod 已有的 PostgreSQL Secret 环境，不得把数据库 URL 导出到宿主、`kubectl cp` 报告或把报告持久化到容器。全过程保持调度、Scrapling、行业 enrichment、sector shadow 和其他 Fuyao 数据集关闭；回滚不得删除 capability report、同日快照、任务历史、Job、Secret 或 PVC，也不得跨日期回填。
-- 调度关闭的 sectors-off `component=all` 预发布在完整 release 收敛后不得再写 schedule-only revision。若中断状态已精确表现为受审 empty non-hook disabled schedule-only stored manifest，tracked live Deployment/Service 声明状态仍等于完整 off release，且 Dashboard 是 exact Ready frozen-image、sectors-off、CronJob/Job absent，只允许使用独立的 same-image repair 入口执行一次 `helm upgrade --no-hooks` 恢复完整 off release；该入口不得 build/import、调用 provider、晋升 capability 或采集，也不得接受其他 drift 形态。
-- 行业行的领涨股展示真实证券名称；provider 只返回代码或缺少名称时保持 `null`，不得把代码冒充名称。
+- 新能力的隔离 probe、capability promotion、生产迁移、首次目录同步、历史回填、dump 导入和部署均不属于默认实现写操作，必须在上海盘后取得再次明确授权。回滚只关闭新 provider 开关和写入口，保留新旧 evidence、additive 表、任务、Secret 与 PVC，不恢复旧 `sectors` 公共采集器。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
 - 盘后定时采集使用与 Dashboard 相同镜像并通过同一 PostgreSQL Service/Secret 访问运行时状态，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
-- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，并通过 no-provider canary 实际观察预测触发（配置断言不能替代 canary 证据）。canary 通过后，允许继续非覆盖备份、suspended release 和一次命名 provider-backed Job；本次操作责任人书面确认 release/namespace/镜像 digest 与明确 catch-up 行为、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部五项。
+- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，并通过 no-provider canary 实际观察预测触发（配置断言不能替代 canary 证据）。canary 通过后，允许继续非覆盖备份、suspended release 和一次命名 provider-backed Job；本次操作责任人书面确认 release/namespace/镜像 digest 与明确 catch-up 行为、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部七项。
 - 通用部署必须在首个 render、build、image、环境或目标访问前校验最终合并值是 typed `enabled=false,suspend=true`。`--disable-schedule` 必须使用 rollback-only canonical-digest authorization ref，且 active-to-off 的失败补偿按 release-derived exact API name 工作：label/shape drift 不能阻止紧急暂停，读回无法证明 absent/typed suspended 时保持 uncertain/NO-GO。
 - 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
+
+### Fuyao THS 三数据集产品边界
+
+- `industry-ranking` 维护 `industry`、`cn_concept`、`region`、`tszs` 四类版本化目录。每个 revision 保存 `tag`、`thscode`、名称、provider 时间、抓取时间、分类数量、canonical checksum 和 capability revision；同一 `thscode` 跨分类时共享行情事实，但各分类关系和对应 revision 必须独立可查。
+- 当日排名必须以完整四类目录和匹配的批量指数快照为输入，证明上海交易日、批次时间戳、唯一代码、必需字段和 100% 快照覆盖后，按 `changePct desc, thscode asc` 稳定排序。重复身份、名称冲突、字段缺失、混合日期或覆盖不足只能输出 `partial` / `insufficient`，不得把 Top 10 子集包装为完整目录。
+- `sector-turnover` 按 `thscode` 和真实交易日保存 `open`、`high`、`low`、`close`、`volume`、`turnover`、来源、质量和 revision；成交量与成交额必须分列，缺失保持 `null`，禁止相互代替或使用 0 补齐。每日任务从已校验的完整快照追加全部编号，同一编号跨分类只存一份行情。
+- 单编号历史最多查询近五年本地日线。覆盖不足时，只显示已有首尾日期和缺口；用户可显式发起回填。每个回填 run 默认最多 60 个唯一编号，按代码与时间窗口保存 checkpoint 和请求预算；单编号失败只影响对应 checkpoint，续跑只处理未完成窗口，已验证同 checksum 数据幂等保留，不同 checksum/revision 形成可审计冲突而不静默覆盖。
+- `sector-breadth` 只计算当前已完成上海交易日，每类选择稳定 Top 10 并合并有效用户点选编号，重复选择只计算一次且保留全部选择来源。每个板块输出成员总数/有效数、涨跌平家数、上涨占比、涨跌家数差率、中位涨幅、`close > MA20` 宽度、涨跌停数量、Top 成交、Top 涨幅、单股最大成交贡献和扩散率，并保留每项分子、分母、缺失原因与字段 lineage。
+- 板块成员事实以 Fuyao 全市场日 K、最近 10 日增量和复权因子 dump 为主源；TDX 只可对精确日期的盘后原始事实做字段级降级补充。复权只作用于价格，原始成交量和成交额不复权；Fuyao dump、复权因子、成员或字段覆盖不足时输出 `partial` / `insufficient`，混合来源标记 `degraded` 并逐字段记录 lineage。MA20 不足的成员从对应分母排除，limits 缺失只降低涨跌停指标，不得污染独立有效的宽度指标。
+- 历史板块宽度不属于本版本。没有精确日期 point-in-time membership 时，系统必须拒绝历史 `sector-breadth`，不得用当前成员回算过去日期。
+- 三个每日任务按 `industry-ranking -> sector-turnover -> sector-breadth` 执行。依赖不兼容时下游显示 `blocked` / `insufficient`；独立数据集和已成功兄弟任务继续提交。任一新任务成功后都必须重建并原子替换 Chapter 01 聚合，避免只保存快照而章节缺失。
+- Chapter 01 新公共字段为 `industryRanking`、`sectorTurnover`、`sectorBreadth` 和独立的 `sectorAnalysis`，新响应不再包含 `sectors`。显式请求旧 dataset ID `sectors` 返回稳定的不支持错误，并列出三个迁移目标；请求不得调用旧 collector 或改写历史 evidence。
+- provider-free GET 只读本地 PostgreSQL：目录查询支持分类、名称/编号搜索、revision 和分页；单编号 K 线支持日期范围、分页、本地覆盖与缺口；operation 进度查询展示目录同步、回填和成员导入的 run/checkpoint 状态。上述 GET 在本地缺失时仍不得构造 provider client、自动回填或下载 dump。
+- 目录同步、当日采集、历史回填和成员事实导入只允许通过显式 POST/CLI 触发，并继续受 manual-write、上海盘后、权限、请求预算、enabled switch 和 exact capability revision 门禁控制。预签名 URL、API key、敏感 header 和原始 provider 响应不得持久化或输出。
 
 ### 第 03 页涨跌停生态完整矩阵
 
@@ -93,6 +102,42 @@
 
 不包含自动下单、主体意图推断、未经来源核实的事件评分，也不宣称经验阈值已经通过 500 至 750 个交易日回测。第 04 页可以展示 limits 中可追溯的高/中/低位样本数量和炸板修复率；未形成独立亏钱收益样本的规则仍保持 `unverified` / `insufficient`。
 
+## 第 05 页：THS 板块观察与申万一级持续性（规划范围）
+
+第 05 页使用紧凑 tab 呈现“排名、板块宽度、量价 K 线、申万持续性”四个独立视图，并保持两种互不替代的证据层：
+
+- **provider observation**：排名视图按四类目录筛选并支持名称/编号搜索，保留 THS provider 身份、revision、精确观察日期、来源、抓取时间、质量和 warning；板块宽度视图展示当日公式证据、成员覆盖、Top 成交和 Top 涨幅；量价 K 线视图按单一 `thscode` 展示蜡烛图、成交量和成交额。provider 代码或名称不得直接当作申万行业身份；只有经过请求日期有效的、版本化且唯一的 mapping 才能建立关联。
+- **Shenwan canonical analysis**：只使用申万一级 taxonomy、请求日期生效的 membership、普通 A 股 universe、原始成交额、前复权价格和等权基准。概念、题材、重叠行业和当前成分股不得进入分析。分析结果通过 `SectorEvidence.analysis` 作为可选扩展返回，旧的 `rows/state/quality` observation payload 继续有效。
+
+量价 K 线只展示本地 PostgreSQL 已覆盖日期，蜡烛、成交量和成交额共享稳定时间轴但保持独立数值轴与 tooltip。请求区间存在缺口时页面显示实际首尾日期、缺失窗口和质量，不自动访问 provider；用户可通过明确操作发起受门禁的历史回填，并在独立 operation 区域查看 checkpoint 进度、失败编号和可重试窗口。
+
+分析固定生成五项规则证据，并保留原始值、分位、规则输入、样本日期、公式、版本和质量：
+
+1. 5/20 日行业相对强度：行业同期收益减去 `ordinary-a-share-equal-weight-v1` 基准；两窗均有效后取较低 midrank 分位。
+2. 近 5 个有效交易日成交额位于完整申万一级横截面前 20% 的天数；并列按稳定行业 ID 裁决，输出 0–5 天。
+3. 有效成员中前复权 `close > MA20` 的比例及滚动分位；零分母保持 `null`。
+4. 负收益分歧事件及两日内成熟承接：后续任一完整交易日收复下跌幅度至少 50% 才算修复；未成熟事件不进入分母。
+5. 申万一级行业前五成交额集中度：按原始成交额和稳定行业 ID 取 `min(5,N)`，除以同一 universe 的全市场原始成交额；不得重复计入成员。
+
+每项滚动分位独立报告有效数、缺口、实际日期范围、60/250 门槛和 confidence；少于 60 个有效观测为 `insufficient`，60–249 为 `reduced-confidence`，不以横截面当天排名替代历史分位。所有经验 bands、权重和规则 ID 继续保持 `needs-backtest`。
+
+分析最多输出三个按总分、核心分项和稳定行业 ID 排序的 canonical 候选。候选必须来自精确日期申万身份；未关联的 provider observation 只能留在观察层。阶段只允许一个：`insufficient`、`high-level-crowding`、`mainline-confirmed`、`mainline-candidate`、`one-day-pulse` 或 `rotation-or-ebb`。高集中度且候选宽度低于 P40 时先触发抱团否决；不得自动赋予“龙头/中军/补涨”等角色，只展示成交排名、涨幅排名、涨跌停、单股贡献和扩散比例等可证明事实。
+
+每个日期恰好生成一条下一交易日验证项，固定格式为：
+
+```text
+候选板块：____；阶段：____。
+持续性证据：____；宽度证据：____；成交证据：____；内部结构：____。
+下一交易日只验证：分歧后____能否承接。
+确认条件：____；失效条件：____。
+```
+
+验证优先级为：恢复关键缺口 → 抱团否决后的宽度恢复至 P40 → 成熟分歧后两日内收复至少 50% → 下一次分歧后核心三项仍各至少 60 → 首个 canonical 行业补齐三项核心门槛。没有 canonical 候选时必须返回 `candidateIndustry=null`、阶段 `insufficient`，验证项只描述关键身份/历史/事实恢复，不得输出方向性市场判断；确认和失效条件必须含明确数值、分位或分数阈值。
+
+第 05 页的申万持续性视图单独展示 analysis 的五项 trace、历史覆盖、候选阶段、抱团风险、内部结构和唯一验证项。分析不足、THS 观察成功、分析 `failed-retained`/`failed-missing`、`observation-only`、`partial` 与 `insufficient` 必须分层显示；不能从 THS 排名或当前成员观察补算申万分析指标。所有可见文字、图表标签、tooltip 和控件不小于 14px，390px 视口不得出现页面级横向溢出、重叠或截断，宽表仅允许自身滚动。
+
+第 05 页的申万数据管理区域只读展示 analysis readiness、required/available history、missing sessions、版本、最新 attempt、warning 和 retry eligibility；THS K 线回填操作与申万分析管理保持独立，也不得混入七数据集“全部采集”。普通 GET、启动和默认调度必须保持 provider-free；latest-only THS observation 不可用于历史日期分析。
+
 ## 验收
 
 ### 01–09 多页市场研判重构（2026-09-14）
@@ -111,7 +156,7 @@
 - 成功盘后快照可按交易日复用；fresh 命中不访问 provider，stale 命中返回旧值并合并刷新，失败不覆盖上次成功结果。
 - 同一 dataset/date 的并发冷请求最多产生一次 provider 采集，过期 refresh lease 可以恢复。
 - `/data-collection` 状态查询只读 PostgreSQL，不调用外部 provider；所有行情 provider 失败时页面仍可打开并提供可用的重试状态。
-- 单项重新采集只运行目标数据集；一键重新采集创建五个独立任务，一个失败时父批次返回 `partial`，其他成功结果立即可用。
+- 单项重新采集只运行目标数据集或其尚未满足的最小依赖；一键重新采集创建七个独立任务，并按 `industry-ranking -> sector-turnover -> sector-breadth` 执行三项板块依赖。一个任务失败时父批次返回 `partial`，不相关任务和已成功结果立即可用。
 - 核心指数单个子项失败时其他指数继续保存；存在同日期旧值时显示 `failed-retained`，不存在时显示缺失。
 - 普通市场环境 GET 只读取本地聚合快照或数据集快照，不因缺失、陈旧或活动采集自动调用 provider。
 - warm Chapter 01 本地性能验证在核心和章节快照均命中时小于 500ms，provider 调用数为 0。
@@ -129,22 +174,38 @@
 - 同步性研判在桌面和 390px 移动视口均完整显示模式、三项确认、结论和风险；移动端确认项纵向排列，不出现文字重叠或小于 14px 的可见文字。
 - 数据采集页在桌面和 390px 移动视口中保持日期、状态、进度和操作可读，不出现控件重叠；采集期间保留旧数据而不是全屏阻塞。
 - TrueNAS 直连候选启用手工采集时，完整 values render 为固定 `NodePort:32001`，且文档与验收不得将可路由网络误述为经过认证、授权或仅限特定客户端。
-- 开市前（09:30 前）首次打开数据采集页时，默认日期为后端解析的上一工作日对应的真实交易日（周末跳过）；节假日或 provider 日期证据不足时保持 `insufficient`/`failed` 并拒绝写入，不得将前一日数据写入当日键。开市后才可按上海当天采集 `sectors` 等 latest-only 数据集；研究页仍保持 15:00 前默认上一日期的规则。
-- 行业主域瞬态失败时按有界策略恢复或降级到延迟域；两个端点均失败时只允许保留同日期成功快照，并区分 `failed-retained` 与 `failed-missing`。
-- 行业 `leader` 字段来自 provider 的名称字段，不返回领涨股证券代码。
+- 开市前（09:30 前）首次打开数据采集页时，默认日期为后端解析的上一工作日对应的真实交易日（周末跳过）；节假日或 provider 日期证据不足时保持 `insufficient`/`failed` 并拒绝写入，不得将前一日数据写入当日键。`industry-ranking`、`sector-turnover`、`sector-breadth` 仅接受当前已完成上海交易日，结算前拒绝 provider I/O；研究页仍保持 15:00 前默认上一日期的规则。
+- 四类目录或完整快照的瞬态失败按共享 transport policy 在请求预算内有界恢复；覆盖、日期或身份仍不完整时只允许保留同日期成功快照，并区分 `failed-retained`、`failed-missing` 与依赖 `blocked`。
+- 新板块契约不提供或推断单一 `leader` 角色；Top 成交和 Top 涨幅名单只展示经过验证的证券身份、原始值、排序与 lineage。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。
 - 容量方向延迟域不足 30 个有效样本、缺少代码/名称/成交额或未按成交额非递增排列时必须拒绝保存；两个端点均失败时只保留同日期成功快照，不得跨日期替代。
-- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection`；1.26 controller 兼容路径的 no-provider canary 只能证明触发映射，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、本次操作责任人书面确认（明确 catch-up 行为）与 suspend-only live diff 全部通过后才可激活。
+- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection`；三项板块任务保持依赖顺序。1.26 controller 兼容路径的 no-provider canary 只能证明触发映射，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、本次操作责任人书面确认（明确 catch-up 行为）与 suspend-only live diff 全部通过后才可激活。
 - scheduled-refresh 在结算时间前拒绝运行，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态和每项 warning 可在 `/data-collection` 查看。
 - CronJob 与手工触发同日期同数据集时不产生重复 provider 调用；异常退出后的 task 按现有 lease 过期规则恢复。
 - 禁用或暂停定时采集不影响 Dashboard、本地快照读取、手工 CLI 或开发期开关控制的 HTTP 采集。
 - 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过专用调度入口恢复 active schedule。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
-- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；sectors 仍是东方财富主链后的 fallback，activeDirection 继续既有 Eastmoney/TDX。默认状态为 `unverified`/关闭。
+- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；三个 THS 板块数据集分别使用 catalog/snapshot、history 和 dump exact capability revision，默认 `unverified`/关闭；activeDirection 继续既有 Eastmoney/TDX。旧 `sectors` 不再参与 fallback 或新响应投影。
 - shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
 - collector/committer/coordinator 边界验收：coordinator 不反射 collector 方法、不解释 vendor payload；每个 dataset/date 只有一个 lease 和 task sequence；core/limits 的 typed commit 在 PostgreSQL fence/UoW 内保持子结果和 detail/fact/manifest 原子；status/detail 查询 provider 调用数为 0。
 - transport engine 验收：requests 与 Scrapling 对同一离线 fixture 产生除 engine/timing 外等价的 normalized payload 或 failure category；401/403/challenge 快速失败，engine 无内部 retry，默认配置不会启动 enhanced runtime，base 镜像和 Helm 默认调度契约不变。
+
+### Fuyao THS 行业与板块三数据集（2026-10-12）
+
+- 四类合成目录 fixture 能证明独立 count/checksum/revision、重复编号拒绝、名称冲突拒绝和跨分类代码复用；共享 `thscode` 只产生一份同日期行情，同时保留所有分类关系。
+- `industry-ranking` 只有在四类目录与完整快照 100% 对齐、上海日期和批次时间一致、必需字段齐全时才为可用；稳定排序固定为 `changePct desc, thscode asc`，缺失编号、重复编号、日期漂移和字段缺失均有明确失败或不足状态。
+- `sector-turnover` 的本地事实与 API 同时保留 OHLC、`volume` 和 `turnover`；测试证明成交量不会被丢弃、成交额不会被当作成交量、缺失字段不会被填 0，跨分类同编号写入保持幂等。
+- 历史回填拒绝超过五年、默认超过 60 个编号或请求预算不足的输入，并在 provider I/O 前返回结构化错误。中断续跑只处理未完成的代码/时间窗口，单编号失败不回滚其他编号，已验证行不被新响应静默覆盖。
+- Fuyao full-market daily、recent-10-day 和 adjustment dump 的 schema、checksum、日期和重复键验证通过后才允许写入；TDX 只填补同日原始事实，复权只作用于价格。混合来源逐字段显示 lineage，并使质量保持 `degraded` / `partial`。
+- `sector-breadth` 的 Top 10 和用户点选合并顺序稳定、重复选择去重；涨跌平、上涨占比、涨跌家数差率、中位涨幅、MA20 宽度、涨跌停交集、Top 成交/涨幅、单股成交贡献和扩散率均使用带分子/分母的后端结果。零分母、成员缺失、MA20 不足和 limits 缺失保持 `null` / `insufficient`，不得在前端补算。
+- 对非当前已完成上海交易日请求 `sector-breadth` 时，系统明确返回不支持并保持 provider 调用数为 0；任何 fixture 都不得使用当前 membership 回算历史宽度。
+- 目录、单编号 K 线和 operation progress GET 覆盖分类、名称/编号搜索、revision、日期范围、分页、本地覆盖与缺口；在 provider 不可用或本地数据不足时仍能返回本地状态，provider 调用数始终为 0。
+- collection 公共枚举、OpenAPI 和 TypeScript 类型只包含七个新 dataset ID。显式请求 `sectors` 返回包含三个迁移目标的稳定错误，调用旧 collector 的次数为 0，已有数据库快照、任务和 capability evidence 的内容与 checksum 保持不变。
+- Chapter 01 新物化结果只暴露 `industryRanking`、`sectorTurnover`、`sectorBreadth`、`sectorAnalysis`，不把旧 `sectors` payload 伪装成新字段；任一新板块任务单独成功后都能创建或重建聚合，失败任务不移除同日成功兄弟 evidence。
+- 数据管理页显示三个独立任务卡、依赖 `blocked`、最近 attempt、保留结果和 operation progress；第 05 页四个 tab 分别承载排名、板块宽度、量价 K 线和申万持续性。THS 视图与申万视图在名称、身份、质量和 lineage 上明确隔离，THS 数据不进入 `QTS-01-05-*` 输入。
+- 量价 K 线视图同时渲染非空蜡烛、成交量和成交额；本地历史不足时仅展示实际覆盖并提供显式回填操作，不因打开或切换视图自动访问 provider。桌面和 390px 视口无页面级横向溢出、重叠或截断，所有可见文字、图例、坐标和 tooltip 不小于 14px。
+- 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行，调度默认继续为 `enabled=false`、`suspend=true`。
 
 ## Provider 请求可靠性边界（2026-10-08）
 

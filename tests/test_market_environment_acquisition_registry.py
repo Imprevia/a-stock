@@ -104,10 +104,10 @@ def test_registry_validates_fallback_shadow_enrichment_and_availability() -> Non
     )
     sources = SourceAdapterRegistry(tuple(adapter(role) for role in roles))
     registry = AcquisitionPlanRegistry(
-        (Plan("sectors", "sectors-plan", steps),),
+        (Plan("industry-ranking", "industry-ranking-plan", steps),),
         source_adapters=sources,
     )
-    assert registry.get("sectors").steps == steps
+    assert registry.get("industry-ranking").steps == steps
 
     unavailable = SourceAdapterRegistry((adapter("formal", available=False),))
     with pytest.raises(ValueError, match="unavailable source adapter"):
@@ -115,3 +115,16 @@ def test_registry_validates_fallback_shadow_enrichment_and_availability() -> Non
             (Plan("core", "core-plan", (AcquisitionPlanStep("formal"),)),),
             source_adapters=unavailable,
         )
+
+
+def test_retired_sectors_plan_is_kept_only_as_test_private_audit_evidence() -> None:
+    legacy_audit_registry = {
+        "sectors": Plan(
+            "sectors",
+            "retired-sectors-plan",
+            (AcquisitionPlanStep("legacy-sector-source"),),
+        )
+    }
+
+    assert legacy_audit_registry["sectors"].plan_id == "retired-sectors-plan"
+    assert "sectors" not in DATASET_IDS

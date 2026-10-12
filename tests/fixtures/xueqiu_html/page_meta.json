@@ -1,0 +1,7 @@
+{
+  "footprint": {
+    "expected_selector": "tr[data-symbol]",
+    "required_attrs": ["data-symbol"]
+  },
+  "extraction-strategy": "static-card-attr"
+}

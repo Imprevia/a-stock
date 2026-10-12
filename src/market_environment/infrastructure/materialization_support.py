@@ -8,6 +8,7 @@ assembly needed when a collection command rebuilds the persisted aggregate.
 from __future__ import annotations
 
 import copy
+import dataclasses
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
@@ -43,7 +44,9 @@ CHAPTER_GROUP_KEYS: dict[str, tuple[str, ...]] = {
     "breadth": ("breadth",),
     "activeDirection": ("activeDirection",),
     "limits": ("limits",),
-    "sectors": ("sectors",),
+    "industry-ranking": ("industryRanking",),
+    "sector-turnover": ("sectorTurnover",),
+    "sector-breadth": ("sectorBreadth",),
 }
 
 
@@ -57,8 +60,10 @@ class MaterializationSupport:
         now: Callable[[], datetime],
         snapshot_ttl_seconds: int,
         limits_enabled: Callable[[], bool] = limit_v1_enabled,
+        continuity_repository: Any | None = None,
     ) -> None:
         self.snapshot_store = repository
+        self.continuity_repository = continuity_repository or getattr(repository, "sector_continuity", None)
         self._now = now
         self.snapshot_ttl_seconds = snapshot_ttl_seconds
         self._limit_ecosystem_composer = LimitEcosystemComposer(
@@ -210,10 +215,20 @@ class MaterializationSupport:
                 "state": "insufficient",
                 "quality": {**quality, "dataset": "limit-pools"},
             },
-            "sectors": {
+            "industry-ranking": {
                 "rows": [],
                 "state": "insufficient",
                 "quality": {**quality, "dataset": "industry-ranking"},
+            },
+            "sector-turnover": {
+                "rows": [],
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "sector-turnover"},
+            },
+            "sector-breadth": {
+                "rows": [],
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "sector-breadth"},
             },
             "activeDirection": {
                 "state": "insufficient",
@@ -227,7 +242,7 @@ class MaterializationSupport:
     def chapter_documents(
         breadth: dict[str, Any],
         limits: dict[str, Any],
-        sectors: dict[str, Any],
+        sector_evidence: dict[str, Any],
         active_direction: dict[str, Any],
     ) -> list[dict[str, Any]]:
         def evidence_status(quality: dict[str, Any]) -> str:
@@ -242,7 +257,7 @@ class MaterializationSupport:
             ("02", "上涨家数、下跌家数和涨跌幅中位数", evidence_status(breadth["quality"])),
             ("03", "涨停、跌停、炸板和连板晋级", evidence_status(limits["quality"])),
             ("04", "高位股、中位股和低位股的亏钱效应", "insufficient"),
-            ("05", "主线持续性和成交额集中度", evidence_status(sectors["quality"])),
+            ("05", "主线持续性和成交额集中度", evidence_status(sector_evidence["quality"])),
             ("06", "大成交额个股中是否出现主动进攻方向", evidence_status(active_direction["quality"])),
             ("07", "公告、政策、外围和突发事件", "unverified"),
             ("08", "如何归类市场环境", "insufficient"),
@@ -353,7 +368,10 @@ class MaterializationSupport:
         dominant_trend = core["summary"]["dominantTrend"]
         breadth = self._enrich_breadth(provider_data["breadth"], as_of, analyses)
         limits = provider_data["limits"]
-        sectors = provider_data["sectors"]
+        industry_ranking = provider_data["industry-ranking"]
+        sector_turnover = provider_data["sector-turnover"]
+        sector_breadth = provider_data["sector-breadth"]
+        sector_analysis = self._continuity_analysis(as_of)
         active_direction = provider_data["activeDirection"]
         events = {
             "state": "unverified",
@@ -367,16 +385,23 @@ class MaterializationSupport:
                 ["未提供带来源、发布时间、有效期和失效条件的结构化事件输入"],
             ),
         }
-        documents = self.chapter_documents(breadth, limits, sectors, active_direction)
+        documents = self.chapter_documents(
+            breadth,
+            limits,
+            sector_breadth if sector_breadth.get("quality") else industry_ranking,
+            active_direction,
+        )
         qualities = [
             breadth["quality"],
             limits["quality"],
-            sectors["quality"],
+            industry_ranking["quality"],
+            sector_turnover["quality"],
+            sector_breadth["quality"],
             active_direction["quality"],
             events["quality"],
         ]
         status_weight = {"ok": 1.0, "fallback": 0.75, "partial": 0.5, "missing": 0.0, "failed": 0.0}
-        coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 6.0, 4)
+        coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 8.0, 4)
         status = "partial" if coverage >= 0.5 else "insufficient"
         synchronization_assessment_value = synchronization_assessment(
             core,
@@ -410,8 +435,11 @@ class MaterializationSupport:
             evidence.append(
                 f"涨跌停：涨停 {limits['limitUpCount']}，跌停 {limits['limitDownCount']}，炸板 {limits['failedLimitUpCount']}"
             )
-        if sectors.get("rows"):
-            names = "、".join(item.get("name") or "未知" for item in sectors["rows"][:3])
+        if industry_ranking.get("rows"):
+            names = "、".join(
+                item.get("name") or "未知"
+                for item in industry_ranking["rows"][:3]
+            )
             evidence.append(f"行业当日排名：{names}")
         if active_direction.get("summary"):
             evidence.append(f"容量方向：{active_direction['summary']}")
@@ -422,7 +450,10 @@ class MaterializationSupport:
             "documents": documents,
             "breadth": breadth,
             "limits": limits,
-            "sectors": sectors,
+            "industryRanking": industry_ranking,
+            "sectorTurnover": sector_turnover,
+            "sectorBreadth": sector_breadth,
+            "sectorAnalysis": sector_analysis,
             "activeDirection": active_direction,
             "events": events,
             "combinationOverview": combination,
@@ -446,6 +477,85 @@ class MaterializationSupport:
                 "invalidation": "任一证据日期不一致、provider 失败或风险证据显著恶化时，不使用候选判断",
             },
         }
+
+    def _continuity_analysis(self, as_of: date) -> dict[str, Any] | None:
+        reader = self.continuity_repository
+        if reader is None:
+            return None
+        try:
+            if hasattr(reader, "get_result"):
+                result = reader.get_result(as_of)
+            elif hasattr(reader, "get_continuity_result"):
+                result = reader.get_continuity_result(as_of)
+            else:
+                return None
+        except Exception:
+            # A failed derived read must not hide a valid provider observation.
+            return None
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            if result.get("asOf") not in (None, as_of.isoformat()):
+                return None
+            return copy.deepcopy(result)
+
+        def convert(value: Any) -> Any:
+            if dataclasses.is_dataclass(value):
+                return {key: convert(item) for key, item in dataclasses.asdict(value).items()}
+            if isinstance(value, dict):
+                return {str(key): convert(item) for key, item in value.items()}
+            if isinstance(value, (tuple, list)):
+                return [convert(item) for item in value]
+            if isinstance(value, (date, datetime)):
+                return value.isoformat()
+            return value
+
+        payload = convert(result)
+        def camelize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    "".join((part if index == 0 else part[:1].upper() + part[1:]) for index, part in enumerate(str(key).split("_"))): camelize(item)
+                    for key, item in value.items()
+                }
+            if isinstance(value, list):
+                return [camelize(item) for item in value]
+            return value
+
+        result_payload = camelize(payload)
+        if result_payload.get("asOf") != as_of.isoformat():
+            return None
+        if "metricTraces" not in result_payload and isinstance(result_payload.get("metrics"), list):
+            result_payload["metricTraces"] = result_payload.pop("metrics")
+        if "quality" not in result_payload:
+            result_payload["quality"] = {
+                "status": result_payload.get("status", "insufficient"),
+                "confidence": result_payload.get("confidence", "insufficient"),
+                "coverage": result_payload.get("coverage"),
+                "asOf": as_of.isoformat(),
+                "requiredObservations": 60,
+                "availableObservations": min(
+                    (
+                        int(item.get("observations", 0) or 0)
+                        for item in result_payload.get("metricTraces", [])
+                        if isinstance(item, dict)
+                    ),
+                    default=0,
+                ),
+                "warnings": list(result_payload.get("warnings") or []),
+                "missingInputs": list(result_payload.get("missingInputs") or []),
+            }
+        if "history" not in result_payload:
+            result_payload["history"] = {
+                "requiredObservations": 60,
+                "windowDays": 250,
+                "validObservations": int(result_payload["quality"].get("availableObservations", 0) or 0),
+                "actualDateRange": [],
+                "gaps": [],
+                "quality": None,
+            }
+        result_payload.setdefault("risk", {})
+        result_payload.setdefault("warnings", [])
+        return result_payload
 
 
 __all__ = ["CHAPTER_GROUP_KEYS", "MARKET_TIME_ZONE", "MaterializationSupport"]

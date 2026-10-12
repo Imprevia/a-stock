@@ -21,6 +21,22 @@ from .materialized_aggregate import (
     MaterializedAggregateRebuilder,
 )
 from .timezone_preferences import UpdateTimezonePreferenceCommand
+from .sector_continuity_backfill import (
+    BackfillReadiness,
+    BackfillRequest,
+    SectorContinuityBackfillService,
+)
+from .ths_sector_operations import (
+    CatalogSyncRequest,
+    MemberImportRequest,
+    ThsCatalogSyncService,
+    ThsMemberImportService,
+    ThsOperationGateError,
+    ThsOperationGates,
+    ThsTurnoverBackfillService,
+    TurnoverBackfillRequest,
+    catalog_sync_request_plan,
+)
 
 __all__ = [
     "CapabilityPromotionConflictError",
@@ -38,4 +54,16 @@ __all__ = [
     "StartCollectionRunCommand",
     "SubmitCollectionRunCommand",
     "UpdateTimezonePreferenceCommand",
+    "BackfillReadiness",
+    "BackfillRequest",
+    "SectorContinuityBackfillService",
+    "CatalogSyncRequest",
+    "MemberImportRequest",
+    "ThsCatalogSyncService",
+    "ThsMemberImportService",
+    "ThsOperationGateError",
+    "ThsOperationGates",
+    "ThsTurnoverBackfillService",
+    "TurnoverBackfillRequest",
+    "catalog_sync_request_plan",
 ]

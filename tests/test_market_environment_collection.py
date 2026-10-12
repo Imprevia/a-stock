@@ -1,11 +1,24 @@
 import json
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 import pytest
 
+from src.market_environment.application.collection import (
+    DatasetCollectorRegistry,
+    DatasetCommitterRegistry,
+)
+from src.market_environment.application.ports import DatasetCommitEvidence
 from src.market_environment.calculations import Bar
 from src.market_environment.cli import main as cli_main
 from src.market_environment.collection import CollectionCoordinator
+from src.market_environment.domain.models import (
+    CollectionCandidate,
+    CollectionOutcome,
+    CollectionTaskState,
+    DATASET_IDS,
+    DatasetDate,
+)
 from src.market_environment.fuyao_config import FuyaoCollectionConfig
 from src.market_environment.providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from src.market_environment.refresh import MARKET_TIME_ZONE, effective_market_date
@@ -151,24 +164,123 @@ class ForbiddenActiveDirectionAdapter:
         raise AssertionError("activeDirection must stay on the Eastmoney/TDX chain")
 
 
+@dataclass
+class FixtureDatasetCollector:
+    dataset_id: str
+    failing_datasets: frozenset[str] = frozenset()
+    calls: list[DatasetDate] = field(default_factory=list)
+
+    def collect(self, identity: DatasetDate) -> CollectionOutcome:
+        self.calls.append(identity)
+        if identity.dataset in self.failing_datasets:
+            return CollectionOutcome(
+                identity,
+                CollectionTaskState.FAILED_MISSING,
+                warning=f"{identity.dataset} unavailable",
+            )
+        candidate = CollectionCandidate(
+            identity=identity,
+            payload={
+                "asOf": identity.as_of.isoformat(),
+                "quality": quality(identity.dataset, identity.as_of),
+            },
+            source="fixture",
+            status="ok",
+            observations=1,
+            warnings=(),
+            settled=True,
+            actual_as_of=identity.as_of,
+            fetched_at=AFTER_MARKET,
+        )
+        return CollectionOutcome(
+            identity,
+            CollectionTaskState.SUCCESS,
+            candidate=candidate,
+        )
+
+
+@dataclass
+class FixtureDatasetCommitter:
+    dataset_id: str
+    store: SnapshotStore
+
+    def commit(self, request) -> DatasetCommitEvidence:
+        candidate = request.candidate
+        self.store.put(
+            SnapshotRecord(
+                dataset=candidate.identity.dataset,
+                as_of=candidate.identity.as_of,
+                payload=dict(candidate.payload),
+                source=candidate.source,
+                status=candidate.status,
+                observations=candidate.observations,
+                warnings=candidate.warnings,
+                fetched_at=candidate.fetched_at or AFTER_MARKET,
+                settled=candidate.settled,
+            ),
+            lease=request.lease,
+            now=AFTER_MARKET,
+        )
+        return DatasetCommitEvidence(
+            identity=request.identity,
+            outcome_state=request.outcome.state,
+            candidate=candidate,
+            writes=("snapshot",),
+        )
+
+
+def fixture_dataset_coordinator(
+    store: SnapshotStore,
+    *,
+    failing_datasets: frozenset[str] = frozenset(),
+    rebuild_aggregate=None,
+) -> tuple[CollectionCoordinator, tuple[FixtureDatasetCollector, ...]]:
+    collectors = tuple(
+        FixtureDatasetCollector(dataset, failing_datasets) for dataset in DATASET_IDS
+    )
+    committers = tuple(FixtureDatasetCommitter(dataset, store) for dataset in DATASET_IDS)
+    return (
+        CollectionCoordinator(
+            None,
+            store,
+            now=lambda: AFTER_MARKET,
+            rebuild_aggregate=rebuild_aggregate,
+            collector_registry=DatasetCollectorRegistry.complete(collectors),
+            committer_registry=DatasetCommitterRegistry.complete(committers),
+            typed_cutover_datasets=DATASET_IDS,
+        ),
+        collectors,
+    )
+
+
 def test_full_collection_continues_after_dataset_failure(tmp_path) -> None:
-    provider = CollectionProvider(failing_datasets={"sectors"})
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     rebuilt: list[date] = []
-    result = CollectionCoordinator(
-        provider,
+    coordinator, collectors = fixture_dataset_coordinator(
         store,
-        now=lambda: AFTER_MARKET,
+        failing_datasets=frozenset({"sector-turnover"}),
         rebuild_aggregate=rebuilt.append,
-    ).collect(AS_OF)
+    )
+    result = coordinator.collect(AS_OF)
 
     tasks = {task.dataset: task for task in result.tasks}
     assert result.run.status == "partial"
-    assert tasks["sectors"].status == "failed-missing"
-    assert all(tasks[name].status == "success" for name in ("core", "breadth", "limits", "activeDirection"))
-    assert store.get("sectors", AS_OF) is None
-    assert all(store.get(name, AS_OF) is not None for name in ("core", "breadth", "limits", "activeDirection"))
-    assert rebuilt == [AS_OF, AS_OF, AS_OF, AS_OF]
+    assert tasks["sector-turnover"].status == "failed-missing"
+    assert tasks["sector-breadth"].status == "blocked"
+    assert all(
+        tasks[name].status == "success"
+        for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
+    )
+    assert store.get("sector-turnover", AS_OF) is None
+    assert store.get("sector-breadth", AS_OF) is None
+    assert all(
+        store.get(name, AS_OF) is not None
+        for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
+    )
+    calls = {collector.dataset_id: collector.calls for collector in collectors}
+    assert calls["sector-turnover"] == [DatasetDate("sector-turnover", AS_OF)]
+    assert calls["sector-breadth"] == []
+    assert rebuilt == [AS_OF] * 5
 
 
 def test_core_fuyao_receives_current_quote_but_history_is_quote_free(tmp_path) -> None:
@@ -233,7 +345,7 @@ def test_active_direction_never_routes_through_fuyao_even_when_flag_is_enabled(t
     assert provider.calls == ["activeDirection"]
 
 
-def test_failed_dataset_retains_same_date_success_without_rollback(tmp_path) -> None:
+def test_retired_sectors_request_preserves_same_date_legacy_evidence(tmp_path) -> None:
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put(
         SnapshotRecord(
@@ -248,20 +360,21 @@ def test_failed_dataset_retains_same_date_success_without_rollback(tmp_path) -> 
             settled=True,
         )
     )
+    before = store.get("sectors", AS_OF)
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(provider, store, now=lambda: AFTER_MARKET)
 
-    result = CollectionCoordinator(
-        CollectionProvider(failing_datasets={"sectors"}),
-        store,
-        now=lambda: AFTER_MARKET,
-    ).collect(AS_OF, ["sectors"])
+    with pytest.raises(
+        ValueError,
+        match="unsupported collection dataset: sectors; use industry-ranking, sector-turnover, or sector-breadth",
+    ):
+        coordinator.collect(AS_OF, ["sectors"])
 
-    assert result.run.status == "failed"
-    assert result.tasks[0].status == "failed-retained"
-    assert store.get("sectors", AS_OF).source == "old"
-    assert "unavailable" in store.get("sectors", AS_OF).refresh_warning
+    assert store.get("sectors", AS_OF) == before
+    assert provider.calls == []
 
 
-def test_failed_sector_collection_does_not_retain_another_date(tmp_path) -> None:
+def test_retired_sectors_request_preserves_other_date_legacy_evidence(tmp_path) -> None:
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     previous_date = AS_OF - timedelta(days=1)
     store.put(
@@ -277,16 +390,19 @@ def test_failed_sector_collection_does_not_retain_another_date(tmp_path) -> None
             settled=True,
         )
     )
+    before = store.get("sectors", previous_date)
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(provider, store, now=lambda: AFTER_MARKET)
 
-    result = CollectionCoordinator(
-        CollectionProvider(failing_datasets={"sectors"}),
-        store,
-        now=lambda: AFTER_MARKET,
-    ).collect(AS_OF, ["sectors"])
+    with pytest.raises(
+        ValueError,
+        match="unsupported collection dataset: sectors; use industry-ranking, sector-turnover, or sector-breadth",
+    ):
+        coordinator.collect(AS_OF, ["sectors"])
 
-    assert result.tasks[0].status == "failed-missing"
     assert store.get("sectors", AS_OF) is None
-    assert store.get("sectors", previous_date).source == "old"
+    assert store.get("sectors", previous_date) == before
+    assert provider.calls == []
 
 
 def test_failed_active_direction_fallback_retains_same_date_success(tmp_path, monkeypatch) -> None:
@@ -460,11 +576,8 @@ def test_scheduled_refresh_collects_all_datasets_and_emits_structured_success(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
+    coordinator, _collectors = fixture_dataset_coordinator(
         SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        now=lambda: AFTER_MARKET,
         rebuild_aggregate=lambda _as_of: None,
     )
 
@@ -479,13 +592,7 @@ def test_scheduled_refresh_collects_all_datasets_and_emits_structured_success(
     assert payload["trigger"] == "scheduled"
     assert payload["asOf"] == AS_OF.isoformat()
     assert payload["status"] == "success"
-    assert {item["dataset"] for item in payload["datasets"]} == {
-        "core",
-        "breadth",
-        "limits",
-        "sectors",
-        "activeDirection",
-    }
+    assert {item["dataset"] for item in payload["datasets"]} == set(DATASET_IDS)
     assert all(
         {"taskId", "source", "observations", "durationMs", "status", "warning"} <= item.keys()
         for item in payload["datasets"]
@@ -603,12 +710,10 @@ def test_scheduled_refresh_partial_persists_successes_and_status_is_provider_fre
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider(failing_datasets={"sectors"})
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
-    coordinator = CollectionCoordinator(
-        provider,
+    coordinator, collectors = fixture_dataset_coordinator(
         store,
-        now=lambda: AFTER_MARKET,
+        failing_datasets=frozenset({"sector-turnover"}),
         rebuild_aggregate=lambda _as_of: None,
     )
 
@@ -618,18 +723,28 @@ def test_scheduled_refresh_partial_persists_successes_and_status_is_provider_fre
         now=lambda: AFTER_MARKET,
     )
     payload = json.loads(capsys.readouterr().out)
-    calls_after_collection = list(provider.calls)
+    calls_after_collection = {
+        collector.dataset_id: tuple(collector.calls) for collector in collectors
+    }
     status = coordinator.collection_status(AS_OF)
 
     tasks = {item["dataset"]: item for item in payload["datasets"]}
     rows = {item["dataset"]: item for item in status["datasets"]}
     assert exit_code == 2
     assert payload["status"] == "partial"
-    assert tasks["sectors"]["status"] == "failed-missing"
-    assert all(store.get(name, AS_OF) is not None for name in ("core", "breadth", "limits", "activeDirection"))
-    assert rows["sectors"]["available"] is False
-    assert rows["sectors"]["latestAttempt"].status == "failed-missing"
-    assert provider.calls == calls_after_collection
+    assert tasks["sector-turnover"]["status"] == "failed-missing"
+    assert tasks["sector-breadth"]["status"] == "blocked"
+    assert all(
+        store.get(name, AS_OF) is not None
+        for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
+    )
+    assert rows["sector-turnover"]["available"] is False
+    assert rows["sector-turnover"]["latestAttempt"].status == "failed-missing"
+    assert rows["sector-breadth"]["available"] is False
+    assert rows["sector-breadth"]["latestAttempt"].status == "blocked"
+    assert {
+        collector.dataset_id: tuple(collector.calls) for collector in collectors
+    } == calls_after_collection
 
 
 def test_scheduled_refresh_all_failures_return_nonzero_without_snapshots(
@@ -638,15 +753,10 @@ def test_scheduled_refresh_all_failures_return_nonzero_without_snapshots(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider(
-        failing_datasets={"breadth", "limits", "sectors", "activeDirection"},
-        failing_indices={spec.code for spec in INDEX_SPECS},
-    )
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
-    coordinator = CollectionCoordinator(
-        provider,
+    coordinator, collectors = fixture_dataset_coordinator(
         store,
-        now=lambda: AFTER_MARKET,
+        failing_datasets=frozenset(DATASET_IDS),
         rebuild_aggregate=lambda _as_of: None,
     )
 
@@ -659,8 +769,17 @@ def test_scheduled_refresh_all_failures_return_nonzero_without_snapshots(
 
     assert exit_code == 2
     assert payload["status"] == "failed"
-    assert all(item["status"] == "failed-missing" for item in payload["datasets"])
-    assert all(store.get(dataset, AS_OF) is None for dataset in ("core", "breadth", "limits", "sectors", "activeDirection"))
+    tasks = {item["dataset"]: item for item in payload["datasets"]}
+    assert all(
+        tasks[dataset]["status"] == "failed-missing"
+        for dataset in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
+    )
+    assert tasks["sector-turnover"]["status"] == "blocked"
+    assert tasks["sector-breadth"]["status"] == "blocked"
+    assert all(store.get(dataset, AS_OF) is None for dataset in DATASET_IDS)
+    calls = {collector.dataset_id: collector.calls for collector in collectors}
+    assert calls["sector-turnover"] == []
+    assert calls["sector-breadth"] == []
 
 
 def test_scheduled_refresh_reuses_manual_active_lease_without_duplicate_provider_call(

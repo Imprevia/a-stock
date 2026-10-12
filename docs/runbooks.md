@@ -272,6 +272,89 @@ promotion 不调用 provider，不创建 collection run，不写 snapshot/aggreg
 enabled flag 或 approved revision。off-first、promotion、enable、collection 和条件 off 必须分别记录
 实际 packet/hash/server-observed 证据；授权本身不能替代任何前置门禁或写后验收。
 
+### Fuyao THS 目录、K 线与成员导入（2026-10-12，离线实现与隔离 probe）
+
+Fuyao 动态接口索引为 `https://fuyao.aicubes.cn/llms-full.txt`（最后核对：
+2026-10-12）。它是动态更新的接口发现和契约核对入口，不是 capability 批准、数据权利证明或生产
+写入授权。仓库已实现下述同步、回填、导入、本地查询和三数据集编排，但所有新 capability 开关默认关闭；
+本 change 已于 2026-10-12 15:21（Asia/Shanghai）在隔离临时目录执行一次真实 probe；未执行 capability apply/promotion、生产迁移、首次正式数据写入、部署或调度激活。probe 结果：`sector-membership`（203 个成员）和 `sector-turnover-history`（24 根 K 线）通过脱敏 evidence policy 审阅；`industry-ranking` 因真实快照存在缺少 `changePct` 的 `883401.TI` 行而为 `ineligible`；daily/incremental/adjustment dump 元数据未提供 SHA-256，均为 `ineligible`。这些状态不得被手工改写为 `eligible`。
+
+隔离 probe 命令（只在上海结算后、显式授权、临时输出路径执行；API key 仅从 Secret/环境注入，不写命令行或文件）：
+
+```bash
+python -m src.market_environment.cli fuyao ths-real-probe \
+  --as-of YYYY-MM-DD --thscode 886042.TI --history-start YYYY-MM-DD \
+  --max-dump-bytes 536870912 --output /tmp/fuyao-ths-report.json \
+  --path /tmp/fuyao-ths-evidence.sqlite3 --allow-real
+```
+
+报告只能通过 `capabilities promote` 的受审路径做 dry-run/apply；本次 eligible membership/history 报告尚未 apply 到生产 PostgreSQL，原因是 9.2 的 clean reviewed commit、备份恢复演练、migration 和镜像冻结尚未满足。adjustment 永远保持 `ineligible`，直到事件推导公式、事件顺序和前收盘证据冻结。
+
+已核对的契约范围：
+
+- `GET /api/a-share-index/catalog/ths-index-list?tag=<tag>` 支持 `industry`、
+  `cn_concept`、`region`、`tszs` 四类全量目录，每行使用完整 `*.TI` `thscode`
+  和展示名称。
+- `GET /api/a-share-index/prices/snapshot?thscodes=...` 批量返回最新 OHLC、`volume`
+  和 `turnover`；它只能用于已证明的当日增量，不得重标为历史数据。
+- `GET /api/a-share-index/prices/historical` 每次只接受一个 `thscode`，仅支持
+  `interval=1d` 和 `start/end` 毫秒时间窗口，单窗口最长 10 年，返回 OHLC、
+  `volume` 和 `turnover`。
+- 全市场 10 年日 K、最近 10 交易日日 K 和复权因子 dump 由
+  `/api/dump/market-dumps/**` 的 API-key 路径获取短时预签名下载链接；链接通常约
+  5 分钟失效，不得持久化、缓存、记录或放入证据。导入证据只保留脱敏的
+  `dump_id`、schema、日期范围、文件 checksum、行数和 capability revision。
+
+实施后的显式操作门禁固定如下：
+
+1. **目录同步**：只允许显式 CLI/受保护 POST 触发；在 provider I/O 前同时校验
+   上海盘后窗口、`--allow-real`、API key、已批准的 `industry-ranking` 与
+   `sector-membership` 精确 capability revisions 和正数请求预算。预算在 provider I/O
+   前按 4 次目录请求、capability 证明的 snapshot 分片数、四类 Top 10 上界和显式
+   点选编号计算；不足时零 provider I/O。四个 tag 各自校验非空、唯一 `*.TI` 代码、
+   名称冲突、provider 时间戳、数量和 canonical checksum；完整目录先独立提交，再按
+   去重后的每类 Top 10 与显式点选编号逐个同步 current membership。单编号失败使
+   operation 为 `partial`，但不得回滚已验证目录或兄弟 membership。普通 GET、启动和
+   默认调度始终零 provider I/O。对应开关/版本为
+   `MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_ENABLED` 与
+   `MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_REVISION`，默认关闭/空值。
+2. **历史 K 线回填**：请求必须明示有限 `thscode` 集合、`start/end`、请求预算和
+   可恢复 run identity；回填按单代码/单窗口记录 checkpoint，已成功且 revision/checksum
+   兼容的窗口在恢复时跳过。验收时同时核对最后有效日期、重复日期、OHLC 范围、
+   `volume >= 0` 和 `turnover >= 0`；两字段分开保存，缺失用 `null`/`insufficient`
+   表示，不得互相替代或补0。
+3. **成员事实导入**：只允许显式导入已下载的本地 Parquet/manifest。先验证文件
+   checksum、`dump_id`、schema、精确日期、`Asia/Shanghai` 时间戳、规范证券代码、
+   重复业务键和字段单位，再写入隔离于 THS 指数日线的成员事实表。任一检查失败
+   整批拒绝，不得把部分文件宣称为完整成员证据。
+   官方 daily/incremental schema 使用 `thscode`、`currency`、`interval`、`adjusted`、
+   `date_ms`、`open_price`、`high_price`、`low_price`、`close_price`、`volume`、`turnover`；adjustment dump
+   提供除权除息事件项而不是现成 `adjustment_factor`。在复权公式、事件顺序和前收盘
+   证据未冻结并验证前，adjustment capability 必须保持 `ineligible`，不得用 synthetic
+   fixture 或未复权价格替代。
+4. **身份隔离与审计保留**：THS `industry`/`cn_concept`/`region`/`tszs` 都是
+   provider observation，不得因名称相似写入申万一级 taxonomy、membership 或
+   `QTS-01-05-*` 输入。历史 `sectors` snapshot、collection task、warning、checksum 和
+   `fuyao/sectors/fuyao-market-v2` capability report 保持原 dataset identity，不删除、重标、复制
+   或当作新数据集成功证据。仓库公共运行时已退役 `sectors`；当前生产 release 在未获部署授权前保持原状，
+   其切换、回滚和历史兼容开关清理必须通过独立受审发布完成。
+
+失败恢复与排错：
+
+- 若在 capability、时间、API key、权限、限流或请求预算门禁失败，要求零 provider I/O
+  或零权威写入；先保留脱敏失败分类，再修正报告/配置，禁止降低校验来继续。
+- 目录同步出现缺 tag、重复代码、冲突名称或 checksum 变化时，将新 revision 保持
+  `insufficient`/冲突审计，不得覆盖上一个完整目录；先比较 provider 时间戳、规范排序
+  后的 code/name 清单和 capability revision。
+- 历史回填的单代码失败不回滚其他已成功代码；parent run 标记 `partial`，只把
+  失败/未完成 checkpoint 保持为可重试。同业务键同 checksum 幂等，不同 checksum
+  必须显式冲突并保留旧证据，不得执行 overwrite 式“修复”。
+- dump 下载中断或预签名过期时重新申请新链接，不得重用、打印或持久化旧 URL；文件
+  checksum/schema/日期失败时拒绝该文件，保留上一个已验证 revision。
+- 回滚只关闭新同步、回填、导入或查询暴露开关，保留 PostgreSQL 新表、run/checkpoint、
+  旧 `sectors` 证据、capability reports、Secret 和 PVC；禁止通过删表、删快照、卸载 release
+  或手工 SQL 清理失败。
+
 ### 扶摇行业字段补充（东方财富同供应商 dataapi）
 
 该能力不是新的行业 provider，也不改变 `push2` → `push2delay` → capability-gated 扶摇的正式顺序。
@@ -343,6 +426,43 @@ Chart 的 `marketEnvironment.scrapling.enabled=false` 默认选择顶层 `image`
 2026-10-08 本地 Podman 实测（Linux amd64，5 次禁网、只读 rootfs、64 MiB `/tmp` tmpfs，统计完整 settings + composition-root 冷启动中位数）：最终 base/enhanced 镜像为 `457408146 / 808329793` bytes（`436.218 / 770.883 MiB`），增强增量 `350921647` bytes（`334.665 MiB`, `+76.720%`）；启动 `1.343 / 1.308s`，CPU user+system `1.350 / 1.321s`，峰值 RSS `74588 / 74948 KiB`，`/tmp` 增量均为 `0`。首轮另有一个受共享磁盘 D-state 影响的 base `25.218s` 异常样本，未纳入最终 5 次有 15 秒 timeout 的测量；稳定中位数未显示增强 profile 的启动回归。
 
 同次 SBOM/漏洞测量中，`pip inspect --local` 的 Python 包数为 `72 / 87`，enhanced 新增 15 个包；base/enhanced 的 CycloneDX 1.4 组件数为 `71 / 86`（生成器不把 pip 自身列为组件），`pip-audit` 使用 2026-10-08 当时的 PyPI advisory 数据均报告 0 个已知 Python 漏洞。Debian 包均为 87 个，排序后 `package=version` 清单 SHA-256 都是 `2b78937be57e2aedcf5515e4877b2d79590bb6569cdcd414b7ddaca6a77af5b4`，证明增强层未增加 OS 包。宿主未安装 Syft/Trivy/Grype，因此这不是全文件系统或供应链二进制 CVE 扫描；生产 rollout 前仍需用组织批准且带冻结数据库版本的 scanner 复核，不能把当前的 0 当作未来或全镜像零漏洞。验证没有执行真实 provider probe、生产部署、Secret 变更或调度激活。
+
+### 末层 HTML 静态源（2026-10-09）
+
+`sectors` 数据集在最末层新增两个静态 HTML source adapter（`sectors-sina-html`、`sectors-xueqiu-html`），目的严格限制在兜底 web-visible 字段：`name` / `changePct` / `amount` / `leader 名`。Engine 复用现有 `Scrapling static engine`，但**绝不**用作爬虫、SPA 渲染或登录墙绕过。本节取代先前任何相关 changelog。
+
+适配的硬规则：
+
+- 仅在 Eastmoney 主域 + 延迟域 + `dataapi` 增强 + Tushare + Fuyao **全部**失败后尝试；任一上层成功立即短路，禁止替换现有 fallback 顺序。
+- `mainNet` / `mainNetPct` / `upCount` / `downCount` 永远 `null + dom-source-unsupported:<field>` warning，禁止用成分股数、计数、`inflow` 文本或任何数值字段组装。
+- `leader` 字段必须是文本（龙头 / 领涨 / 领先股标签去掉后的名），遇到 6 位代码或数字徽标立刻降为 `null` 并附 `leader-identifier-not-name` warning，绝不把代码当成名字。
+- 401 / 403 / 登录墙 / 验证码 / interstitial challenge 立刻分类为 non-retryable `permission` / `challenge`，**不**重试、**不**切换 engine、**不**自动绕到 `requests`。
+- DOM 选择器漂移必须被 `DriftDetector` 触发 `dom-drift`，quality 降级为 `fallback` / `degraded`，绝不从无关 DOM 字符串拼出 name / changePct / amount / leader。
+- `scheduledCollection.enabled` 仍按仓库规则默认 `false` 且 `suspend=true`；HTML 末层上线不自动开 cron。
+
+环境与编排：
+
+- `MARKET_ENVIRONMENT_CRAWL_FALLBACK_ENABLED=0` 是默认；`=1` 时 plan 注册并启用末层步骤。
+- `MARKET_ENVIRONMENT_CRAWL_FALLBACK_HOSTS` 接受逗号分隔的 `sina` 与 `xueqiu`；任何其他值都被 settings 校验拒绝。
+- Helm: `marketEnvironment.crawlFallback.enabled=false`、`marketEnvironment.crawlFallback.hosts=[sina, xueqiu]`；渲染 baseline 与 overlay 时，`MARKET_ENVIRONMENT_CRAWL_FALLBACK_*` env 注入 Deployment/CronJob；token / cookie / secret 都不进入 manifest。
+- `scheduledCollection.enabled` 字段与 `crawlFallback.enabled` **互不依赖**：crawl 启用不等于允许排程。
+- Scrapling engine 范围：`scrapling.enabled=false` 默认；`crawlFallback.enabled=true` 时只把 `(host, source_id)` allowlist 暴露给 sina / xueqiu adapter，**不**扩散给其他 source。
+
+排错与回滚：
+
+- 失效标志：浏览器或 collection 日志里 sina / xueqiu 持续出现 `host-permission-denied`、`host-challenge-detected`、`dom-drift` 或 `row-extraction-error`；dashboard 上对应行的 quality 经常是 `degraded` / `fallback`。
+- 立即回滚：把 `marketEnvironment.crawlFallback.enabled` 改回 `false` 并 roll 一份 Helm release（或运行 `bash scripts/deploy-truenas-k3s.sh`），不允许在 enabled 状态下临时禁用 host。回滚只翻转开关，**不**删除 PVC / capability report / snapshot / 历史 fixture。
+- 真实 probe：仅在 `--allow-real` + `MARKET_ENVIRONMENT_PROBE_ALLOW_REAL=1` + 盘后窗口下执行 `python -m src.market_environment.cli sectors-html real-probe --source <sina|xueqiu>-html --as-of <date> --output <redacted.json>`；probe 默认 dry-run 且零网络 I/O，输出 envelope 永不包含 token / cookie / body。
+- capability promote：probe 通过后，操作发起人执行 `python -m src.market_environment.cli capabilities promote --input <report> --provider <sina|xueqiu> --dataset sectors --revision <crawl-html-<host>-v1> --apply`，与 `activate-fuyao-sector-fallback` 复用同一条 promotion 边界，**不**引入第二条路径。
+- 若同一进程已按 `scrapling.enabled=false` 初始化，之后切到 `crawlFallback.enabled=true` 时 composition 会 fail closed，按受审 workload replacement 流程走，不允许进程内热替换 gateway。
+
+绝对禁止：
+
+- 把任意中间件重新解释的 sina / xueqiu 数字（成分股数、计数、`inflow` 徽标、装饰性数值）写入 `SectorRow.mainNet` / `upCount` 等。
+- 把 leader code（如 `600519`）作为 `leader` 字段值。
+- 把第三方资产（CSS/JS/字体）从站点搬运到生产容器或 fixture；fixture 是手写合成，禁止从线上 `view-source` 拷贝完整骨架。
+- 启用 host 时附带默认 allowlist 之外的其他 host / source_id。
+- 把 `scheduledCollection.enabled=true` 的开关打开，但 crawlFallback 还想保持 enabled 同步。
 
 ### Helm Chart 与受控发布入口
 
@@ -542,7 +662,7 @@ curl "http://127.0.0.1:8001/api/market-environment/data-collection?as_of=2026-08
 
 `/api/market-environment` 保留完整聚合响应用于兼容；网页首屏使用 `/api/market-environment/core`，该接口不访问全 A、涨跌停池和行业 provider。章节接口的 `section` 支持 `breadth`、`limits`、`sectors`、`activeDirection` 和 `summary`，其中 `summary` 用于第 08、09 页并加载全部已接入章节证据。`chapter01` 仍是向后兼容的可选扩展。`breadth`、`sectors` 和 `activeDirection` 只在请求上海时区当前日期、且其实际交易日与最新市场快照一致时读取；查询历史日期时这些当前快照型数据集返回 `missing`，不得拿今日数据回填。`limits` 使用实际交易日查询日期化涨停/跌停/炸板池。所有数据集检查 `quality.status` 和 `quality.warnings`；缺失值保持 `null`，不要在前端转换为 0。`/api/market-environment/collection-runs/{run_id}` 的 task `timings` 同时承载数值耗时和 provider fallback 的来源、revision、失败证据字符串，客户端不得把该对象强制解析为纯数值表。
 
-普通市场环境 GET 优先读取 PostgreSQL 中精确日期的数据集快照或 materialized aggregate，不自动启动 provider 采集。五类数据 `core`、`breadth`、`limits`、`sectors` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止其他结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 PostgreSQL transaction/store write 计时。
+普通市场环境 GET 优先读取 PostgreSQL 中精确日期的数据集快照或 materialized aggregate，不自动启动 provider 采集。七类数据 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection` 分别使用 `(dataset, as_of)` lease；三项 THS 任务按依赖顺序运行，失败尝试保留同日期成功值并记录 warning，一键采集中的单项失败不会阻止无关结果保存。排查加载慢时分别查看 snapshot lookup、collection lease、provider collection、aggregate validation 和 PostgreSQL transaction/store write 计时。
 
 盘后预计算：
 
@@ -698,7 +818,7 @@ PostgreSQL StatefulSet/ClusterIP Service ready
   -> suspended CronJob render/deploy
 ```
 
-当前 runtime schema 最低版本为 6；`alembic upgrade head` 必须应用到 `0003_provider_capability_reports`，使 `provider_capability_reports` 及其 dataset/status 索引由 Alembic 显式管理。该 revision 仅执行 additive `CREATE ... IF NOT EXISTS` 和 schema ledger 登记，不重写已有表或市场 payload。若 migration Job 未达到 version 6，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
+当前 runtime schema 最低版本为 8；`alembic upgrade head` 必须依次应用到 `0005_ths_sector_datasets`，其中 `0004_sector_continuity` 和 `0005_ths_sector_datasets` 均为 additive migration，不重写旧 `sectors` 快照、task、capability 或聚合证据。若 migration Job 未达到 version 8，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
 
 StatefulSet 未 ready 或 migration Job 失败时不得 rollout service/schedule；migration Job 使用同一 URL Secret，
 成功后检查 `alembic_version`，并把 Job 日志及 manifest hash 作为切换证据。
@@ -742,6 +862,12 @@ pg_restore --clean --if-exists --no-owner \
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=0`：行业扶摇 fallback 的数据集开关，默认关闭；只有 Eastmoney 两端点失败、capability report 为 `eligible` 且批准 revision 完全匹配时才可设为 `1`。
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION`：显式绑定脱敏 capability report 的批准 revision；为空、未知或不匹配时 fail closed。该值不是 Secret，也不能替代 real probe/shadow 审批。
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED=0`：仅启用隔离 shadow 对账观测；shadow 失败只降低质量/可观测性，不得阻断已通过 capability 门禁的正式 fallback，也不得写入凭据。
+- `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=0`：THS 目录同步、历史回填和成员事实导入的总写授权，默认关闭；只有显式 POST/CLI 还必须同时通过 manual-write、盘后、预算和 capability revision 门禁。
+- `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED=0` / `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION`：四类目录和完整快照能力开关及精确批准 revision，默认关闭/空；不匹配时在 provider I/O 前 fail closed。
+- `MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED=0` / `MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION`：单编号历史日 K 能力开关及精确批准 revision，默认关闭/空；最多近五年、单批最多 60 编号，按代码/窗口 checkpoint 恢复。
+- `MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_ENABLED=0` / `MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_REVISION`：current membership 能力开关及精确批准 revision，默认关闭/空值；目录同步必须同时通过 catalog 与 membership capability，Top 10 与显式点选编号逐代码隔离失败。
+- `MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED=0`、`MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED=0`、`MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED=0`：三类成员事实导入能力分别门禁，默认全部关闭；revision 从受审 manifest 提供，预签名 URL、API key 和原始响应不得持久化或输出。官方 dump 必须逐行证明 `currency=CNY`、日 K `interval=1d`、`adjusted=none`、业务键唯一和 metadata checksum；未提供 SHA-256 时保持 `ineligible`。
+- `MARKET_ENVIRONMENT_FUYAO_SECTORS_*` 仅保留给尚未切换的历史部署兼容和旧证据审计；新七数据集 coordinator、公共 API、CLI 每日 dataset selector 和前端不会读取或列出 `sectors`。
 - `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`：扶摇行业基础结果的东方财富 dataapi 同供应商字段补充开关，默认关闭；开启仍需满足当前上海市场日、结算后、扶摇结果已接受和严格身份/口径门禁，不引入新 Secret。
 - `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；scheduled-refresh 在该时间前拒绝采集，CronJob schedule 必须晚于该值。
 - 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard/CronJob 作为共享协调边界。
@@ -753,7 +879,7 @@ curl -X POST "http://127.0.0.1:8001/api/market-environment/collection-runs" -H "
 curl "http://127.0.0.1:8001/api/market-environment/collection-runs/<run-id>"
 ```
 
-POST 立即返回 `202` 和 `runId`；省略 datasets 时创建五个独立 task，传 `{"datasets":["breadth"]}` 时只采集单项。父批次允许 `partial`，每个成功 task 独立提交；失败 task 不覆盖同日期旧值。数据采集页 `/data-collection` 只通过 GET 查询本地状态，所有 provider 故障时仍应可打开。历史日期仅允许采集 provider 能验证日期的数据集；无法证明日期的最新快照型数据按钮必须禁用并由 API 返回 422。服务重启后，遗留 collecting task 在 lease 过期后可重新采集。
+POST 立即返回 `202` 和 `runId`；省略 datasets 时创建七个独立 task，传 `{"datasets":["breadth"]}` 时只采集单项；请求依赖型 THS 任务会复用兼容本地前置结果或补入最小依赖链。父批次允许 `partial`，每个成功 task 独立提交；失败 task 不覆盖同日期旧值。显式请求 `sectors` 返回包含三个迁移目标的不支持错误且零 provider I/O。数据采集页 `/data-collection` 只通过 GET 查询本地状态，所有 provider 故障时仍应可打开。历史日期仅允许采集 provider 能验证日期的数据集；历史 THS 日线只能通过显式 backfill，历史 `sector-breadth` 不支持。服务重启后，遗留 collecting task 在 lease 过期后可重新采集。
 
 数据采集页首次加载调用不带 `as_of` 的状态 GET，并用响应 `asOf` 初始化日期控件；后端按 `Asia/Shanghai` 解析有效市场日：开市前（09:30 前）返回上一工作日对应的真实交易日并跳过周末，节假日或没有可证明实际日期时返回 `insufficient`/拒绝，不猜测日期；开市后才返回上海当天。provider 返回的实际日期必须与目标 `as_of` 一致，无法证明时保持 `insufficient`/`failed`，不得通过改名或复制跨日期数据。用户手工切换日期后使用显式 `as_of`，历史限制继续生效。研究看板仍使用下述 15:00 结算日期逻辑，两者不要重新合并。
 
@@ -896,6 +1022,48 @@ kubectl delete pv a-stock-market-environment-data
 `a-stock-data-collection` 为 Helm-owned 且 `suspend=true`。SQLite 历史已导入 PostgreSQL；验收读取使用
 `/api/market-environment?as_of=2026-09-16` 和 `/api/market-environment/core?as_of=2026-09-16`，均返回
 200、5 个指数且无顶层 data gap。盘中默认当天尚未采集时返回 503 属于 exact-date fail-closed，不得改为静默回退。
+
+## 第 05 页申万一级行业持续性与历史回填（规划 runbook）
+
+本能力尚处文档与离线设计阶段。以下流程只定义未来实施的 fail-closed 边界，不代表已批准任何新数据源、生产迁移或回填。
+
+### 离线 fixture 与 capability report
+
+- PR/CI 只使用固定、脱敏 fixture，覆盖申万 taxonomy 变迁、股票跨行业生效区间、北交所 `920xxx`、退市/停牌、除权除息、TDX 原始成交额、benchmark 缺日、重复身份和混合日期；不得提交真实生产快照。
+- `shenwan-taxonomy`、`shenwan-point-in-time-membership`、`stock-adjusted-price`、`tdx-original-daily-facts`、`benchmark-history` 必须分别出具 capability report，包含精确日期语义、沪深北覆盖、字段解释、source/revision/checksum、分页/重复处理、权限/限频、数据权利和失败负例。报告状态仅允许 `eligible`、`ineligible`、`unverified`；缺报告、过期、冲突或未批准时零 provider I/O、零正式事实写入。
+- 附件 `a-share-free-data-api.html` 及其中列出的 Baostock、mootdx、Tushare/JQData 等只作为候选源目录，不构成批准证据、数据权利证明或生产接入许可。客户端代码许可证与底层数据使用条款必须分开审阅；自动采集、长期存储和派生展示均需单独确认。
+- 真实 probe 只能由明确授权的盘后隔离命令执行，输出脱敏 capability evidence，不写正式 snapshot、analysis、PostgreSQL 或 SQLite 运行时状态；不得把 probe 成功自动升级为 capability 或打开 feature flag。
+- 当前离线契约可用以下命令生成零网络、零正式写入的脱敏 dry-run 报告；`--allow-real` 仅用于后续另行授权的盘后隔离 probe，且仍需环境门禁、上海时间 15:30 后和显式 provider-neutral adapter：
+
+  ```bash
+  python -m src.market_environment.cli industry-capability-probe \
+    --dataset stock-adjusted-price \
+    --source baostock \
+    --revision baostock-adjusted-v1 \
+    --as-of YYYY-MM-DD \
+    --output /tmp/industry-capability-dry-run.json
+  ```
+
+  该命令默认 `status=dry-run`、`networkCalls=0`、`formalWrites=0`；当前仓库未配置正式 source adapter，不能把命令成功当作任何来源已批准。
+- 数据权利审阅必须拆分记录：Baostock/mootdx/Tushare/JQData 的客户端代码许可证不等于底层行情、申万分类或衍生展示授权；申万公开表还需单独核对自动采集、长期存储、历史成员重放和对外派生展示边界。任何一项未获书面确认时，报告保持 `unverified`，不允许回填或生产写入。
+
+### additive migration 与运行时边界
+
+- 新 taxonomy/membership/security fact/benchmark/aggregate/continuity/backfill 表只能通过 PostgreSQL additive migration 增加，必须演练 upgrade、rollback、migrate-again 和现有五数据集不变性；禁止覆写旧 snapshot、task、aggregate、PVC 或历史 checksum。
+- PostgreSQL repository 与 `MarketEnvironmentUnitOfWork` 负责精确业务键、revision/checksum、事务、lease/fencing 和 CAS；普通 GET、状态读取和启动必须保持 provider-free，七数据集“全部采集”和默认调度不得隐式触发历史 backfill 或 dump 导入。
+- `SectorEvidence.analysis` 为可选字段。observation、analysis、attempt 三套 quality/status 独立保存；同日兼容结果可标记 `failed-retained`，无兼容结果才是 `failed-missing`，不得跨日期替代。
+- snapshot v2 的 closed `metricProvenance` 只从同日 materialized analysis 复制五项 canonical 指标；冻结 v1 replay 继续有效。任何 provenance/data revision 变化都形成新 identity；输出 evidence bundle ID 不得自引用 snapshot hash。
+
+### 显式 backfill、恢复与回滚
+
+- backfill 是独立、有界、可恢复的 application/CLI workflow，不是第六个 collection dataset。请求必须包含权威交易日历解析出的有限交易日范围、批准的 source/domain/classification/calculation revisions 和可恢复 run identity；首次预热默认 272 个交易日，也可请求小范围修复或更长研究区间。
+- 运行按交易日逐日执行输入 → 聚合 → 分析，记录 parent run 与 per-date attempt、coverage、warnings、retry eligibility 和 `success` / `partial` / `failed-retained` / `failed-missing` / `insufficient`。已成功且版本兼容的日期跳过；中断后只重试未完成日期；新 revision 不静默重写旧证据。
+- 数据管理页只读展示 readiness、required/available history、missing sessions、版本、最近 attempt 和重试资格，不提供普通 backfill 按钮；任何运维启动、生产非 fixture 回填、数据库 migration、部署或调度激活均需额外明确授权和 plan Completion Evidence。
+- 失败恢复先保留同日成功值与 attempt 审计，再按原 revision 重试；不得删除证据、PVC、Secret、Job 或旧 checksum，不得用当前 membership、其他日期排名、零值或最新-only provider 补齐历史。回滚只关闭新 feature/版本并保留数据与审计，禁止回切过期 SQLite。
+
+### 预热生产路径（需另行授权）
+
+生产前顺序固定为：固定 clean reviewed source/fixture/capability packet → 离线 schema/fixture replay → 隔离数据库 additive migration 演练 → 小范围交易日回填 → 60 日覆盖 → 272 日默认预热 → 更长研究范围。每一步都需核对 exact-date、taxonomy/membership、universe、adjustment、benchmark、input checksum 和 quality；任一失败保持 `insufficient`/`failed-*`，不扩大范围。真实 provider probe、PostgreSQL migration、非 fixture 回填、部署、Secret 变更和调度激活均不得混入普通测试或默认 CronJob。
 
 ## 验证矩阵
 
@@ -1130,7 +1298,7 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 - chart lifecycle 测试语义已更新：路由切换时旧章节组件卸载（dispose 其 echarts 实例）、新章节挂载（init 新实例），断言 init/dispose 累计次数（01→02→01 为 init 2→3→5、dispose 0→2→3）。
 - 扶摇能力验证：使用脱敏 fixture 执行 `python -m src.market_environment.cli fuyao capability-probe --fixture tests/fixtures/market-environment/fuyao-market-data.json --as-of YYYY-MM-DD --path /tmp/fuyao-capability.sqlite3`。该命令不访问网络；core 报告必须同时证明五个指数和至少 280 根有效 K 线，breadth 报告必须证明完整分页与稳定 timestamp；报告为 `ineligible`/`unverified` 时不得填写批准 revision。当前通用能力 revision 为 `fuyao-market-v2`，旧 `fuyao-market-v1` 不得用于 core/breadth/activeDirection 的批准。
 - v2 数据集边界：`core` 使用 `/api/a-share-index/prices/historical`，逐指数传 `thscode`、`interval=1d`、上海时区 `start/end` 毫秒时间戳；每项必须有 OHLC、成交额且最后有效 `date_ms` 等于 `as_of`。当前日期还必须有独立腾讯报价校验，历史日期不得调用实时报价。`breadth` 使用 `/api/a-share/prices/snapshot`，按 `limit/offset` 拉完 `total`；所有页的 `total` 和规范身份集合必须稳定，每页 `timestamp` 均须存在且映射到同一上海交易日；原始值允许漂移但要保留 exact/date stability 与 span 证据。历史 breadth 只读本地精确快照，Fuyao latest-only 接口不得回填历史。
-- 分数据集切换：批准并启用 `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=1` 或 `MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED=1` 后，core 链为 `Fuyao -> mootdx -> baidu -> sina -> tencent -> Eastmoney`，breadth 链为 `Fuyao -> TDX`（仅在 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 时）`-> Eastmoney`。`limits` 仍为 Fuyao 主源加东方财富交叉核对/降级；`sectors` 仍为东方财富主链失败后的 Fuyao fallback；`activeDirection` 不进入 Fuyao 切换，继续 Eastmoney/TDX。
+- 分数据集切换：批准并启用 `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=1` 或 `MARKET_ENVIRONMENT_FUYAO_BREADTH_ENABLED=1` 后，core 链为 `Fuyao -> mootdx -> baidu -> sina -> tencent -> Eastmoney`，breadth 链为 `Fuyao -> TDX`（仅在 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED=1` 时）`-> Eastmoney`。`limits` 仍为 Fuyao 主源加东方财富交叉核对/降级；旧 `sectors` fallback 仅属于历史部署与审计契约，仓库公共运行时改用三个独立 THS 数据集；`activeDirection` 不进入 Fuyao 切换，继续 Eastmoney/TDX。
 - 请求预算和回滚：limits 与通用 Fuyao 客户端共享 composition root 的进程级 policy gateway、host budget、single-flight、熔断和最小间隔；网络/408/429/5xx 只由 gateway 重试，HTTP 200 内 `4001`/`5003` 等业务码只由 adapter 有界慢退避，不能叠加第二套 transport limiter/retry。缺 API key 时零 I/O，401/403 快速失败，最终错误只记录脱敏 `code/message/request_id`。出现 429、权限、字段、日期或分页异常时，先关闭对应 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或移除批准 revision，保留旧快照与 task 记录，不删除 PVC、不跨日期回填。
 - 真实验证只能在盘后、显式本地隔离路径执行：`python -m src.market_environment.cli fuyao real-probe --allow-real --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 --output /tmp/fuyao-real.json`，API key 仅来自 `MARKET_ENVIRONMENT_FUYAO_API_KEY`。缺 key、日期不一致、权限/限流错误均 fail closed。
 - 行业 real probe 必须明确记录扶摇的交易日历、同花顺行业目录和行业快照三个 endpoint，以及目录/快照覆盖和快照时间戳日期一致性；快照 `data.timestamp` 是响应时间戳，分批原始毫秒值可以不同，但必须全部映射到同一精确上海交易日。报告必须说明行业 fallback 不提供主力净流入、上涨/下跌家数或领涨股，缺失字段保持 `null`，不得以代码或零值填充。

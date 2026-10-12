@@ -62,6 +62,10 @@ spec:
               value: {{ ternary "1" "0" .Values.marketEnvironment.scrapling.enabled | quote }}
             - name: MARKET_ENVIRONMENT_SCRAPLING_ALLOWLIST
               value: {{ toJson .Values.marketEnvironment.scrapling.allowlist | quote }}
+            - name: MARKET_ENVIRONMENT_CRAWL_FALLBACK_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.crawlFallback.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_CRAWL_FALLBACK_HOSTS
+              value: {{ join "," .Values.marketEnvironment.crawlFallback.hosts | quote }}
             - name: MARKET_ENVIRONMENT_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -122,6 +126,26 @@ spec:
               value: {{ .Values.marketEnvironment.fuyao.datasets.sectors.approvedRevision | quote }}
             - name: MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED
               value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.sectors.shadowEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.writesAuthorized | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.catalog.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.ths.catalog.revision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.membership.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.ths.membership.revision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.history.enabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION
+              value: {{ .Values.marketEnvironment.fuyao.ths.history.revision | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.dumps.dailyEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.dumps.incrementalEnabled | quote }}
+            - name: MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.ths.dumps.adjustmentEnabled | quote }}
             - name: MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_ENABLED
               value: {{ ternary "1" "0" .Values.marketEnvironment.fuyao.datasets.activeDirection.enabled | quote }}
             - name: MARKET_ENVIRONMENT_FUYAO_ACTIVE_DIRECTION_APPROVED_REVISION

@@ -11,6 +11,7 @@ export const STATUS_LABELS: Record<CollectionTaskStatus, string> = {
   partial: '部分成功',
   'failed-retained': '失败，保留旧值',
   'failed-missing': '失败，暂无数据',
+  blocked: '依赖阻塞',
   busy: '已有任务运行',
 }
 
@@ -20,7 +21,7 @@ export function isRunActive(run: CollectionRun | null) {
 
 export function statusTone(value: CollectionTaskStatus | undefined) {
   if (value === 'success') return 'success'
-  if (value === 'partial' || value === 'failed-retained' || value === 'busy') return 'warning'
+  if (value === 'partial' || value === 'failed-retained' || value === 'blocked' || value === 'busy') return 'warning'
   if (value === 'collecting' || value === 'queued') return 'running'
   return 'failed'
 }

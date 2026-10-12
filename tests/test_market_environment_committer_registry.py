@@ -18,8 +18,10 @@ from src.market_environment.domain.models import (
     DatasetDate,
 )
 from src.market_environment.infrastructure.collection import (
-    STANDARD_SNAPSHOT_DATASETS,
     StandardSnapshotCommitter,
+    ThsIndustryRankingCommitter,
+    ThsSectorBreadthCommitter,
+    ThsSectorTurnoverCommitter,
 )
 
 
@@ -129,12 +131,16 @@ def commit_request(dataset: str = "breadth") -> DatasetCommitRequest:
 
 
 def complete_committers(factory: UnitOfWorkFactory):
-    return tuple(
-        StandardSnapshotCommitter(dataset, factory)
-        if dataset in STANDARD_SNAPSHOT_DATASETS
-        else StubCommitter(dataset)
-        for dataset in DATASET_IDS
-    )
+    committers = {
+        "core": StubCommitter("core"),
+        "breadth": StandardSnapshotCommitter("breadth", factory),
+        "limits": StubCommitter("limits"),
+        "industry-ranking": ThsIndustryRankingCommitter(factory),
+        "sector-turnover": ThsSectorTurnoverCommitter(factory),
+        "sector-breadth": ThsSectorBreadthCommitter(factory),
+        "activeDirection": StandardSnapshotCommitter("activeDirection", factory),
+    }
+    return tuple(committers[dataset] for dataset in DATASET_IDS)
 
 
 def test_complete_registry_routes_all_stable_datasets_to_typed_committers() -> None:
@@ -146,6 +152,9 @@ def test_complete_registry_routes_all_stable_datasets_to_typed_committers() -> N
     assert registry.dataset_ids == DATASET_IDS
     assert tuple(committer.dataset_id for committer in registry) == DATASET_IDS
     assert all(isinstance(committer, DatasetCommitter) for committer in registry)
+    assert isinstance(registry.get("industry-ranking"), ThsIndustryRankingCommitter)
+    assert isinstance(registry.get("sector-turnover"), ThsSectorTurnoverCommitter)
+    assert isinstance(registry.get("sector-breadth"), ThsSectorBreadthCommitter)
     assert evidence.identity == DatasetDate("breadth", AS_OF)
     assert evidence.outcome_state is CollectionTaskState.SUCCESS
     assert evidence.writes == ("snapshot",)
@@ -163,6 +172,8 @@ def test_registry_rejects_unknown_duplicate_and_missing_committers_before_writes
 
     with pytest.raises(ValueError, match="unsupported dataset committer: unknown"):
         DatasetCommitterRegistry((StubCommitter("unknown"),))
+    with pytest.raises(ValueError, match="unsupported dataset committer: sectors"):
+        DatasetCommitterRegistry((StubCommitter("sectors"),))
 
     core = StubCommitter("core")
     with pytest.raises(ValueError, match="duplicate dataset committer: core"):
@@ -170,7 +181,10 @@ def test_registry_rejects_unknown_duplicate_and_missing_committers_before_writes
 
     with pytest.raises(
         ValueError,
-        match="missing dataset committers: breadth, limits, sectors, activeDirection",
+        match=(
+            "missing dataset committers: breadth, limits, industry-ranking, "
+            "sector-turnover, sector-breadth, activeDirection"
+        ),
     ):
         DatasetCommitterRegistry.complete((core,))
 
@@ -191,6 +205,12 @@ def test_standard_committer_rejects_datasets_with_specialized_write_sets() -> No
         ):
             StandardSnapshotCommitter(dataset, factory)
 
+    with pytest.raises(
+        ValueError,
+        match="unsupported standard snapshot committer: sectors",
+    ):
+        StandardSnapshotCommitter("sectors", factory)
+
     assert factory.calls == 0
 
 
@@ -202,11 +222,11 @@ def test_commit_request_and_committer_reject_identity_mismatch_before_uow() -> N
         DatasetCommitRequest(
             identity=request.identity,
             outcome=request.outcome,
-            lease=Lease("sectors", AS_OF),
+            lease=Lease("core", AS_OF),
         )
 
     with pytest.raises(ValueError, match="dataset committer identity mismatch"):
-        StandardSnapshotCommitter("sectors", factory).commit(request)
+        StandardSnapshotCommitter("activeDirection", factory).commit(request)
 
     assert factory.calls == 0
 

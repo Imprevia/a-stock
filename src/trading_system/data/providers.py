@@ -18,6 +18,14 @@ from .provider_http import HostPolicy, ProviderHttpClient, ProviderHttpError
 
 _GLOBAL_EASTMONEY_LIMITER: "SerialRateLimiter | None" = None
 
+_SECTOR_RULE_TO_METRIC = {
+    "QTS-01-05-01": "sector.relative_strength_percentile",
+    "QTS-01-05-02": "sector.top_turnover_days",
+    "QTS-01-05-03": "sector.above_ma20_ratio_percentile",
+    "QTS-01-05-04": "sector.disagreement_recovery_percentile",
+    "QTS-01-05-05": "sector.top5_turnover_concentration_percentile",
+}
+
 
 @dataclass(frozen=True)
 class ProviderQuality:
@@ -193,6 +201,93 @@ def _observation_count(value: Any) -> int:
     return 1
 
 
+def _sector_analysis(payload: dict[str, Any], as_of: date) -> dict[str, Any] | None:
+    analysis = (payload.get("chapter01") or {}).get("sectorAnalysis")
+    if not isinstance(analysis, dict) or analysis.get("asOf") != as_of.isoformat():
+        return None
+    return analysis
+
+
+def _provenance_entry(analysis: dict[str, Any], trace: dict[str, Any], as_of: date) -> dict[str, Any] | None:
+    quality = analysis.get("quality") if isinstance(analysis.get("quality"), dict) else {}
+    lineage = analysis.get("lineage") if isinstance(analysis.get("lineage"), dict) else {}
+    history = analysis.get("history") if isinstance(analysis.get("history"), dict) else {}
+    versions = lineage.get("versions") if isinstance(lineage.get("versions"), dict) else lineage
+    analysis_quality = trace.get("status") or quality.get("status") or analysis.get("status")
+    if analysis_quality not in {"ok", "partial", "degraded", "reduced-confidence"}:
+        return None
+    history_coverage = history.get("coverage", quality.get("coverage", analysis.get("coverage")))
+    constituent_coverage = trace.get("raw", {}).get("constituentCoverage", quality.get("constituentCoverage", analysis.get("coverage")))
+    version_keys = {
+        "dataVersion": ("dataVersion", "marketDataVersion"),
+        "classificationVersion": ("classificationVersion", "taxonomyVersion"),
+        "membershipVersion": ("membershipVersion",),
+        "universeVersion": ("universeVersion",),
+        "adjustmentVersion": ("adjustmentVersion",),
+        "benchmarkVersion": ("benchmarkVersion",),
+        "calculationVersion": ("calculationVersion",),
+    }
+    result: dict[str, Any] = {
+        "sourceDataset": "sector-continuity-analysis",
+        "actualDate": analysis.get("asOf"),
+        "analysisQuality": analysis_quality,
+        "historyCoverage": history_coverage,
+        "constituentCoverage": constituent_coverage,
+        "evidenceReferences": sorted(set(lineage.get("evidenceReferences") or trace.get("evidenceReferences") or [])),
+        "upstreamEvidenceChecksums": sorted(set(lineage.get("evidenceChecksums") or lineage.get("upstreamEvidenceChecksums") or [])),
+    }
+    for target, candidates in version_keys.items():
+        result[target] = next((versions.get(key) for key in candidates if versions.get(key)), None)
+    required = (
+        "actualDate", "historyCoverage", "constituentCoverage", "dataVersion",
+        "classificationVersion", "membershipVersion", "universeVersion",
+        "adjustmentVersion", "benchmarkVersion", "calculationVersion",
+    )
+    if any(result.get(key) is None for key in required):
+        return None
+    try:
+        result["historyCoverage"] = float(result["historyCoverage"])
+        result["constituentCoverage"] = float(result["constituentCoverage"])
+    except (TypeError, ValueError):
+        return None
+    if result["actualDate"] != as_of.isoformat():
+        return None
+    return result
+
+
+def _bridge_sector_metrics(payload: dict[str, Any], as_of: date) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    analysis = _sector_analysis(payload, as_of)
+    if analysis is None:
+        return {}, {}, ["same-date sector continuity analysis is unavailable"]
+    candidates = analysis.get("candidates") if isinstance(analysis.get("candidates"), list) else []
+    first = candidates[0] if candidates and isinstance(candidates[0], dict) else None
+    candidate_traces = first.get("ruleTraces", []) if first else []
+    market_traces = analysis.get("metricTraces") if isinstance(analysis.get("metricTraces"), list) else []
+    traces: dict[str, dict[str, Any]] = {}
+    for trace in [*candidate_traces, *market_traces]:
+        if isinstance(trace, dict) and trace.get("ruleId") in _SECTOR_RULE_TO_METRIC:
+            traces[str(trace["ruleId"])] = trace
+    metrics: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+    warnings: list[str] = []
+    for rule_id, metric_name in _SECTOR_RULE_TO_METRIC.items():
+        if rule_id != "QTS-01-05-05" and first is None:
+            continue
+        trace = traces.get(rule_id)
+        if not trace:
+            continue
+        value = trace.get("value")
+        if rule_id != "QTS-01-05-02":
+            value = trace.get("percentile")
+        entry = _provenance_entry(analysis, trace, as_of)
+        if value is None or entry is None:
+            warnings.append(f"{metric_name} omitted because value or provenance is incomplete")
+            continue
+        metrics[metric_name] = value
+        provenance[metric_name] = entry
+    return metrics, provenance, warnings
+
+
 def create_after_market_snapshot(as_of: date, service: Any | None = None) -> dict[str, Any]:
     """Create a real-data partial snapshot without inventing unavailable breadth data.
 
@@ -209,12 +304,13 @@ def create_after_market_snapshot(as_of: date, service: Any | None = None) -> dic
         payload = market_service.get(as_of)
     except Exception as exc:
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "asOf": as_of.isoformat(),
             "createdAt": created_at,
             "status": "insufficient",
             "providerQuality": [ProviderQuality("index-daily", "fallback-chain", "failed", 0, (str(exc),)).to_dict()],
             "metrics": {},
+            "metricProvenance": {},
             "events": [],
             "warnings": [f"index provider failed: {exc}", "chapter 01 requires breadth, limit, sector, active-security, and event datasets"],
         }
@@ -233,11 +329,13 @@ def create_after_market_snapshot(as_of: date, service: Any | None = None) -> dic
     positions = [item.get("rangePosition60") for item in indices if item.get("rangePosition60") is not None]
     turnover = [item.get("amountRatio20") for item in indices if item.get("amountRatio20") is not None]
     warnings = list(payload.get("summary", {}).get("warnings", []))
-    warnings.append("chapter 01 breadth, limit, tier-risk, sector, active-security, and event datasets are not yet connected")
+    sector_metrics, metric_provenance, sector_warnings = _bridge_sector_metrics(payload, as_of)
+    warnings.extend(sector_warnings)
+    warnings.append("chapter 01 breadth, limit, tier-risk, active-security, and event datasets are not yet fully connected")
     sources = sorted({item.get("dataQuality", {}).get("source", "unknown") for item in indices})
     status = "fallback" if warnings else "ok"
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "asOf": payload.get("asOf", as_of.isoformat()),
         "createdAt": payload.get("generatedAt", created_at),
         "status": "insufficient",
@@ -249,7 +347,9 @@ def create_after_market_snapshot(as_of: date, service: Any | None = None) -> dic
             "index.bullish_ratio": len(bullish) / len(valid_ma) if valid_ma else None,
             "index.range_position_60": sum(positions) / len(positions) if positions else None,
             "market.turnover_ratio_20": sum(turnover) / len(turnover) if turnover else None,
+            **sector_metrics,
         },
+        "metricProvenance": metric_provenance,
         "events": [],
         "warnings": warnings,
     }

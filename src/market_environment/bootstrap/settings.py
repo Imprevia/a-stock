@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import time
 
 from src.trading_system.data.provider_scrapling import ScraplingStaticEngineConfig
@@ -17,6 +17,50 @@ from ..infrastructure.providers.tdx.config import TDXDailyPackageConfig
 
 class SettingsConfigurationError(ValueError):
     """Raised when a top-level runtime setting is malformed."""
+
+
+
+@dataclass(frozen=True, slots=True)
+class CrawlFallbackConfig:
+    """Opt-in last-tier HTML adapter configuration.
+
+    Default ``enabled=False`` mirrors the existing sector-tier convention: the
+    static HTML adapters exist in the codebase but are NOT registered unless an
+    operator flips the gate.  ``enabled_hosts`` controls which host adapters
+    are registered when the global toggle is on.
+    """
+
+    enabled: bool = False
+    enabled_hosts: tuple[str, ...] = ("sina", "xueqiu")
+
+    def is_host_enabled(self, host: str) -> bool:
+        return self.enabled and host in set(self.enabled_hosts)
+
+
+def _crawl_fallback_hosts(env: Mapping[str, str]) -> tuple[str, ...]:
+    raw = env.get("MARKET_ENVIRONMENT_CRAWL_FALLBACK_HOSTS", "sina,xueqiu")
+    candidates = tuple(
+        stripped.lower()
+        for entry in str(raw).split(",")
+        for stripped in (entry.strip(),)
+        if stripped
+    )
+    if not all(candidate in {"sina", "xueqiu"} for candidate in candidates):
+        raise SettingsConfigurationError(
+            "MARKET_ENVIRONMENT_CRAWL_FALLBACK_HOSTS allows only sina or xueqiu"
+        )
+    return candidates
+
+
+def _crawl_fallback_config(env: Mapping[str, str]) -> CrawlFallbackConfig:
+    return CrawlFallbackConfig(
+        enabled=_boolean(
+            env,
+            "MARKET_ENVIRONMENT_CRAWL_FALLBACK_ENABLED",
+            False,
+        ),
+        enabled_hosts=_crawl_fallback_hosts(env),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +83,7 @@ class MarketEnvironmentSettings:
     persistent_cache_enabled: bool = True
     limits_v1_enabled: bool = False
     sector_enrichment_enabled: bool = False
+    crawl_fallback: CrawlFallbackConfig = field(default_factory=CrawlFallbackConfig)
     collection_workers: int = 2
 
     @classmethod
@@ -93,6 +138,7 @@ class MarketEnvironmentSettings:
                 "MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED",
                 False,
             ),
+            crawl_fallback=_crawl_fallback_config(env),
             collection_workers=_positive_integer(
                 env,
                 "MARKET_ENVIRONMENT_COLLECTION_WORKERS",
@@ -190,4 +236,5 @@ def _scrapling_config(env: Mapping[str, str]) -> ScraplingStaticEngineConfig:
         ) from exc
 
 
-__all__ = ["MarketEnvironmentSettings", "SettingsConfigurationError"]
+
+__all__ = ["CrawlFallbackConfig", "MarketEnvironmentSettings", "SettingsConfigurationError"]

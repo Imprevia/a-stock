@@ -42,6 +42,7 @@ CollectionTaskStatus = Literal[
     "failed-retained",
     "failed-missing",
     "busy",
+    "blocked",
 ]
 
 

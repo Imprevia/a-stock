@@ -26,7 +26,7 @@ from src.market_environment.domain.models import (
     QualityMetadata,
     RedactedProvenance,
 )
-from src.market_environment.snapshot_store import SnapshotRecord
+from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 
 
 AS_OF = date(2026, 9, 3)
@@ -103,7 +103,7 @@ def test_run_task_outcome_and_revision_values_keep_stored_strings() -> None:
     assert CollectionTaskState("failed-retained").value == "failed-retained"
 
     record = SnapshotRecord(
-        dataset="sectors",
+        dataset="industry-ranking",
         as_of=AS_OF,
         payload={"quality": {**quality_payload(), "dataset": "industry-ranking"}},
         source="fixture",
@@ -125,6 +125,28 @@ def test_run_task_outcome_and_revision_values_keep_stored_strings() -> None:
     assert retained.state.value == "failed-retained"
     assert retained.retained is True
     assert materialization_revision_to_storage(revision) == "a" * 64
+
+
+def test_retired_sectors_snapshot_remains_readable_as_audit_evidence(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "legacy-sector-audit.sqlite3")
+    legacy = SnapshotRecord(
+        dataset="sectors",
+        as_of=AS_OF,
+        payload={"quality": {**quality_payload(), "dataset": "sectors"}},
+        source="legacy-fixture",
+        status="ok",
+        observations=10,
+        warnings=("retired public contract",),
+        fetched_at=FETCHED_AT,
+    )
+    store.put(legacy)
+
+    audited = store.get("sectors", AS_OF)
+
+    assert audited is not None
+    assert audited.dataset == "sectors"
+    assert audited.source == "legacy-fixture"
+    assert audited.payload["quality"]["dataset"] == "sectors"
 
 
 def test_typed_values_reject_invalid_identity_and_outcome() -> None:

@@ -1,0 +1,50 @@
+{
+  "dataset": "shenwan-point-in-time-membership",
+  "source": "operator-import",
+  "revision": "shenwan-fixture-2026-v1",
+  "taxonomyFamily": "shenwan",
+  "taxonomyLevel": 1,
+  "taxonomyVersion": "shenwan-l1-2026",
+  "sourceRevision": "fixture-source-v1",
+  "effectiveFrom": "2026-07-01",
+  "effectiveTo": null,
+  "dataRights": {
+    "reviewed": true,
+    "automationAllowed": true,
+    "storageAllowed": true,
+    "derivedDisplayAllowed": true,
+    "clientLicense": "fixture-only",
+    "underlyingDataTerms": "synthetic-fixture-only"
+  },
+  "industries": [
+    {"industryId": "801010", "displayName": "农林牧渔"},
+    {"industryId": "801020", "displayName": "采掘"}
+  ],
+  "memberships": [
+    {
+      "securityId": "sh.600001",
+      "industryId": "801010",
+      "validFrom": "2021-12-13",
+      "validTo": "2026-07-01",
+      "sourceRevision": "fixture-source-v1",
+      "evidenceChecksum": "fixture-membership-before"
+    },
+    {
+      "securityId": "sh.600001",
+      "industryId": "801020",
+      "validFrom": "2026-07-01",
+      "validTo": null,
+      "sourceRevision": "fixture-source-v1",
+      "evidenceChecksum": "fixture-membership-after"
+    },
+    {
+      "securityId": "bj.920001",
+      "industryId": "801010",
+      "validFrom": "2025-10-09",
+      "validTo": null,
+      "sourceRevision": "fixture-source-v1",
+      "evidenceChecksum": "fixture-membership-beijing"
+    }
+  ],
+  "checksum": "df0f80106120dcf86c7b7c3a86a090e182833aab0a415c1f934e6e115c1f7357"
+}

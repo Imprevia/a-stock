@@ -134,6 +134,23 @@ marketEnvironment:
   fuyao:
     existingSecret: ""
     secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    ths:
+      # New THS catalog/history/dump capabilities are independent from the
+      # retired compatibility `sectors` switch and remain fail-closed.
+      writesAuthorized: false
+      catalog:
+        enabled: false
+        revision: ""
+      membership:
+        enabled: false
+        revision: ""
+      history:
+        enabled: false
+        revision: ""
+      dumps:
+        dailyEnabled: false
+        incrementalEnabled: false
+        adjustmentEnabled: false
     datasets:
       core:
         enabled: false
@@ -162,6 +179,14 @@ marketEnvironment:
     poolTimeoutSeconds: 10
     statementTimeoutMs: 30000
   settlementTime: "15:10"
+  # Last-tier HTML sector fallback. Default disabled; do NOT flip to true
+  # without an authorized --allow-real probe and a matching capability
+  # report (see spec add-static-html-sector-fallback).
+  crawlFallback:
+    enabled: false
+    hosts:
+      - sina
+      - xueqiu
   scheduledCollection:
     enabled: false
     suspend: true

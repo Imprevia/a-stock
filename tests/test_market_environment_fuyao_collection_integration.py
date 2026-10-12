@@ -1,18 +1,31 @@
 from datetime import date, datetime
 import copy
 import json
+from dataclasses import dataclass
 
 import pytest
 
+from src.market_environment.application.collection import SourceAdapterRegistry
 from src.market_environment.collection import CollectionCoordinator
+from src.market_environment.domain.models import CollectionTaskState
 from src.market_environment.fuyao_config import (
     FUYAO_SECTORS_RUNTIME_REVISION,
     FuyaoCollectionConfig,
 )
 from src.market_environment.fuyao_market import FuyaoMarketResult
+from src.market_environment.infrastructure.providers.fuyao_policy import (
+    FuyaoCollectionPolicy,
+)
+from src.market_environment.infrastructure.providers.sectors_acquisition import (
+    EastmoneySectorDelayedAdapter,
+    EastmoneySectorEnrichmentAdapter,
+    EastmoneySectorPrimaryAdapter,
+    FuyaoSectorSourceAdapter,
+    SectorsAcquisitionPlan,
+)
 from src.market_environment.provider_capability import ProviderCapabilityReport
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
-from src.market_environment.refresh import MARKET_TIME_ZONE
+from src.market_environment.refresh import MARKET_TIME_ZONE, settlement_time
 from src.market_environment.sector_enrichment import ENRICHMENT_MAPPING_REVISION
 from src.market_environment import cli as market_cli
 from src.market_environment.cli import main as cli_main
@@ -22,7 +35,31 @@ AS_OF = date(2026, 9, 18)
 NOW = datetime(2026, 9, 18, 16, 0, tzinfo=MARKET_TIME_ZONE)
 
 
+@dataclass(frozen=True)
+class LegacyDatasetDate:
+    """Retired acquisition identity deliberately excluded from the public enum."""
+
+    dataset: str
+    as_of: date
+
+
+class LegacySourceAdapterRegistry(SourceAdapterRegistry):
+    """Validate the retired plan without reopening the public registry."""
+
+    def validate_references(self, plans) -> None:
+        for candidate in plans:
+            assert candidate.dataset_id == "sectors"
+            for step in candidate.steps:
+                adapter = self.get(step.adapter_id)
+                assert adapter.capability.available
+                if step.capability_revision is not None:
+                    assert step.capability_revision == adapter.capability.revision
+
+
 class ChapterProvider:
+    def __init__(self):
+        self.sector_calls = 0
+
     def fetch_chapter01_breadth(self, as_of, *, allow_current_snapshot):
         return {
             "advanceCount": 2, "declineCount": 1, "flatCount": 0,
@@ -40,6 +77,53 @@ class ChapterProvider:
     def fetch_chapter01_limits(self, as_of):
         return {"limitUpCount": 1, "limitDownCount": 0, "failedLimitUpCount": 0, "quality": {"status": "ok", "source": "fixture", "observations": 1, "asOf": as_of.isoformat(), "warnings": []}}
 
+    def _fetch_eastmoney_industries_from(self, url):
+        self.sector_calls += 1
+        return [
+            {
+                "f12": "BK001",
+                "f14": "电子",
+                "f3": 2.5,
+                "f6": 1000.0,
+                "f62": 88.0,
+                "f184": 1.25,
+                "f104": 8,
+                "f105": 2,
+                "f128": "样本股",
+            }
+        ]
+
+    def _build_sectors(self, rows, as_of, *, source, status, warnings):
+        normalized = [
+            {
+                "rank": index,
+                "code": row["f12"],
+                "name": row["f14"],
+                "changePct": row["f3"],
+                "amount": row["f6"],
+                "mainNet": row["f62"],
+                "mainNetPct": row["f184"],
+                "upCount": row["f104"],
+                "downCount": row["f105"],
+                "leader": row["f128"],
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
+        return {
+            "rows": normalized,
+            "state": "当日排名已观测",
+            "quality": {
+                "dataset": "industry-ranking",
+                "source": source,
+                "provider": "eastmoney",
+                "status": status,
+                "observations": len(normalized),
+                "asOf": as_of.isoformat(),
+                "warning": "；".join(warnings) if warnings else None,
+                "warnings": list(warnings),
+            },
+        }
+
 
 class FailingFuyaoAdapter:
     def fetch_breadth(self, as_of):
@@ -48,9 +132,13 @@ class FailingFuyaoAdapter:
 
 class FailingSectorProvider(ChapterProvider):
     def __init__(self):
-        self.sector_calls = 0
+        super().__init__()
 
     def fetch_chapter01_sectors(self, as_of, *, allow_current_snapshot):
+        self.sector_calls += 1
+        raise RuntimeError("Eastmoney primary disconnected; delayed unavailable")
+
+    def _fetch_eastmoney_industries_from(self, url):
         self.sector_calls += 1
         raise RuntimeError("Eastmoney primary disconnected; delayed unavailable")
 
@@ -174,6 +262,51 @@ def eligible_report(
     )
 
 
+def legacy_sector_plan(
+    provider,
+    adapter,
+    store,
+    config,
+    *,
+    now=NOW,
+    enrichment_enabled=False,
+):
+    policy = FuyaoCollectionPolicy(config, store)
+    adapters = LegacySourceAdapterRegistry(
+        (
+            EastmoneySectorPrimaryAdapter(provider, now=lambda: now),
+            EastmoneySectorDelayedAdapter(provider, now=lambda: now),
+            FuyaoSectorSourceAdapter(
+                adapter,
+                revision=policy.revision("sectors"),
+                now=lambda: now,
+            ),
+            EastmoneySectorEnrichmentAdapter(
+                provider,
+                enabled=lambda: enrichment_enabled,
+                now=lambda: now,
+            ),
+        )
+    )
+    local_now = now.astimezone(MARKET_TIME_ZONE)
+    return SectorsAcquisitionPlan(
+        adapters,
+        fuyao_is_enabled=policy.is_enabled,
+        fuyao_gate_warning=policy.gate_warning,
+        fuyao_shadow_enabled=policy.shadow_enabled,
+        fuyao_revision=policy.revision,
+        market_today=lambda: local_now.date(),
+        is_settled=lambda as_of: (
+            as_of == local_now.date()
+            and local_now.time().replace(tzinfo=None) >= settlement_time()
+        ),
+    )
+
+
+def collect_legacy_sectors(plan):
+    return plan.collect(LegacyDatasetDate("sectors", AS_OF))
+
+
 def test_enabled_dataset_is_rejected_before_lease_when_revision_missing(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     config = FuyaoCollectionConfig.from_environment({
@@ -203,7 +336,7 @@ def test_enabled_dataset_falls_back_and_retains_warning(tmp_path):
     assert store.get("breadth", AS_OF).source == "fixture"
 
 
-def test_sectors_prefers_eastmoney_when_it_is_healthy(tmp_path):
+def test_public_coordinator_rejects_retired_sectors_before_provider_io(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     config = FuyaoCollectionConfig.from_environment(
@@ -212,22 +345,28 @@ def test_sectors_prefers_eastmoney_when_it_is_healthy(tmp_path):
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
+    provider = ChapterProvider()
     adapter = FuyaoSectorAdapter()
-    result = CollectionCoordinator(
-        ChapterProvider(),
+    coordinator = CollectionCoordinator(
+        provider,
         store,
         now=lambda: NOW,
         fuyao_config=config,
         fuyao_adapter=adapter,
         rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
+    )
 
-    assert result.run.status == "success"
-    assert result.tasks[0].source == "fixture"
+    with pytest.raises(
+        ValueError,
+        match="unsupported collection dataset: sectors; use industry-ranking",
+    ):
+        coordinator.collect(AS_OF, ["sectors"])
+
+    assert provider.sector_calls == 0
     assert adapter.calls == 0
 
 
-def test_sectors_shadow_failure_does_not_block_eastmoney_result(tmp_path):
+def test_retired_sector_plan_shadow_failure_does_not_block_eastmoney_result(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     config = FuyaoCollectionConfig.from_environment(
@@ -237,24 +376,22 @@ def test_sectors_shadow_failure_does_not_block_eastmoney_result(tmp_path):
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED": "1",
         }
     )
+    provider = ChapterProvider()
     adapter = FuyaoSectorAdapter(fail=True)
-    result = CollectionCoordinator(
-        ChapterProvider(),
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(provider, adapter, store, config)
+    )
 
-    assert result.run.status == "success"
-    assert result.tasks[0].status == "success"
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert outcome.candidate is not None
+    assert outcome.candidate.source == "eastmoney-clist"
+    assert provider.sector_calls == 1
     assert adapter.calls == 1
-    assert result.tasks[0].timings["shadow"]["status"] == "insufficient"
-    assert "shadow 不可用" in (result.tasks[0].warning or "")
+    assert outcome.attempts[-1].role == "shadow"
+    assert "shadow 不可用" in (outcome.warning or "")
 
 
-def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
+def test_retired_sector_plan_uses_approved_fuyao_after_eastmoney_chain_fails(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     config = FuyaoCollectionConfig.from_environment(
@@ -265,34 +402,27 @@ def test_sectors_uses_approved_fuyao_only_after_eastmoney_chain_fails(tmp_path):
     )
     provider = FailingSectorProvider()
     adapter = FuyaoSectorAdapter()
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(provider, adapter, store, config)
+    )
+    candidate = outcome.candidate
 
-    assert result.run.status == "partial"
-    assert result.tasks[0].status == "partial"
-    assert result.tasks[0].source == "fuyao"
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert candidate is not None and candidate.source == "fuyao"
     assert adapter.calls == 1
-    assert snapshot is not None and snapshot.source == "fuyao"
-    assert snapshot.payload["rows"][0]["mainNet"] is None
-    assert "东方财富行业排名不可用" in (result.tasks[0].warning or "")
-    assert "扶摇行业 provider fields unavailable" in (result.tasks[0].warning or "")
-    assert f"capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}" in (result.tasks[0].warning or "")
-    warning = result.tasks[0].warning or ""
+    assert candidate.payload["rows"][0]["mainNet"] is None
+    assert "东方财富行业排名不可用" in (outcome.warning or "")
+    assert "扶摇行业 provider fields unavailable" in (outcome.warning or "")
+    assert f"capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}" in (outcome.warning or "")
+    warning = outcome.warning or ""
     assert warning.index("扶摇行业 provider fields unavailable") < warning.index("东方财富行业排名不可用")
     assert warning.index("东方财富行业排名不可用") < warning.index(
         f"capability revision: {FUYAO_SECTORS_RUNTIME_REVISION}"
     )
-    assert result.tasks[0].timings["sourceRevision"] == FUYAO_SECTORS_RUNTIME_REVISION
+    assert candidate.source_revision == FUYAO_SECTORS_RUNTIME_REVISION
 
 
-def test_sectors_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp_path):
+def test_retired_sector_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp_path):
     revision = "fuyao-market-v2"
     store = SnapshotStore(tmp_path / "snapshots-v2.sqlite3")
     store.put_capability_report(eligible_report("sectors", revision=revision))
@@ -305,26 +435,18 @@ def test_sectors_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp
     provider = FailingSectorProvider()
     adapter = FuyaoSectorAdapter(revision=revision)
 
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
-    task = result.tasks[0]
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(provider, adapter, store, config)
+    )
+    candidate = outcome.candidate
 
-    assert result.run.status == "partial"
-    assert task.status == "partial"
-    assert task.source == "fuyao"
-    assert task.timings["sourceRevision"] == revision
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert candidate is not None and candidate.source == "fuyao"
+    assert candidate.source_revision == revision
     assert adapter.calls == 1
-    assert snapshot is not None
-    assert snapshot.as_of == AS_OF
-    assert snapshot.payload["quality"]["asOf"] == AS_OF.isoformat()
-    row = snapshot.payload["rows"][0]
+    assert candidate.identity.as_of == AS_OF
+    assert candidate.payload["quality"]["asOf"] == AS_OF.isoformat()
+    row = candidate.payload["rows"][0]
     assert {field: row[field] for field in ("code", "name", "changePct", "amount")} == {
         "code": "881101.TI",
         "name": "电子",
@@ -335,7 +457,7 @@ def test_sectors_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp
         row[field] is None
         for field in ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
     )
-    warning = task.warning or ""
+    warning = outcome.warning or ""
     assert warning.index("扶摇行业 provider fields unavailable") < warning.index(
         "东方财富行业排名不可用"
     )
@@ -344,7 +466,7 @@ def test_sectors_v2_fallback_preserves_exact_date_and_partial_field_contract(tmp
     )
 
 
-def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_path):
+def test_retired_fuyao_sector_enrichment_is_kept_in_candidate_metadata(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     config = FuyaoCollectionConfig.from_environment(
@@ -355,32 +477,33 @@ def test_fuyao_sector_enrichment_is_persisted_in_snapshot_and_task_metadata(tmp_
     )
     provider = EnrichingSectorProvider()
 
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(),
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            provider,
+            FuyaoSectorAdapter(),
+            store,
+            config,
+            enrichment_enabled=True,
+        )
+    )
+    candidate = outcome.candidate
 
-    assert result.tasks[0].status == "partial"
+    assert outcome.state is CollectionTaskState.PARTIAL
     assert provider.enrichment_calls == [(AS_OF, True)]
-    assert snapshot is not None
-    assert snapshot.source == "fuyao"
-    assert snapshot.payload["rows"][0]["mainNet"] == 88.0
-    assert snapshot.payload["rows"][0]["leader"] == "样本股"
-    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert candidate is not None and candidate.source == "fuyao"
+    assert candidate.payload["rows"][0]["mainNet"] == 88.0
+    assert candidate.payload["rows"][0]["leader"] == "样本股"
+    enrichment = candidate.payload["quality"]["sectorEnrichment"]
     assert enrichment["sameVendor"] is True
     assert enrichment["mappingRevision"] == "fuyao-eastmoney-sector-map-v1"
     assert enrichment["matchMethod"] == "normalized-name"
     assert enrichment["matchedRows"] == 1
     assert enrichment["identityCoverage"] == 1.0
-    assert result.tasks[0].timings["sectorEnrichment"] == enrichment
+    assert candidate.quality is not None
+    assert candidate.quality.extra["sectorEnrichment"] == enrichment
 
 
-def test_sector_enrichment_failure_commits_fuyao_base_and_does_not_fail_siblings(tmp_path):
+def test_retired_sector_enrichment_failure_preserves_base_and_not_supported_sibling(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     config = FuyaoCollectionConfig.from_environment(
@@ -391,27 +514,32 @@ def test_sector_enrichment_failure_commits_fuyao_base_and_does_not_fail_siblings
     )
     provider = EnrichingSectorProvider(fail_enrichment=True)
 
-    result = CollectionCoordinator(
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            provider,
+            FuyaoSectorAdapter(),
+            store,
+            config,
+            enrichment_enabled=True,
+        )
+    )
+    candidate = outcome.candidate
+    sibling = CollectionCoordinator(
         provider,
         store,
         now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(),
         rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors", "breadth"])
-    tasks = {task.dataset: task for task in result.tasks}
-    snapshot = store.get("sectors", AS_OF)
+    ).collect(AS_OF, ["breadth"])
 
-    assert result.run.status == "partial"
-    assert tasks["sectors"].status == "partial"
-    assert tasks["breadth"].status == "success"
-    assert snapshot is not None
-    assert snapshot.payload["rows"][0]["mainNet"] is None
-    assert snapshot.payload["quality"]["sectorEnrichment"]["status"] == "failed"
-    assert "fixture dataapi unavailable" in (tasks["sectors"].warning or "")
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert candidate is not None
+    assert candidate.payload["rows"][0]["mainNet"] is None
+    assert candidate.payload["quality"]["sectorEnrichment"]["status"] == "failed"
+    assert "fixture dataapi unavailable" in (outcome.warning or "")
+    assert sibling.tasks[0].status == "success"
 
 
-def test_sector_enrichment_is_skipped_before_settlement_without_provider_call(tmp_path):
+def test_retired_sector_enrichment_is_skipped_before_settlement_without_provider_call(tmp_path):
     before_settlement = datetime(2026, 9, 18, 14, 30, tzinfo=MARKET_TIME_ZONE)
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
@@ -423,25 +551,27 @@ def test_sector_enrichment_is_skipped_before_settlement_without_provider_call(tm
     )
     provider = EnrichingSectorProvider()
 
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: before_settlement,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(),
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            provider,
+            FuyaoSectorAdapter(),
+            store,
+            config,
+            now=before_settlement,
+            enrichment_enabled=True,
+        )
+    )
+    candidate = outcome.candidate
 
-    assert result.tasks[0].status == "partial"
+    assert outcome.state is CollectionTaskState.PARTIAL
     assert provider.enrichment_calls == []
-    assert snapshot is not None
-    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert candidate is not None
+    enrichment = candidate.payload["quality"]["sectorEnrichment"]
     assert enrichment["status"] == "skipped"
     assert enrichment["dateEvidence"]["eligible"] is False
 
 
-def test_sector_enrichment_is_skipped_for_historical_date_without_provider_call(tmp_path):
+def test_retired_sector_plan_rejects_historical_date_without_provider_call(tmp_path):
     historical_now = datetime(2026, 9, 21, 16, 0, tzinfo=MARKET_TIME_ZONE)
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
@@ -452,25 +582,24 @@ def test_sector_enrichment_is_skipped_for_historical_date_without_provider_call(
         }
     )
     provider = EnrichingSectorProvider()
+    adapter = FuyaoSectorAdapter()
 
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: historical_now,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(),
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"], allow_historical_latest_only=True)
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            provider,
+            adapter,
+            store,
+            config,
+            now=historical_now,
+            enrichment_enabled=True,
+        )
+    )
 
-    assert result.tasks[0].status == "partial"
+    assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert provider.enrichment_calls == []
-    assert snapshot is not None
-    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
-    assert enrichment["status"] == "skipped"
-    assert enrichment["dateEvidence"]["reason"] == "东方财富 dataapi 行业字段补充仅允许当前上海交易日且结算后调用"
-    assert enrichment["dateEvidence"]["requested"] == AS_OF.isoformat()
-    assert enrichment["dateEvidence"]["current"] == "2026-09-21"
+    assert provider.sector_calls == 0
+    assert adapter.calls == 0
+    assert "历史日期不使用当前数据回填" in (outcome.warning or "")
 
 
 @pytest.mark.parametrize(
@@ -480,7 +609,7 @@ def test_sector_enrichment_is_skipped_for_historical_date_without_provider_call(
         ("15:10", 1, "complete", "current Shanghai market date after settlement"),
     ],
 )
-def test_sector_enrichment_settlement_boundary_is_inclusive(
+def test_retired_sector_enrichment_settlement_boundary_is_inclusive(
     tmp_path,
     clock_time,
     expected_calls,
@@ -499,26 +628,28 @@ def test_sector_enrichment_settlement_boundary_is_inclusive(
     )
     provider = EnrichingSectorProvider()
 
-    result = CollectionCoordinator(
-        provider,
-        store,
-        now=lambda: at_boundary,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(),
-        rebuild_aggregate=lambda _date: None,
-    ).collect(AS_OF, ["sectors"])
-    snapshot = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            provider,
+            FuyaoSectorAdapter(),
+            store,
+            config,
+            now=at_boundary,
+            enrichment_enabled=True,
+        )
+    )
+    candidate = outcome.candidate
 
     assert provider.enrichment_calls == ([(AS_OF, True)] if expected_calls else [])
-    assert snapshot is not None
-    enrichment = snapshot.payload["quality"]["sectorEnrichment"]
+    assert candidate is not None
+    enrichment = candidate.payload["quality"]["sectorEnrichment"]
     assert enrichment["status"] == expected_status
     assert enrichment["dateEvidence"]["reason"] == expected_reason
     assert enrichment["dateEvidence"]["current"] == AS_OF.isoformat()
     assert enrichment["dateEvidence"]["settled"] is (expected_calls == 1)
 
 
-def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):
+def test_retired_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     config = FuyaoCollectionConfig.from_environment(
         {
@@ -527,21 +658,17 @@ def test_sectors_capability_gate_blocks_fuyao_after_eastmoney_failure(tmp_path):
         }
     )
     adapter = FuyaoSectorAdapter()
-    result = CollectionCoordinator(
-        FailingSectorProvider(),
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-    ).collect(AS_OF, ["sectors"])
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(FailingSectorProvider(), adapter, store, config)
+    )
 
-    assert result.tasks[0].status == "failed-missing"
+    assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert adapter.calls == 0
-    assert "缺少批准报告" in (result.tasks[0].warning or "")
+    assert "缺少批准报告" in (outcome.warning or "")
 
 
 @pytest.mark.parametrize("revision", ["fuyao-market-v1", "unknown-revision"])
-def test_sectors_matching_eligible_non_v2_report_still_blocks_fuyao_io(
+def test_retired_sectors_matching_eligible_non_v2_report_still_blocks_fuyao_io(
     tmp_path,
     revision,
 ):
@@ -555,17 +682,13 @@ def test_sectors_matching_eligible_non_v2_report_still_blocks_fuyao_io(
     )
     adapter = FuyaoSectorAdapter(revision=revision)
 
-    result = CollectionCoordinator(
-        FailingSectorProvider(),
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-    ).collect(AS_OF, ["sectors"])
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(FailingSectorProvider(), adapter, store, config)
+    )
 
-    assert result.tasks[0].status == "failed-missing"
+    assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert adapter.calls == 0
-    warning = result.tasks[0].warning or ""
+    warning = outcome.warning or ""
     assert f"仅接受 capability revision {FUYAO_SECTORS_RUNTIME_REVISION}" in warning
     assert revision in warning
 
@@ -577,7 +700,7 @@ def test_sectors_matching_eligible_non_v2_report_still_blocks_fuyao_io(
         (ProviderCapabilityReport(provider="fuyao", dataset="sectors", revision="r2", status="eligible"), "revision 不匹配"),
     ],
 )
-def test_sectors_capability_status_or_revision_mismatch_blocks_provider(tmp_path, report, expected_warning):
+def test_retired_sectors_capability_status_or_revision_mismatch_blocks_provider(tmp_path, report, expected_warning):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(report)
     config = FuyaoCollectionConfig.from_environment(
@@ -587,20 +710,16 @@ def test_sectors_capability_status_or_revision_mismatch_blocks_provider(tmp_path
         }
     )
     adapter = FuyaoSectorAdapter()
-    result = CollectionCoordinator(
-        FailingSectorProvider(),
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=adapter,
-    ).collect(AS_OF, ["sectors"])
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(FailingSectorProvider(), adapter, store, config)
+    )
 
-    assert result.tasks[0].status == "failed-missing"
+    assert outcome.state is CollectionTaskState.FAILED_MISSING
     assert adapter.calls == 0
-    assert expected_warning in (result.tasks[0].warning or "")
+    assert expected_warning in (outcome.warning or "")
 
 
-def test_sectors_fallback_failure_retains_only_same_date_snapshot(tmp_path):
+def test_retired_sectors_failure_leaves_same_date_audit_snapshot_unchanged(tmp_path):
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     store.put_capability_report(eligible_report("sectors"))
     store.put(
@@ -622,17 +741,22 @@ def test_sectors_fallback_failure_retains_only_same_date_snapshot(tmp_path):
             "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION": FUYAO_SECTORS_RUNTIME_REVISION,
         }
     )
-    result = CollectionCoordinator(
-        FailingSectorProvider(),
-        store,
-        now=lambda: NOW,
-        fuyao_config=config,
-        fuyao_adapter=FuyaoSectorAdapter(fail=True),
-    ).collect(AS_OF, ["sectors"])
+    before = store.get("sectors", AS_OF)
+    outcome = collect_legacy_sectors(
+        legacy_sector_plan(
+            FailingSectorProvider(),
+            FuyaoSectorAdapter(fail=True),
+            store,
+            config,
+        )
+    )
+    after = store.get("sectors", AS_OF)
 
-    assert result.tasks[0].status == "failed-retained"
-    assert store.get("sectors", AS_OF).source == "old-fuyao"
-    assert "扶摇行业 fallback 不可用" in (result.tasks[0].warning or "")
+    assert outcome.state is CollectionTaskState.FAILED_MISSING
+    assert "扶摇行业 fallback 不可用" in (outcome.warning or "")
+    assert before is not None and after is not None
+    assert after.checksum == before.checksum
+    assert after.source == "old-fuyao"
 
 
 def test_offline_capability_probe_uses_fixture_only(monkeypatch, tmp_path, capsys):

@@ -113,6 +113,10 @@ def create_database_engine(settings: DatabaseSettings | None = None) -> Engine:
             )
         finally:
             cursor.close()
+        # psycopg starts an implicit transaction for the SELECT above.  End
+        # that connection-initialization transaction before SQLAlchemy applies
+        # a unit-of-work isolation level and opens the caller's transaction.
+        dbapi_connection.commit()
 
     return engine
 

@@ -1,0 +1,5 @@
+[
+  {"code": "BK0421", "name": "半导体", "changePct": 2.34, "amount": 123456789.0, "leader": "中芯国际"},
+  {"code": "BK0475", "name": "新能源", "changePct": 1.09, "amount": 98000000.0, "leader": "宁德时代"},
+  {"code": "BK0420", "name": "银行", "changePct": -0.45, "amount": 45000000.0, "leader": "招商银行"}
+]

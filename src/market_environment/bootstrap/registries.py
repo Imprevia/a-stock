@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from ..infrastructure.providers.sina_html import SinaHtmlSectorAdapter
+from ..infrastructure.providers.xueqiu_html import XueqiuHtmlSectorAdapter
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +29,13 @@ from ..infrastructure.collection import (
     CoreDatasetCommitter,
     LimitsDatasetCommitter,
     StandardSnapshotCommitter,
+    ThsIndustryRankingCommitter,
+    ThsIndustryRankingProjector,
+    ThsSectorBreadthCommitter,
+    ThsSectorBreadthProjector,
+    ThsSectorTurnoverCommitter,
+    ThsSectorTurnoverProjector,
+    build_local_detail_projector_registry,
 )
 from ..infrastructure.persistence.postgres import (
     MarketEnvironmentUnitOfWork,
@@ -38,6 +48,8 @@ from ..infrastructure.persistence.postgres import (
     PostgresMaterializedAggregateRepository,
     PostgresProviderCapabilityRepository,
     PostgresSnapshotRepository,
+    PostgresSectorContinuityRepository,
+    PostgresThsSectorRepository,
     PostgresTimezonePreferenceRepository,
     PostgresTradingSessionRepository,
 )
@@ -147,6 +159,7 @@ def build_runtime_acquisition_registries(
     retained_core_indices: Callable[[Any], Any],
     market_today: Callable[[], date],
     is_settled: Callable[[date], bool],
+    crawl_fallback_is_enabled: Callable[[str], bool] = lambda _host: False,
 ) -> tuple[SourceAdapterRegistry, AcquisitionPlanRegistry]:
     """Build staged runtime registries for each migrated dataset."""
 
@@ -172,7 +185,7 @@ def build_runtime_acquisition_registries(
         EastmoneyActiveDirectionDelayedAdapter(provider),
         TDXDerivedActiveDirectionAdapter(provider),
     )
-    sector_sources = (
+    sector_sources = [
         EastmoneySectorPrimaryAdapter(provider),
         EastmoneySectorDelayedAdapter(provider),
         FuyaoSectorSourceAdapter(
@@ -183,7 +196,12 @@ def build_runtime_acquisition_registries(
             provider,
             enabled=sector_enrichment_enabled,
         ),
-    )
+    ]
+    if crawl_fallback_is_enabled("sina"):
+        sector_sources.append(SinaHtmlSectorAdapter())
+    if crawl_fallback_is_enabled("xueqiu"):
+        sector_sources.append(XueqiuHtmlSectorAdapter())
+    sector_sources = tuple(sector_sources)
     limits_sources = (
         FuyaoLimitsSourceAdapter(provider),
         EastmoneyLimitsSourceAdapter(provider),
@@ -233,15 +251,6 @@ def build_runtime_acquisition_registries(
         is_settled=is_settled,
         previous_session=limits_previous_session,
     )
-    sectors_plan = SectorsAcquisitionPlan(
-        source_adapters,
-        fuyao_is_enabled=fuyao_is_enabled,
-        fuyao_gate_warning=fuyao_gate_warning,
-        fuyao_shadow_enabled=fuyao_shadow_enabled,
-        fuyao_revision=fuyao_revision,
-        market_today=market_today,
-        is_settled=is_settled,
-    )
     active_direction_plan = ActiveDirectionAcquisitionPlan(
         source_adapters,
         tdx_derived_is_enabled=tdx_active_direction_is_enabled,
@@ -259,13 +268,9 @@ def build_runtime_acquisition_registries(
                     limits_plan
                     if dataset_id == "limits"
                     else (
-                        sectors_plan
-                        if dataset_id == "sectors"
-                        else (
-                            active_direction_plan
-                            if dataset_id == "activeDirection"
-                            else _deferred_acquisition_plan(dataset_id, source_adapters)
-                        )
+                        active_direction_plan
+                        if dataset_id == "activeDirection"
+                        else _deferred_acquisition_plan(dataset_id, source_adapters)
                     )
                 )
             )
@@ -285,7 +290,9 @@ def build_committer_registry(
         "core": CoreDatasetCommitter(unit_of_work_factory),
         "breadth": StandardSnapshotCommitter("breadth", unit_of_work_factory),
         "limits": LimitsDatasetCommitter(unit_of_work_factory),
-        "sectors": StandardSnapshotCommitter("sectors", unit_of_work_factory),
+        "industry-ranking": ThsIndustryRankingCommitter(unit_of_work_factory),
+        "sector-turnover": ThsSectorTurnoverCommitter(unit_of_work_factory),
+        "sector-breadth": ThsSectorBreadthCommitter(unit_of_work_factory),
         "activeDirection": StandardSnapshotCommitter(
             "activeDirection",
             unit_of_work_factory,
@@ -293,6 +300,32 @@ def build_committer_registry(
     }
     return DatasetCommitterRegistry.complete(
         committers[dataset_id] for dataset_id in DATASET_IDS
+    )
+
+
+def build_detail_projector_registry(
+    store: Any,
+    *,
+    limits_enabled: bool | Callable[[], bool] | None = None,
+) -> DatasetDetailProjectorRegistry:
+    """Build local status projectors with typed THS dataset details."""
+
+    projectors = {
+        projector.dataset_id: projector
+        for projector in build_local_detail_projector_registry(
+            store,
+            limits_enabled=limits_enabled,
+        )
+    }
+    projectors.update(
+        {
+            "industry-ranking": ThsIndustryRankingProjector(),
+            "sector-turnover": ThsSectorTurnoverProjector(),
+            "sector-breadth": ThsSectorBreadthProjector(),
+        }
+    )
+    return DatasetDetailProjectorRegistry.complete(
+        projectors[dataset_id] for dataset_id in DATASET_IDS
     )
 
 
@@ -373,6 +406,8 @@ def _unavailable_unit_of_work() -> Any:
 
 def _postgres_repository_bundle(connection: Any) -> SimpleNamespace:
     leases = PostgresLeaseRepository(connection)
+    sector_continuity = PostgresSectorContinuityRepository(connection)
+    ths_sectors = PostgresThsSectorRepository(connection)
     return SimpleNamespace(
         snapshots=PostgresSnapshotRepository(connection),
         collection_runs=PostgresCollectionRunRepository(connection),
@@ -384,12 +419,22 @@ def _postgres_repository_bundle(connection: Any) -> SimpleNamespace:
         provider_capabilities=PostgresProviderCapabilityRepository(connection),
         limit_details=PostgresLimitDetailRepository(connection),
         timezone_preferences=PostgresTimezonePreferenceRepository(connection),
+        sector_continuity=sector_continuity,
+        sector_taxonomy=sector_continuity,
+        sector_memberships=sector_continuity,
+        sector_security_facts=sector_continuity,
+        sector_benchmarks=sector_continuity,
+        sector_industry_aggregates=sector_continuity,
+        sector_results=sector_continuity,
+        sector_backfill=sector_continuity,
+        ths_sectors=ths_sectors,
     )
 
 
 __all__ = [
     "RuntimeRegistries",
     "build_committer_registry",
+    "build_detail_projector_registry",
     "build_deferred_acquisition_registries",
     "build_runtime_acquisition_registries",
     "build_unit_of_work_factory",

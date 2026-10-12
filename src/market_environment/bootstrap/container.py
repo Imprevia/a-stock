@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -19,11 +20,13 @@ from src.trading_system.data.provider_transport import (
 from src.trading_system.data.provider_scrapling import ScraplingStaticHttpEngine
 
 from ..application.collection import DatasetCollectorRegistry
+from ..application.commands import ThsOperationGates
 from ..application.ports import (
     CollectionCommandPort,
     CollectionQueryPort,
     MarketEnvironmentQueryPort,
 )
+from ..domain.models import DATASET_IDS
 from ..infrastructure.collection import (
     AcquisitionPlanCollector,
     CollectionCoordinator,
@@ -33,13 +36,23 @@ from ..infrastructure.collection import (
     LimitsPreviousSessionCommitPreparer,
     LimitsPreviousSessionEvidenceReader,
     ProviderLimitHistoryPreparer,
-    build_local_detail_projector_registry,
+    ThsIndustryRankingCollector,
+    ThsSectorBreadthCollector,
+    ThsSectorTurnoverCollector,
 )
 from ..infrastructure.providers.fuyao.market import (
     FuyaoMarketAdapter,
     FuyaoMarketClient,
 )
-from ..infrastructure.collection.refresh import MARKET_TIME_ZONE
+from ..infrastructure.providers.fuyao.ths_dump import (
+    FuyaoThsDumpReader,
+    merge_member_facts,
+)
+from ..infrastructure.providers.fuyao.ths_sector import (
+    FuyaoThsCapabilityPolicy,
+    FuyaoThsSectorAdapter,
+)
+from ..infrastructure.collection.refresh import MARKET_TIME_ZONE, effective_market_date
 from ..infrastructure.materialized_aggregate_factory import build_composer, build_rebuilder
 from ..infrastructure.materialization_support import MaterializationSupport
 from ..timezone_preferences import TimezonePreferenceStore
@@ -48,6 +61,8 @@ from ..infrastructure.compatibility import (
     CoordinatorCollectionQueryAdapter,
     RebuilderAggregateCommandAdapter,
     RepositoryMarketEnvironmentQueryAdapter,
+    ThsSectorCommandAdapter,
+    ThsSectorQueryAdapter,
     TimezoneCommandAdapter,
     TimezoneQueryAdapter,
 )
@@ -59,12 +74,12 @@ from ..infrastructure.providers import (
     CoreCollector,
     FuyaoCollectionPolicy,
     LimitsCollector,
-    SectorsCollector,
 )
 from ..infrastructure.providers.runtime import CollectorProviderRuntime
 from .registries import (
     RuntimeRegistries,
     build_committer_registry,
+    build_detail_projector_registry,
     build_runtime_acquisition_registries,
     build_unit_of_work_factory,
 )
@@ -76,6 +91,7 @@ class ReadDependencies:
     market_environment: MarketEnvironmentQueryPort
     collection: CollectionQueryPort
     timezone_preferences: TimezoneQueryAdapter
+    ths_sectors: Any
     clock: Callable[[], datetime]
 
 
@@ -84,6 +100,7 @@ class CommandDependencies:
     collection: CollectionCommandPort
     aggregate: RebuilderAggregateCommandAdapter
     timezone_preferences: TimezoneCommandAdapter
+    ths_sectors: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +127,8 @@ class ContainerAdapters:
     commit_request_factories: dict[str, Callable[..., Any]] | None = None
     commit_preparers: dict[str, Any] | None = None
     typed_cutover_datasets: tuple[str, ...] | None = None
+    ths_queries: Any | None = None
+    ths_commands: Any | None = None
 
 
 @dataclass(slots=True)
@@ -183,15 +202,71 @@ def build_container(
         FuyaoMarketClient(transport_gateway=transport_gateway)
     )
     fuyao_policy = FuyaoCollectionPolicy(settings.fuyao, repository)
+    unit_of_work_factory = (
+        adapters.unit_of_work_factory or build_unit_of_work_factory(repository)
+    )
+    ths_capability_policy = _build_ths_capability_policy(repository)
+
+    def ths_adapter_factory(
+        catalog_revision: str,
+        history_revision: str | None,
+        membership_revision: str | None = None,
+    ) -> FuyaoThsSectorAdapter:
+        return FuyaoThsSectorAdapter(
+            FuyaoMarketClient(transport_gateway=transport_gateway),
+            catalog_revision=catalog_revision,
+            history_revision=history_revision or catalog_revision,
+            membership_revision=membership_revision or catalog_revision,
+            now=lambda: _market_now(clock).astimezone(timezone.utc),
+        )
+
+    def load_ths_catalog_bundle(as_of: date) -> Any:
+        revision = (
+            os.getenv("MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION") or ""
+        ).strip()
+        if not revision:
+            raise RuntimeError("Fuyao THS catalog capability revision is not configured")
+        report = ths_capability_policy.require("industry-ranking", revision)
+        adapter = ths_adapter_factory(revision, revision)
+        before = int(adapter.client.request_count)
+        bundle = adapter.fetch_catalog_snapshot(as_of)
+        requests_used = int(adapter.client.request_count) - before
+        authorized_budget = int(report.rate_limit_evidence["requestBudget"])
+        if requests_used > authorized_budget:
+            raise RuntimeError("Fuyao THS catalog request budget was exhausted")
+        return bundle
+
+    def current_completed_session() -> date | None:
+        current = _market_now(clock).date()
+        return (
+            current
+            if _is_settled(
+                current,
+                clock=clock,
+                settlement_boundary=settings.settlement_time,
+            )
+            else None
+        )
+
+    ths_collectors = (
+        ThsIndustryRankingCollector(
+            load_ths_catalog_bundle,
+            current_completed_session,
+        ),
+        ThsSectorTurnoverCollector(
+            unit_of_work_factory,
+            current_completed_session,
+        ),
+        ThsSectorBreadthCollector(
+            unit_of_work_factory,
+            current_completed_session,
+        ),
+    )
     limits_previous_sessions = LimitsPreviousSessionEvidenceReader(repository)
     uses_default_collectors = adapters.collector_registry is None
     typed_cutover_datasets = adapters.typed_cutover_datasets
     if typed_cutover_datasets is None:
-        typed_cutover_datasets = (
-            ("core", "breadth", "limits", "sectors", "activeDirection")
-            if uses_default_collectors
-            else ()
-        )
+        typed_cutover_datasets = DATASET_IDS if uses_default_collectors else ()
     source_adapters, acquisition_plans = _build_acquisition_registries(
         adapters,
         provider=collector,
@@ -211,6 +286,7 @@ def build_container(
             clock=clock,
             settlement_boundary=settings.settlement_time,
         ),
+        crawl_fallback_is_enabled=settings.crawl_fallback.is_host_enabled,
     )
     collector_registry = adapters.collector_registry
     if collector_registry is None:
@@ -224,16 +300,14 @@ def build_container(
             limits_v1_enabled=settings.limits_v1_enabled,
             fuyao_adapter=fuyao_adapter,
             fuyao_policy=fuyao_policy,
+            ths_collectors=ths_collectors,
         )
-    unit_of_work_factory = (
-        adapters.unit_of_work_factory or build_unit_of_work_factory(repository)
-    )
     committer_registry = adapters.committer_registry or build_committer_registry(
         unit_of_work_factory
     )
     detail_projectors = (
         adapters.detail_projector_registry
-        or build_local_detail_projector_registry(
+        or build_detail_projector_registry(
             repository,
             limits_enabled=settings.limits_v1_enabled,
         )
@@ -298,17 +372,53 @@ def build_container(
         settings,
         repository,
     )
+    ths_gates = ThsOperationGates(
+        manual_write_enabled=lambda: settings.manual_refresh_enabled,
+        authorized=lambda: _environment_enabled(
+            "MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED"
+        ),
+        after_market=lambda as_of: _is_settled(
+            as_of,
+            clock=clock,
+            settlement_boundary=settings.settlement_time,
+        ),
+    )
+    ths_queries = adapters.ths_queries or ThsSectorQueryAdapter(unit_of_work_factory)
+    ths_commands = adapters.ths_commands or ThsSectorCommandAdapter(
+        unit_of_work_factory=unit_of_work_factory,
+        executor=task_executor,
+        adapter_factory=ths_adapter_factory,
+        dump_reader=FuyaoThsDumpReader(),
+        fact_merger=merge_member_facts,
+        capability_policy=ths_capability_policy,
+        gates=ths_gates,
+        default_revisions={
+            "industry-ranking": os.getenv(
+                "MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION"
+            ),
+            "sector-membership": os.getenv(
+                "MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_REVISION"
+            ),
+            "sector-turnover-history": os.getenv(
+                "MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION"
+            ),
+        },
+        clock=lambda: _market_now(clock).astimezone(timezone.utc),
+        effective_date=lambda: effective_market_date(_market_now(clock)),
+    )
 
     reads = ReadDependencies(
         market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
         collection=CoordinatorCollectionQueryAdapter(coordinator),
         timezone_preferences=TimezoneQueryAdapter(timezone_repository),
+        ths_sectors=ths_queries,
         clock=clock,
     )
     commands = CommandDependencies(
         collection=CoordinatorCollectionCommandAdapter(coordinator, task_executor),
         aggregate=RebuilderAggregateCommandAdapter(rebuilder),
         timezone_preferences=TimezoneCommandAdapter(timezone_repository),
+        ths_sectors=ths_commands,
     )
     return ApplicationContainer(
         settings=settings,
@@ -437,6 +547,7 @@ def _build_acquisition_registries(
     retained_core_indices: Callable[[Any], Any],
     market_today: Callable[[], date],
     is_settled: Callable[[date], bool],
+    crawl_fallback_is_enabled: Callable[[str], bool] = lambda _host: False,
 ):
     plans = adapters.acquisition_plan_registry
     sources = adapters.source_adapter_registry
@@ -460,6 +571,7 @@ def _build_acquisition_registries(
             retained_core_indices=retained_core_indices,
             market_today=market_today,
             is_settled=is_settled,
+            crawl_fallback_is_enabled=crawl_fallback_is_enabled,
         )
     return sources, plans
 
@@ -475,6 +587,7 @@ def _build_runtime_collector_registry(
     limits_v1_enabled: bool,
     fuyao_adapter: Any,
     fuyao_policy: FuyaoCollectionPolicy,
+    ths_collectors: tuple[Any, Any, Any],
     lease_seconds: float = 600.0,
 ) -> DatasetCollectorRegistry:
     typed = frozenset(typed_cutover_datasets)
@@ -534,21 +647,7 @@ def _build_runtime_collector_registry(
                 fuyao_revision=fuyao_policy.revision,
             )
         ),
-        AcquisitionPlanCollector("sectors", acquisition_plans)
-        if "sectors" in typed
-        else (
-            SectorsCollector(
-                provider,
-                repository,
-                market_now=market_now,
-                is_settled=is_settled,
-                fuyao_adapter=fuyao_adapter,
-                fuyao_is_enabled=fuyao_policy.is_enabled,
-                fuyao_gate_warning=fuyao_policy.gate_warning,
-                fuyao_shadow_enabled=fuyao_policy.shadow_enabled,
-                fuyao_revision=fuyao_policy.revision,
-            )
-        ),
+        *ths_collectors,
         AcquisitionPlanCollector("activeDirection", acquisition_plans)
         if "activeDirection" in typed
         else (
@@ -580,6 +679,36 @@ def _is_settled(
     return as_of < current.date() or (
         as_of == current.date()
         and current.time().replace(tzinfo=None) >= settlement_boundary
+    )
+
+
+def _environment_enabled(name: str) -> bool:
+    return os.getenv(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_ths_capability_policy(repository: Any) -> FuyaoThsCapabilityPolicy:
+    return FuyaoThsCapabilityPolicy(
+        repository,
+        enabled={
+            "industry-ranking": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED"
+            ),
+            "sector-membership": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_MEMBERSHIP_ENABLED"
+            ),
+            "sector-turnover-history": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED"
+            ),
+            "sector-member-daily-dump": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED"
+            ),
+            "sector-member-incremental-dump": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED"
+            ),
+            "sector-member-adjustment-dump": _environment_enabled(
+                "MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED"
+            ),
+        },
     )
 
 

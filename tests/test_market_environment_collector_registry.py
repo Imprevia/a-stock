@@ -58,7 +58,7 @@ class RecordingTaskCollector:
         )
 
 
-def test_complete_registry_routes_all_five_stable_dataset_identifiers() -> None:
+def test_complete_registry_routes_all_seven_stable_dataset_identifiers() -> None:
     collectors = tuple(RecordingCollector(dataset_id) for dataset_id in DATASET_IDS)
     registry = DatasetCollectorRegistry.complete(collectors)
     identity = DatasetDate("breadth", AS_OF)
@@ -66,7 +66,7 @@ def test_complete_registry_routes_all_five_stable_dataset_identifiers() -> None:
     outcome = registry.collect(identity)
 
     assert registry.dataset_ids == DATASET_IDS
-    assert len(registry) == 5
+    assert len(registry) == 7
     assert tuple(collector.dataset_id for collector in registry) == DATASET_IDS
     assert outcome.identity == identity
     assert collectors[1].calls == [identity]
@@ -76,6 +76,8 @@ def test_complete_registry_routes_all_five_stable_dataset_identifiers() -> None:
 def test_registry_rejects_unknown_duplicate_and_incomplete_registration() -> None:
     with pytest.raises(ValueError, match="unsupported dataset collector: unknown"):
         DatasetCollectorRegistry((RecordingCollector("unknown"),))
+    with pytest.raises(ValueError, match="unsupported dataset collector: sectors"):
+        DatasetCollectorRegistry((RecordingCollector("sectors"),))
 
     duplicate = RecordingCollector("core")
     with pytest.raises(ValueError, match="duplicate dataset collector: core"):
@@ -83,7 +85,10 @@ def test_registry_rejects_unknown_duplicate_and_incomplete_registration() -> Non
 
     with pytest.raises(
         ValueError,
-        match="missing dataset collectors: breadth, limits, sectors, activeDirection",
+        match=(
+            "missing dataset collectors: breadth, limits, industry-ranking, "
+            "sector-turnover, sector-breadth, activeDirection"
+        ),
     ):
         DatasetCollectorRegistry.complete((RecordingCollector("core"),))
 

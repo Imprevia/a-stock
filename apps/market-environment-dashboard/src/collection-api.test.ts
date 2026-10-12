@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  COLLECTION_DATASETS,
+  LEGACY_SECTORS_MIGRATION_MESSAGE,
+  fetchThsCatalog,
+  fetchThsOperation,
+  fetchThsSectorBars,
   fetchCollectionStatus,
   pollCollectionRun,
+  pollThsOperation,
+  startSectorTurnoverBackfill,
   startCollectionRun,
+  startThsCatalogSync,
+  startThsMemberFactsImport,
 } from './collection-api'
 import type {
   CollectionRun,
@@ -97,6 +106,19 @@ describe('collection view model', () => {
 })
 
 describe('collection API', () => {
+  it('exposes seven supported datasets and rejects legacy sectors before fetch', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(COLLECTION_DATASETS).toEqual([
+      'core', 'breadth', 'limits', 'industry-ranking', 'sector-turnover', 'sector-breadth', 'activeDirection',
+    ])
+    expect(COLLECTION_DATASETS).not.toContain('sectors')
+
+    await expect(startCollectionRun('2026-09-03', ['sectors'] as never)).rejects.toThrow(LEGACY_SECTORS_MIGRATION_MESSAGE)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('omits as_of on first load and preserves explicit dates', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ asOf: '2026-09-03', datasets: [] }))
     vi.stubGlobal('fetch', fetchMock)
@@ -147,5 +169,89 @@ describe('collection API', () => {
 
     expect(result).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses provider-free THS catalog, bars, and operation query routes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchThsCatalog({ tag: 'cn_concept', search: 'AI', revision: 'catalog-r1', page: 2, pageSize: 30 })
+    await fetchThsSectorBars('885001.TI', { startDate: '2025-01-01', endDate: '2026-09-03', page: 1, pageSize: 500 })
+    await fetchThsOperation('run/1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/market-environment/ths/catalog?tag=cn_concept&search=AI&revision=catalog-r1&page=2&page_size=30')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/market-environment/ths/sectors/885001.TI/bars?start_date=2025-01-01&end_date=2026-09-03&page=1&page_size=500')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/market-environment/ths/operations/run%2F1')
+  })
+
+  it('submits and polls an explicit THS breadth membership selection', async () => {
+    const queued = { runId: 'catalog-run', status: 'queued' }
+    const completed = {
+      runId: 'catalog-run', kind: 'catalog-sync', status: 'partial', warning: null,
+      progress: { completed: 5, total: 6, failed: 1, conflicts: 0 }, checkpoints: [],
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(queued))
+      .mockResolvedValueOnce(jsonResponse({ ...completed, status: 'running' }))
+      .mockResolvedValueOnce(jsonResponse(completed))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await startThsCatalogSync({
+      asOf: '2026-09-03',
+      membershipThscodes: ['885001.TI'],
+    })
+    const result = await pollThsOperation('catalog-run', { intervalMs: 1 })
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      asOf: '2026-09-03', membershipThscodes: ['885001.TI'],
+    })
+    expect(result?.status).toBe('partial')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/market-environment/ths/operations/catalog-run')
+  })
+
+  it('starts an explicit bounded turnover backfill with camelCase fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ runId: 'run-ths', status: 'queued' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await startSectorTurnoverBackfill({
+      thscodes: ['885001.TI'],
+      startDate: '2025-01-01',
+      endDate: '2026-09-03',
+      requestBudget: 12,
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/market-environment/ths/turnover/backfills')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      thscodes: ['885001.TI'], startDate: '2025-01-01', endDate: '2026-09-03', requestBudget: 12,
+    })
+  })
+
+  it('sends the verified member dump manifests expected by the backend', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ runId: 'run-import', status: 'queued' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const dump = {
+      path: '/staging/daily.parquet',
+      dumpId: 'daily-20260903',
+      schemaRevision: 'daily-v1',
+      capabilityRevision: 'daily-cap-v1',
+      checksum: 'abc123',
+      startDate: '2026-09-03',
+      endDate: '2026-09-03',
+    }
+
+    await startThsMemberFactsImport({
+      asOf: '2026-09-03',
+      sourceRevision: 'member-facts-v1',
+      daily: dump,
+      adjustment: { ...dump, path: '/staging/adjustment.parquet', dumpId: 'adjustment-20260903' },
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/market-environment/ths/member-facts/imports')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      asOf: '2026-09-03',
+      sourceRevision: 'member-facts-v1',
+      daily: { dumpId: 'daily-20260903', schemaRevision: 'daily-v1' },
+      adjustment: { dumpId: 'adjustment-20260903', schemaRevision: 'daily-v1' },
+    })
   })
 })

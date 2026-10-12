@@ -894,6 +894,17 @@ def test_helm_values_define_fail_closed_configurable_scheduled_collection() -> N
     }
     assert fuyao["existingSecret"] == ""
     assert fuyao["secretKey"] == "MARKET_ENVIRONMENT_FUYAO_API_KEY"
+    assert fuyao["ths"] == {
+        "writesAuthorized": False,
+        "catalog": {"enabled": False, "revision": ""},
+        "membership": {"enabled": False, "revision": ""},
+        "history": {"enabled": False, "revision": ""},
+        "dumps": {
+            "dailyEnabled": False,
+            "incrementalEnabled": False,
+            "adjustmentEnabled": False,
+        },
+    }
     assert fuyao["datasets"]["sectors"] == {
         "enabled": False,
         "approvedRevision": "",
@@ -915,6 +926,14 @@ def test_helm_default_render_keeps_dashboard_and_omits_cronjob() -> None:
     assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"] == "0"
     assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"] == ""
     assert environment["MARKET_ENVIRONMENT_FUYAO_SECTORS_SHADOW_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION"] == ""
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION"] == ""
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED"] == "0"
+    assert environment["MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED"] == "0"
     assert "MARKET_ENVIRONMENT_FUYAO_API_KEY" not in environment
     # The optional same-vendor enrichment is fail-closed in application code
     # when this env var is absent; the chart must not enable it implicitly.
@@ -966,9 +985,18 @@ def test_helm_injects_independent_optional_fuyao_secret_into_both_workloads() ->
     }
 
     assert all(document.get("kind") != "Secret" for document in documents)
+    assert cronjob["spec"]["suspend"] is True
     for container in (dashboard, collector):
         environment = _environment(container)
         assert environment["MARKET_ENVIRONMENT_LIMITS_V1_ENABLED"] == "1"
+        assert environment["MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED"] == "0"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED"] == "0"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION"] == ""
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED"] == "0"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION"] == ""
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED"] == "0"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED"] == "0"
+        assert environment["MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED"] == "0"
         assert environment["MARKET_ENVIRONMENT_FUYAO_API_KEY"] == expected_secret
         assert environment["MARKET_ENVIRONMENT_DATABASE_URL"]["secretKeyRef"]["name"] == "a-stock-postgresql"
 
@@ -1018,11 +1046,70 @@ def test_helm_sectors_gate_and_approved_revision_are_explicit_and_secret_backed(
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_ths_capability_gates_are_explicit_in_both_suspended_workloads() -> None:
+    documents = _render_helm(
+        "--kube-version",
+        "1.27.0",
+        "--set",
+        "marketEnvironment.scheduledCollection.enabled=true",
+        "--set",
+        "marketEnvironment.scheduledCollection.suspend=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.writesAuthorized=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.catalog.enabled=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.catalog.revision=fuyao-ths-catalog-v1",
+        "--set",
+        "marketEnvironment.fuyao.ths.history.enabled=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.history.revision=fuyao-ths-history-v1",
+        "--set",
+        "marketEnvironment.fuyao.ths.dumps.dailyEnabled=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.dumps.incrementalEnabled=true",
+        "--set",
+        "marketEnvironment.fuyao.ths.dumps.adjustmentEnabled=true",
+    )
+
+    deployment = _resource(documents, "Deployment")
+    cronjob = _resource(documents, "CronJob")
+    expected = {
+        "MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED": "1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED": "1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_REVISION": "fuyao-ths-catalog-v1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_ENABLED": "1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_HISTORY_REVISION": "fuyao-ths-history-v1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED": "1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED": "1",
+        "MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED": "1",
+    }
+
+    assert cronjob["spec"]["suspend"] is True
+    for container in (
+        deployment["spec"]["template"]["spec"]["containers"][0],
+        cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0],
+    ):
+        environment = _environment(container)
+        assert {name: environment[name] for name in expected} == expected
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
 def test_helm_rejects_string_limits_v1_flag() -> None:
     assert _render_helm_schema_failures(
         "--set-string",
         "marketEnvironment.limits.v1Enabled=false",
     ) == ["- at '/marketEnvironment/limits/v1Enabled': got string, want boolean"]
+
+
+@pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")
+def test_helm_rejects_string_ths_capability_flag() -> None:
+    assert _render_helm_schema_failures(
+        "--set-string",
+        "marketEnvironment.fuyao.ths.catalog.enabled=false",
+    ) == [
+        "- at '/marketEnvironment/fuyao/ths/catalog/enabled': got string, want boolean"
+    ]
 
 
 @pytest.mark.skipif(HELM_BINARY is None, reason="helm is not installed")

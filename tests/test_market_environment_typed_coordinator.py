@@ -147,12 +147,12 @@ def test_typed_coordinator_derives_same_date_retention_and_isolates_siblings(tmp
     rebuilds: list[date] = []
     value, store, collectors, committers = coordinator(
         tmp_path,
-        failures=frozenset({"sectors"}),
+        failures=frozenset({"sector-turnover"}),
         rebuild=rebuilds.append,
     )
     store.put(
         SnapshotRecord(
-            dataset="sectors",
+            dataset="sector-turnover",
             as_of=AS_OF,
             payload={"asOf": AS_OF.isoformat(), "quality": {}},
             source="retained-source",
@@ -164,18 +164,35 @@ def test_typed_coordinator_derives_same_date_retention_and_isolates_siblings(tmp
         )
     )
 
-    result = value.collect(AS_OF, ("breadth", "sectors"))
+    result = value.collect(
+        AS_OF,
+        ("breadth", "sector-turnover", "sector-breadth"),
+    )
     tasks = {task.dataset: task for task in result.tasks}
+    collectors_by_dataset = {collector.dataset_id: collector for collector in collectors}
+    committers_by_dataset = {committer.dataset_id: committer for committer in committers}
 
     assert tasks["breadth"].status == "success"
-    assert tasks["sectors"].status == "failed-retained"
-    assert "typed fixture unavailable" in tasks["sectors"].warning
-    assert store.get("sectors", AS_OF).source == "retained-source"
-    assert len(committers[1].calls) == 1
-    assert committers[3].calls == []
-    assert rebuilds == [AS_OF, AS_OF]
-    assert collectors[1].calls == [DatasetDate("breadth", AS_OF)]
-    assert collectors[3].calls == [DatasetDate("sectors", AS_OF)]
+    assert tasks["industry-ranking"].status == "success"
+    assert tasks["sector-turnover"].status == "failed-retained"
+    assert tasks["sector-breadth"].status == "success"
+    assert "typed fixture unavailable" in tasks["sector-turnover"].warning
+    assert store.get("sector-turnover", AS_OF).source == "retained-source"
+    assert len(committers_by_dataset["breadth"].calls) == 1
+    assert len(committers_by_dataset["industry-ranking"].calls) == 1
+    assert committers_by_dataset["sector-turnover"].calls == []
+    assert len(committers_by_dataset["sector-breadth"].calls) == 1
+    assert rebuilds == [AS_OF, AS_OF, AS_OF, AS_OF]
+    assert collectors_by_dataset["breadth"].calls == [DatasetDate("breadth", AS_OF)]
+    assert collectors_by_dataset["industry-ranking"].calls == [
+        DatasetDate("industry-ranking", AS_OF)
+    ]
+    assert collectors_by_dataset["sector-turnover"].calls == [
+        DatasetDate("sector-turnover", AS_OF)
+    ]
+    assert collectors_by_dataset["sector-breadth"].calls == [
+        DatasetDate("sector-breadth", AS_OF)
+    ]
 
 
 def test_coordinator_source_contains_no_signature_reflection() -> None:

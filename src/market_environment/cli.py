@@ -21,7 +21,9 @@ from .application.commands import (
 )
 from .infrastructure.collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
 from .infrastructure.providers.fuyao.market import FuyaoMarketAdapter, FuyaoMarketClient
+from .infrastructure.providers.fuyao.ths_probe import run_fuyao_ths_capability_probe
 from .infrastructure.providers.capability import ProviderCapabilityReport
+from .domain.models.capability import THS_CAPABILITY_REVISIONS
 from .infrastructure.persistence.sqlite_import.date_relabel import relabel_date, rollback_date_relabel
 from .infrastructure.persistence.sqlite_import.migration import backup_sqlite, import_sqlite
 from .providers import INDEX_SPECS, MarketDataProvider
@@ -155,6 +157,29 @@ def build_parser() -> argparse.ArgumentParser:
     real.add_argument("--output", required=True, help="redacted report output path")
     real.add_argument("--path", required=True, help="isolated SQLite store path")
     real.add_argument("--allow-real", action="store_true", help="required explicit authorization")
+    ths_real = fuyao_commands.add_parser(
+        "ths-real-probe",
+        help="probe six independently versioned THS contracts",
+    )
+    ths_real.add_argument("--as-of", required=True, type=date.fromisoformat)
+    ths_real.add_argument("--thscode", required=True)
+    ths_real.add_argument("--history-start", required=True, type=date.fromisoformat)
+    ths_real.add_argument("--max-dump-bytes", required=True, type=_positive_int)
+    ths_real.add_argument("--output", required=True, help="redacted report output path")
+    ths_real.add_argument("--path", required=True, help="isolated SQLite store path")
+    ths_real.add_argument("--allow-real", action="store_true", help="required explicit authorization")
+    for dataset, argument in (
+        ("industry-ranking", "catalog-revision"),
+        ("sector-membership", "membership-revision"),
+        ("sector-turnover-history", "history-revision"),
+        ("sector-member-daily-dump", "daily-dump-revision"),
+        ("sector-member-incremental-dump", "incremental-dump-revision"),
+        ("sector-member-adjustment-dump", "adjustment-dump-revision"),
+    ):
+        ths_real.add_argument(
+            f"--{argument}",
+            default=THS_CAPABILITY_REVISIONS[dataset],
+        )
     tdx = commands.add_parser("tdx", help="audit the TDX daily-package provider")
     tdx_commands = tdx.add_subparsers(dest="tdx_command", required=True)
     tdx_probe = tdx_commands.add_parser(
@@ -164,6 +189,100 @@ def build_parser() -> argparse.ArgumentParser:
     tdx_probe.add_argument("--as-of", required=True, type=date.fromisoformat)
     tdx_probe.add_argument("--output", required=True, help="redacted report output path")
     tdx_probe.add_argument("--allow-real", action="store_true", help="required explicit authorization")
+    sectors_html = commands.add_parser(
+        "sectors-html",
+        help="audit static-HTML sectors adapters",
+    )
+    sectors_html_commands = sectors_html.add_subparsers(
+        dest="sectors_html_command",
+        required=True,
+    )
+    sectors_probe = sectors_html_commands.add_parser(
+        "real-probe",
+        help="run an authorized local HTML probe (dry-run by default)",
+    )
+    sectors_probe.add_argument(
+        "--source",
+        required=True,
+        choices=("sina-html", "xueqiu-html"),
+    )
+    sectors_probe.add_argument("--as-of", required=True, type=date.fromisoformat)
+    sectors_probe.add_argument(
+        "--output",
+        required=True,
+        help="redacted report output path",
+    )
+    sectors_probe.add_argument(
+        "--allow-real",
+        action="store_true",
+        help="required explicit authorization for the network call",
+    )
+    industry_probe = commands.add_parser(
+        "industry-capability-probe",
+        help="audit one point-in-time industry input capability",
+    )
+    industry_probe.add_argument(
+        "--dataset",
+        required=True,
+        choices=(
+            "shenwan-taxonomy",
+            "shenwan-point-in-time-membership",
+            "stock-adjusted-price",
+            "tdx-original-daily-facts",
+            "benchmark-history",
+        ),
+    )
+    industry_probe.add_argument("--source", required=True)
+    industry_probe.add_argument("--revision", required=True)
+    industry_probe.add_argument("--as-of", required=True, type=date.fromisoformat)
+    industry_probe.add_argument("--output", required=True, help="redacted report output path")
+    industry_probe.add_argument("--allow-real", action="store_true")
+    continuity = commands.add_parser(
+        "sector-continuity",
+        help="explicitly plan or inspect Shenwan sector continuity backfill",
+    )
+    continuity_commands = continuity.add_subparsers(dest="continuity_command", required=True)
+    continuity_backfill = continuity_commands.add_parser("backfill", help="plan an explicit finite backfill")
+    continuity_backfill.add_argument("--as-of", required=True, type=date.fromisoformat)
+    continuity_backfill.add_argument("--start-as-of", type=date.fromisoformat)
+    continuity_backfill.add_argument("--sessions", type=_positive_int, default=272)
+    continuity_backfill.add_argument("--session-date", action="append", type=date.fromisoformat, default=[])
+    continuity_backfill.add_argument("--calculation-version", required=True)
+    continuity_backfill.add_argument("--source-revision", action="append", default=[], metavar="KEY=VALUE")
+    continuity_backfill.add_argument("--apply", action="store_true", help="requires a separately configured runtime; never implied")
+    continuity_readiness = continuity_commands.add_parser("readiness", help="read local readiness without provider I/O")
+    continuity_readiness.add_argument("--as-of", required=True, type=date.fromisoformat)
+    continuity_readiness.add_argument("--required-history", type=_positive_int, default=272)
+    ths = commands.add_parser(
+        "ths",
+        help="run explicitly authorized THS catalog, turnover, and member-fact operations",
+    )
+    ths_commands = ths.add_subparsers(dest="ths_command", required=True)
+    ths_catalog = ths_commands.add_parser("catalog-sync", help="synchronize all four THS catalogs")
+    ths_catalog.add_argument("--as-of", required=True, type=date.fromisoformat)
+    ths_catalog.add_argument("--capability-revision")
+    ths_catalog.add_argument("--membership-capability-revision")
+    ths_catalog.add_argument(
+        "--membership-thscode",
+        action="append",
+        default=[],
+        dest="membership_thscodes",
+    )
+    ths_catalog.add_argument("--request-budget", type=_positive_int)
+    ths_catalog.add_argument("--apply", action="store_true")
+    ths_backfill = ths_commands.add_parser("turnover-backfill", help="backfill bounded THS K-lines")
+    ths_backfill.add_argument("--thscode", action="append", required=True, dest="thscodes")
+    ths_backfill.add_argument("--start-date", required=True, type=date.fromisoformat)
+    ths_backfill.add_argument("--end-date", required=True, type=date.fromisoformat)
+    ths_backfill.add_argument("--capability-revision")
+    ths_backfill.add_argument("--request-budget", type=_positive_int)
+    ths_backfill.add_argument("--apply", action="store_true")
+    ths_import = ths_commands.add_parser(
+        "member-import",
+        help="import a local, verified member-fact request JSON",
+    )
+    ths_import.add_argument("--request", required=True, help="local JSON request path")
+    ths_import.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -340,6 +459,18 @@ def _validate_fuyao_real_probe_boundary(as_of: date, current: datetime) -> None:
         )
 
 
+def _validate_isolated_probe_paths(output: str, store: str) -> None:
+    output_path = Path(output).resolve()
+    store_path = Path(store).resolve()
+    if output_path == store_path:
+        raise ValueError("probe output and isolated evidence store must be different paths")
+    for label, path in (("probe output", output_path), ("isolated evidence store", store_path)):
+        if not path.parent.is_dir():
+            raise ValueError(f"{label} parent directory does not exist")
+        if path.exists():
+            raise ValueError(f"{label} path must not already exist")
+
+
 def _print_payload(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -352,6 +483,172 @@ def _close_capability_runtime(runtime: Any | None) -> bool:
     except Exception:
         return False
     return True
+
+
+def _run_sectors_html_real_probe(
+    *,
+    as_of: date,
+    source: str,
+    allow_real: bool,
+) -> dict[str, Any]:
+    """Dry-run by default; only call the network when ``--allow-real`` is set.
+
+    The probe reuses the static-HTML adapter with a transport override that
+    invokes the configured Scrapling engine. The output is a redacted JSON
+    envelope ready for the capability-promotion CLI; the envelope never
+    contains a raw response body, a token, a cookie, or an authorization
+    header.
+    """
+    from .infrastructure.providers.sina_html import SinaHtmlSectorAdapter
+    from .infrastructure.providers.xueqiu_html import XueqiuHtmlSectorAdapter
+    from .infrastructure.providers.html_common.base_adapter import (
+        StaticHtmlTransportError,
+    )
+    from .infrastructure.providers.html_common.fixture_loader import (
+        load_host_fixture,
+    )
+    from .application.ports.acquisition import SourceRequest, DatasetDate
+
+    if source == "sina-html":
+        adapter = SinaHtmlSectorAdapter()
+        host_id = "sina"
+    elif source == "xueqiu-html":
+        adapter = XueqiuHtmlSectorAdapter()
+        host_id = "xueqiu"
+    else:
+        raise ValueError(f"unknown source: {source!r}")
+
+    fixture = load_host_fixture(host_id)
+    started = time.perf_counter()
+    probe = {
+        "provider": host_id,
+        "dataset": "sectors",
+        "source": source,
+        "revision": adapter.capability.revision,
+        "requestedDate": as_of.isoformat(),
+        "scraplingProfile": "default-off",
+        "allowReal": bool(allow_real),
+        "fixtureFootprint": dict(fixture.footprint),
+        "fixtureCoverage": dict(fixture.meta),
+        "elapsedMs": None,
+        "transports": [],
+        "hostClassification": None,
+        "fieldCoverage": {
+            "code": 0.0,
+            "name": 0.0,
+            "changePct": 0.0,
+            "amount": 0.0,
+            "leader": 0.0,
+            "mainNet": 0.0,
+            "mainNetPct": 0.0,
+            "upCount": 0.0,
+            "downCount": 0.0,
+        },
+        "permissionEvidence": {"configured": False, "scraplingAllowlist": False},
+        "rateLimitEvidence": {"transports": 0, "singleFlight": True},
+        "warnings": [],
+        "status": "dry-run",
+    }
+
+    if not allow_real:
+        probe["warnings"].append(
+            "dry-run requested; pass --allow-real to issue a single bodyless GET"
+        )
+        probe["elapsedMs"] = round((time.perf_counter() - started) * 1000, 2)
+        return probe
+
+    if not os.getenv("MARKET_ENVIRONMENT_PROBE_ALLOW_REAL"):
+        probe["status"] = "rejected"
+        probe["warnings"].append(
+            "MARKET_ENVIRONMENT_PROBE_ALLOW_REAL must be set for live probes"
+        )
+        return probe
+
+    request = SourceRequest(
+        identity=DatasetDate(dataset="sectors", as_of=as_of),
+        source_id=adapter.source_id,
+        current_market_date=as_of,
+        settled=False,
+        params={"fixture": fixture},
+    )
+
+    def _classify_transport(exc: Exception) -> str:
+        if isinstance(exc, StaticHtmlTransportError):
+            return exc.signal
+        return "transport-error"
+
+    try:
+        from .infrastructure.providers.html_common import ScraplingStaticHttpEngine  # noqa: F401
+    except Exception:
+        pass
+
+    fetch_started = time.perf_counter()
+    try:
+        from src.trading_system.data.provider_scrapling import (
+            ScraplingStaticEngineConfig,
+            ScraplingStaticHttpEngine,
+        )
+
+        config = ScraplingStaticEngineConfig(
+            enabled=True,
+            allowlist=frozenset(
+                {(adapter.expected_endpoint().split("//", 1)[-1].rstrip("/"), adapter.source_id)}
+            ),
+        )
+        engine = ScraplingStaticHttpEngine(config)
+        body = engine.fetch(str(adapter.expected_endpoint()))
+        probe["transports"].append(
+            {
+                "engine": "scrapling",
+                "endpoint": adapter.expected_endpoint(),
+                "classification": "ok",
+                "elapsedMs": round((time.perf_counter() - fetch_started) * 1000, 2),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - classify for report
+        classification = _classify_transport(exc)
+        probe["transports"].append(
+            {
+                "engine": "scrapling",
+                "endpoint": adapter.expected_endpoint(),
+                "classification": classification,
+                "elapsedMs": round((time.perf_counter() - fetch_started) * 1000, 2),
+            }
+        )
+        probe["hostClassification"] = classification
+        probe["warnings"].append(f"transport reported {classification}: {exc!s}")
+        probe["elapsedMs"] = round((time.perf_counter() - started) * 1000, 2)
+        if classification in {"host-permission-denied", "host-challenge-detected"}:
+            probe["status"] = "ineligible"
+        else:
+            probe["status"] = "rejected"
+        return probe
+
+    try:
+        adapter.set_gate_predicate(lambda _req: True)
+        adapter.set_fetch_override(lambda _req: body)
+        result = adapter.acquire(request)
+    except Exception as exc:  # noqa: BLE001
+        probe["warnings"].append(f"adapter failed: {exc!s}")
+        probe["status"] = "insufficient"
+        probe["elapsedMs"] = round((time.perf_counter() - started) * 1000, 2)
+        return probe
+
+    rows = getattr(result, "payload", {}).get("rows", []) if not isinstance(result, Exception) else []
+    if rows:
+        counts = {field: 0 for field in probe["fieldCoverage"]}
+        per_row = lambda field: any(row.get(field) is not None for row in rows)
+        for field in counts:
+            if per_row(field):
+                counts[field] = 1.0
+        probe["fieldCoverage"] = counts
+        probe["status"] = "ok"
+    else:
+        probe["status"] = "insufficient"
+        probe["warnings"].append("adapter returned no rows")
+
+    probe["elapsedMs"] = round((time.perf_counter() - started) * 1000, 2)
+    return probe
 
 
 def _run_tdx_real_probe(as_of: date) -> dict[str, Any]:
@@ -578,8 +875,111 @@ def main(
     coordinator: CollectionCoordinator | None = None,
     now: Callable[[], datetime] | None = None,
     capability_runtime_factory: Callable[[], Any] | None = None,
+    ths_runtime_factory: Callable[[], Any] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "ths":
+        if not args.apply:
+            payload: dict[str, Any] = {
+                "status": "planned",
+                "operation": args.ths_command,
+                "formalWrites": 0,
+                "providerCalls": 0,
+                "warning": "dry-run only; --apply requires manual-write, settlement, permission, budget, and capability gates",
+            }
+            if args.ths_command == "catalog-sync":
+                payload["asOf"] = args.as_of.isoformat()
+                payload["membershipCodes"] = len(set(args.membership_thscodes))
+            elif args.ths_command == "turnover-backfill":
+                payload.update(
+                    {
+                        "codes": len(set(args.thscodes)),
+                        "startDate": args.start_date.isoformat(),
+                        "endDate": args.end_date.isoformat(),
+                    }
+                )
+            _print_payload(payload)
+            return 0
+
+        runtime = None
+        result = None
+        try:
+            if ths_runtime_factory is None:
+                from .bootstrap.container import build_container
+
+                runtime = build_container()
+            else:
+                runtime = ths_runtime_factory()
+            commands = runtime.commands.ths_sectors
+            if args.ths_command == "catalog-sync":
+                result = commands.start_catalog_sync(
+                    as_of=args.as_of,
+                    capability_revision=args.capability_revision,
+                    membership_capability_revision=args.membership_capability_revision,
+                    membership_thscodes=args.membership_thscodes,
+                    request_budget=args.request_budget,
+                )
+            elif args.ths_command == "turnover-backfill":
+                result = commands.start_turnover_backfill(
+                    thscodes=args.thscodes,
+                    start_date=args.start_date,
+                    end_date=args.end_date,
+                    capability_revision=args.capability_revision,
+                    request_budget=args.request_budget,
+                )
+            else:
+                raw = json.loads(Path(args.request).read_text(encoding="utf-8"))
+
+                def dump_request(name: str) -> dict[str, Any]:
+                    value = raw[name]
+                    local_path = str(value["path"])
+                    if "://" in local_path:
+                        raise ValueError("member import CLI accepts local files only")
+                    return {
+                        "path": local_path,
+                        "dump_id": value["dumpId"],
+                        "schema_revision": value["schemaRevision"],
+                        "capability_revision": value["capabilityRevision"],
+                        "checksum": value["checksum"],
+                        "start_date": date.fromisoformat(value["startDate"]),
+                        "end_date": date.fromisoformat(value["endDate"]),
+                    }
+
+                result = commands.start_member_import(
+                    as_of=date.fromisoformat(raw["asOf"]),
+                    source_revision=raw["sourceRevision"],
+                    request_budget=raw.get("requestBudget"),
+                    daily=dump_request("daily"),
+                    adjustment=dump_request("adjustment"),
+                    incremental=(
+                        dump_request("incremental")
+                        if raw.get("incremental") is not None
+                        else None
+                    ),
+                )
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+            _close_capability_runtime(runtime)
+            _print_payload(
+                {"status": "rejected", "error": "THS operation input could not be read"}
+            )
+            return 2
+        except Exception as exc:
+            from .application.commands import ThsOperationGateError
+
+            _close_capability_runtime(runtime)
+            if isinstance(exc, (ValueError, ThsOperationGateError)):
+                error = str(exc)
+            else:
+                error = "THS operation runtime is unavailable"
+            _print_payload({"status": "rejected", "error": error})
+            return 2
+        if not _close_capability_runtime(runtime):
+            _print_payload(
+                {"status": "rejected", "error": "THS operation runtime did not close cleanly"}
+            )
+            return 3
+        _print_payload(dict(result or {}))
+        return 0
     if args.command == "capabilities" and args.capability_command == "promote":
         runtime = None
         try:
@@ -783,6 +1183,49 @@ def main(
             except Exception as exc:
                 _print_payload({"status": "rejected", "error": str(exc)})
                 return 2
+        if args.fuyao_command == "ths-real-probe":
+            if not args.allow_real:
+                _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
+                return 2
+            probe_now = _market_now(now)
+            try:
+                _validate_fuyao_real_probe_boundary(args.as_of, probe_now)
+            except ValueError as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
+            if not os.getenv("MARKET_ENVIRONMENT_FUYAO_API_KEY", "").strip():
+                _print_payload({"status": "rejected", "error": "MARKET_ENVIRONMENT_FUYAO_API_KEY is required"})
+                return 2
+            try:
+                _validate_isolated_probe_paths(args.output, args.path)
+                payload = run_fuyao_ths_capability_probe(
+                    as_of=args.as_of,
+                    thscode=args.thscode,
+                    history_start=args.history_start,
+                    max_dump_bytes=args.max_dump_bytes,
+                    revisions={
+                        "industry-ranking": args.catalog_revision,
+                        "sector-membership": args.membership_revision,
+                        "sector-turnover-history": args.history_revision,
+                        "sector-member-daily-dump": args.daily_dump_revision,
+                        "sector-member-incremental-dump": args.incremental_dump_revision,
+                        "sector-member-adjustment-dump": args.adjustment_dump_revision,
+                    },
+                    now=lambda: probe_now.astimezone(timezone.utc),
+                )
+                Path(args.output).write_text(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+                    encoding="utf-8",
+                )
+                store = LegacySqliteSnapshotStore(args.path)
+                for item in payload["reports"]:
+                    store.put_capability_report(ProviderCapabilityReport.from_dict(item))
+                _print_payload(payload)
+                return 0 if all(item["status"] == "eligible" for item in payload["reports"]) else 2
+            except Exception as exc:
+                error = str(exc) if isinstance(exc, ValueError) else "THS capability probe failed"
+                _print_payload({"status": "rejected", "error": error})
+                return 2
     if args.command == "tdx" and args.tdx_command == "real-probe":
         if not args.allow_real:
             _print_payload({"status": "rejected", "error": "real probe requires --allow-real"})
@@ -798,6 +1241,98 @@ def main(
         except Exception as exc:
             _print_payload({"status": "rejected", "error": str(exc)})
             return 2
+    if args.command == "sectors-html" and args.sectors_html_command == "real-probe":
+        try:
+            payload = _run_sectors_html_real_probe(
+                as_of=args.as_of,
+                source=args.source,
+                allow_real=args.allow_real,
+            )
+        except Exception as exc:
+            _print_payload({"status": "rejected", "error": str(exc)})
+            return 2
+        Path(args.output).write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        _print_payload(payload)
+        return 0 if payload.get("status") == "ok" else 2
+    if args.command == "industry-capability-probe":
+        from .interfaces.cli.industry_capability_probe import (
+            IndustryProbeError,
+            run_industry_capability_probe,
+        )
+
+        try:
+            payload = run_industry_capability_probe(
+                dataset=args.dataset,
+                source=args.source,
+                revision=args.revision,
+                as_of=args.as_of,
+                output=args.output,
+                allow_real=args.allow_real,
+            )
+        except IndustryProbeError as exc:
+            _print_payload({"status": "rejected", "error": str(exc)})
+            return 2
+        _print_payload(payload)
+        return 0 if payload.get("status") == "dry-run" else 2
+    if args.command == "sector-continuity":
+        if args.continuity_command == "backfill":
+            revisions: dict[str, str] = {}
+            for item in args.source_revision:
+                if "=" not in item:
+                    _print_payload({"status": "rejected", "error": "--source-revision must use KEY=VALUE"})
+                    return 2
+                key, value = item.split("=", 1)
+                if not key.strip() or not value.strip():
+                    _print_payload({"status": "rejected", "error": "--source-revision must use non-empty KEY=VALUE"})
+                    return 2
+                revisions[key.strip()] = value.strip()
+            try:
+                from .application.commands import BackfillRequest
+
+                request = BackfillRequest(
+                    as_of=args.as_of,
+                    start_as_of=args.start_as_of,
+                    sessions=args.sessions,
+                    calculation_version=args.calculation_version,
+                    source_revisions=revisions,
+                )
+                supplied_sessions = tuple(sorted(set(args.session_date)))
+                if supplied_sessions and any(item > args.as_of for item in supplied_sessions):
+                    raise ValueError("--session-date cannot be later than --as-of")
+            except ValueError as exc:
+                _print_payload({"status": "rejected", "error": str(exc)})
+                return 2
+            if args.apply:
+                _print_payload({"status": "rejected", "error": "backfill runtime is not configured; production DB/provider writes require separate authorization"})
+                return 2
+            _print_payload({
+                "status": "planned",
+                "asOf": args.as_of.isoformat(),
+                "startAsOf": args.start_as_of.isoformat() if args.start_as_of else None,
+                "sessions": args.sessions,
+                "sessionDates": [item.isoformat() for item in supplied_sessions],
+                "calculationVersion": args.calculation_version,
+                "sourceRevisions": revisions,
+                "formalWrites": 0,
+                "providerCalls": 0,
+                "warning": "dry-run plan only; pass through an authorized application runtime to execute",
+            })
+            return 0
+        if args.continuity_command == "readiness":
+            _print_payload({
+                "status": "unavailable",
+                "asOf": args.as_of.isoformat(),
+                "requiredHistory": args.required_history,
+                "availableHistory": 0,
+                "missingSessions": [],
+                "coverage": 0,
+                "providerCalls": 0,
+                "warning": "local readiness repository is not configured; this command never starts backfill",
+            })
+            return 0
     if args.command == "database" and args.database_command == "migrate":
         try:
             source = Path(args.source)

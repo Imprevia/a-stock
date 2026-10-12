@@ -12,7 +12,9 @@ DATASET_IDS = (
     "core",
     "breadth",
     "limits",
-    "sectors",
+    "industry-ranking",
+    "sector-turnover",
+    "sector-breadth",
     "activeDirection",
 )
 
@@ -39,6 +41,7 @@ class CollectionTaskState(str, Enum):
     FAILED_RETAINED = "failed-retained"
     FAILED_MISSING = "failed-missing"
     BUSY = "busy"
+    BLOCKED = "blocked"
 
 
 class AcquisitionFailureCategory(str, Enum):

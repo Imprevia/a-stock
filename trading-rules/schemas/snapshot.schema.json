@@ -2,14 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://a-stock.local/schemas/trading-snapshot.json",
   "title": "Canonical trading snapshot",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schemaVersion", "asOf", "createdAt", "status", "providerQuality", "metrics", "events", "warnings"],
-  "properties": {
-    "schemaVersion": {"const": 1},
-    "asOf": {"type": "string", "format": "date"},
-    "createdAt": {"type": "string", "format": "date-time"},
-    "status": {"enum": ["ok", "degraded", "insufficient"]},
+  "oneOf": [
+    {"$ref": "#/$defs/snapshotV1"},
+    {"$ref": "#/$defs/snapshotV2"}
+  ],
+  "$defs": {
     "providerQuality": {
       "type": "array",
       "items": {
@@ -30,11 +27,84 @@
       "properties": {
         "index.sync_pattern": {"type": ["number", "null"]},
         "index.range_position_20": {"type": ["number", "null"]},
-        "market.turnover_ratio_5": {"type": ["number", "null"]}
+        "market.turnover_ratio_5": {"type": ["number", "null"]},
+        "sector.relative_strength_percentile": {"type": ["number", "null"]},
+        "sector.top_turnover_days": {"type": ["number", "integer", "null"]},
+        "sector.above_ma20_ratio_percentile": {"type": ["number", "null"]},
+        "sector.disagreement_recovery_percentile": {"type": ["number", "null"]},
+        "sector.top5_turnover_concentration_percentile": {"type": ["number", "null"]}
       },
       "additionalProperties": {"type": ["number", "integer", "boolean", "string", "null"]}
     },
-    "events": {"type": "array", "items": {"$ref": "event.schema.json"}},
-    "warnings": {"type": "array", "items": {"type": "string"}}
+    "metricProvenanceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceDataset", "actualDate", "analysisQuality", "historyCoverage", "constituentCoverage", "dataVersion", "classificationVersion", "membershipVersion", "universeVersion", "adjustmentVersion", "benchmarkVersion", "calculationVersion", "evidenceReferences", "upstreamEvidenceChecksums"],
+      "properties": {
+        "sourceDataset": {"type": "string", "minLength": 1},
+        "actualDate": {"type": "string", "format": "date"},
+        "analysisQuality": {"enum": ["ok", "partial", "degraded", "reduced-confidence"]},
+        "historyCoverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "constituentCoverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "dataVersion": {"type": "string", "minLength": 1},
+        "classificationVersion": {"type": "string", "minLength": 1},
+        "membershipVersion": {"type": "string", "minLength": 1},
+        "universeVersion": {"type": "string", "minLength": 1},
+        "adjustmentVersion": {"type": "string", "minLength": 1},
+        "benchmarkVersion": {"type": "string", "minLength": 1},
+        "calculationVersion": {"type": "string", "minLength": 1},
+        "evidenceReferences": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "upstreamEvidenceChecksums": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+      }
+    },
+    "metricProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sector.relative_strength_percentile": {"$ref": "#/$defs/metricProvenanceEntry"},
+        "sector.top_turnover_days": {"$ref": "#/$defs/metricProvenanceEntry"},
+        "sector.above_ma20_ratio_percentile": {"$ref": "#/$defs/metricProvenanceEntry"},
+        "sector.disagreement_recovery_percentile": {"$ref": "#/$defs/metricProvenanceEntry"},
+        "sector.top5_turnover_concentration_percentile": {"$ref": "#/$defs/metricProvenanceEntry"}
+      }
+    },
+    "snapshotV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "asOf", "createdAt", "status", "providerQuality", "metrics", "events", "warnings"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "asOf": {"type": "string", "format": "date"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "status": {"enum": ["ok", "degraded", "insufficient"]},
+        "providerQuality": {"$ref": "#/$defs/providerQuality"},
+        "metrics": {"$ref": "#/$defs/metrics"},
+        "events": {"type": "array", "items": {"$ref": "event.schema.json"}},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "snapshotV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "asOf", "createdAt", "status", "providerQuality", "metrics", "metricProvenance", "events", "warnings"],
+      "properties": {
+        "schemaVersion": {"const": 2},
+        "asOf": {"type": "string", "format": "date"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "status": {"enum": ["ok", "degraded", "insufficient"]},
+        "providerQuality": {"$ref": "#/$defs/providerQuality"},
+        "metrics": {"$ref": "#/$defs/metrics"},
+        "metricProvenance": {"$ref": "#/$defs/metricProvenance"},
+        "events": {"type": "array", "items": {"$ref": "event.schema.json"}},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"metrics": {"required": ["sector.relative_strength_percentile"]}}}, "then": {"properties": {"metricProvenance": {"required": ["sector.relative_strength_percentile"]}}}},
+        {"if": {"properties": {"metrics": {"required": ["sector.top_turnover_days"]}}}, "then": {"properties": {"metricProvenance": {"required": ["sector.top_turnover_days"]}}}},
+        {"if": {"properties": {"metrics": {"required": ["sector.above_ma20_ratio_percentile"]}}}, "then": {"properties": {"metricProvenance": {"required": ["sector.above_ma20_ratio_percentile"]}}}},
+        {"if": {"properties": {"metrics": {"required": ["sector.disagreement_recovery_percentile"]}}}, "then": {"properties": {"metricProvenance": {"required": ["sector.disagreement_recovery_percentile"]}}}},
+        {"if": {"properties": {"metrics": {"required": ["sector.top5_turnover_concentration_percentile"]}}}, "then": {"properties": {"metricProvenance": {"required": ["sector.top5_turnover_concentration_percentile"]}}}}
+      ]
+    }
   }
 }

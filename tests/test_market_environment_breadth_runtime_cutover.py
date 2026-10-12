@@ -214,7 +214,15 @@ def test_default_runtime_collects_breadth_through_plan_and_standard_committer(
     result = coordinator.collect(AS_OF, ("breadth",))
 
     assert coordinator.typed_cutover_datasets == frozenset(
-        {"core", "breadth", "limits", "sectors", "activeDirection"}
+        {
+            "core",
+            "breadth",
+            "limits",
+            "industry-ranking",
+            "sector-turnover",
+            "sector-breadth",
+            "activeDirection",
+        }
     )
     assert isinstance(
         container.registries.collectors.get("breadth"),

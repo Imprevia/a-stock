@@ -62,7 +62,7 @@ CHAPTER_GROUP_KEYS = {
     "breadth": ("breadth",),
     "activeDirection": ("activeDirection",),
     "limits": ("limits",),
-    "sectors": ("sectors",),
+    "sectors": ("industry-ranking", "sector-turnover", "sector-breadth"),
 }
 logger = logging.getLogger(__name__)
 _MATERIALIZED_SCHEMA_VERSION_KEY = "_storageSchemaVersion"
@@ -699,11 +699,26 @@ class MarketEnvironmentService:
             elif group == "limits" and callable(fetch := getattr(self.provider, "fetch_chapter01_limits", None)):
                 value = {"limits": fetch(as_of)}
             elif group == "sectors" and callable(fetch := getattr(self.provider, "fetch_chapter01_sectors", None)):
-                value = {"sectors": fetch(as_of, allow_current_snapshot=allow_current_snapshot)}
+                legacy_sector = fetch(
+                    as_of,
+                    allow_current_snapshot=allow_current_snapshot,
+                )
+                missing = self._missing_chapter_provider_data(
+                    as_of,
+                    "legacy sectors evidence cannot prove turnover or breadth",
+                    status="missing",
+                )
+                value = {
+                    "industry-ranking": legacy_sector,
+                    "sector-turnover": missing["sector-turnover"],
+                    "sector-breadth": missing["sector-breadth"],
+                }
             else:
                 legacy = self._load_legacy_chapter(core)
                 keys = CHAPTER_GROUP_KEYS[group]
                 value = {key: legacy[key] for key in keys}
+                if group == "sectors" and legacy.get("sectorAnalysis") is not None:
+                    value["sectorAnalysis"] = legacy["sectorAnalysis"]
         except Exception as exc:
             missing = self._missing_chapter_provider_data(as_of, f"第 01 章 {group} 数据获取失败：{exc}")
             keys = CHAPTER_GROUP_KEYS[group]
@@ -858,6 +873,22 @@ class MarketEnvironmentService:
                 )
             except Exception as exc:
                 value = self._missing_chapter_provider_data(as_of, f"第 01 章扩展接口失败：{exc}")
+        if "sectors" in value and "industry-ranking" not in value:
+            legacy_sector = copy.deepcopy(value["sectors"])
+            missing = self._missing_chapter_provider_data(
+                as_of,
+                "legacy sectors evidence cannot prove turnover or breadth",
+                status="missing",
+            )
+            analysis = legacy_sector.pop("analysis", None)
+            value = {
+                **value,
+                "industry-ranking": legacy_sector,
+                "sector-turnover": missing["sector-turnover"],
+                "sector-breadth": missing["sector-breadth"],
+                "sectorAnalysis": analysis,
+            }
+            value.pop("sectors", None)
         self._cache_set(self._chapter_cache, cache_key, value)
         return value
 
@@ -886,7 +917,13 @@ class MarketEnvironmentService:
         breadth = provider_data["breadth"]
         breadth = self._enrich_breadth(breadth, as_of, analyses)
         limits = provider_data["limits"]
-        sectors = provider_data["sectors"]
+        industry_ranking = copy.deepcopy(provider_data["industry-ranking"])
+        sector_turnover = provider_data["sector-turnover"]
+        sector_breadth = provider_data["sector-breadth"]
+        sector_analysis = provider_data.get("sectorAnalysis") or industry_ranking.pop(
+            "analysis",
+            None,
+        )
         active_direction = provider_data["activeDirection"]
         events = {
             "state": "unverified",
@@ -900,10 +937,28 @@ class MarketEnvironmentService:
                 ["未提供带来源、发布时间、有效期和失效条件的结构化事件输入"],
             ),
         }
-        documents = self._chapter_documents(breadth, limits, sectors, active_direction)
-        qualities = [breadth["quality"], limits["quality"], sectors["quality"], active_direction["quality"], events["quality"]]
+        sector_evidence = (
+            sector_breadth
+            if sector_breadth.get("quality")
+            else industry_ranking
+        )
+        documents = self._chapter_documents(
+            breadth,
+            limits,
+            sector_evidence,
+            active_direction,
+        )
+        qualities = [
+            breadth["quality"],
+            limits["quality"],
+            industry_ranking["quality"],
+            sector_turnover["quality"],
+            sector_breadth["quality"],
+            active_direction["quality"],
+            events["quality"],
+        ]
         status_weight = {"ok": 1.0, "fallback": 0.75, "partial": 0.5, "missing": 0.0, "failed": 0.0}
-        coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 6.0, 4)
+        coverage = round((1.0 + sum(status_weight.get(item["status"], 0.0) for item in qualities)) / 8.0, 4)
         status = "partial" if coverage >= 0.5 else "insufficient"
         synchronization_assessment = self._synchronization_assessment(core, breadth)
         core["summary"]["synchronizationAssessment"] = synchronization_assessment
@@ -934,8 +989,11 @@ class MarketEnvironmentService:
             evidence.append(
                 f"涨跌停：涨停 {limits['limitUpCount']}，跌停 {limits['limitDownCount']}，炸板 {limits['failedLimitUpCount']}"
             )
-        if sectors.get("rows"):
-            names = "、".join(item.get("name") or "未知" for item in sectors["rows"][:3])
+        if industry_ranking.get("rows"):
+            names = "、".join(
+                item.get("name") or "未知"
+                for item in industry_ranking["rows"][:3]
+            )
             evidence.append(f"行业当日排名：{names}")
         if active_direction.get("summary"):
             evidence.append(f"容量方向：{active_direction['summary']}")
@@ -952,7 +1010,10 @@ class MarketEnvironmentService:
             "documents": documents,
             "breadth": breadth,
             "limits": limits,
-            "sectors": sectors,
+            "industryRanking": industry_ranking,
+            "sectorTurnover": sector_turnover,
+            "sectorBreadth": sector_breadth,
+            "sectorAnalysis": sector_analysis,
             "activeDirection": active_direction,
             "events": events,
             "combinationOverview": combination_overview,
@@ -1007,10 +1068,20 @@ class MarketEnvironmentService:
                 "state": "insufficient",
                 "quality": {**quality, "dataset": "limit-pools"},
             },
-            "sectors": {
+            "industry-ranking": {
                 "rows": [],
                 "state": "insufficient",
                 "quality": {**quality, "dataset": "industry-ranking"},
+            },
+            "sector-turnover": {
+                "rows": [],
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "sector-turnover"},
+            },
+            "sector-breadth": {
+                "rows": [],
+                "state": "insufficient",
+                "quality": {**quality, "dataset": "sector-breadth"},
             },
             "activeDirection": {
                 "state": "insufficient",

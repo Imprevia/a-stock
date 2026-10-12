@@ -187,7 +187,11 @@ def test_postgres_import_retry_deduplicates_identity_audits_and_expired_lease_ev
 
     source = tmp_path / "import-retry.sqlite3"
     owner = f"import-retry-{uuid.uuid4().hex}"
-    as_of = date(2099, 12, 31)
+    unique = uuid.uuid4().int
+    # The integration database is intentionally reusable across local runs.
+    # Give this import a unique business date so an earlier successful run's
+    # fencing row cannot masquerade as a conflicting first import.
+    as_of = date(3000 + unique % 6000, 1 + unique % 12, 1 + unique % 28)
     now = datetime.now(timezone.utc)
     source_store = SnapshotStore(source)
     source_store.acquire_lease("core", as_of, owner, lease_seconds=300)
