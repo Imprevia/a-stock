@@ -195,6 +195,27 @@ def _failure(
     )
 
 
+def _decoded_ranking(row: Mapping[str, Any]) -> ThsRankingRow:
+    raw_change_pct = row.get("changePct")
+    return ThsRankingRow(
+        tag=str(row["tag"]),
+        rank=int(row["rank"]),
+        thscode=str(row["thscode"]),
+        name=str(row["name"]),
+        change_pct=(
+            float(raw_change_pct) if raw_change_pct is not None else None
+        ),
+        volume=float(row["volume"]) if row.get("volume") is not None else None,
+        turnover=(
+            float(row["turnover"])
+            if row.get("turnover") is not None
+            else None
+        ),
+        catalog_revision=str(row["catalogRevision"]),
+        as_of=_row_date(row["asOf"]),
+    )
+
+
 def _validate_identity(identity: DatasetDate, dataset_id: str) -> None:
     if identity.dataset != dataset_id:
         raise ValueError(f"collector {dataset_id} cannot collect {identity.dataset}")
@@ -340,12 +361,29 @@ class ThsIndustryRankingCollector:
                     *(warning for bar in bars for warning in bar.warnings),
                 )
             )
+            ranking_change_pct_missing = tuple(
+                row.thscode for row in rankings if row.change_pct is None
+            )
+            if ranking_change_pct_missing:
+                warnings = _deduplicated(
+                    (
+                        *warnings,
+                        *(
+                            f"industry-ranking row {thscode} has no changePct"
+                            for thscode in ranking_change_pct_missing
+                        ),
+                    )
+                )
             status = "partial" if warnings else "ok"
             missing_market_fields = tuple(
                 field_name
                 for field_name in ("open", "high", "low", "close", "volume", "turnover")
                 if any(getattr(bar, field_name) is None for bar in bars)
             )
+            if ranking_change_pct_missing:
+                existing = set(missing_market_fields)
+                existing.add("changePct")
+                missing_market_fields = tuple(sorted(existing))
             candidate = _candidate(
                 identity,
                 rows=tuple(_ranking_payload(row) for row in rankings),
@@ -489,21 +527,7 @@ class ThsIndustryRankingCommitter:
             for row in _rows(catalog.get("relations"), "catalog.relations")
         )
         rankings = tuple(
-            ThsRankingRow(
-                tag=str(row["tag"]),
-                rank=int(row["rank"]),
-                thscode=str(row["thscode"]),
-                name=str(row["name"]),
-                change_pct=float(row["changePct"]),
-                volume=float(row["volume"]) if row.get("volume") is not None else None,
-                turnover=(
-                    float(row["turnover"])
-                    if row.get("turnover") is not None
-                    else None
-                ),
-                catalog_revision=str(row["catalogRevision"]),
-                as_of=_row_date(row["asOf"]),
-            )
+            _decoded_ranking(row)
             for row in _rows(payload.get("rows"), "rows")
         )
         bars = tuple(

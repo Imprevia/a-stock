@@ -252,3 +252,64 @@ def test_synthetic_fixture_covers_four_tags_shared_code_history_and_redaction() 
     assert "x-api-key" not in lowered
     assert "authorization" not in lowered
     assert "x-amz-signature" not in lowered
+
+
+def test_snapshot_fact_allows_missing_change_pct_with_warning() -> None:
+    fact = ThsSnapshotFact(
+        thscode="883401.TI",
+        name="缺字段板块",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+        change_pct=None,
+        open=10.0,
+        high=10.8,
+        low=9.8,
+        close=10.5,
+        volume=1000.0,
+        turnover=10000.0,
+    )
+    assert fact.change_pct is None
+    assert fact.close == 10.5
+
+
+def test_build_rankings_tolerates_missing_change_pct_by_sorting_to_tail() -> None:
+    relations = _relations()
+    base_snapshots = _snapshots()
+    # Drop change_pct for two THS codes that fall across tags.
+    patched = []
+    for snapshot in base_snapshots:
+        patched.append(
+            ThsSnapshotFact(
+                thscode=snapshot.thscode,
+                name=snapshot.name,
+                as_of=snapshot.as_of,
+                provider_timestamp=snapshot.provider_timestamp,
+                change_pct=None if snapshot.thscode in {"000001.TI", "000003.TI"} else snapshot.change_pct,
+                open=snapshot.open,
+                high=snapshot.high,
+                low=snapshot.low,
+                close=snapshot.close,
+                volume=snapshot.volume,
+                turnover=snapshot.turnover,
+            )
+        )
+
+    rankings = build_rankings(
+        relations,
+        tuple(patched),
+        catalog_revision="catalog-r1",
+        as_of=AS_OF,
+    )
+    assert rankings, "rankings must still be produced when some changePct are missing"
+    by_code = {row.thscode: row for row in rankings}
+    assert by_code["000001.TI"].change_pct is None
+    assert by_code["000003.TI"].change_pct is None
+    # Per-tag leaders with a non-null change_pct must still outrank every None entry.
+    for tag in THS_TAGS:
+        rows = [row for row in rankings if row.tag == tag]
+        leaders = [row for row in rows if row.change_pct is not None]
+        trailers = [row for row in rows if row.change_pct is None]
+        if leaders and trailers:
+            assert max(row.rank for row in leaders) <= min(row.rank for row in trailers), (
+                f"per-tag ordering broken for {tag}: leaders={leaders} trailers={trailers}"
+            )

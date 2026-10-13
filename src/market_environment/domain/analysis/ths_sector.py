@@ -89,7 +89,18 @@ def build_rankings(
     for tag in THS_TAGS:
         ranked = sorted(
             grouped[tag],
-            key=lambda pair: (-pair[1].change_pct, pair[0].thscode),
+            # Tuple key makes None change_pct sort LAST for the descending day-change
+            # ordering; downstream callers (sector-turnover / sector-breadth) only depend
+            # on per-tag leaders with at least one non-null change_pct.
+            key=lambda pair: (
+                pair[1].change_pct is None,
+                -(
+                    pair[1].change_pct
+                    if pair[1].change_pct is not None
+                    else float("-inf")
+                ),
+                pair[0].thscode,
+            ),
         )
         for index, (relation, snapshot) in enumerate(ranked, start=1):
             rows.append(

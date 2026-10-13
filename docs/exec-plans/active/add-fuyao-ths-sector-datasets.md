@@ -12,12 +12,47 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**真实 probe 已完成部分能力审阅，生产操作门禁阻塞**
+- 当前阶段：**10 实地打通预备（10.1 + 10.2 + 10.3 + 10.9 完成；10.4 起继续分步授权）**
 - 阶段序列：OpenSpec → 事实文档 → 数据模型/持久化 → provider/应用编排 → API/CLI → 前端 → 全量验证 → 回写
 
 ## Status（状态）
 
-`real-probe-completed-promotion-and-production-gates-blocked` · 用户已明确授权继续 task 9.1/9.2，且已在上海 15:10 结算边界后完成隔离真实 probe。current membership 与单编号历史报告通过本地 evidence policy 审阅；目录/快照、三类 dump 均为 `ineligible`，未晋升、未写生产数据库。生产 PostgreSQL migration、首次同步/回填/导入、部署和调度激活仍受备份、clean reviewed commit、镜像/渲染冻结和默认暂停门禁约束。
+`stage-10-1-partial-change-pct-rule-and-tests` · 用户选 B 路径：adapter 在 snapshot 行确实缺少 `changePct` 时把缺失按行级 warning 透传而非拒绝；`ThsRankingRow` / `ThsSnapshotFact` 字段允许 `null`；`build_rankings` 把 `None` 行排到 per-tag 末尾；`_probe_catalog` 报告 `changePctCoverage`、`changePctCoverageThreshold`、`changePctMissingCodes`、`changePctMissingTags` 四个新证据字段；capability policy `_validate_ths_catalog` 调整 evidence 门为 `changePctCoverage >= 0.99` 且 `changePctMissingTags` 为空（四个 tag 必须仍有非空 `change_pct`）；`requiredFieldsComplete` 含义收紧到 `close` 列 100%；`ThsIndustryRankingCollector` 把 `changePct` 缺失行的 thscode 附加 warning 并把 `changePct` 加入 `missingFields`；`ThsIndustryRankingCommitter._decode` 用 `_decoded_ranking` 接受 `null`。离线 focused `518 passed`、前端 `139 passed`、OpenSpec strict、docs-contract full、git diff --check 全过；未触动任何 provider、production PostgreSQL、Helm、Secret、PVC、调度或 CronJob。
+
+`stage-10-2-ths-real-probe-completed` · 用户选打通路径：10.1 落地后用户授权盘后真实 probe，按 plan 10.x 在上海结算后、隔离临时路径重跑 `cli fuyao ths-real-probe`（`as-of=2026-10-12`、`thscode=886042.TI`、`history-start=2024-10-12`、`max-dump-bytes=536870912`），脱敏 proof 落盘 `/tmp/fuyao-ths-report-20261012.json`（同步保留 `.b1/.b2` 两份备份）。六份 capability report 中三份翻为 `eligible`：
+
+| revision | dataset | status | 关键证据 |
+| --- | --- | --- | --- |
+| `fuyao-ths-catalog-v1` | `industry-ranking` | eligible | 845/845 行；`changePctCoverage=1.0`、`changePctMissingTags=[]`、`requiredFieldsComplete=true`、`snapshotCoverage=1.0`；tag 分量 `industry=320 / region=33 / tszs=102 / cn_concept=390`；C1 丢弃的空市值行 (`883401.TI`/`883422.TI`) 走 warning 透传；checksum `29dd8021…77693` |
+| `fuyao-ths-membership-v1` | `sector-membership` | eligible | `886042.TI` 成员 203 人；`memberIdentity/name/identityUnique` 三项 true；checksum `8e56512b…a6f6` |
+| `fuyao-ths-history-v1` | `sector-turnover-history` | eligible | `886042.TI` K 线 484 根；`observedStart=2024-10-14 → observedEnd=2026-10-12`、`withinFiveYears=true`、`ohlc/turnover/volume` 三 complete；checksum `c98d89e5…7931` |
+
+三 dump (`fuyao-ths-daily/incremental/adjustment-dump-v1`) 仍 `ineligible`，原因均为 "Fuyao dump metadata lacks a SHA-256 checksum" 与 "operation contract was not proven"；授权状态下不得代为允许。10.4–10.8 仍等待"继续"授权才能动（10.3 capability apply 已落地，见 Status `stage-10-3-capability-promote-completed`）。
+
+10.1 + 10.2 后的离线验证：后端 THS/fuyao/capability 套件 `143 passed`；前端 Vitest `20 files / 139 tests passed`；Vite production build 通过（仅有既有大 chunk warning）；`openspec validate add-fuyao-ths-sector-datasets --strict` 通过；`python scripts/check-docs-contract.py --mode=full` 通过（代码 11 / 文档 5 / plan 1）；`git diff --check` 全过。未触动 production PostgreSQL、Helm、Secret、PVC、调度或 CronJob，未执行 capability apply 或 promotion。
+
+`stage-10-9-pgdump-and-recovery-drill-completed` · 用户明确授权 `继续 10.9` 后，由本地 dev box 通过 `ssh admin@192.168.1.20 → sudo k3s kubectl exec -n a-stock a-stock-postgresql-0` 跑 `pg_dump -Fc -Z 9 --no-owner --no-privileges --quote-all-identifiers` 生成 `/tmp/a-stock-pgdump-20261013.dump`（2,400,447 字节，sha256 `1723b24ced06d0f9eda06c5fa18867235685e24467ae5425ffeb6ec74c3b3ee5`，耗时 2.9s）；通过 `kubectl cp` + `scp` 拉回 `/tmp/a-stock-pgdump-20261013.dump`。在本地起隔离 PG 容器 `a-stock-pg-recovery-1791854545`（`docker.m.daocloud.io/library/postgres:16.4`，端口 `55432→5432`，独立卷 `/tmp/a-stock-pgdata-1791854545`，DB `a_stock_recovery`，与生产 `a-stock` PG 完全隔离）并用 `pg_restore --single-transaction --clean --if-exists --exit-on-error` 灌入 0 error、39 张表全到位。Schema 校验：`schema_migrations` v4–v8 全 apply（v7=`add-sector-continuity-facts`、v8=`add-ths-sector-datasets` 共用 `2026-10-12 09:34:56.764315+00`，印证 9.2 部署一次 apply 两个 migration 的事实）；`provider_capability_reports` 仅含 `fuyao/sectors/fuyao-market-v2/eligible` 1 行（旧 change 唯一行未变）；所有新 THS 表（`ths_catalog_revisions`、`ths_catalog_relations`、`ths_sector_identities`、`ths_sector_daily_bars`、`ths_sector_memberships`、`ths_member_daily_facts`、`ths_industry_rankings`、`ths_sector_breadth_evidence`、`ths_backfill_runs`、`ths_backfill_checkpoints`、`ths_operations`）schema 均存在、行数均 0（10.5–10.8 尚未执行）。未触动 production PG pod、PVC UID `6c426fc5-…`、Helm release rev 98、已写入的 capability 行、Helm env 等。隔离容器保留运行（per 用户 (a)），等 10.3 capability apply 后做 `provider_capability_reports` 行差对照，作为唯一 capability apply 的真实基线证据。
+
+`stage-10-3-capability-promote-completed` · 用户明确授权 `继续 10.3 apply` 后，由本地 dev box 通过 `ssh admin@192.168.1.20 → sudo k3s kubectl exec -n a-stock a-stock-57b65c5bc6-ggt62 -- bash -lc "cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli capabilities promote"` 在生产 Pod 镜像内完成 CLI 入口发现（`/app/src/market_environment` 在镜像 PYTHONPATH 之外，需 `cd /app` + `PYTHONPATH=/app/src`），三份脱敏 capability report 在 `conflictState="absent"` 与 `result="validated"` 下分别通过 dry-run，再加 `--apply` 提交；每条 CLI exit 0，stdout 均为单行 JSON：
+
+| dataset | revision | dry-run exit | apply exit | dry-run result | apply result |
+| --- | --- | --- | --- | --- | --- |
+| `industry-ranking` | `fuyao-ths-catalog-v1` | 0 | 0 | `validated` | `applied` |
+| `sector-membership` | `fuyao-ths-membership-v1` | 0 | 0 | `validated` | `applied` |
+| `sector-turnover-history` | `fuyao-ths-history-v1` | 0 | 0 | `validated` | `applied` |
+
+行差对照：在生产 PG `sudo k3s kubectl exec -n a-stock a-stock-postgresql-0 -- psql` 上 `SELECT provider,dataset,revision,status,sample_count,schema_version,to_char(checked_at,'YYYY-MM-DD HH24:MI:SS') FROM provider_capability_reports ORDER BY provider,dataset,revision` 结果 4 行：
+
+```
+fuyao|industry-ranking|fuyao-ths-catalog-v1|eligible|845|1|2026-10-12 15:44:17
+fuyao|sector-membership|fuyao-ths-membership-v1|eligible|203|1|2026-10-12 15:44:17
+fuyao|sectors|fuyao-market-v2|eligible|10|1|2026-10-09 12:00:00
+fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:44:17
+```
+
+对比 10.9 隔离 PG baseline（仅 `fuyao|sectors|fuyao-market-v2` 1 行），apply 后只多出 3 行 catalogue/membership/history；旧 `fuyao/sectors/fuyao-market-v2` 行的 `sample_count=10`、`checked_at=2026-10-09 12:00:00` 未变（option (a) 承诺兑现：capability apply 只新增不修改）。Apply 前后 Pod env 镜像快照对比：`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=0`、六个 `_THS_*_ENABLED=0`、三个 `_THS_*_REVISION=""`、`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, APPROVED_REVISION=fuyao-market-v2`（上一 change 保留）全部不变；`/tmp` 在 Pod 为 emptyDir，scp 进去的 envelope 不进入 PVC；Pod `restartCount=0`、Deployment 1/1 Ready、PVC UID `6c426fc5-…` 未变、Helm release rev 98 未动、CronJob 仍 absent。
+
+10.3 离线验证：THS/capability/fuyao 聚焦测试 161 passed（focused set 包括 `tests/test_market_environment_capability_promotion.py` 53 passed + THS collection/datasets/CLI/dump/sector/postgres 等共 14 个测试文件，`ths_sector_operations` + `ths_sector_queries` + `ths_sector_domain` + `ths_registry_integration` + `ths_http` + `fuyao_ths_dump` + `fuyao_ths_sector` + `postgres_ths_sector` + `ths_sector_migration` + `fuyao_collection_integration` 全套 161 passed in 45s）；`openspec validate add-fuyao-ths-sector-datasets --strict` 通过；`python scripts/check-docs-contract.py --mode=full` 通过（代码 11 / 文档 5 / plan 1）；`git diff --check` 全过；未触动生产 Pod 镜像、Helm release、Secret、PVC、调度或 CronJob；未执行 10.4 起的 env 升级或首次真实采集。
 
 ## 事实源
 
@@ -67,15 +102,40 @@
 - `python scripts/check-docs-contract.py --mode=full` 与 `git diff --check` 通过。
 - 2026-10-12 15:21（Asia/Shanghai）隔离真实 probe：`sector-membership` revision `fuyao-ths-membership-v1` 为 `eligible`（203 个成员，checksum `2c85bc56…99779`），`sector-turnover-history` revision `fuyao-ths-history-v1` 为 `eligible`（24 根 K 线，checksum `d61cab08…3f680`）。`industry-ranking` 因真实快照 `883401.TI` 缺少 `changePct` 为 `ineligible`；daily/incremental/adjustment dump 元数据均未提供 SHA-256，全部 `ineligible`。未执行 capability apply/promotion、正式事实写入或生产数据库变更。
 
+- 2026-10-12 17:18–17:35 受控 `scripts/deploy-truenas-k3s.sh --component all` 在 `192.168.1.20` k3s `v1.26.6+k3s-6a894050-dirty` 集群完整通过：preflight rendering 通过 chart `a-stock-0.1.1` 严格 lint 与 k3s 1.26 offline template；`/tmp/a-stock-deploy.6r3T2d/release-packet` 的 `packetDigest=1a509c18cb9b25fbcf284772f421835c3d54d67fca8a168ca298aff145553d27` 满足 `disabled` 状态；`generic deployment precondition` 确认 stored manifest 与 live release 调度均 off/absent，非 Helm `market-data-collection` 也不存在；`podman build` 从本地 `c53705f` clean reviewed checkout 重建单一不可变镜像 `localhost/a-stock-market-environment:20261012-172238-c53705f`、layer 12/14 写入（py-mini-racer/pyarrow/psycopg3 等），`podman save` 输出 585 MB tar 归档 `a-stock-market-environment-20261012-172238-c53705f.tar`、SHA-256 在远端校验通过；`scp` 复制至 `admin@192.168.1.20:/mnt/xiaomi/app-builds/a-stock/` 后 `sudo k3s ctr -n k8s.io images import` 成功，containerd manifest digest `sha256:bcebdb7127f882e6b2117acca0d133352b83b55b1a9f3dc5894e3ce92a901e8d`、解压完成；Helm revisions 96/97/98 依次完成 `component=database`、`component=service`、`component=all` 三个 atomic upgrade + `--wait --timeout=5m`，`schema-migration` Hook Job 成功 apply 0004 + 0005，post-install/post-upgrade hook 已被 `before-hook-creation,hook-succeeded` 自动清理；PostgreSQL 与 Dashboard 均 1/1 Ready、0 重启；`/api/health` 与首页均 HTTP 200；`/api/market-environment/ths/catalog` 返回 `{"revision":null,"items":[],"page":1,"pageSize":100,"total":0}`，旧 `/api/market-environment/sectors` 仍 HTTP 200 兼容。
+- 2026-10-12 23:44（Asia/Shanghai）盘后真实 probe（10.2）：`cli fuyao ths-real-probe --as-of 2026-10-12 --thscode 886042.TI --history-start 2024-10-12 --max-dump-bytes 536870912` 在 `/tmp/fuyao-ths-report-20261012.json`（备份 `.b1/.b2`）生成六份脱敏 capability report。三份翻为 `eligible`：
+  - `fuyao-ths-catalog-v1`（`industry-ranking`）— 845/845 行，`changePctCoverage=1.0`、`changePctMissingTags=[]`、`requiredFieldsComplete=true`、`snapshotCoverage=1.0`；tag 分量 `industry=320 / region=33 / tszs=102 / cn_concept=390`；C1 丢弃的空市值行 (`883401.TI`/`883422.TI`) 走 warning 透传；checksum `29dd8021…77693`。
+  - `fuyao-ths-membership-v1`（`sector-membership`）— `886042.TI` 成员 203 人；`memberIdentity/name/identityUnique` 三项 true；checksum `8e56512b…a6f6`。
+  - `fuyao-ths-history-v1`（`sector-turnover-history`）— `886042.TI` K 线 484 根；`observedStart=2024-10-14 → observedEnd=2026-10-12`、`withinFiveYears=true`、`ohlc/turnover/volume` 三 complete；checksum `c98d89e5…7931`。
+  - 另三 dump（`fuyao-ths-daily/incremental/adjustment-dump-v1`）仍 `ineligible`：原因均为 “Fuyao dump metadata lacks a SHA-256 checksum” 与 “operation contract was not proven”，授权状态下不得代为允许。
+  - 离线验证：后端 THS/fuyao/capability 套件 `143 passed`；Vitest `20 files / 139 tests passed`；Vite production build 通过；`openspec validate add-fuyao-ths-sector-datasets --strict` 通过；`python scripts/check-docs-contract.py --mode=full` 通过；`git diff --check` 全过。未触动 production PostgreSQL / Helm / Secret / PVC / 调度 / CronJob，未执行 capability apply 或 promotion。
+- 2026-10-13 09:18（Asia/Shanghai）`stage-10-9-pgdump-and-recovery-drill-completed`：local dev box 通过 `ssh admin@192.168.1.20 → sudo k3s kubectl exec -n a-stock a-stock-postgresql-0 -- pg_dump -Fc -Z 9 --no-owner --no-privileges --quote-all-identifiers` 生成生产 PG dump `/tmp/a-stock-pgdump-20261013.dump`（2,400,447 字节、sha256 `1723b24ced06d0f9eda06c5fa18867235685e24467ae5425ffeb6ec74c3b3ee5`、耗时 2.9s）；随后通过 `kubectl cp -n a-stock a-stock-postgresql-0:/tmp/a-stock-pgdump-20261013.dump /tmp/...` + `scp` 把 dump 拉到本地。在本地用 `podman run -d --name a-stock-pg-recovery-1791854545 --publish 55432:5432 --volume /tmp/a-stock-pgdata-1791854545:/var/lib/postgresql/data docker.m.daocloud.io/library/postgres:16.4` 起隔离 PG 容器，`pg_restore --single-transaction --clean --if-exists --exit-on-error /tmp/a-stock-pgdump-20261013.dump` 0 error 完成，恢复 39 张表。Schema 校验：`schema_migrations` v4–v8 全 apply（v7 add-sector-continuity-facts + v8 add-ths-sector-datasets 共用 `2026-10-12 09:34:56.764315+00`，印证 9.2 真演练一次 apply 两个 migration 的事实）；`provider_capability_reports` 仍仅含 1 行 `fuyao|sectors|fuyao-market-v2|eligible`；11 张新 THS 表 schema 均存在、行数均 0（10.5–10.8 未执行）。未触动 production pod、PVC UID `6c426fc5-…`、Helm release rev 98、已写入 capability 唯一行、Helm env 全 off 与 absent CronJob。隔离 PG 容器按用户 (a) 选保留运行至 10.3 后做 `provider_capability_reports` 行差对照。
+- 2026-10-13 09:54（Asia/Shanghai）`stage-10-3-capability-promote-completed`：dev box 通过 `ssh admin@192.168.1.20 → sudo k3s kubectl cp /tmp/fuyao-ths-report-20261012.json a-stock/a-stock-57b65c5bc6-ggt62:/tmp/fuyao-ths-report-20261012.json`（md5 `4b108bb1…f83c` 一致）把脱敏 envelope 放进生产 Pod `/tmp`（emptyDir，不进 PVC），再 `sudo k3s kubectl exec -n a-stock a-stock-57b65c5bc6-ggt62 -- bash -lc "cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli capabilities promote"` 跑三条 CLI。Dry-run：`industry-ranking / fuyao-ths-catalog-v1` exit 0 + `{"checksum":"29dd8021…7693","conflictState":"absent","mode":"dry-run","result":"validated","targetBackend":"postgresql+psycopg://***@a-stock-postgresql:5432/a-stock"}`；`sector-membership / fuyao-ths-membership-v1` exit 0 + `result=validated`；`sector-turnover-history / fuyao-ths-history-v1` exit 0 + `result=validated`。Apply：三份全部 exit 0 + `mode=apply, result=applied, conflictState=absent`，`targetBackend=postgresql+psycopg://***@a-stock-postgresql:5432/a-stock`。行差对照（生产 PG `\d provider_capability_reports`）：4 行 = `fuyao|industry-ranking|fuyao-ths-catalog-v1|eligible|845|1|2026-10-12 15:44:17`、`fuyao|sector-membership|fuyao-ths-membership-v1|eligible|203|1|2026-10-12 15:44:17`、`fuyao|sectors|fuyao-market-v2|eligible|10|1|2026-10-09 12:00:00`（旧 change 未变）、`fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:44:17`；对比 10.9 隔离 PG baseline（仅 `fuyao|sectors|fuyao-market-v2` 1 行）多 3 行、旧行未改，option (a) 承诺兑现。Pod env 镜像对比前后：`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=0`、六个 `_THS_*_ENABLED=0`、三个 `_THS_*_REVISION=""`、`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, APPROVED_REVISION=fuyao-market-v2` 全不变；Pod `restartCount=0`、Deployment 1/1 Ready、PVC UID `6c426fc5-…` 不变、Helm release rev 98 未动、CronJob 仍 absent；envelope 走 `/tmp` emptyDir，不进 PVC；未触动任何 Secret、API key 或外发端口。离线：focused THS/capability/fuyao 161 passed（focused set 包括 `tests/test_market_environment_capability_promotion.py` 等 14 个测试文件，45.63s）；`openspec validate --strict` 通过；`check-docs-contract --mode=full` 通过；`git diff --check` 全过。日志：dry-run 与 apply 命令逐行落 `/tmp/a-stock-dryrun-*.txt` 与 `/tmp/a-stock-apply-*.txt`；行差对照落 `/tmp/a-stock-pgdiff-caps-20261013.txt`；env pre/post 状态落 `/tmp/a-stock-podenv-{pre,post}state-20261013.txt`。
+
 ## Remaining Gaps（剩余缺口）
 
-- 真实 probe 已执行但 `industry-ranking` 仍因响应字段缺失为 `ineligible`；需 provider 契约修复或人工审阅后才能重新 probe/promotion。
+- 真实 probe 已重跑且 `industry-ranking / fuyao-ths-catalog-v1` 在 10.1 + partial `changePct` 策略下翻为 `eligible`（`changePctCoverage=1.0`、`changePctMissingTags=[]`）；cumulative eligibility 仍受"每个 tag 至少保留若干 `changePct` 行"的二次门约束——后续如 provider 把四类中某一类整体置空，需先复核 `changePctMissingTags` 是否仍为空，否则按现 policy 自动降回 `ineligible`。
 - 真实 dump 元数据缺少 SHA-256，daily/incremental 无法下载并晋升；不得放宽 checksum 门禁。
 - Fuyao adjustment dump 真实契约不直接提供 `adjustment_factor`；复权因子推导所需公式、公司行动顺序和前收盘证据尚未实现，因此 adjustment capability 必须保持 `ineligible`。
-- membership/history 虽通过隔离 policy 审阅，但 promotion 尚未 apply 到生产 PostgreSQL；在 9.2 的备份、migration 和镜像冻结完成前不得写生产 capability 表。
-- 生产 PostgreSQL 尚未执行 `0004`/`0005` migration；首次目录同步、历史回填、成员导入、部署与调度激活均未执行。
-- 当前生产 release 仍保留历史 `sectors` fallback；仓库新公共运行时已退役该标识，生产切换必须在独立授权下完成备份、migration、suspended rollout 和回滚审阅。
+- membership / history / industry-ranking 三份 report 在 10.2 后均满足 evidence policy；promotion 仍未 apply 到生产 PostgreSQL，9.2 部署只迁移 schema 与切镜像，**未**对 `provider_capability_reports` 写入新 capability 行，capability promotion 仍需独立授权。
+- 生产 PostgreSQL 在 9.2 部署中已 apply alembic `0004 add-sector-continuity-facts` + `0005 add-ths-sector-datasets`；11 张新 THS 表与索引全数落地、`schema_migrations` v4–v8 全应用；首次正式 capability apply、catalog sync、history backfill、member import 与调度激活仍按 9.2 “分别授权”要求等待。
+- 当前生产 release 仍保留历史 `sectors` fallback（`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, approvedRevision=fuyao-market-v2`）；仓库新公共运行时已退役该标识，公共 API 已切换至 `/api/market-environment/ths/*`，旧 `sectors` 路径仅作为审计兼容。
+
+- `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED` 等 6 个新 capability 与 `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED` 仍全部为 0；任何独立 promotion 或写入前必须先经 capability policy + 双 revision 预检 + 请求预算门禁。
+- **10 实地打通分步授权清单（每一步单独确认）**：
+  - [x] 10.1 用户选 B；`industry-ranking` 在 `883401.TI` 缺 `changePct` 时不再 hard fail；adapter / sort key / probe / policy / collector / committer 已落地（10.1-followup 详见 Status）。
+  - [x] 10.2 盘后真实 probe：`/tmp/fuyao-ths-report-20261012.json`；六份 report 中三份 `eligible`（catalog 845 行 / membership 203 人 / history 484 根 K 线），三 dump `ineligible`（SHA-256 缺失）；outcome 已写入 Status 表。
+  - [x] 10.3 capability apply：三份 eligible report 在生产 Pod 镜像内经 `cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli capabilities promote` dry-run 全 validated，加 `--apply` 提交并写入生产 PG；行差对照仅新增 3 行，旧 `fuyao/sectors/fuyao-market-v2` 行不变，详见 Status `stage-10-3-capability-promote-completed` 与 Completion Evidence。
+  - 10.4 Helm release 升级：`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=1` + 6 个 `_ENABLED` 切换 + `_REVISION` 注入；CronJob 保持 `suspend=true`。
+  - 10.5 单次小批 catalog sync。
+  - 10.6 单次小批 history backfill。
+  - 10.7 单次小批 member import（dump 缺 SHA-256 时只跑 probe）。
+  - 10.8 完整 dry-run 三数据集采集，校验数据采集页状态。
+  - [x] 10.9 pg_dump + 隔离 PostgreSQL 恢复演练：dump `/tmp/a-stock-pgdump-20261013.dump`（sha256 `1723b24c…3ee5`）+ 本地隔离 PG 容器恢复校验，详见 Status 表与 10.9 evidence。
+  - 10.10 文档回写（plan / OpenSpec tasks 9.1+9.2 / `docs/status.md`）。
 
 ## Next Step（下一步）
 
-保留本次隔离 probe 的脱敏摘要；临时 report/evidence 已按数据边界清理，正式 promotion 前必须重新 probe 并保存受审报告。待 provider 修复后重新探测目录/dump；membership/history 的 capability apply 需在 9.2 的 clean reviewed commit、备份恢复演练、additive migration 和镜像冻结之后执行。随后才可进行 suspended rollout 与小批同步/回填/导入观察；默认调度保持 `enabled=false / suspend=true`。
+9.2 部署与 10.9 隔离恢复演练都通过：保留 production PG `pg_dump-20261013` dump（sha256 `1723b24c…3ee5`）作为可回滚兜底；本地隔离 PG 容器 `a-stock-pg-recovery-1791854545` 仍在运行作为 capability apply 前后的行差对照基线（baseline caps 仅 `fuyao/sectors/fuyao-market-v2` 1 行）。Production pod 仍是 1/1 Ready、0 重启、PVC UID `6c426fc5-…` 未变；Helm release rev 98 未动；已写入 capability 唯一行未变；Helm env 仍全 off；调度仍 absent。
+
+10.3 capability apply 已落地：行差对照 = `provider_capability_reports` 4 行（1 旧 + 3 新），旧 `fuyao/sectors/fuyao-market-v2` 行未变，option (a) 承诺兑现；Helm release rev 98、Pod 镜像、PVC、Secret、CronJob 全部未动。下一观察重点：行差对照落 `/tmp/a-stock-pgdiff-caps-20261013.txt`；envelope 走 Pod 内 `/tmp` emptyDir，不进 PVC；隔离 PG 容器 `a-stock-pg-recovery-1791854545` 仍按用户 (a) 保留运行，等用户复述 "cleanup" 才可销毁。下一受控动作仍按 plan 10.x "每步独立授权" 顺序等待：10.4 Helm release 升级注入 `_WRITES_AUTHORIZED=1` + 6 个 `_ENABLED=1` + `_REVISION`（CronJob 仍 `suspend=true`），10.5–10.8 顺序小批 catalog sync / history backfill / member import（dump 缺 SHA-256 时只跑 probe）/ 全量 dry-run 采集。每一步都要用户复述授权才能动；任何 5xx / 超时 / 数据冲突立即 halt 并先回报证据再决定继续。

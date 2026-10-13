@@ -528,7 +528,14 @@ tag 出现时保留分类关系和共享代码身份，不按名称、排名或�
 三个数据集的职责和依赖固定如下：
 
 - `industry-ranking` 从四类完整目录和同一上海交易日的完整快照生成稳定分类排名；目录、编号身份、日期或
-  100% 覆盖任一不足时不发布正式结果。
+  100% 覆盖任一不足时不发布正式结果。当 provider 快照行确实缺少 `changePct`（如真实
+  `883401.TI` 在 `/api/a-share-index/prices/snapshot` 不返回任何日涨跌幅 alias）时，adapter
+  把缺失按行级 warning 透传，`ThsRankingRow.change_pct` 允许 `null`，排序键在该 tag 内把
+  `None` 行排到末尾而非拒绝整份快照。capability policy 接受 partial 的两条独立证据门：
+  `changePctCoverage >= 0.99` 且 `changePctMissingTags` 为空（即四个 tag 都至少有非空
+  `change_pct`），任何 tag 整列缺失仍记 `ineligible`；committer/collector 接受 `changePct=null`
+  行落库，质量仍按现有规则标记为 `partial`，前端 `ThsIndustryRankingRow.changePct` 类型同步为
+  `number | null`。快照 `close` 列必须 100% 覆盖，OHLC/volume/turnover/catalog identity 门禁不变。
 - `sector-turnover` 保存逐 `thscode` 日线的 `open`、`high`、`low`、`close`、`volume` 和
   `turnover`。每日快照追加全部目录编号，历史接口按单编号请求；产品回填窗口最多近五年，每批最多
   60 个编号，以 checkpoint 记录编号、日期区间、revision、预算消耗和完成状态。重试必须幂等且可恢复，

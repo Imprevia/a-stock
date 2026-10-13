@@ -246,6 +246,40 @@ class FuyaoThsSectorAdapter:
                         f"Fuyao THS snapshot contains duplicate identity {code}"
                     )
                 snapshot_rows[code] = row
+        # Identify snapshot rows for which the provider dropped every live market
+        # field (e.g. suspended / delisted / newly-listed `thscode`s whose day
+        # remains empty). Those rows would otherwise fail ThsSnapshotFact validation
+        # and abort the whole bundle, so they are demoted to a row-level warning and
+        # their catalog relations are dropped to keep the bundle invariant
+        # `set(snapshot_rows) == set(relations.thscode) == expected_codes`.
+        empty_market_codes: set[str] = set()
+        market_value_aliases = (
+            ("open", "open_price", "o"),
+            ("high", "high_price", "h"),
+            ("low", "low_price", "l"),
+            ("close", "close_price", "c", "last_price"),
+            ("volume", "vol"),
+            ("turnover", "amount", "amt", "f6"),
+        )
+        for code, row in snapshot_rows.items():
+            if all(
+                self._number(row, *aliases) is None
+                for aliases in market_value_aliases
+            ):
+                empty_market_codes.add(code)
+        if empty_market_codes:
+            snapshot_rows = {
+                code: row for code, row in snapshot_rows.items()
+                if code not in empty_market_codes
+            }
+            relations = tuple(
+                relation for relation in relations
+                if relation.thscode not in empty_market_codes
+            )
+            tag_counts = {
+                tag: sum(1 for relation in relations if relation.tag == tag)
+                for tag in THS_TAGS
+            }
         expected_codes = {relation.thscode for relation in relations}
         if set(snapshot_rows) != expected_codes:
             missing = sorted(expected_codes - set(snapshot_rows))
@@ -263,12 +297,14 @@ class FuyaoThsSectorAdapter:
             )
 
         snapshots: list[ThsSnapshotFact] = []
+        missing_change_pct: list[str] = []
         snapshot_time = max(snapshot_times)
         for code in sorted(snapshot_rows):
             row = snapshot_rows[code]
             change_pct = self._number(row, "price_change_ratio_pct", "change_pct", "changePct", "f3")
             if change_pct is None:
-                raise FuyaoMarketContractError(f"Fuyao THS snapshot {code} lacks changePct")
+                # Provider gap: the snapshot row omits every alias for the daily
+                missing_change_pct.append(code)
             snapshots.append(
                 ThsSnapshotFact(
                     thscode=code,
@@ -279,7 +315,7 @@ class FuyaoThsSectorAdapter:
                     open=self._number(row, "open", "open_price", "o"),
                     high=self._number(row, "high", "high_price", "h"),
                     low=self._number(row, "low", "low_price", "l"),
-                    close=self._number(row, "close", "close_price", "c"),
+                    close=self._number(row, "close", "close_price", "c", "last_price"),
                     volume=self._number(row, "volume", "vol"),
                     turnover=self._number(row, "turnover", "amount", "amt", "f6"),
                 )
@@ -299,10 +335,21 @@ class FuyaoThsSectorAdapter:
             catalog_revision=self.catalog_revision,
             as_of=as_of,
         )
-        warnings = tuple(
-            f"{snapshot.thscode} volume is unavailable"
-            for snapshot in snapshots
-            if snapshot.volume is None
+        warnings = (
+            *tuple(
+                f"{code} snapshot row has no live market values for {as_of.isoformat()}; "
+                "dropped from snapshot and ranking for this revision"
+                for code in sorted(empty_market_codes)
+            ),
+            *tuple(
+                f"{snapshot.thscode} volume is unavailable"
+                for snapshot in snapshots
+                if snapshot.volume is None
+            ),
+            *tuple(
+                f"{thscode} changePct missing from provider snapshot"
+                for thscode in missing_change_pct
+            ),
         )
         return ThsCatalogSnapshotBundle(
             revision,
@@ -471,7 +518,7 @@ class FuyaoThsSectorAdapter:
                 "open": self._number(row, "open", "open_price", "o"),
                 "high": self._number(row, "high", "high_price", "h"),
                 "low": self._number(row, "low", "low_price", "l"),
-                "close": self._number(row, "close", "close_price", "c"),
+                "close": self._number(row, "close", "close_price", "c", "last_price"),
                 "volume": self._number(row, "volume", "vol"),
                 "turnover": self._number(row, "turnover", "amount", "amt", "f6"),
             }

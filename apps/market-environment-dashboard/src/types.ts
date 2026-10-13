@@ -31,7 +31,7 @@ export interface IndexAnalysis {
   code: string
   name: string
   representative: string
-  changePct: number
+  changePct: number | null
   close: number
   movingAverages: {
     ma5: number | null
@@ -397,7 +397,7 @@ export interface ThsIndustryRankingRow {
   rank: number
   thscode: string
   name: string
-  changePct: number
+  changePct: number | null
   volume: number | null
   turnover: number | null
   catalogRevision: string

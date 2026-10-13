@@ -109,7 +109,7 @@ class ThsSnapshotFact:
     name: str
     as_of: date
     provider_timestamp: datetime
-    change_pct: float
+    change_pct: float | None = None
     open: float | None = None
     high: float | None = None
     low: float | None = None
@@ -122,7 +122,9 @@ class ThsSnapshotFact:
         _required_text(self.name, "name")
         if self.provider_timestamp.tzinfo is None:
             raise ValueError("snapshot provider_timestamp must be timezone-aware")
-        _finite(self.change_pct, "change_pct")
+        # change_pct may be None when the provider snapshot omits the daily
+        # price-change field; the per-row missing signal is propagated through
+        # the bundle warnings rather than rejecting the whole snapshot.
         for field_name in ("open", "high", "low", "close", "volume", "turnover"):
             _non_negative(getattr(self, field_name), field_name)
         prices = (self.open, self.high, self.low, self.close)
@@ -144,7 +146,7 @@ class ThsRankingRow:
     rank: int
     thscode: str
     name: str
-    change_pct: float
+    change_pct: float | None
     volume: float | None
     turnover: float | None
     catalog_revision: str
@@ -158,7 +160,9 @@ class ThsRankingRow:
         object.__setattr__(self, "thscode", normalize_thscode(self.thscode))
         _required_text(self.name, "name")
         _required_text(self.catalog_revision, "catalog_revision")
-        _finite(self.change_pct, "change_pct")
+        # change_pct may be None at the ranking level; sort logic in build_rankings
+        # treats None as the worst observed change while keeping per-tag leaders with
+        # at least one non-null row at the top.
         _non_negative(self.volume, "volume")
         _non_negative(self.turnover, "turnover")
 

@@ -1259,3 +1259,132 @@ def test_cli_close_error_does_not_override_primary_error(monkeypatch, capsys) ->
         "status": "rejected",
         "error": "safe validation failure",
     }
+
+
+def _industry_ranking_report_field_coverage(change_pct_coverage: float) -> dict:
+    return {
+        "endpoints": {
+            "catalog": "/api/a-share-index/catalog/ths-index-list",
+            "snapshot": "/api/a-share-index/prices/snapshot",
+        },
+        "tags": ["industry", "cn_concept", "region", "tszs"],
+        "tagCounts": {
+            "industry": 1,
+            "cn_concept": 1,
+            "region": 1,
+            "tszs": 1,
+        },
+        "uniqueCodes": 2,
+        "snapshotRows": 2,
+        "requiredFieldsComplete": True,
+        "ohlcPresent": True,
+        "volumePresent": True,
+        "turnoverPresent": True,
+        "changePctCoverage": change_pct_coverage,
+        "changePctCoverageThreshold": 0.99,
+        "changePctMissingCodes": [],
+        "changePctMissingTags": [],
+    }
+
+
+def _industry_ranking_report(
+    *,
+    change_pct_coverage: float = 1.0,
+    change_pct_missing_tags: tuple[str, ...] = (),
+    change_pct_missing_codes: tuple[str, ...] = (),
+) -> dict:
+    base = _industry_ranking_report_field_coverage(change_pct_coverage)
+    base["changePctMissingTags"] = list(change_pct_missing_tags)
+    base["changePctMissingCodes"] = list(change_pct_missing_codes)
+    import copy
+    return copy.deepcopy(base)
+
+
+def _with_change_pct_evidence(report: ProviderCapabilityReport, **overrides) -> dict:
+    """Return a fresh report dict with patched field_coverage and recomputed checksum.
+
+    The capability promotion command validates the report checksum, so mutating the
+    in-memory dataclass would invalidate it. Rebuilding the dict keeps the redacted
+    payload coherent with the new evidence.
+    """
+    payload = dict(report.to_dict())
+    field_coverage = dict(payload.get("field_coverage") or {})
+    field_coverage.update(overrides)
+    payload["field_coverage"] = field_coverage
+    # ProviderCapabilityReport.from_dict validates the supplied checksum against the
+    # recomputed one; clearing it lets the rebuild adopt the new evidence's checksum.
+    payload["checksum"] = ""
+    rebuilt = ProviderCapabilityReport.from_dict(payload)
+    return rebuilt.to_dict()
+
+
+def test_industry_ranking_promotion_accepts_partial_change_pct_when_coverage_meets_threshold() -> None:
+    command, _factory = _command()
+    result = command.execute(
+        {
+            "provider": "fuyao",
+            "asOf": AS_OF.isoformat(),
+            "reports": [
+                _with_change_pct_evidence(
+                    _ths_report("industry-ranking"),
+                    changePctCoverage=0.99,
+                    changePctCoverageThreshold=0.99,
+                    changePctMissingCodes=["883401.TI"],
+                    changePctMissingTags=[],
+                )
+            ],
+        },
+        provider="fuyao",
+        dataset="industry-ranking",
+        revision=THS_CAPABILITY_REVISIONS["industry-ranking"],
+        target_backend="masked",
+    )
+    assert result.result in {"validated", "applied", "idempotent"}
+
+
+def test_industry_ranking_promotion_rejects_below_threshold_coverage() -> None:
+    command, _factory = _command()
+    with pytest.raises(CapabilityPromotionValidationError, match="coverage"):
+        command.execute(
+            {
+                "provider": "fuyao",
+                "asOf": AS_OF.isoformat(),
+                "reports": [
+                    _with_change_pct_evidence(
+                        _ths_report("industry-ranking"),
+                        changePctCoverage=0.5,
+                        changePctCoverageThreshold=0.99,
+                        changePctMissingCodes=["883401.TI"],
+                        changePctMissingTags=[],
+                    )
+                ],
+            },
+            provider="fuyao",
+            dataset="industry-ranking",
+            revision=THS_CAPABILITY_REVISIONS["industry-ranking"],
+            target_backend="masked",
+        )
+
+
+def test_industry_ranking_promotion_rejects_tag_fully_missing_change_pct() -> None:
+    command, _factory = _command()
+    with pytest.raises(CapabilityPromotionValidationError):
+        command.execute(
+            {
+                "provider": "fuyao",
+                "asOf": AS_OF.isoformat(),
+            "reports": [
+                _with_change_pct_evidence(
+                    _ths_report("industry-ranking"),
+                    changePctCoverage=0.99,
+                    changePctCoverageThreshold=0.99,
+                    changePctMissingCodes=[],
+                    changePctMissingTags=["industry"],
+                )
+            ],
+            },
+            provider="fuyao",
+            dataset="industry-ranking",
+            revision=THS_CAPABILITY_REVISIONS["industry-ranking"],
+            target_backend="masked",
+        )

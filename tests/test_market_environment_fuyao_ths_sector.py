@@ -287,3 +287,97 @@ def test_history_rejects_duplicate_identity_drift_missing_ohlc_and_five_year_ove
             "000001.TI", [],
             start_date=date(2020, 1, 1), end_date=AS_OF,
         )
+
+
+def test_normalize_catalog_snapshot_tolerates_missing_change_pct_and_emits_warning() -> None:
+    fixture = _fixture()
+    catalogs = _catalog_payloads(fixture)
+    raw_snapshots = list(fixture["snapshot"])
+    patched = []
+    for row in raw_snapshots:
+        row = dict(row)
+        if row["thscode"] == "000005.TI":
+            # Real provider gap on 883401.TI analog code: drop every alias.
+            for alias in ("price_change_ratio_pct", "change_pct", "changePct", "f3"):
+                row.pop(alias, None)
+        patched.append(row)
+
+    bundle = _adapter().normalize_catalog_snapshot(
+        catalogs,
+        [{"timestamp": fixture["providerTimestamp"], "item": patched}],
+        as_of=AS_OF,
+        fetched_at=NOW,
+    )
+
+    by_code = {row.thscode: row for row in bundle.snapshots}
+    assert by_code["000005.TI"].change_pct is None
+    missing_warning = next(
+        warning for warning in bundle.warnings if warning.startswith("000005.TI changePct missing")
+    )
+    assert missing_warning in bundle.warnings
+    # Rankings must still be produced with changePct None passthrough.
+    matching_rank = next(
+        ranking for ranking in bundle.rankings if ranking.thscode == "000005.TI"
+    )
+    assert matching_rank.change_pct is None
+
+
+def test_normalize_catalog_snapshot_skips_rows_without_live_market_values() -> None:
+    fixture = _fixture()
+    catalogs = _catalog_payloads(fixture)
+    raw_snapshots = list(fixture["snapshot"])
+
+    # Inject three extra codes that the provider exposes in the catalog but does not
+    # supply any live market data for (mirrors the real "883401.TI / 883422.TI /
+    # 883998.TI" provider gap observed on 2026-10-12).
+    sparse_codes = [("883401.TI", "稀疏板块A"), ("883422.TI", "稀疏板块B"), ("883998.TI", "稀疏板块C")]
+    industries = list(catalogs["industry"]["item"])
+    for thscode, name in sparse_codes:
+        industries.append({"thscode": thscode, "name": name})
+    catalogs["industry"] = {
+        "timestamp": catalogs["industry"]["timestamp"],
+        "item": industries,
+    }
+    for thscode, name in sparse_codes:
+        raw_snapshots.append(
+            {
+                "thscode": thscode,
+                "name": name,
+                "ticker": thscode.split(".", 1)[0],
+                "volume": None,
+                "turnover": None,
+                "last_price": None,
+                "price_change": None,
+                "price_change_ratio_pct": None,
+                "open_price": None,
+                "high_price": None,
+                "low_price": None,
+                "prev_price": 1.0,
+            }
+        )
+
+    bundle = _adapter().normalize_catalog_snapshot(
+        catalogs,
+        [{"timestamp": fixture["providerTimestamp"], "item": raw_snapshots}],
+        as_of=AS_OF,
+        fetched_at=NOW,
+    )
+
+    snapshot_codes = {row.thscode for row in bundle.snapshots}
+    relation_codes = {row.thscode for row in bundle.relations}
+    assert relation_codes == snapshot_codes
+    for thscode, _name in sparse_codes:
+        assert thscode not in snapshot_codes, f"sparse {thscode} should be dropped"
+    dropped_warnings = [
+        warning for warning in bundle.warnings
+        if "no live market values" in warning
+    ]
+    assert len(dropped_warnings) == len(sparse_codes)
+    # The three sparse codes all come from the 'industry' tag, so after dropping
+    # them the industry count returns to the fixture's original 2 entries.
+    assert bundle.revision.tag_counts == {
+        "industry": 2,
+        "cn_concept": 2,
+        "region": 1,
+        "tszs": 1,
+    }

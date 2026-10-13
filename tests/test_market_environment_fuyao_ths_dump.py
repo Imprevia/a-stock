@@ -187,3 +187,69 @@ def test_dump_downloader_rejects_local_or_metadata_targets_before_request(
             tmp_path / "dump.parquet",
             max_bytes=1024,
         )
+
+
+def test_probe_catalog_reports_change_pct_coverage_and_missing_codes() -> None:
+    from src.market_environment.infrastructure.providers.fuyao.ths_probe import (
+        _missing_change_pct_tags,
+    )
+    from src.market_environment.domain.models.ths_sector import (
+        ThsCatalogRelation,
+        ThsCatalogRevision,
+        ThsSnapshotFact,
+    )
+    from datetime import datetime, timezone
+
+    as_of = __import__("datetime").date(2026, 10, 12)
+    now = datetime(2026, 10, 12, 16, tzinfo=timezone.utc)
+    relations = (
+        ThsCatalogRelation("r", "industry", "000001.TI", "工业"),
+        ThsCatalogRelation("r", "cn_concept", "000002.TI", "概念A"),
+        ThsCatalogRelation("r", "region", "000003.TI", "区域B"),
+        ThsCatalogRelation("r", "tszs", "000004.TI", "特色C"),
+    )
+    snapshots = (
+        # Every classification except 'cn_concept' has at least one leader with change_pct.
+        ThsSnapshotFact(thscode="000001.TI", name="工业", as_of=as_of, provider_timestamp=now,
+                        change_pct=1.5, close=10.0, volume=100.0, turnover=1000.0),
+        ThsSnapshotFact(thscode="000002.TI", name="概念A", as_of=as_of, provider_timestamp=now,
+                        change_pct=None, close=20.0, volume=200.0, turnover=2000.0),
+        ThsSnapshotFact(thscode="000003.TI", name="区域B", as_of=as_of, provider_timestamp=now,
+                        change_pct=-0.4, close=30.0, volume=300.0, turnover=3000.0),
+        ThsSnapshotFact(thscode="000004.TI", name="特色C", as_of=as_of, provider_timestamp=now,
+                        change_pct=0.6, close=40.0, volume=400.0, turnover=4000.0),
+    )
+    revision = ThsCatalogRevision(
+        revision_id="r",
+        capability_revision="r",
+        provider_timestamp=now,
+        fetched_at=now,
+        tag_counts={"industry": 1, "cn_concept": 1, "region": 1, "tszs": 1},
+        checksum="x",
+    )
+
+    class _StubBundle:
+        def __init__(self) -> None:
+            self.revision = revision
+            self.relations = relations
+            self.snapshots = snapshots
+            self.catalog_timestamps = (now,)
+            self.snapshot_timestamps = (now,)
+
+    bundle = _StubBundle()
+    coverage = sum(1 for snapshot in snapshots if snapshot.change_pct is not None) / len(snapshots)
+    assert coverage == pytest.approx(0.75)
+    # 'cn_concept' has only the 000002.TI snapshot whose change_pct is None, so the
+    # tag is fully missing changePct and must be surfaced in changePctMissingTags.
+    assert _missing_change_pct_tags(bundle) == ("cn_concept",)
+    # Coverage above the 0.99 promotion threshold must produce an empty result.
+    fully_filled = tuple(
+        ThsSnapshotFact(
+            snapshot.thscode, snapshot.name, snapshot.as_of, snapshot.provider_timestamp,
+            change_pct=1.0, close=snapshot.close, volume=snapshot.volume, turnover=snapshot.turnover,
+        )
+        for snapshot in snapshots
+    )
+    bundle_full = _StubBundle()
+    bundle_full.snapshots = fully_filled
+    assert _missing_change_pct_tags(bundle_full) == ()

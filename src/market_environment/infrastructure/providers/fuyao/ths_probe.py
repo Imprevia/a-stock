@@ -21,6 +21,7 @@ from ....domain.models.capability import (
     THS_CAPABILITY_REVISIONS,
     ProviderCapabilityReport,
 )
+from ....domain.models.ths_sector import normalize_thscode
 from .market import FuyaoMarketClient
 from .ths_sector import FuyaoThsSectorAdapter
 
@@ -281,6 +282,40 @@ def run_fuyao_ths_capability_probe(
     }
 
 
+def _missing_change_pct_tags(
+    bundle: Any,
+    *,
+    allowed_tags: frozenset[str] = frozenset({"industry", "cn_concept", "region", "tszs"}),
+) -> tuple[str, ...]:
+    """Return the subset of the four THS tags whose every snapshot row lacks change_pct.
+
+    The capability promotion policy reads this field to refuse any tag whose coverage
+    collapsed to zero, so a single provider gap cannot leave a per-tag ranking without
+    at least one leader carrying a non-null change_pct.
+    """
+    relations = getattr(bundle, "relations", ())
+    snapshots = tuple(getattr(bundle, "snapshots", ()))
+    if not relations or not snapshots:
+        return ()
+    coverage: dict[str, list[bool]] = {tag: [] for tag in allowed_tags}
+    snapshot_by_code = {
+        normalize_thscode(getattr(snapshot, "thscode", "")): snapshot
+        for snapshot in snapshots
+    }
+    for relation in relations:
+        snapshot = snapshot_by_code.get(
+            normalize_thscode(getattr(relation, "thscode", ""))
+        )
+        if snapshot is None:
+            continue
+        coverage.setdefault(relation.tag, []).append(
+            getattr(snapshot, "change_pct", None) is not None
+        )
+    return tuple(
+        sorted(tag for tag, values in coverage.items() if values and not any(values))
+    )
+
+
 def _capture_report(
     dataset: str,
     revision: str,
@@ -342,9 +377,17 @@ def _probe_catalog(
             "uniqueCodes": len(unique_codes),
             "snapshotRows": len(bundle.snapshots),
             "requiredFieldsComplete": all(
-                row.change_pct is not None and row.close is not None
-                for row in bundle.snapshots
+                row.close is not None for row in bundle.snapshots
             ),
+            "changePctCoverage": (
+                sum(1 for row in bundle.snapshots if row.change_pct is not None)
+                / max(1, len(bundle.snapshots))
+            ),
+            "changePctCoverageThreshold": 0.99,
+            "changePctMissingCodes": sorted(
+                row.thscode for row in bundle.snapshots if row.change_pct is None
+            ),
+            "changePctMissingTags": _missing_change_pct_tags(bundle),
             "ohlcPresent": all(
                 None not in {row.open, row.high, row.low, row.close}
                 for row in bundle.snapshots

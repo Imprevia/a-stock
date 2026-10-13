@@ -52,7 +52,7 @@
 | `activate-fuyao-sector-fallback` | Codex | production-fuyao-sectors-enabled-and-collected（22/24） | 2026-10-09 |
 | `add-tushare-sector-fallback` | Codex | planned-awaiting-implementation | 2026-10-09 |
 | `add-sector-continuity-metrics` | Codex | in-progress（56/60：11.1 已授权，盘后窗口与真实 adapter 阻塞） | 2026-10-12 |
-| `add-fuyao-ths-sector-datasets` | Codex | implementation-complete-awaiting-authorized-real-operations（30/32） | 2026-10-12 |
+| `add-fuyao-ths-sector-datasets` | Codex | stage-10-3-capability-promote-completed（30/32；10.1+10.2+10.3+10.9 完成；3 行 eligible capability 已写入生产 `provider_capability_reports`，旧 `fuyao/sectors/fuyao-market-v2` 行未变；隔离 PG 容器仍按用户 (a) 保留运行，需 cleanup 授权） | 2026-10-13 |
 
 ## 说明
 

@@ -158,6 +158,8 @@ def _validate_ths_catalog(report: ProviderCapabilityReport) -> None:
         or unique_codes < 1
         or snapshot_rows != unique_codes
         or fields.get("requiredFieldsComplete") is not True
+        or (_change_pct_coverage(fields) < 0.99)
+        or fields.get("changePctMissingTags")  # tuple/list of tags fully missing changePct
         or fields.get("ohlcPresent") is not True
         or fields.get("volumePresent") is not True
         or fields.get("turnoverPresent") is not True
@@ -359,6 +361,16 @@ def _integer(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return converted if converted == value else None
+
+def _change_pct_coverage(fields: Mapping[str, Any]) -> float:
+    """Return the changePct coverage ratio with a defensive default of 1.0.
+
+    The THS catalog capability evidence contract always emits changePctCoverage
+    for fresh probes; older reports without the field are treated as fully covered
+    so newly issued capability rows are not invalidated retroactively.
+    """
+    raw = _number(fields.get("changePctCoverage"))
+    return raw if raw is not None else 1.0
 
 
 def _number(value: Any) -> float | None:
