@@ -52,7 +52,7 @@
 | `activate-fuyao-sector-fallback` | Codex | production-fuyao-sectors-enabled-and-collected（22/24） | 2026-10-09 |
 | `add-tushare-sector-fallback` | Codex | planned-awaiting-implementation | 2026-10-09 |
 | `add-sector-continuity-metrics` | Codex | in-progress（56/60：11.1 已授权，盘后窗口与真实 adapter 阻塞） | 2026-10-12 |
-| `add-fuyao-ths-sector-datasets` | Codex | stage-10-4-helm-ths-on-completed（30/32；10.1+10.2+10.3+10.4+10.9 完成；3 行 eligible capability 已写入生产 `provider_capability_reports` + Helm release 升 99 注入 THS env 但 CronJob 仍 absent；隔离 PG 容器仍按用户 (a) 保留运行，需 cleanup 授权） | 2026-10-13 |
+| `add-fuyao-ths-sector-datasets` | Codex | stage-10-5-catalog-sync-applied（30/32；10.1–10.5 + 10.9 完成；catalog/ranking/bar/identity 846 行 + membership 2,376 行已入生产，Helm release 100，调度仍 disabled/suspended；10.6–10.8 分步授权待续） | 2026-10-13 |
 
 ## 说明
 

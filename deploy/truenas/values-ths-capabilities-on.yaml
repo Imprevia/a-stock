@@ -26,7 +26,7 @@ extraEnv:
 image:
   pullPolicy: IfNotPresent
   repository: localhost/a-stock-market-environment
-  tag: 20261012-172238-c53705f
+  tag: 20261013-162900-8f0a6bc
 
 ingress:
   enabled: false

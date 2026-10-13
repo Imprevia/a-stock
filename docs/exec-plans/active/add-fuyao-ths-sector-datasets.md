@@ -12,7 +12,7 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**10 实地打通预备（10.1 + 10.2 + 10.3 + 10.4 + 10.5 dry-run + 10.9 完成；10.5 apply 待盘后 15:10 settlement 之后授权；10.6 起继续分步授权）**
+- 当前阶段：**10 实地打通（10.1 + 10.2 + 10.3 + 10.4 + 10.5 dry-run + 10.9 完成；10.5 apply 首次运行暴露旧镜像断链，正在部署已审 partial `changePct` 修复后重试；10.6 起继续分步授权）**
 - 阶段序列：OpenSpec → 事实文档 → 数据模型/持久化 → provider/应用编排 → API/CLI → 前端 → 全量验证 → 回写
 
 ## Status（状态）
@@ -58,6 +58,10 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 `stage-10-5-catalog-sync-dryrun-completed` · 用户明确授权 `继续 10.5` 后，dev box 经 `ssh admin@192.168.1.20 → sudo k3s kubectl exec -n a-stock a-stock-776d4bf97c-zt9ss -- bash -lc "cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli ths catalog-sync --as-of 2026-10-13 --capability-revision fuyao-ths-catalog-v1 --membership-capability-revision fuyao-ths-membership-v1 --membership-thscode 886042.TI --request-budget 60"` 跑 dry-run（不加 `--apply`）。CLI stdout 单行 JSON `{"asOf":"2026-10-13","formalWrites":0,"membershipCodes":1,"operation":"catalog-sync","providerCalls":0,"status":"planned","warning":"dry-run only; --apply requires manual-write, settlement, permission, budget, and capability gates"}`、exit 0。Pre-state 抓取：Helm release `a-stock` revision 99 + `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=1` + 6 个 `_THS_*_ENABLED=1` + 三个 `_THS_*_REVISION`（落 `/tmp/a-stock-10.5-podenv-20261013.txt`），`MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=1`、`MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`（落同）；`provider_capability_reports` 行差仍是 4 行（10.3 三新增 + 旧 `fuyao/sectors/fuyao-market-v2` 保持，落 `/tmp/a-stock-10.5-caps-row-20261013.txt`）；11 张新 THS 表全部 `count(*)=0`（落 `/tmp/a-stock-10.5-ths-tables-20261013.txt`）；CronJob 仍 absent；pod 镜像仍是 `20261012-172238-c53705f`、Deployment `1/1 Ready`、pod `restartCount=0`。Dry-run 路径不调用 provider、不写库、只输出 planned payload；实际 apply 必须等上海 settlement 15:10 之后用户单独复述才能跑（CLI `_is_settled(as_of, settlement_boundary=15:10)` 闸门），但 `effective_market_date(2026-10-13 10:59 Asia/Shanghai) == 2026-10-13`、`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=1` + 6 个 `_THS_*_ENABLED=1` + 三个 `_THS_*_REVISION` 都已就绪、Helm release 99、capability 4 行 eligible、audit packet 与 dry-run 输出均落 `/tmp/a-stock-10.5-dryrun-20261013.txt`；10.5-apply 命令与 dry-run 完全一致只需加 `--apply`，请求预算 60（4 个 catalog tag + 11 个 snapshot batch + 40 个 membership tag-content + 1 个 selected code = 56 minimum_budget），三个 eligible revision 与 10.3 capability apply 完全对齐；其余 10.6–10.8 仍按 plan "分别授权"继续等待用户复述。离线：focused THS/capability 套件 161 passed、`vitest 139 passed`、`openspec validate --strict` 通过、`check-docs-contract --mode=full` 通过、`git diff --check` 全过。
 
+`stage-10-5-catalog-sync-apply-image-blocked` · 用户于 2026-10-13 盘后再次授权 `继续 10.5 apply`，CLI 在 Pod 时钟 16:24（Asia/Shanghai）通过 settlement/manual-write/authorization/capability/budget 门禁并返回 `runId=4c1e51239ffb4cdb881299e74d5da379, status=queued`。后台 operation 随后为 `failed`：`warning="Fuyao THS snapshot 883401.TI lacks changePct"`、`requests_used=15`、`completed_items=0`、`failed_items=4`、`conflict_items=0`；`ths_operations` 仅新增该失败审计行，`ths_catalog_revisions` / `ths_catalog_relations` / `ths_sector_identities` / `ths_sector_memberships` 仍全部为 0，事务未产生 normalized authoritative writes。根因不是 10.1 代码回归，而是生产 Pod 仍运行 10.4 刻意保留的旧镜像 `20261012-172238-c53705f`；partial `changePct` 修复从 commit `955ee33` 才存在。修复步骤限定为：从已审 commit `8f0a6bc` 构建不可变镜像，先本地 health smoke，再传输/import 到 k3s containerd；使用完整 live values 做 hook-free atomic Helm upgrade，仅变更应用 image tag，保持 Secret/PVC、THS env、capability rows、PostgreSQL、migration、CronJob absent 与 `scheduledCollection.enabled=false/suspend=true`；验证 rollout 后再以同一 10.5 参数发起新 run。任何镜像构建、传输、rollout、provider 或写库错误立即停止。
+
+`stage-10-5-catalog-sync-applied` · 2026-10-13 17:28（Asia/Shanghai）从已审 commit `8f0a6bc` 构建并部署包含 `955ee33` partial `changePct` 修复的镜像 `localhost/a-stock-market-environment:20261013-162900-8f0a6bc`，containerd digest `sha256:d63399666230e655b2c4e5bcf7cc7fb7985657ebea55c3707d0210a5b2e98600`，Helm release 99 → 100。部署前后的完整 manifest 仅 runtime image tag 变化（空白行差异除外）；`--no-hooks` 未运行 migration，CronJob 仍 absent，THS env、Secret、PVC UID、PostgreSQL 保持不变，Pod 1/1 Ready、0 重启，Pod 内 `/api/health` HTTP 200。新 Pod 上重试同一 catalog-sync 参数成功：`runId=8226a1b725d74d1a81829372736be4b3`、`status=success`、`total_items=45`、`completed_items=45`、`failed_items=0`、`conflict_items=0`、`requests_used=56/60`；结果为 `catalogRows=846`、`rankingRows=846`、`barRows=846`、`membershipCodes=41`。生产 PG 计数：`ths_catalog_revisions=1`、`ths_catalog_relations=846`（`industry=320/cn_concept=390/region=33/tszs=103`）、`ths_industry_rankings=846`、`ths_sector_daily_bars=846`、`ths_sector_identities=846`、`ths_sector_memberships=2376`（显式 `886042.TI=203`）；`/api/market-environment/ths/catalog` 返回 `revision=fuyao-ths-catalog-v1,total=846`。失败 run `4c1e51239ffb4cdb881299e74d5da379` 作为审计记录保留，未产生 authoritative writes。证据：`/tmp/a-stock-10.5-apply-{retry,attempt}-20261013.txt`、`/tmp/a-stock-10.5-image-fix-{pre,dryrun,upgrade,poststate,validation}-20261013.txt`、`/tmp/a-stock-10.5-rows-after-20261013.txt`。
+
 ## 事实源
 
 - `openspec/changes/add-fuyao-ths-sector-datasets/`
@@ -98,6 +102,8 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 ## Completion Evidence（完成证据）
 
+- 10.5 catalog sync 已完成真实 apply：旧镜像失败 run `4c1e51239ffb4cdb881299e74d5da379` 保留为失败审计且零 normalized 写入；切换至包含 `955ee33` 的镜像后，成功 run `8226a1b725d74d1a81829372736be4b3` 写入 846 catalog/ranking/bar/identity 行、2,376 membership facts（含显式 `886042.TI` 203 行），API catalog 已从空态变为 `revision=fuyao-ths-catalog-v1,total=846`。
+- 10.5 修复发布保持受控：Helm release 99 → 100，镜像为 `20261013-162900-8f0a6bc`，Pod 1/1 Ready 且 0 重启，PostgreSQL/PVC/Secret 未变，`schema_migrations` 未新增，CronJob/Job absent，Pod 内 health 200；manifest 语义差异仅 runtime image tag。
 - OpenSpec apply 进度仍为 `30/32`；9.1 的 probe/tooling 子项已完成，但 capability apply/promotion 与 9.2 生产操作仍未完成。`openspec validate add-fuyao-ths-sector-datasets --strict` 通过。
 - 后端 focused 回归（含 THS probe/dump/operations、capability promotion、DAG、HTTP、查询、部署契约）：`310 passed`；architecture gate `13 passed`，dump/promotion 回归 `59 passed`。最后一次全库回归在工作树收口前为 `1416 passed, 6 skipped`，仅暴露 direct-network architecture violation 与一次非确定性性能尖峰；两者均已修复/复核，受影响测试分别通过 `13 passed` 与 `1 passed`，未重新耗时运行整套全库。
 - 前端 Vitest：`20 files / 139 tests passed`；Vite production build 通过，仅有既有大 chunk warning。Playwright 在 1440×1000 与 390×844 检查四视图：页面级 overflow 为 false、可见字号违规为 0、console/page error 为 0，桌面与移动 K 线 Canvas 均非空。
@@ -122,17 +128,17 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 - 真实 probe 已重跑且 `industry-ranking / fuyao-ths-catalog-v1` 在 10.1 + partial `changePct` 策略下翻为 `eligible`（`changePctCoverage=1.0`、`changePctMissingTags=[]`）；cumulative eligibility 仍受"每个 tag 至少保留若干 `changePct` 行"的二次门约束——后续如 provider 把四类中某一类整体置空，需先复核 `changePctMissingTags` 是否仍为空，否则按现 policy 自动降回 `ineligible`。
 - 真实 dump 元数据缺少 SHA-256，daily/incremental 无法下载并晋升；不得放宽 checksum 门禁。
 - Fuyao adjustment dump 真实契约不直接提供 `adjustment_factor`；复权因子推导所需公式、公司行动顺序和前收盘证据尚未实现，因此 adjustment capability 必须保持 `ineligible`。
-- membership / history / industry-ranking 三份 report 在 10.2 后均满足 evidence policy；promotion 仍未 apply 到生产 PostgreSQL，9.2 部署只迁移 schema 与切镜像，**未**对 `provider_capability_reports` 写入新 capability 行，capability promotion 仍需独立授权。
-- 生产 PostgreSQL 在 9.2 部署中已 apply alembic `0004 add-sector-continuity-facts` + `0005 add-ths-sector-datasets`；11 张新 THS 表与索引全数落地、`schema_migrations` v4–v8 全应用；首次正式 capability apply、catalog sync、history backfill、member import 与调度激活仍按 9.2 “分别授权”要求等待。
+- membership / history / industry-ranking 三份 report 已在 10.3 apply 写入生产 `provider_capability_reports`；生产当前保留 4 行（旧 `fuyao/sectors` + 3 个新 eligible revision），10.5 成功 run 使用其中 catalog/membership 两个精确 revision。
+- 生产 PostgreSQL 已 apply alembic `0004 add-sector-continuity-facts` + `0005 add-ths-sector-datasets`；10.5 catalog sync 已完成首次正式写入。剩余真实动作是 10.6 history backfill、10.7 member import probe/import 判定和 10.8 全量 dry-run，仍按“分别授权”要求执行。
 - 当前生产 release 仍保留历史 `sectors` fallback（`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, approvedRevision=fuyao-market-v2`）；仓库新公共运行时已退役该标识，公共 API 已切换至 `/api/market-environment/ths/*`，旧 `sectors` 路径仅作为审计兼容。
 
-- `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED` 等 6 个新 capability 与 `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED` 仍全部为 0；任何独立 promotion 或写入前必须先经 capability policy + 双 revision 预检 + 请求预算门禁。
+- `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED` 等 6 个新 capability 与 `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED` 当前为 1；写入仍必须经 capability policy + 双 revision 预检 + 请求预算门禁，调度继续保持 disabled/suspended。
 - **10 实地打通分步授权清单（每一步单独确认）**：
   - [x] 10.1 用户选 B；`industry-ranking` 在 `883401.TI` 缺 `changePct` 时不再 hard fail；adapter / sort key / probe / policy / collector / committer 已落地（10.1-followup 详见 Status）。
   - [x] 10.2 盘后真实 probe：`/tmp/fuyao-ths-report-20261012.json`；六份 report 中三份 `eligible`（catalog 845 行 / membership 203 人 / history 484 根 K 线），三 dump `ineligible`（SHA-256 缺失）；outcome 已写入 Status 表。
   - [x] 10.3 capability apply：三份 eligible report 在生产 Pod 镜像内经 `cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli capabilities promote` dry-run 全 validated，加 `--apply` 提交并写入生产 PG；行差对照仅新增 3 行，旧 `fuyao/sectors/fuyao-market-v2` 行不变，详见 Status `stage-10-3-capability-promote-completed` 与 Completion Evidence。
   - [x] 10.4 Helm release 升级：`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=1` + 6 个 `_ENABLED=1` + 3 个 `_REVISION` 注入；Helm release 98 → 99、CronJob 仍 `suspend=true`，详见 Status `stage-10-4-helm-ths-on-completed` 与 Completion Evidence。
-  - [ ] 10.5 单次小批 catalog sync：dry-run 已落地（1 个 membership code、request-budget 60、as_of 2026-10-13、status planned、exit 0），apply 必须待 15:10 settlement 之后用户复述才能跑，详见 Status `stage-10-5-catalog-sync-dryrun-completed` 与 `/tmp/a-stock-10.5-dryrun-20261013.txt`。
+  - [x] 10.5 单次小批 catalog sync：首次 apply 因旧镜像 hard fail `883401.TI changePct`，随后部署包含 `955ee33` 的已审镜像并以同一参数成功完成；846 catalog/ranking/bar/identity 行、2,376 membership facts 已写入，详见 `stage-10-5-catalog-sync-applied`。
   - 10.6 单次小批 history backfill。
   - 10.7 单次小批 member import（dump 缺 SHA-256 时只跑 probe）。
   - 10.8 完整 dry-run 三数据集采集，校验数据采集页状态。
@@ -140,6 +146,10 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
   - 10.10 文档回写（plan / OpenSpec tasks 9.1+9.2 / `docs/status.md`）。
 
 ## Next Step（下一步）
+
+当前有效下一步：10.5 catalog sync 已成功并完成本地 API/数据库核验；等待用户单独授权 10.6 单次小批 history backfill（先 dry-run/预算核对），之后再按顺序处理 10.7 member import 与 10.8 全量 dry-run。默认调度仍 `enabled=false / suspend=true`；隔离 PG 容器清理仍需用户复述 `cleanup`。
+
+以下两段是 10.5 apply 前的历史 pre-state 快照，已由 `stage-10-5-catalog-sync-applied` supersede，不作为当前运行状态。
 
 9.2 部署与 10.9 隔离恢复演练都通过：保留 production PG `pg_dump-20261013` dump（sha256 `1723b24c…3ee5`）作为可回滚兜底；本地隔离 PG 容器 `a-stock-pg-recovery-1791854545` 仍在运行作为 capability apply 前后的行差对照基线（baseline caps 仅 `fuyao/sectors/fuyao-market-v2` 1 行）。Production pod 仍是 1/1 Ready、0 重启、PVC UID `6c426fc5-…` 未变；Helm release rev 98 未动；已写入 capability 唯一行未变；Helm env 仍全 off；调度仍 absent。
 
