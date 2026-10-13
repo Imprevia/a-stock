@@ -1,0 +1,92 @@
+# Plan 10.4 — turn on the THS writes gate and per-dataset enable/revision flags
+# without changing image, PVC, Secret, scheduledCollection state or the existing
+# `sectors` fallback. Only the `marketEnvironment.fuyao.ths` block is allowed
+# to drift from the live release. All other fields must round-trip identical
+# with the live `helm get values` output captured at 2026-10-13 10:24
+# (Asia/Shanghai); secret reference/pvc/keep/dump image all stay on the
+# reviewed baseline.
+#
+# Pre-state captured in /tmp/a-stock-10.4-helm-values-pre-20261013.txt and
+# /tmp/a-stock-manifest-pre-20261013.yaml; see plan Status
+# `stage-10-4-helm-ths-on` for the full audit packet.
+component: all
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED
+    value: "0"
+
+image:
+  pullPolicy: IfNotPresent
+  repository: localhost/a-stock-market-environment
+  tag: 20261012-172238-c53705f
+
+ingress:
+  enabled: false
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  persistentCache: true
+  settlementTime: "15:10"
+  scrapling:
+    enabled: false
+    allowlist: []
+  tdx:
+    derivedActiveDirectionEnabled: true
+  limits:
+    v1Enabled: true
+    fuyao:
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  fuyao:
+    existingSecret: a-stock-market-provider
+    secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    ths:
+      # Plan 10.4: enable the new THS capability gate. Each sub-dataset
+      # has its own fail-closed `enabled` flag and a separate
+      # `approvedRevision` only set when the dataset was confirmed
+      # eligible by plan 10.3 capability apply.
+      writesAuthorized: true
+      catalog:
+        enabled: true
+        revision: "fuyao-ths-catalog-v1"
+      membership:
+        enabled: true
+        revision: "fuyao-ths-membership-v1"
+      history:
+        enabled: true
+        revision: "fuyao-ths-history-v1"
+      # Dumps stay gated together so any future SHA-256 contract fix
+      # can flip all three with one values bump.
+      dumps:
+        dailyEnabled: true
+        incrementalEnabled: true
+        adjustmentEnabled: true
+    datasets:
+      sectors:
+        enabled: true
+        approvedRevision: fuyao-market-v2
+        shadowEnabled: false
+  scheduledCollection:
+    enabled: false
+    suspend: true
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+replicaCount: 1
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
