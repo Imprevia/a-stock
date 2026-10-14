@@ -52,7 +52,7 @@
 | `activate-fuyao-sector-fallback` | Codex | production-fuyao-sectors-enabled-and-collected（22/24） | 2026-10-09 |
 | `add-tushare-sector-fallback` | Codex | planned-awaiting-implementation | 2026-10-09 |
 | `add-sector-continuity-metrics` | Codex | in-progress（56/60：11.1 已授权，盘后窗口与真实 adapter 阻塞） | 2026-10-12 |
-| `add-fuyao-ths-sector-datasets` | Codex | stage-10-5-catalog-sync-applied（30/32；10.1–10.5 + 10.9 完成；catalog/ranking/bar/identity 846 行 + membership 2,376 行已入生产，Helm release 100，调度仍 disabled/suspended；10.6–10.8 分步授权待续） | 2026-10-13 |
+| `add-fuyao-ths-sector-datasets` | Codex | stage-10-11-cronjob-activated-observation-pending（30/32；生产 rev 107，CronJob active，首次 16:30 自然触发观察待续） | 2026-10-14 |
 
 ## 说明
 

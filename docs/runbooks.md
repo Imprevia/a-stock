@@ -754,9 +754,9 @@ kubectl get cronjob,job -n a-stock
 kubectl logs -n a-stock 'job/<job-name>'
 ```
 
-不得使用裸 `kubectl patch` 暂停或恢复周期调度；TrueNAS 的正常激活、回退和激活失败补偿都必须走下文受控入口，由入口绑定实际 release-derived CronJob、clean/upstream、冻结 hashes、授权与 live state。紧急停止新调度使用 `--disable-schedule`；若目标状态不确定则保持 NO-GO 并按已审核的 exact-resource incident packet 处置。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由专用受审 packet 给出 exact name/resource/日期，并经本次操作责任人书面确认后通过专用入口执行。
+不得使用裸 `kubectl patch` 暂停或恢复周期调度；TrueNAS 的正常激活、回退和激活失败补偿都必须走下文受控入口。入口自动绑定实际 release-derived CronJob、clean worktree、冻结镜像与 live/desired diff；generic scheduling 的 upstream 和 chart/baseline/overlay/render SHA-256 当前仍由操作人写前人工核算并记录到 active plan，脚本尚未自动消费这些 `REVIEWED_*` 值。紧急停止新调度使用 `--disable-schedule`；若目标状态不确定则保持 NO-GO 并按已审核的 exact-resource incident packet 处置。provider-backed Job 也不得从本 runbook 的固定示例创建，必须由专用受审 packet 给出 exact name/resource/日期，并经本次操作责任人书面确认后通过专用入口执行。
 
-业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`sectors`、`activeDirection`，并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 PostgreSQL，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
+业务目标 CronJob 使用 `Asia/Shanghai` 的 `30 16 * * 1-5`，覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth`、`activeDirection`，其中三项 THS 任务按 DAG 执行；并设置 `concurrencyPolicy: Forbid`、`backoffLimit: 0` 和执行超时。native `spec.timeZone` 要求 Kubernetes/k3s 1.27+；Chart 本身仍支持 1.26，TrueNAS controller profile 使用经过验证的 `Etc/UTC` `30 8 * * 1-5` 或 `Asia/Shanghai` `30 16 * * 1-5`，且省略该字段。周末直接运行 CLI 时返回 `skipped` 且不访问 provider；结算前运行返回非零。`partial`/`failed` 也返回非零并让 Job 显示失败，但已经成功的数据集继续保存在 PostgreSQL，CronJob 不自动整批重跑；到 `/data-collection` 只重采失败行。
 
 Helm 通过 `marketEnvironment.scheduledCollection` 配置，Chart 默认 `enabled=false`、`suspend=true` 且不渲染 CronJob；`suspend=true` 在显式启用时保留资源但不创建新 Job。通用 install/upgrade/application rollback 必须重交完整受控 values 和这两个安全覆盖，不得继承历史 values 或恢复历史 revision。`timezoneStrategy=native` 仅允许 1.27+ 的上海 native timezone，`timezoneStrategy=controller` 仅允许 1.26、allowlist controller timezone、已声明的时区证据和固定 16:30 映射。controller profile 的 `suspend=false` 还要求 `controllerCanaryVerified=true`，但这个配置断言只是 typed 校验，不能替代运行时的 controller canary 证据。正式部署使用不可变 image tag，Dashboard 和 CronJob 必须解析到同一镜像版本并通过同一 PostgreSQL Service/Secret 访问数据库，均不挂载 PVC；fail-closed 默认下不会创建 Job 或解除暂停。
 
@@ -773,13 +773,13 @@ bash scripts/deploy-truenas-k3s.sh --offline-render \
   --kube-version 1.26.6+k3s1 --release-name a-stock --namespace a-stock
 ```
 
-调度专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）由本次操作责任人书面确认本次操作的 release、namespace、镜像 digest 和 catch-up 行为后再调用，并在 plan 的 Completion Evidence 中记录对应证据。`--activate-schedule` 必须明确选择 `next-schedule` 或 `immediate-catch-up`，其中 `next-schedule` 必须已越过上一触发的 `startingDeadlineSeconds` deadline 且距下一触发至少 300 秒，`immediate-catch-up` 只允许在 deadline window 内。该时间窗在 preflight 校验一次，并在 live/image/diff/re-render/hash 检查后、Helm write 前再次校验；第二次失败时 Helm write 和补偿 patch 都必须为零。第二次校验通过后才启用 fail-safe，Helm、写后读取/比较/最终查询或 HUP/INT/TERM 任一失败都对 release-derived exact CronJob 补偿 `suspend=true`，全部 postcondition 通过才解除。所有目标模式要求 `REVIEWED_GIT_HEAD` 与本地 upstream 相等、工作树完全 clean，并校验 `REVIEWED_CHART_SHA256`。
+调度专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）由本次操作责任人书面确认本次操作的 release、namespace、镜像 digest 和 catch-up 行为后再调用，并在 plan 的 Completion Evidence 中记录对应证据。`--activate-schedule` 必须明确选择 `next-schedule` 或 `immediate-catch-up`，其中 `next-schedule` 必须已越过上一触发的 `startingDeadlineSeconds` deadline 且距下一触发至少 300 秒，`immediate-catch-up` 只允许在 deadline window 内。该时间窗在 preflight 校验一次，并在 live/image/diff/re-render 检查后、Helm write 前再次校验；第二次失败时 Helm write 和补偿 patch 都必须为零。第二次校验通过后才启用 fail-safe，Helm、写后读取/比较/最终查询或 HUP/INT/TERM 任一失败都对 release-derived exact CronJob 补偿 `suspend=true`，全部 postcondition 通过才解除。脚本自动要求工作树完全 clean；`REVIEWED_GIT_HEAD`/upstream 与 chart/baseline/overlay/render SHA-256 由操作人另行核算和记录，generic scheduling 入口尚未自动强制这些值。
 
 部署文档安全测试把 CommonMark shell fence 与 Bash AST 作为发布门禁。brace/glob executable expansion、`eval`、stdin-fed `bash`/`sh`/`dash`/`zsh`、`source`/`.`、`alias`/`hash -p` command-resolution mutation、动态 executable/action 和未知 Helm plugin/action 都必须返回 violation；无法解析或无法证明只读时 fail closed，不能因缺少字面量 `helm` 而跳过。
 
 从 server dry-run 起，脚本把审阅后的 chart/baseline/overlay 复制到本次运行专属只读快照，重新校验 render hash，后续 admission 或 Helm upgrade 只读取该快照。实际 release 前同时验证 Helm 记录与 API server live Deployment/Service/CronJob，绑定 Dashboard Pod 的 Deployment→ReplicaSet owner chain、ready 状态、精确镜像 tag、合法 CRI imageID，以及目标 containerd tag→reviewed manifest digest；任一 drift 都拒绝。CRI imageID 通常是 image config digest，不要求与 containerd manifest digest 相等。写操作使用 `helm upgrade --atomic`，随后再次读取 live 资源并与冻结 manifest 比较；激活或回退失败会先对 exact CronJob 补偿设置 `suspend=true`，再报告目标状态需要复核。
 
-调度专用入口的使用前提：所有修改必须经本次操作责任人书面确认并在 plan 的 Completion Evidence 中记录，并且：(1) `REVIEWED_GIT_HEAD`、clean 工作树与本地 upstream 一致；(2) `REVIEWED_CHART_SHA256`、`REVIEWED_BASELINE_SHA256`、`REVIEWED_OVERLAY_SHA256`、`REVIEWED_RENDER_SHA256` 全部已计算并验证；(3) frozen image 已通过 `FROZEN_IMAGE_*` 三元组固化；(4) `--activate-schedule` 已明确选择 `next-schedule` 或 `immediate-catch-up` catch-up 行为；(5) 在 execute 前再次核对 live release 与冻结 manifest 一致、candidate diff 只包含 `/spec/suspend: true -> false` 单字段变化。任何步骤失败都保持 `suspend=true`，不进入 Helm write。
+调度专用入口的使用前提：所有修改必须经本次操作责任人书面确认并在 plan 的 Completion Evidence 中记录，并且：(1) clean 工作树；(2) 操作人已人工确认 control-plane HEAD/upstream，并计算记录 chart/baseline/overlay/render SHA-256；(3) frozen image 已通过 `FROZEN_IMAGE_*` 三元组固化；(4) `--activate-schedule` 已明确选择 `next-schedule` 或 `immediate-catch-up` catch-up 行为；(5) 在 execute 前再次核对 live release 与冻结 manifest 一致、candidate diff 只包含 `/spec/suspend: true -> false` 单字段变化。当前脚本自动强制 (1)、(3)、(4)、(5)，但不自动消费 (2) 的 `REVIEWED_*` 值；人工证据缺失同样视为 NO-GO。任何步骤失败都保持 `suspend=true`，不进入 Helm write。
 
 第一版只用 cron 周范围排除周末，不维护交易所节假日日历。工作日节假日可能产生 failed/partial run；这是可审计的失败安全行为，任何 provider 无法证明属于当天的数据都不得落入当天快照。不要用 `--force` 或跨日期复制规避该限制。
 
@@ -1034,6 +1034,14 @@ kubectl delete pv a-stock-market-environment-data
 `a-stock-data-collection` 为 Helm-owned 且 `suspend=true`。SQLite 历史已导入 PostgreSQL；验收读取使用
 `/api/market-environment?as_of=2026-09-16` 和 `/api/market-environment/core?as_of=2026-09-16`，均返回
 200、5 个指数且无顶层 data gap。盘中默认当天尚未采集时返回 503 属于 exact-date fail-closed，不得改为静默回退。
+
+2026-10-14 本 change 的生产激活沿用同一受控入口：revision 105 的完整 THS-on/schedule-off release 先经
+`--release-suspended` 创建 revision 106，再以 `ACTIVATION_CATCH_UP_MODE=next-schedule` 经
+`--activate-schedule` 生成 revision 107。两次时间窗校验均指向当日 16:30（Asia/Shanghai）；106 到 107
+的 stored manifest 只允许 `spec.suspend: true -> false`。写后必须确认 CronJob UID 不变、ACTIVE=0、
+LAST SCHEDULE 为空、namespace Job 为空、冻结镜像/PVC/Secret/schema/活动 run-task 均不漂移。首次自然
+触发后再验收七数据集和 Chapter 01；provider 失败保留真实质量状态，禁止通过一次性 Job 或手工 provider
+调用补造成功记录。
 
 ## 第 05 页申万一级行业持续性与历史回填（规划 runbook）
 
