@@ -12,12 +12,12 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**实现与验证完成，等待提交推送**
+- 当前阶段：**完成**
 - 阶段序列：容量审计 → 低风险回收 → 部署防护 → 离线验证 → 提交推送
 
 ## Status（状态）
 
-`implementation-complete-awaiting-commit` · 本机空间回收、k3s 只读审计、部署归档容量门禁、文档与离线验证均已完成，等待提交推送。
+`completed` · 本机空间回收、k3s 只读审计、部署归档容量门禁、文档、离线验证与代码提交均已完成。
 
 ## 事实源
 
@@ -36,7 +36,7 @@
 - [x] 为部署脚本增加可配置临时根目录、容量选择和导出前门禁
 - [x] 同步部署环境示例、架构说明与 runbook
 - [x] 补充并运行聚焦测试、docs contract 和差异检查
-- [ ] 提交并推送代码
+- [x] 提交并推送代码
 
 ## Acceptance（验收）
 
@@ -53,6 +53,7 @@
 - `pip cache purge` 删除 1,061 个文件（缓存从约 520 MiB 降到 7.1 MiB）；`uv cache clean` 清空约 1.5 GiB；`npm cache clean --force` 将 `~/.npm` 从约 2.3 GiB 降到 36 MiB；`podman image prune -f` 清理无引用 dangling 层，保留一个仍被镜像层级引用的 448 MiB 父镜像。
 - k3s 只读审计：`/mnt/xiaomi` 547G 中可用约 400G、`DiskPressure=False`；应用 PVC 约 5.8 MiB、PostgreSQL PVC 约 39 MiB。未执行远端 tar/containerd 清理，未修改集群、PVC、Secret、CronJob 或数据库备份。
 - `bash -n scripts/deploy-truenas-k3s.sh` 通过；`tests/test_truenas_scheduling_guard.py` 为 117 passed；`tests/test_deployment_manifests.py` 为 190 passed；`python scripts/check-docs-contract.py --mode=full` 通过（代码 1 / 文档 5 / plan 1）；`git diff --check` 通过。
+- 实现提交：`46291a6745f9485904fa4b4507803aed7677ea62`（`fix(deploy): guard image archive disk usage`）。
 
 ## Remaining Gaps（剩余缺口）
 
@@ -63,4 +64,4 @@
 
 ## Next Step（下一步）
 
-提交实现与证据文档，记录代码提交 SHA 后推送 `main`。
+持续观察构建机根分区；如需进一步治理，单独授权 systemd journal/LVM 或 TrueNAS 历史归档保留策略。
