@@ -12,10 +12,12 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**10 实地打通（10.1 + 10.2 + 10.3 + 10.4 + 10.5 apply + 10.9 完成；10.5 后续 collection revision 幂等与 nullable `changePct` 回归已修复并完成离线验证；生产 0006 migration/重新采集仍需单独授权；10.6 起继续分步授权）**
+- 当前阶段：**10 实地打通（10.1 + 10.2 + 10.3 + 10.4 + 10.5 apply + 10.9 + 0006 生产迁移/修复镜像发布完成；2026-10-13 失败审计保留，2026-10-14 盘后重新采集与 10.6 起真实操作仍需分别授权）**
 - 阶段序列：OpenSpec → 事实文档 → 数据模型/持久化 → provider/应用编排 → API/CLI → 前端 → 全量验证 → 回写
 
 ## Status（状态）
+
+`stage-10-5-production-migration-and-rollout-completed` · 2026-10-14 用户明确授权部署到 k3s 后，从 clean detached commit `b0a7c35` 执行受控生产发布。迁移前将 manual refresh 临时置 0，确认 active run/task 均为 0，并创建不可覆盖 PostgreSQL custom dump `a-stock-pgdump-20261014-1040-b0a7c35.dump`（2,800,385 bytes，SHA-256 `82286ef44b31c41a6c255c1011c342359ed716c6d608e0cc3f07cd2d5ae6e52c`）；该 dump 已在临时 PostgreSQL 16.4 中单事务恢复，读回 schema v8、846 catalog relations 和 846 rankings。`scripts/deploy-truenas-k3s.sh --component all` 使用 THS-on、schedule-off baseline，Helm revisions 102/103/104 依次完成 database migration、service rollout 和完整 release 收敛；最终 hook-free 恢复 manual refresh 形成 revision 105。生产现为 schema version 9、Alembic `0006_ths_rank_null_pct`、`change_pct IS NULLABLE=YES`；镜像 `localhost/a-stock-market-environment:20261014-104800-b0a7c35`，containerd manifest digest `sha256:ef8b524bf3e143ec68348100ed9384be8bd21048637a03cd1c358fcaaf7a2ae7`，Pod imageID `sha256:67089878f5d654a7dc7f6e8337bb0c6db11a3536a8d887dec720e2bed555f0f0`。Dashboard/PostgreSQL 均 1/1 Ready、0 restart；两个 PVC UID、两个 Secret UID、4 条 capability、846/2,376 THS normalized facts均未变化；首页、`/data-collection`、health、status 和 catalog provider-free GET 均 HTTP 200；CronJob/Job absent，调度保持 disabled/suspended。因执行时未到 15:10 且本轮只授权部署，未运行 provider collection；2026-10-13 的 `failed-missing/blocked` 审计按设计保留。
 
 `stage-10-5-collection-idempotency-regression-fix` · 代码修复、0006 migration、真实本地 PostgreSQL upgrade 演练和回归测试均完成；生产当前仍是 schema v8，需单独授权迁移与重新采集。最终 focused 58 passed、全库 1432 passed / 6 skipped；OpenSpec strict、docs-contract full、Alembic head 和 git diff --check 均通过。
 
@@ -107,6 +109,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 ## Completion Evidence（完成证据）
 
+- 2026-10-14 生产发布完成：新备份 SHA-256 `82286ef4…e52c` 已通过 archive list 和隔离恢复；Helm 101 临时冻结 manual refresh，102 应用 0006，103 rollout 新服务，104 收敛完整 release，105 hook-free 恢复 manual refresh。最终 schema v9 / Alembic `0006_ths_rank_null_pct` / `change_pct nullable=YES`，目标镜像 1/1 Ready、0 restart，health/首页/数据采集页/status/catalog 均 HTTP 200；PVC/Secret/capability/normalized THS 行数不变，CronJob/Job absent，未调用 provider。
 - 10.5 collection regression fix 已完成：`put_catalog_revision` 对同 revision 的抓取时间漂移保持幂等，`list_rankings` 能安全读取 nullable `change_pct`/`volume`/`turnover`；新增 `0006_ths_ranking_nullable_change_pct` 并将 runtime schema minimum 提升至 9。最终 THS/迁移 focused `58 passed`、全库 `1432 passed, 6 skipped`；未执行生产 migration、部署或重新采集。
 - 10.5 catalog sync 已完成真实 apply：旧镜像失败 run `4c1e51239ffb4cdb881299e74d5da379` 保留为失败审计且零 normalized 写入；切换至包含 `955ee33` 的镜像后，成功 run `8226a1b725d74d1a81829372736be4b3` 写入 846 catalog/ranking/bar/identity 行、2,376 membership facts（含显式 `886042.TI` 203 行），API catalog 已从空态变为 `revision=fuyao-ths-catalog-v1,total=846`。
 - 10.5 修复发布保持受控：Helm release 99 → 100，镜像为 `20261013-162900-8f0a6bc`，Pod 1/1 Ready 且 0 重启，PostgreSQL/PVC/Secret 未变，`schema_migrations` 未新增，CronJob/Job absent，Pod 内 health 200；manifest 语义差异仅 runtime image tag。
@@ -136,7 +139,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 - Fuyao adjustment dump 真实契约不直接提供 `adjustment_factor`；复权因子推导所需公式、公司行动顺序和前收盘证据尚未实现，因此 adjustment capability 必须保持 `ineligible`。
 - membership / history / industry-ranking 三份 report 已在 10.3 apply 写入生产 `provider_capability_reports`；生产当前保留 4 行（旧 `fuyao/sectors` + 3 个新 eligible revision），10.5 成功 run 使用其中 catalog/membership 两个精确 revision。
 - 生产 PostgreSQL 已 apply alembic `0004 add-sector-continuity-facts` + `0005 add-ths-sector-datasets`；10.5 catalog sync 已完成首次正式写入。剩余真实动作是 10.6 history backfill、10.7 member import probe/import 判定和 10.8 全量 dry-run，仍按“分别授权”要求执行。
-- 代码已要求 runtime schema version 9；生产当前只读证据仍是 v8，需在下一次受控发布中运行 `alembic upgrade head` 应用 0006 后再启用 nullable `changePct` 写入路径。
+- 生产已于 2026-10-14 应用 0006 并达到 runtime schema version 9；剩余验证是上海 15:10 后在新的当前交易日重新采集三项 THS 数据集，证明同 revision 时间漂移保持幂等且 nullable `changePct` 可写入/读回。2026-10-13 旧失败 attempt 必须继续保留，不做历史 relabel。
 - 当前生产 release 仍保留历史 `sectors` fallback（`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, approvedRevision=fuyao-market-v2`）；仓库新公共运行时已退役该标识，公共 API 已切换至 `/api/market-environment/ths/*`，旧 `sectors` 路径仅作为审计兼容。
 
 - `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED` 等 6 个新 capability 与 `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED` 当前为 1；写入仍必须经 capability policy + 双 revision 预检 + 请求预算门禁，调度继续保持 disabled/suspended。
@@ -146,15 +149,16 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
   - [x] 10.3 capability apply：三份 eligible report 在生产 Pod 镜像内经 `cd /app && PYTHONPATH=/app/src python3 -m market_environment.cli capabilities promote` dry-run 全 validated，加 `--apply` 提交并写入生产 PG；行差对照仅新增 3 行，旧 `fuyao/sectors/fuyao-market-v2` 行不变，详见 Status `stage-10-3-capability-promote-completed` 与 Completion Evidence。
   - [x] 10.4 Helm release 升级：`MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED=1` + 6 个 `_ENABLED=1` + 3 个 `_REVISION` 注入；Helm release 98 → 99、CronJob 仍 `suspend=true`，详见 Status `stage-10-4-helm-ths-on-completed` 与 Completion Evidence。
   - [x] 10.5 单次小批 catalog sync：首次 apply 因旧镜像 hard fail `883401.TI changePct`，随后部署包含 `955ee33` 的已审镜像并以同一参数成功完成；846 catalog/ranking/bar/identity 行、2,376 membership facts 已写入，详见 `stage-10-5-catalog-sync-applied`。
+  - [x] 10.5 后续回归修复生产发布：应用 0006、发布 `b0a7c35` 镜像并完成 provider-free 验收；未执行盘中 provider collection，详见 `stage-10-5-production-migration-and-rollout-completed`。
   - 10.6 单次小批 history backfill。
   - 10.7 单次小批 member import（dump 缺 SHA-256 时只跑 probe）。
   - 10.8 完整 dry-run 三数据集采集，校验数据采集页状态。
   - [x] 10.9 pg_dump + 隔离 PostgreSQL 恢复演练：dump `/tmp/a-stock-pgdump-20261013.dump`（sha256 `1723b24c…3ee5`）+ 本地隔离 PG 容器恢复校验，详见 Status 表与 10.9 evidence。
-  - 10.10 文档回写（plan / OpenSpec tasks 9.1+9.2 / `docs/status.md`）。
+  - [x] 10.10 文档回写（plan / OpenSpec tasks 9.1+9.2 保持未完成 / `docs/status.md` / runbook）。
 
 ## Next Step（下一步）
 
-当前有效下一步：先在受控发布窗口应用 0006 schema migration 并重新验证失败批次恢复为成功，再等待用户单独授权 10.6 单次小批 history backfill（先 dry-run/预算核对），之后按顺序处理 10.7 member import 与 10.8 全量 dry-run。默认调度仍 `enabled=false / suspend=true`；隔离 PG 容器清理仍需用户复述 `cleanup`。
+当前有效下一步：等待上海 15:10 后由用户单独授权 2026-10-14 当前交易日的三项 THS 重新采集，确认 `industry-ranking` 不再因同 revision 时间漂移冲突，量价/宽度不再因该前置失败而 blocked；随后再分别授权 10.6 单次小批 history backfill、10.7 member import 与 10.8 全量 dry-run。OpenSpec 9.1/9.2 继续保持未完成，默认调度仍 `enabled=false / suspend=true`；隔离 PG 容器清理仍需用户复述 `cleanup`。
 
 以下两段是 10.5 apply 前的历史 pre-state 快照，已由 `stage-10-5-catalog-sync-applied` supersede，不作为当前运行状态。
 
