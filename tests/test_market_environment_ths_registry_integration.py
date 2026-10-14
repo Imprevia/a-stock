@@ -73,5 +73,6 @@ def test_detail_projector_registry_overrides_only_the_three_ths_datasets() -> No
         "asOf": AS_OF.isoformat(),
         "rowCount": 0,
         "state": "missing",
+        "catalogRevisionId": None,
         "catalogRevision": None,
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
@@ -19,6 +20,9 @@ from ..models.ths_sector import (
     ThsSectorBreadth,
     ThsSnapshotFact,
 )
+
+
+_CHECKSUM_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def catalog_checksum(relations: Iterable[ThsCatalogRelation]) -> str:
@@ -39,6 +43,32 @@ def catalog_checksum(relations: Iterable[ThsCatalogRelation]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def catalog_observation_revision_id(
+    *,
+    provider: str,
+    capability_revision: str,
+    as_of: date,
+    checksum: str,
+) -> str:
+    """Derive one opaque immutable identity for a daily catalog observation."""
+
+    normalized_provider = str(provider).strip().lower()
+    normalized_capability = str(capability_revision).strip()
+    normalized_checksum = str(checksum).strip().lower()
+    if not normalized_provider or ":" in normalized_provider:
+        raise ValueError("provider must be a non-empty catalog identity segment")
+    if not normalized_capability or ":" in normalized_capability:
+        raise ValueError("capability_revision must be a non-empty catalog identity segment")
+    if type(as_of) is not date:
+        raise ValueError("as_of must be a Shanghai trading date")
+    if not _CHECKSUM_PATTERN.fullmatch(normalized_checksum):
+        raise ValueError("checksum must be a full SHA-256 hex digest")
+    return (
+        f"{normalized_provider}:{normalized_capability}:{as_of.isoformat()}:"
+        f"sha256:{normalized_checksum}"
+    )
 
 
 def build_rankings(
@@ -103,6 +133,22 @@ def build_rankings(
             ),
         )
         for index, (relation, snapshot) in enumerate(ranked, start=1):
+            warnings = (
+                *(("changePct is unavailable",) if not snapshot.has_ranking_value else ()),
+                *(
+                    ("daily bar values are unavailable",)
+                    if not snapshot.has_live_values
+                    else tuple(
+                        f"{field_name} is unavailable"
+                        for field_name in snapshot.missing_live_fields
+                    )
+                )
+            )
+            quality = (
+                "insufficient"
+                if not snapshot.has_ranking_value
+                else "partial" if snapshot.missing_live_fields else "ok"
+            )
             rows.append(
                 ThsRankingRow(
                     tag=relation.tag,
@@ -114,6 +160,8 @@ def build_rankings(
                     turnover=snapshot.turnover,
                     catalog_revision=catalog_revision,
                     as_of=as_of,
+                    quality=quality,
+                    warnings=warnings,
                 )
             )
     return tuple(rows)
@@ -129,15 +177,26 @@ def select_breadth_codes(
 
     if per_tag <= 0:
         raise ValueError("per_tag must be positive")
+    rankable = tuple(
+        row
+        for row in rankings
+        if row.change_pct is not None
+        and row.quality not in {"insufficient", "missing", "failed"}
+    )
     reasons: dict[str, set[str]] = defaultdict(set)
     for tag in THS_TAGS:
         tag_rows = sorted(
-            (row for row in rankings if row.tag == tag),
+            (row for row in rankable if row.tag == tag),
             key=lambda row: (row.rank, row.thscode),
-        )[:per_tag]
+        )
+        if len(tag_rows) < per_tag:
+            raise ValueError(
+                f"{tag} has {len(tag_rows)} rankable candidates; {per_tag} required"
+            )
+        tag_rows = tag_rows[:per_tag]
         for row in tag_rows:
             reasons[row.thscode].add(f"top-{per_tag}:{tag}")
-    known_codes = {row.thscode for row in rankings}
+    known_codes = {row.thscode for row in rankable}
     for raw_code in user_selected:
         code = str(raw_code).strip().upper()
         if code not in known_codes:
@@ -321,5 +380,6 @@ __all__ = [
     "build_rankings",
     "calculate_breadth",
     "catalog_checksum",
+    "catalog_observation_revision_id",
     "select_breadth_codes",
 ]

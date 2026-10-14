@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from src.market_environment.domain.analysis.ths_sector import (
     build_rankings,
     calculate_breadth,
     catalog_checksum,
+    catalog_observation_revision_id,
     select_breadth_codes,
 )
 from src.market_environment.domain.models.ths_sector import (
@@ -18,6 +20,7 @@ from src.market_environment.domain.models.ths_sector import (
     ThsCatalogRelation,
     ThsCatalogRevision,
     ThsMemberObservation,
+    ThsRankingRow,
     ThsSectorBar,
     ThsSnapshotFact,
 )
@@ -57,14 +60,49 @@ def _snapshots() -> tuple[ThsSnapshotFact, ...]:
 
 def test_catalog_revision_requires_all_four_tags_and_checksum_is_stable() -> None:
     relations = _relations()
-    assert catalog_checksum(relations) == catalog_checksum(tuple(reversed(relations)))
+    checksum = catalog_checksum(relations)
+    assert checksum == catalog_checksum(tuple(reversed(relations)))
+    observation = catalog_observation_revision_id(
+        provider="fuyao",
+        capability_revision="fuyao-ths-catalog-v1",
+        as_of=AS_OF,
+        checksum=checksum,
+    )
+    assert observation == catalog_observation_revision_id(
+        provider="FUYAO",
+        capability_revision="fuyao-ths-catalog-v1",
+        as_of=AS_OF,
+        checksum=checksum.upper(),
+    )
+    assert catalog_observation_revision_id(
+        provider="fuyao",
+        capability_revision="fuyao-ths-catalog-v1",
+        as_of=date(2026, 10, 13),
+        checksum=checksum,
+    ) != observation
+    with pytest.raises(ValueError, match="Shanghai trading date"):
+        catalog_observation_revision_id(
+            provider="fuyao",
+            capability_revision="fuyao-ths-catalog-v1",
+            as_of=NOW,  # type: ignore[arg-type]
+            checksum=checksum,
+        )
+    renamed = (*relations[:-1], ThsCatalogRelation("other", "cn_concept", "000001.TI", "改名"))
+    renamed_checksum = catalog_checksum(renamed)
+    assert renamed_checksum != checksum
+    assert catalog_observation_revision_id(
+        provider="fuyao",
+        capability_revision="fuyao-ths-catalog-v1",
+        as_of=AS_OF,
+        checksum=renamed_checksum,
+    ) != observation
     revision = ThsCatalogRevision(
         revision_id="catalog-r1",
         capability_revision="fuyao-ths-catalog-v1",
         provider_timestamp=NOW,
         fetched_at=NOW,
         tag_counts={"industry": 1, "cn_concept": 2, "region": 1, "tszs": 1},
-        checksum=catalog_checksum(relations),
+        checksum=checksum,
     )
     assert revision.row_count == 5
     with pytest.raises(ValueError, match="exactly the four"):
@@ -215,21 +253,58 @@ def test_breadth_zero_denominators_and_limits_missing_stay_null() -> None:
     assert result.quality == "insufficient"
 
 
-def test_top_ten_and_user_selections_are_deduplicated() -> None:
+def test_rankable_top_n_and_user_selections_are_deduplicated() -> None:
     rankings = build_rankings(
         _relations(),
         _snapshots(),
         catalog_revision="catalog-r1",
         as_of=AS_OF,
     )
-    selected = select_breadth_codes(rankings, ("000001.TI",), per_tag=10)
+    selected = select_breadth_codes(rankings, ("000001.TI",), per_tag=1)
     assert selected["000001.TI"] == (
-        "top-10:cn_concept",
-        "top-10:industry",
+        "top-1:cn_concept",
+        "top-1:industry",
         "user-selected",
     )
     with pytest.raises(ValueError, match="absent"):
-        select_breadth_codes(rankings, ("999999.TI",))
+        select_breadth_codes(rankings, ("999999.TI",), per_tag=1)
+
+
+def test_breadth_selection_filters_unrankable_rows_and_rejects_short_top_n() -> None:
+    rankings = build_rankings(
+        _relations(),
+        _snapshots(),
+        catalog_revision="catalog-r1",
+        as_of=AS_OF,
+    )
+    patched = tuple(
+        replace(
+            row,
+            change_pct=None,
+            quality="insufficient",
+            warnings=("changePct is unavailable",),
+        )
+        if row.tag == "cn_concept" and row.thscode == "000001.TI"
+        else row
+        for row in rankings
+    )
+    selected = select_breadth_codes(patched, per_tag=1)
+    assert "top-1:cn_concept" not in selected["000001.TI"]
+    assert selected["000002.TI"] == ("top-1:cn_concept",)
+
+    insufficient = tuple(
+        replace(
+            row,
+            change_pct=None,
+            quality="insufficient",
+            warnings=("changePct is unavailable",),
+        )
+        if row.tag == "industry"
+        else row
+        for row in rankings
+    )
+    with pytest.raises(ValueError, match="industry has 0 rankable candidates; 1 required"):
+        select_breadth_codes(insufficient, per_tag=1)
 
 
 def test_synthetic_fixture_covers_four_tags_shared_code_history_and_redaction() -> None:
@@ -272,6 +347,125 @@ def test_snapshot_fact_allows_missing_change_pct_with_warning() -> None:
     assert fact.close == 10.5
 
 
+def test_snapshot_availability_keeps_all_null_and_independent_gap_dimensions() -> None:
+    all_null = ThsSnapshotFact(
+        thscode="883401.TI",
+        name="全空板块",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+    )
+    assert all_null.has_live_values is False
+    assert all_null.has_ranking_value is False
+    assert all_null.missing_live_fields == (
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover",
+    )
+
+    change_pct_only = ThsSnapshotFact(
+        thscode="883402.TI",
+        name="仅排名板块",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+        change_pct=1.25,
+    )
+    assert change_pct_only.has_live_values is False
+    assert change_pct_only.has_ranking_value is True
+
+    bar_without_change_pct = ThsSnapshotFact(
+        thscode="883403.TI",
+        name="仅量价板块",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+        close=10.5,
+        volume=1000,
+        turnover=10000,
+    )
+    assert bar_without_change_pct.has_live_values is True
+    assert bar_without_change_pct.has_ranking_value is False
+
+    with pytest.raises(ValueError, match="cannot be entirely empty"):
+        ThsSectorBar(
+            "883401.TI",
+            AS_OF,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "fuyao",
+            "cap-v1",
+            "checksum",
+            NOW,
+        )
+    with pytest.raises(ValueError, match="unsupported THS ranking quality"):
+        ThsRankingRow(
+            tag="industry",
+            rank=1,
+            thscode="883401.TI",
+            name="坏质量",
+            change_pct=None,
+            volume=None,
+            turnover=None,
+            catalog_revision="catalog-r1",
+            as_of=AS_OF,
+            quality="unknown",  # type: ignore[arg-type]
+        )
+
+
+def test_complete_rankings_keep_shared_all_null_and_independent_quality() -> None:
+    snapshots = list(_snapshots())
+    snapshots[0] = ThsSnapshotFact(
+        thscode="000001.TI",
+        name="板块1",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+    )
+    snapshots[1] = ThsSnapshotFact(
+        thscode="000002.TI",
+        name="板块2",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+        change_pct=1.5,
+    )
+    snapshots[2] = ThsSnapshotFact(
+        thscode="000003.TI",
+        name="板块3",
+        as_of=AS_OF,
+        provider_timestamp=NOW,
+        close=10.5,
+        volume=1000,
+        turnover=10000,
+    )
+
+    rows = build_rankings(
+        _relations(),
+        tuple(snapshots),
+        catalog_revision="catalog-r1",
+        as_of=AS_OF,
+    )
+    assert len(rows) == len(_relations())
+    shared = [row for row in rows if row.thscode == "000001.TI"]
+    assert {row.tag for row in shared} == {"industry", "cn_concept"}
+    assert {row.quality for row in shared} == {"insufficient"}
+    assert all("changePct is unavailable" in row.warnings for row in shared)
+    assert all("daily bar values are unavailable" in row.warnings for row in shared)
+
+    ranking_only = next(row for row in rows if row.thscode == "000002.TI")
+    assert ranking_only.quality == "partial"
+    assert ranking_only.change_pct == 1.5
+    assert "daily bar values are unavailable" in ranking_only.warnings
+
+    bar_only = next(row for row in rows if row.thscode == "000003.TI")
+    assert bar_only.quality == "insufficient"
+    assert bar_only.change_pct is None
+    assert "changePct is unavailable" in bar_only.warnings
+
+
 def test_build_rankings_tolerates_missing_change_pct_by_sorting_to_tail() -> None:
     relations = _relations()
     base_snapshots = _snapshots()
@@ -304,6 +498,8 @@ def test_build_rankings_tolerates_missing_change_pct_by_sorting_to_tail() -> Non
     by_code = {row.thscode: row for row in rankings}
     assert by_code["000001.TI"].change_pct is None
     assert by_code["000003.TI"].change_pct is None
+    assert by_code["000001.TI"].quality == "insufficient"
+    assert by_code["000003.TI"].quality == "insufficient"
     # Per-tag leaders with a non-null change_pct must still outrank every None entry.
     for tag in THS_TAGS:
         rows = [row for row in rankings if row.tag == tag]

@@ -209,7 +209,7 @@ def run_fuyao_ths_capability_probe(
     clock = now or (lambda: datetime.now(timezone.utc))
     adapter = FuyaoThsSectorAdapter(
         active_client,
-        catalog_revision=selected_revisions["industry-ranking"],
+        capability_revision=selected_revisions["industry-ranking"],
         membership_revision=selected_revisions["sector-membership"],
         history_revision=selected_revisions["sector-turnover-history"],
         now=clock,
@@ -359,7 +359,7 @@ def _probe_catalog(
     unique_codes = {row.thscode for row in bundle.relations}
     return _report(
         dataset="industry-ranking",
-        revision=adapter.catalog_revision,
+        revision=adapter.capability_revision,
         status="eligible",
         endpoint=adapter.SNAPSHOT_ENDPOINT,
         as_of=as_of,

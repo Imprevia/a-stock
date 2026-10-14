@@ -147,6 +147,43 @@ export interface Chapter01SectionResponse {
   chapter01: Chapter01Analysis
 }
 
+export type ThsDiagnosticReasonCode =
+  | 'THS_LIVE_VALUES_MISSING'
+  | 'THS_DAILY_SNAPSHOT_INSUFFICIENT'
+  | 'THS_CATALOG_REVISION_COLLISION'
+  | 'THS_DEPENDENCY_INSUFFICIENT'
+  | 'THS_DEPENDENCY_REVISION_MISMATCH'
+
+export interface ThsBlockedByDiagnostic {
+  dataset: string
+  status: string
+  reasonCode?: ThsDiagnosticReasonCode | null
+  exactDate?: string | null
+  catalogRevisionId?: string | null
+}
+
+export interface ThsDiagnostic {
+  reasonCode: ThsDiagnosticReasonCode
+  message: string
+  failureStage: string
+  exactDate: string
+  retryable: boolean
+  capabilityRevision?: string | null
+  catalogRevisionId?: string | null
+  expectedCount?: number | null
+  observedCount?: number | null
+  usableCount?: number | null
+  rankableCount?: number | null
+  barCount?: number | null
+  missingLiveCount?: number | null
+  missingLiveCodes?: string[]
+  missingRankingCount?: number | null
+  missingRankingCodes?: string[]
+  existingChecksum?: string | null
+  observedChecksum?: string | null
+  blockedBy?: ThsBlockedByDiagnostic[]
+}
+
 export interface DataSetQuality {
   dataset?: string
   source: string
@@ -163,6 +200,17 @@ export interface DataSetQuality {
   derived?: boolean
   rankingMethod?: string | null
   sourceRevision?: string | null
+  catalogRevisionId?: string | null
+  expectedCount?: number | null
+  observedCount?: number | null
+  usableCount?: number | null
+  rankableCount?: number | null
+  barCount?: number | null
+  missingLiveCount?: number | null
+  missingLiveCodes?: string[]
+  missingRankingCount?: number | null
+  missingRankingCodes?: string[]
+  diagnostics?: ThsDiagnostic | null
   industryMappingRevision?: string | null
   industryMappingCoverage?: number | null
   industryMappingCovered?: number | null
@@ -400,14 +448,19 @@ export interface ThsIndustryRankingRow {
   changePct: number | null
   volume: number | null
   turnover: number | null
-  catalogRevision: string
+  catalogRevisionId?: string | null
+  catalogRevision?: string | null
   asOf: string
+  quality?: string | null
+  warnings?: string[]
 }
 
 export interface ThsIndustryRanking {
   state: string
   asOf?: string | null
+  catalogRevisionId?: string | null
   revisionId?: string | null
+  diagnostics?: ThsDiagnostic | null
   rows: ThsIndustryRankingRow[]
   quality: DataSetQuality
 }

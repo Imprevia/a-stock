@@ -88,7 +88,7 @@ def _catalog_payloads(fixture):
 def _adapter(client=None):
     return FuyaoThsSectorAdapter(
         client or FakeClient([]),
-        catalog_revision="fixture-ths-catalog-v1",
+        capability_revision="fixture-ths-catalog-v1",
         history_revision="fixture-ths-history-v1",
         now=lambda: NOW,
     )
@@ -152,11 +152,35 @@ def test_normalize_four_catalogs_complete_snapshot_and_cross_tag_identity() -> N
         "tszs": 1,
     }
     assert len(bundle.snapshots) == 5
+    assert bundle.revision.capability_revision == "fixture-ths-catalog-v1"
+    assert bundle.revision.revision_id.startswith(
+        "fuyao:fixture-ths-catalog-v1:2026-10-12:sha256:"
+    )
+    assert bundle.revision.revision_id != bundle.revision.capability_revision
+    assert {row.revision_id for row in bundle.relations} == {
+        bundle.revision.revision_id
+    }
+    assert bundle.missing_live_codes == ()
+    assert bundle.missing_ranking_codes == ()
     assert len([row for row in bundle.relations if row.thscode == "000005.TI"]) == 2
     assert len([row for row in bundle.rankings if row.thscode == "000005.TI"]) == 2
 
 
-@pytest.mark.parametrize("case", ["duplicate", "missing", "date-drift", "name-conflict"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "duplicate",
+        "missing",
+        "extra",
+        "snapshot-duplicate",
+        "date-drift",
+        "row-date-drift",
+        "catalog-timestamp-missing",
+        "snapshot-timestamp-missing",
+        "name-conflict",
+        "snapshot-name-conflict",
+    ],
+)
 def test_catalog_snapshot_rejects_contract_drift(case) -> None:
     fixture = _fixture()
     catalogs = _catalog_payloads(fixture)
@@ -168,8 +192,32 @@ def test_catalog_snapshot_rejects_contract_drift(case) -> None:
         }
     elif case == "missing":
         snapshots[0]["item"] = snapshots[0]["item"][:-1]
+    elif case == "extra":
+        snapshots[0]["item"].append(
+            {
+                **snapshots[0]["item"][0],
+                "thscode": "999999.TI",
+                "name": "目录外代码",
+            }
+        )
+    elif case == "snapshot-duplicate":
+        snapshots[0]["item"].append(dict(snapshots[0]["item"][0]))
     elif case == "date-drift":
         snapshots[0]["timestamp"] = fixture["invalidCases"]["snapshotDateDrift"]
+    elif case == "row-date-drift":
+        snapshots[0]["item"][0] = {
+            **snapshots[0]["item"][0],
+            "date": "2026-10-11",
+        }
+    elif case == "catalog-timestamp-missing":
+        catalogs["industry"] = {"item": catalogs["industry"]["item"]}
+    elif case == "snapshot-timestamp-missing":
+        snapshots[0].pop("timestamp")
+    elif case == "snapshot-name-conflict":
+        snapshots[0]["item"][0] = {
+            **snapshots[0]["item"][0],
+            "name": "冲突快照名称",
+        }
     else:
         catalogs["cn_concept"] = {
             "timestamp": fixture["providerTimestamp"],
@@ -320,9 +368,12 @@ def test_normalize_catalog_snapshot_tolerates_missing_change_pct_and_emits_warni
         ranking for ranking in bundle.rankings if ranking.thscode == "000005.TI"
     )
     assert matching_rank.change_pct is None
+    assert matching_rank.quality == "insufficient"
+    assert bundle.missing_live_codes == ()
+    assert bundle.missing_ranking_codes == ("000005.TI",)
 
 
-def test_normalize_catalog_snapshot_skips_rows_without_live_market_values() -> None:
+def test_normalize_catalog_snapshot_retains_rows_without_live_market_values() -> None:
     fixture = _fixture()
     catalogs = _catalog_payloads(fixture)
     raw_snapshots = list(fixture["snapshot"])
@@ -367,17 +418,100 @@ def test_normalize_catalog_snapshot_skips_rows_without_live_market_values() -> N
     relation_codes = {row.thscode for row in bundle.relations}
     assert relation_codes == snapshot_codes
     for thscode, _name in sparse_codes:
-        assert thscode not in snapshot_codes, f"sparse {thscode} should be dropped"
-    dropped_warnings = [
+        assert thscode in snapshot_codes, f"sparse {thscode} must remain explicit"
+    retained_warnings = [
         warning for warning in bundle.warnings
         if "no live market values" in warning
     ]
-    assert len(dropped_warnings) == len(sparse_codes)
-    # The three sparse codes all come from the 'industry' tag, so after dropping
-    # them the industry count returns to the fixture's original 2 entries.
+    assert len(retained_warnings) == len(sparse_codes)
+    assert bundle.missing_live_codes == tuple(code for code, _name in sparse_codes)
+    assert bundle.missing_ranking_codes == tuple(code for code, _name in sparse_codes)
+    assert len(bundle.relations) == 9
+    assert len(bundle.rankings) == 9
+    assert all(
+        row.quality == "insufficient"
+        for row in bundle.rankings
+        if row.thscode in bundle.missing_ranking_codes
+    )
+    # Counts and checksum describe the complete catalog, not daily value availability.
     assert bundle.revision.tag_counts == {
-        "industry": 2,
+        "industry": 5,
         "cn_concept": 2,
         "region": 1,
         "tszs": 1,
     }
+    filled_rows = [dict(row) for row in raw_snapshots]
+    for row in filled_rows:
+        if row["thscode"] in bundle.missing_live_codes:
+            row.update(
+                {
+                    "price_change_ratio_pct": 0.5,
+                    "open_price": 10.0,
+                    "high_price": 10.5,
+                    "low_price": 9.8,
+                    "last_price": 10.2,
+                    "volume": 1000.0,
+                    "turnover": 10000.0,
+                }
+            )
+    filled = _adapter().normalize_catalog_snapshot(
+        catalogs,
+        [{"timestamp": fixture["providerTimestamp"], "item": filled_rows}],
+        as_of=AS_OF,
+        fetched_at=NOW,
+    )
+    assert filled.missing_live_codes == ()
+    assert filled.revision.tag_counts == bundle.revision.tag_counts
+    assert filled.revision.checksum == bundle.revision.checksum
+    assert filled.revision.revision_id == bundle.revision.revision_id
+
+
+def test_catalog_observation_identity_ignores_order_and_timestamp_drift() -> None:
+    fixture = _fixture()
+    catalogs = _catalog_payloads(fixture)
+    snapshot = [{"timestamp": fixture["providerTimestamp"], "item": fixture["snapshot"]}]
+    first = _adapter().normalize_catalog_snapshot(
+        catalogs,
+        snapshot,
+        as_of=AS_OF,
+        fetched_at=NOW,
+    )
+
+    reordered = {
+        tag: {
+            "timestamp": "2026-10-12T17:00:00+08:00",
+            "item": list(reversed(payload["item"])),
+        }
+        for tag, payload in catalogs.items()
+    }
+    retry = _adapter().normalize_catalog_snapshot(
+        reordered,
+        [{"timestamp": "2026-10-12T17:01:00+08:00", "item": list(reversed(fixture["snapshot"]))}],
+        as_of=AS_OF,
+        fetched_at=datetime(2026, 10, 12, 9, 5, tzinfo=timezone.utc),
+    )
+    assert retry.revision.checksum == first.revision.checksum
+    assert retry.revision.revision_id == first.revision.revision_id
+    assert retry.revision.provider_timestamp != first.revision.provider_timestamp
+    assert retry.revision.fetched_at != first.revision.fetched_at
+
+
+def test_change_pct_without_bar_is_rankable_but_declares_live_gap() -> None:
+    fixture = _fixture()
+    catalogs = _catalog_payloads(fixture)
+    rows = [dict(row) for row in fixture["snapshot"]]
+    target = next(row for row in rows if row["thscode"] == "000004.TI")
+    for field_name in ("open", "high", "low", "close", "volume", "turnover"):
+        target[field_name] = None
+
+    bundle = _adapter().normalize_catalog_snapshot(
+        catalogs,
+        [{"timestamp": fixture["providerTimestamp"], "item": rows}],
+        as_of=AS_OF,
+        fetched_at=NOW,
+    )
+    assert bundle.missing_live_codes == ("000004.TI",)
+    assert bundle.missing_ranking_codes == ()
+    ranking = next(row for row in bundle.rankings if row.thscode == "000004.TI")
+    assert ranking.change_pct == 0.0
+    assert ranking.quality == "partial"

@@ -65,17 +65,18 @@
 
 ### Fuyao THS 三数据集产品边界
 
-- `industry-ranking` 维护 `industry`、`cn_concept`、`region`、`tszs` 四类版本化目录。每个 revision 保存 `tag`、`thscode`、名称、provider 时间、抓取时间、分类数量、canonical checksum 和 capability revision；同一 `thscode` 跨分类时共享行情事实，但各分类关系和对应 revision 必须独立可查。
-- 当日排名必须以完整四类目录和匹配的批量指数快照为输入，证明上海交易日、批次时间戳、唯一代码、必需字段和 100% 快照覆盖后，按 `changePct desc, thscode asc` 稳定排序。重复身份、名称冲突、字段缺失、混合日期或覆盖不足只能输出 `partial` / `insufficient`，不得把 Top 10 子集包装为完整目录。
-- `sector-turnover` 按 `thscode` 和真实交易日保存 `open`、`high`、`low`、`close`、`volume`、`turnover`、来源、质量和 revision；成交量与成交额必须分列，缺失保持 `null`，禁止相互代替或使用 0 补齐。每日任务从已校验的完整快照追加全部编号，同一编号跨分类只存一份行情。
+- `industry-ranking` 维护 `industry`、`cn_concept`、`region`、`tszs` 四类版本化目录。固定 `capabilityRevision` 只表示已批准的接口/schema/权限/预算，不是目录主键；`catalogRevisionId` 必须由 provider、capability revision、上海交易日和完整四类 `(tag, thscode, name)` canonical checksum 确定，且在每日行情对账前计算。每个 observation revision 保存完整分类数量、checksum 与 provider/fetch 时间；时间戳不参与身份，同一 `thscode` 跨分类时共享行情事实，但各分类关系必须独立可查。
+- 当日排名必须以完整四类目录和身份集合完全匹配的批量指数快照为输入，证明上海交易日、唯一代码和 100% 身份覆盖后，按可用 `changePct desc, thscode asc` 稳定排序；`changePct=null` 行保留在分类关系末尾并标为不可排名，不得进入 breadth Top-N。重复/额外/缺失身份、名称冲突或混合日期仍 fail closed；身份与日期有效但市场字段为空时保留 relation，以 `partial`、`null`、行级质量、`missingLiveCodes` 和 `missingRankingCodes` 表达，不得裁剪目录或补零。
+- `sector-turnover` 按 `thscode` 和真实交易日保存已证明的 `open`、`high`、`low`、`close`、`volume`、`turnover`、来源、质量和 `catalogRevisionId`；成交量与成交额必须分列，缺失保持 `null`，禁止相互代替或使用 0 补齐。每日任务只为至少一个 bar 字段可用的代码创建事实；六项全空的代码进入 `missingLiveCodes`。页面展示 expected/bar/missing coverage，同一编号跨分类只存一份行情。
 - 单编号历史最多查询近五年本地日线。覆盖不足时，只显示已有首尾日期和缺口；用户可显式发起回填。每个回填 run 默认最多 60 个唯一编号，按代码与时间窗口保存 checkpoint 和请求预算；单编号失败只影响对应 checkpoint，续跑只处理未完成窗口，已验证同 checksum 数据幂等保留，不同 checksum/revision 形成可审计冲突而不静默覆盖。
-- `sector-breadth` 只计算当前已完成上海交易日，每类选择稳定 Top 10 并合并有效用户点选编号，重复选择只计算一次且保留全部选择来源。每个板块输出成员总数/有效数、涨跌平家数、上涨占比、涨跌家数差率、中位涨幅、`close > MA20` 宽度、涨跌停数量、Top 成交、Top 涨幅、单股最大成交贡献和扩散率，并保留每项分子、分母、缺失原因与字段 lineage。
+- `sector-breadth` 只计算当前已完成上海交易日，从与 ranking/turnover 相同的单一 catalog revision 中排除 `changePct=null` 或质量不可排名行，再为每类选择稳定 Top 10 并合并有效用户点选编号；任一分类有效候选不足 10 时显示该分类 valid/required 计数和 `insufficient`，不得把短列表包装为完整 Top 10。重复选择只计算一次且保留全部选择来源。每个板块输出成员总数/有效数、涨跌平家数、上涨占比、涨跌家数差率、中位涨幅、`close > MA20` 宽度、涨跌停数量、Top 成交、Top 涨幅、单股最大成交贡献和扩散率，并保留每项分子、分母、缺失原因与字段 lineage。
 - 板块成员事实以 Fuyao 全市场日 K、最近 10 日增量和复权因子 dump 为主源；TDX 只可对精确日期的盘后原始事实做字段级降级补充。复权只作用于价格，原始成交量和成交额不复权；Fuyao dump、复权因子、成员或字段覆盖不足时输出 `partial` / `insufficient`，混合来源标记 `degraded` 并逐字段记录 lineage。MA20 不足的成员从对应分母排除，limits 缺失只降低涨跌停指标，不得污染独立有效的宽度指标。
 - 历史板块宽度不属于本版本。没有精确日期 point-in-time membership 时，系统必须拒绝历史 `sector-breadth`，不得用当前成员回算过去日期。
-- 三个每日任务按 `industry-ranking -> sector-turnover -> sector-breadth` 执行。依赖不兼容时下游显示 `blocked` / `insufficient`；独立数据集和已成功兄弟任务继续提交。任一新任务成功后都必须重建并原子替换 Chapter 01 聚合，避免只保存快照而章节缺失。
+- 三个每日任务按 `industry-ranking -> sector-turnover -> sector-breadth` 执行。同日期、同 `catalogRevisionId` 且仅含已声明值缺口的 compatible partial 可继续驱动下游；身份/日期错误、revision 不匹配或有效 Top-N 候选不足时才显示精确 `blocked` / `insufficient`。独立数据集和已成功兄弟任务继续提交；任一新任务成功或 accepted partial 后都必须重建并原子替换 Chapter 01 聚合，避免只保存快照而章节缺失。
 - Chapter 01 新公共字段为 `industryRanking`、`sectorTurnover`、`sectorBreadth` 和独立的 `sectorAnalysis`，新响应不再包含 `sectors`。显式请求旧 dataset ID `sectors` 返回稳定的不支持错误，并列出三个迁移目标；请求不得调用旧 collector 或改写历史 evidence。
 - provider-free GET 只读本地 PostgreSQL：目录查询支持分类、名称/编号搜索、revision 和分页；单编号 K 线支持日期范围、分页、本地覆盖与缺口；operation 进度查询展示目录同步、回填和成员导入的 run/checkpoint 状态。上述 GET 在本地缺失时仍不得构造 provider client、自动回填或下载 dump。
 - 目录同步、当日采集、历史回填和成员事实导入只允许通过显式 POST/CLI 触发，并继续受 manual-write、上海盘后、权限、请求预算、enabled switch 和 exact capability revision 门禁控制。预签名 URL、API key、敏感 header 和原始 provider 响应不得持久化或输出。
+- 数据管理页对 THS 任务显示 expected/usable/bar/rankable coverage、有界 missing code 样本、稳定 `reasonCode`、`blockedBy` 上游状态和 opaque `catalogRevisionId`；旧纯文本 warning 仍可显示。第 05 页保留 all-null 或 `changePct` 缺失的目录行，数字继续为 `null` 并标注“当日行情缺失”或“部分排名”，但不可排名行不进入任何 Top-N。新增可见文字不小于 14px，桌面和 390px 宽度不得产生页面级横向溢出。
 
 ### 第 03 页涨跌停生态完整矩阵
 
@@ -194,7 +195,7 @@
 ### Fuyao THS 行业与板块三数据集（2026-10-12）
 
 - 四类合成目录 fixture 能证明独立 count/checksum/revision、重复编号拒绝、名称冲突拒绝和跨分类代码复用；共享 `thscode` 只产生一份同日期行情，同时保留所有分类关系。
-- `industry-ranking` 只有在四类目录与完整快照 100% 对齐、上海日期和批次时间一致、必需字段齐全时才为可用；稳定排序固定为 `changePct desc, thscode asc`，缺失编号、重复编号、日期漂移和字段缺失均有明确失败或不足状态。
+- `industry-ranking` 只有在四类目录与快照身份 100% 对齐、上海日期和批次时间一致时才可发布；完整目录 checksum 在行情值分类前生成，固定 capability revision 不得作为目录 observation 主键。稳定排序为可排名行 `changePct desc, thscode asc` 后接不可排名行 `thscode asc`；缺失/重复身份和日期漂移失败关闭，而在场的字段缺失以独立 gap set、`null` 和行级不足状态保留。
 - `sector-turnover` 的本地事实与 API 同时保留 OHLC、`volume` 和 `turnover`；测试证明成交量不会被丢弃、成交额不会被当作成交量、缺失字段不会被填 0，跨分类同编号写入保持幂等。
 - 历史回填拒绝超过五年、默认超过 60 个编号或请求预算不足的输入，并在 provider I/O 前返回结构化错误。中断续跑只处理未完成的代码/时间窗口，单编号失败不回滚其他编号，已验证行不被新响应静默覆盖。
 - Fuyao full-market daily、recent-10-day 和 adjustment dump 的 schema、checksum、日期和重复键验证通过后才允许写入；TDX 只填补同日原始事实，复权只作用于价格。混合来源逐字段显示 lineage，并使质量保持 `degraded` / `partial`。
@@ -203,7 +204,7 @@
 - 目录、单编号 K 线和 operation progress GET 覆盖分类、名称/编号搜索、revision、日期范围、分页、本地覆盖与缺口；在 provider 不可用或本地数据不足时仍能返回本地状态，provider 调用数始终为 0。
 - collection 公共枚举、OpenAPI 和 TypeScript 类型只包含七个新 dataset ID。显式请求 `sectors` 返回包含三个迁移目标的稳定错误，调用旧 collector 的次数为 0，已有数据库快照、任务和 capability evidence 的内容与 checksum 保持不变。
 - Chapter 01 新物化结果只暴露 `industryRanking`、`sectorTurnover`、`sectorBreadth`、`sectorAnalysis`，不把旧 `sectors` payload 伪装成新字段；任一新板块任务单独成功后都能创建或重建聚合，失败任务不移除同日成功兄弟 evidence。
-- 数据管理页显示三个独立任务卡、依赖 `blocked`、最近 attempt、保留结果和 operation progress；第 05 页四个 tab 分别承载排名、板块宽度、量价 K 线和申万持续性。THS 视图与申万视图在名称、身份、质量和 lineage 上明确隔离，THS 数据不进入 `QTS-01-05-*` 输入。
+- 数据管理页显示三个独立任务卡、coverage、有界 missing code、稳定 reason code、依赖 `blockedBy`、最近 attempt、保留结果和 operation progress；第 05 页四个 tab 分别承载排名、板块宽度、量价 K 线和申万持续性，并保留不可排名行但不把它们用于 Top-N。THS 视图与申万视图在名称、身份、质量和 lineage 上明确隔离，THS 数据不进入 `QTS-01-05-*` 输入。
 - 量价 K 线视图同时渲染非空蜡烛、成交量和成交额；本地历史不足时仅展示实际覆盖并提供显式回填操作，不因打开或切换视图自动访问 provider。桌面和 390px 视口无页面级横向溢出、重叠或截断，所有可见文字、图例、坐标和 tooltip 不小于 14px。
 - 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行，调度默认继续为 `enabled=false`、`suspend=true`。
 

@@ -1,4 +1,4 @@
-import type { ThsSectorBar, ThsSectorTag } from './types'
+import type { ThsDiagnostic, ThsSectorBar, ThsSectorTag } from './types'
 
 export const COLLECTION_DATASETS = [
   'core',
@@ -37,6 +37,8 @@ export interface CollectionAttempt {
   source: string
   observations: number
   warning: string | null
+  diagnostics?: ThsDiagnostic | null
+  catalogRevisionId?: string | null
   queuedAt: string | null
   startedAt: string | null
   completedAt: string | null
@@ -70,6 +72,7 @@ export interface DatasetCollectionStatus {
   settled: boolean
   refreshWarning: string | null
   quality?: Record<string, unknown> | null
+  catalogRevisionId?: string | null
   latestAttempt: CollectionAttempt | null
   activeTaskId: string | null
   collectionAllowed: boolean
@@ -149,7 +152,8 @@ export interface CollectionRun {
 }
 
 export interface ThsCatalogRevision {
-  revisionId: string
+  catalogRevisionId: string
+  revisionId?: string
   capabilityRevision: string
   providerTimestamp: string
   fetchedAt: string
@@ -164,7 +168,7 @@ export interface ThsCatalogItem {
 }
 
 export interface ThsCatalogResponse {
-  revision: ThsCatalogRevision
+  revision: ThsCatalogRevision | null
   items: ThsCatalogItem[]
   page: number
   pageSize: number
@@ -311,7 +315,14 @@ export async function fetchThsCatalog(query: ThsCatalogQuery = {}): Promise<ThsC
   if (query.page != null) params.set('page', String(query.page))
   if (query.pageSize != null) params.set('page_size', String(query.pageSize))
   const suffix = params.size ? `?${params.toString()}` : ''
-  return requestJson(`/api/market-environment/ths/catalog${suffix}`)
+  const response = await requestJson<ThsCatalogResponse>(
+    `/api/market-environment/ths/catalog${suffix}`,
+  )
+  const revision = response.revision as Partial<ThsCatalogRevision> | null
+  if (revision && !revision.catalogRevisionId && revision.revisionId) {
+    revision.catalogRevisionId = revision.revisionId
+  }
+  return response
 }
 
 export async function fetchThsSectorBars(

@@ -175,14 +175,14 @@ def test_typed_coordinator_derives_same_date_retention_and_isolates_siblings(tmp
     assert tasks["breadth"].status == "success"
     assert tasks["industry-ranking"].status == "success"
     assert tasks["sector-turnover"].status == "failed-retained"
-    assert tasks["sector-breadth"].status == "success"
+    assert tasks["sector-breadth"].status == "blocked"
     assert "typed fixture unavailable" in tasks["sector-turnover"].warning
     assert store.get("sector-turnover", AS_OF).source == "retained-source"
     assert len(committers_by_dataset["breadth"].calls) == 1
     assert len(committers_by_dataset["industry-ranking"].calls) == 1
     assert committers_by_dataset["sector-turnover"].calls == []
-    assert len(committers_by_dataset["sector-breadth"].calls) == 1
-    assert rebuilds == [AS_OF, AS_OF, AS_OF, AS_OF]
+    assert committers_by_dataset["sector-breadth"].calls == []
+    assert rebuilds == [AS_OF, AS_OF, AS_OF]
     assert collectors_by_dataset["breadth"].calls == [DatasetDate("breadth", AS_OF)]
     assert collectors_by_dataset["industry-ranking"].calls == [
         DatasetDate("industry-ranking", AS_OF)
@@ -190,9 +190,7 @@ def test_typed_coordinator_derives_same_date_retention_and_isolates_siblings(tmp
     assert collectors_by_dataset["sector-turnover"].calls == [
         DatasetDate("sector-turnover", AS_OF)
     ]
-    assert collectors_by_dataset["sector-breadth"].calls == [
-        DatasetDate("sector-breadth", AS_OF)
-    ]
+    assert collectors_by_dataset["sector-breadth"].calls == []
 
 
 def test_coordinator_source_contains_no_signature_reflection() -> None:

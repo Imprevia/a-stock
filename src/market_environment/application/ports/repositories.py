@@ -237,7 +237,10 @@ class ThsSectorRepository(Protocol):
         relations: Sequence[ThsCatalogRelation],
     ) -> ThsCatalogRevision: ...
     def get_catalog_revision(self, revision_id: str) -> ThsCatalogRevision | None: ...
-    def latest_catalog_revision(self) -> ThsCatalogRevision | None: ...
+    def latest_catalog_revision(
+        self,
+        as_of: date | None = None,
+    ) -> ThsCatalogRevision | None: ...
     def list_catalog(
         self,
         *,
@@ -271,6 +274,7 @@ class ThsSectorRepository(Protocol):
         *,
         start_date: date | None = None,
         end_date: date | None = None,
+        source_revision: str | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> Sequence[ThsSectorBar]: ...

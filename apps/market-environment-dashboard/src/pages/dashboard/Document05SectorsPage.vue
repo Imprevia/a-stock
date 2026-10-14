@@ -56,6 +56,7 @@ const analysis = computed(() => rawAnalysis.value?.asOf === selectedAsOf.value ?
 const hasMismatchedAnalysis = computed(() => Boolean(rawAnalysis.value && !analysis.value))
 const rankingIsExactDate = computed(() => industryRanking.value?.quality.asOf === selectedAsOf.value)
 const allRankingRows = computed(() => rankingIsExactDate.value ? industryRanking.value?.rows ?? [] : [])
+const rankableRankingRows = computed(() => allRankingRows.value.filter(isRankableRankingRow))
 const tagRankingRows = computed(() => allRankingRows.value.filter((row) => row.tag === rankingTag.value))
 const rankingRows = computed(() => {
   const query = rankingSearch.value.trim().toLocaleLowerCase('zh-CN')
@@ -85,6 +86,16 @@ const rankingWarnings = computed(() => [...new Set([
   industryRanking.value?.quality.warning,
   ...(industryRanking.value?.quality.warnings ?? []),
 ].filter((warning): warning is string => Boolean(warning)))])
+const rankingIsPartial = computed(() => Boolean(
+  industryRanking.value
+  && (
+    industryRanking.value.quality.status !== 'ok'
+    || rankableRankingRows.value.length !== allRankingRows.value.length
+  )
+))
+const rankingExpectedCount = computed(() => (
+  industryRanking.value?.quality.expectedCount ?? allRankingRows.value.length
+))
 const analysisWarnings = computed(() => [...new Set([
   ...(analysis.value?.warnings ?? []),
   ...(analysis.value?.quality.warnings ?? []),
@@ -220,6 +231,22 @@ function tagLabel(tag: ThsSectorTag | null | undefined): string {
   return tag ? TAG_LABELS[tag] : '用户点选'
 }
 
+function isRankableRankingRow(row: ThsIndustryRankingRow): boolean {
+  return row.changePct != null
+    && !['insufficient', 'missing', 'failed'].includes(row.quality ?? '')
+}
+
+function rankingRowState(row: ThsIndustryRankingRow): string {
+  if (row.changePct == null && row.volume == null && row.turnover == null) return '当日行情缺失'
+  if (!isRankableRankingRow(row)) return '不可排名'
+  if (row.volume == null || row.turnover == null || row.quality === 'partial') return '部分字段'
+  return '可排名'
+}
+
+function rankingRowTone(row: ThsIndustryRankingRow): string {
+  return isRankableRankingRow(row) && rankingRowState(row) === '可排名' ? 'ok' : 'insufficient'
+}
+
 function yearsAgo(value: string, years: number): string {
   const date = new Date(`${value}T00:00:00Z`)
   if (Number.isNaN(date.getTime())) return ''
@@ -290,6 +317,8 @@ async function startBackfill(): Promise<void> {
 
 async function selectBreadth(thscode: string): Promise<void> {
   if (!selectedAsOf.value || breadthSelectionLoading.value) return
+  const ranking = allRankingRows.value.find((row) => row.thscode === thscode)
+  if (!ranking || !isRankableRankingRow(ranking)) return
   selectedThscode.value = thscode
   activeView.value = 'breadth'
   breadthSelectionLoading.value = true
@@ -355,27 +384,31 @@ watch(
   <section v-if="activeView === 'ranking'" class="panel table-panel ths-ranking-panel" aria-labelledby="ths-ranking-title">
     <div class="panel-heading">
       <div><span class="panel-kicker">THS provider observation</span><h2 id="ths-ranking-title">四类目录与当日排名</h2></div>
-      <span class="quality-badge" :class="ctx.qualityTone(industryRanking?.quality)">{{ ctx.qualityLabel(industryRanking?.quality) }}</span>
+      <div class="ths-ranking-heading-status">
+        <span v-if="rankingIsPartial" class="ranking-partial-label">部分排名 · 可排名 {{ rankableRankingRows.length }} / {{ rankingExpectedCount }}</span>
+        <span class="quality-badge" :class="ctx.qualityTone(industryRanking?.quality)">{{ ctx.qualityLabel(industryRanking?.quality) }}</span>
+      </div>
     </div>
     <div class="sector-ranking-controls">
       <label><span>分类</span><select v-model="rankingTag"><option v-for="(label, tag) in TAG_LABELS" :key="tag" :value="tag">{{ label }}</option></select></label>
       <label><span>搜索名称或编号</span><input v-model="rankingSearch" type="search" placeholder="例如 半导体 / 885000.TI" /></label>
-      <div><span>目录版本</span><strong>{{ industryRanking?.revisionId || rankingRows[0]?.catalogRevision || '--' }}</strong></div>
+      <div><span>目录版本</span><strong>{{ industryRanking?.catalogRevisionId || industryRanking?.revisionId || rankingRows[0]?.catalogRevisionId || rankingRows[0]?.catalogRevision || '--' }}</strong></div>
     </div>
     <div v-if="industryRanking && !rankingIsExactDate" class="sector-analysis-notice warning" role="status">
       <CircleAlert :size="20" /><div><strong>排名日期不一致</strong><p>所选 {{ selectedAsOf }}，本地排名证据为 {{ industryRanking.quality.asOf || '未知' }}；不展示跨日期结果。</p></div>
     </div>
     <div v-else-if="rankingRows.length" class="table-scroll ths-ranking-scroll">
       <table class="sector-table ths-ranking-table">
-        <thead><tr><th>排名</th><th>板块</th><th>涨跌幅</th><th>成交量</th><th>成交额</th><th>操作</th></tr></thead>
+        <thead><tr><th>排名</th><th>板块</th><th>涨跌幅</th><th>成交量</th><th>成交额</th><th>行状态</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="row in rankingRows" :key="`${row.tag}:${row.thscode}`">
+          <tr v-for="row in rankingRows" :key="`${row.tag}:${row.thscode}`" :class="{ 'ranking-row-unavailable': !isRankableRankingRow(row) }">
             <td>{{ row.rank }}</td>
             <td><strong>{{ row.name }}</strong><span>{{ row.thscode }}</span></td>
             <td :class="changeTone(row.changePct)">{{ formatPct(row.changePct) }}</td>
             <td>{{ formatAmount(row.volume) }}</td>
             <td>{{ formatAmount(row.turnover) }}</td>
-            <td><div class="ths-ranking-actions"><button class="inline-icon-command" type="button" :disabled="breadthSelectionLoading" @click="selectBreadth(row.thscode)"><BarChart3 :size="15" /><span>计算宽度</span></button><button class="inline-icon-command" type="button" @click="selectedThscode = row.thscode; activeView = 'turnover'"><History :size="15" /><span>查看 K 线</span></button></div></td>
+            <td><span class="ranking-row-state" :class="rankingRowTone(row)" :title="row.warnings?.join('；') || undefined">{{ rankingRowState(row) }}</span></td>
+            <td><div class="ths-ranking-actions"><button class="inline-icon-command" type="button" :disabled="breadthSelectionLoading || !isRankableRankingRow(row)" :title="!isRankableRankingRow(row) ? '缺少有效涨跌幅，不进入 Top-N 宽度输入' : undefined" @click="selectBreadth(row.thscode)"><BarChart3 :size="15" /><span>{{ isRankableRankingRow(row) ? '计算宽度' : '不可排名' }}</span></button><button class="inline-icon-command" type="button" @click="selectedThscode = row.thscode; activeView = 'turnover'"><History :size="15" /><span>查看 K 线</span></button></div></td>
           </tr>
         </tbody>
       </table>

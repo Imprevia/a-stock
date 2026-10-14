@@ -205,6 +205,19 @@ def test_bar_same_checksum_is_idempotent_conflict_does_not_overwrite_and_revisio
     assert len(repo.list_sector_bars("885001.TI")) == 1
 
 
+def test_daily_catalog_observation_bars_can_be_read_explicitly_without_merging(
+    repository,
+) -> None:
+    repo, _connection = repository
+    first = _bar(source_revision="catalog-r1", checksum="bar-r1")
+    second = _bar(source_revision="catalog-r2", checksum="bar-r2")
+    assert repo.put_sector_bar(first) == "inserted"
+    assert repo.put_sector_bar(second) == "inserted"
+    assert repo.list_sector_bars("885001.TI")[0].source_revision == "catalog-r2"
+    assert repo.list_sector_bars("885001.TI", source_revision="catalog-r1") == (first,)
+    assert repo.list_sector_bars("885001.TI", source_revision="catalog-r2") == (second,)
+
+
 def test_rankings_memberships_and_generic_operation_round_trip(repository) -> None:
     repo, _connection = repository
     revision = _revision("catalog-r1", "checksum-r1")
@@ -267,6 +280,8 @@ def test_rankings_with_missing_change_pct_write_and_read_back(repository) -> Non
         turnover=None,
         catalog_revision="catalog-r1",
         as_of=date(2026, 10, 10),
+        quality="insufficient",
+        warnings=("changePct is unavailable",),
     )
 
     assert repo.put_rankings((ranking,)) == {
@@ -275,6 +290,44 @@ def test_rankings_with_missing_change_pct_write_and_read_back(repository) -> Non
         "conflict": 0,
     }
     assert repo.list_rankings(date(2026, 10, 10), tag="industry") == (ranking,)
+
+
+def test_rankings_select_one_latest_revision_and_explicit_revision_never_merges(
+    repository,
+) -> None:
+    repo, _connection = repository
+    older = _revision("catalog-r1", "checksum-r1")
+    newer = _revision("catalog-r2", "checksum-r2")
+    repo.put_catalog_revision(older, _relations(older.revision_id))
+    repo.put_catalog_revision(newer, _relations(newer.revision_id))
+    as_of = date(2026, 10, 10)
+    old_row = ThsRankingRow(
+        tag="industry",
+        rank=1,
+        thscode="885001.TI",
+        name="共享板块",
+        change_pct=1.0,
+        volume=100.0,
+        turnover=200.0,
+        catalog_revision=older.revision_id,
+        as_of=as_of,
+    )
+    new_row = ThsRankingRow(
+        tag="industry",
+        rank=1,
+        thscode="885001.TI",
+        name="共享板块",
+        change_pct=2.0,
+        volume=100.0,
+        turnover=200.0,
+        catalog_revision=newer.revision_id,
+        as_of=as_of,
+    )
+    repo.put_rankings((old_row, new_row))
+
+    assert repo.latest_catalog_revision(as_of) == newer
+    assert repo.list_rankings(as_of) == (new_row,)
+    assert repo.list_rankings(as_of, revision_id=older.revision_id) == (old_row,)
 
 
 def test_backfill_run_and_checkpoints_use_generic_operation_state(repository) -> None:

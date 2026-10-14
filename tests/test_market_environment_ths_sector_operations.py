@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -25,6 +26,10 @@ from src.market_environment.domain.models.ths_sector import (
     ThsRankingRow,
     ThsSectorBar,
     ThsSnapshotFact,
+)
+from src.market_environment.domain.analysis.ths_sector import (
+    catalog_checksum,
+    catalog_observation_revision_id,
 )
 from src.market_environment.infrastructure.providers.fuyao.ths_dump import (
     ThsDumpContractError,
@@ -299,6 +304,14 @@ def _catalog_bundle() -> ThsCatalogSnapshotBundle:
         )
         for index, relation in enumerate(relations, start=1)
     )
+    checksum = catalog_checksum(relations)
+    revision_id = catalog_observation_revision_id(
+        provider="fuyao",
+        capability_revision="catalog-cap-r1",
+        as_of=AS_OF,
+        checksum=checksum,
+    )
+    relations = tuple(replace(relation, revision_id=revision_id) for relation in relations)
     rankings = tuple(
         ThsRankingRow(
             tag=relation.tag,
@@ -308,18 +321,18 @@ def _catalog_bundle() -> ThsCatalogSnapshotBundle:
             change_pct=snapshot.change_pct,
             volume=snapshot.volume,
             turnover=snapshot.turnover,
-            catalog_revision="catalog-r1",
+            catalog_revision=revision_id,
             as_of=AS_OF,
         )
         for relation, snapshot in zip(relations, snapshots, strict=True)
     )
     revision = ThsCatalogRevision(
-        revision_id="catalog-r1",
+        revision_id=revision_id,
         capability_revision="catalog-cap-r1",
         provider_timestamp=NOW,
         fetched_at=NOW,
         tag_counts={tag: 1 for tag in tags},
-        checksum="catalog-checksum",
+        checksum=checksum,
     )
     return ThsCatalogSnapshotBundle(revision, relations, snapshots, rankings)
 

@@ -330,7 +330,9 @@ def test_ordinary_deploy_rejects_disabled_unsuspended_env_before_render_or_acces
 def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
     tmp_path: Path,
 ) -> None:
-    repo, baseline, _, _, _, _ = _prepare_reviewed_repo(tmp_path)
+    repo, tracked_baseline, _, _, _, reviewed_head = _prepare_reviewed_repo(tmp_path)
+    baseline = tmp_path / "external-baseline.yaml"
+    shutil.copy2(tracked_baseline, baseline)
     fake_bin, target_marker = _write_target_spies(tmp_path)
     helm_calls = tmp_path / "helm-calls"
     drifted = tmp_path / "baseline-drifted"
@@ -348,6 +350,8 @@ def test_ordinary_deploy_revalidates_frozen_values_before_render_or_access(
     helm.chmod(0o755)
     env_file = tmp_path / "deploy.env"
     _write_env(env_file, repo, baseline, None)
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"REVIEWED_GIT_HEAD={reviewed_head}\n")
 
     completed = subprocess.run(
         ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
@@ -422,6 +426,29 @@ def _render_sector_profile(
 
 def _write_documents(path: Path, documents: list[dict]) -> None:
     path.write_text(yaml.safe_dump_all(documents, sort_keys=False), encoding="utf-8")
+
+
+def _manual_refresh_render(value: str, *, values: Path = SECTORS_OFF) -> str:
+    documents = [item for item in yaml.safe_load_all(_render_sector_profile(values)) if item]
+    deployment = next(item for item in documents if item.get("kind") == "Deployment")
+    dashboard = deployment["spec"]["template"]["spec"]["containers"][0]
+    manual = [
+        item
+        for item in dashboard["env"]
+        if item.get("name") == "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+    ]
+    assert len(manual) == 1
+    manual[0] = {
+        "name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED",
+        "value": value,
+    }
+    dashboard["env"] = [
+        manual[0]
+        if item.get("name") == "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+        else item
+        for item in dashboard["env"]
+    ]
+    return yaml.safe_dump_all(documents, sort_keys=False)
 
 
 def _sector_runtime_payloads(rendered: str) -> tuple[dict, dict, dict]:
@@ -736,6 +763,223 @@ def test_sectors_config_only_comparator_rejects_noop_transition(tmp_path: Path) 
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_manual_refresh_comparator_accepts_only_literal_one_to_zero(
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "manual-on.yaml"
+    desired = tmp_path / "manual-off.yaml"
+    current.write_text(_manual_refresh_render("1"), encoding="utf-8")
+    desired.write_text(_manual_refresh_render("0"), encoding="utf-8")
+
+    completed = _run_validator(
+        "compare-manual-refresh-only",
+        "",
+        "--current",
+        str(current),
+        "--desired",
+        str(desired),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "noop",
+        "value-from",
+        "duplicate",
+        "missing",
+        "image",
+        "other-env",
+        "replicas",
+        "service",
+        "resource-set",
+        "cronjob",
+        "hook",
+    ],
+)
+def test_manual_refresh_comparator_rejects_every_unreviewed_drift(
+    tmp_path: Path, drift: str
+) -> None:
+    current_documents = [
+        item for item in yaml.safe_load_all(_manual_refresh_render("1")) if item
+    ]
+    desired_documents = [
+        item for item in yaml.safe_load_all(_manual_refresh_render("0")) if item
+    ]
+    deployment = next(item for item in desired_documents if item["kind"] == "Deployment")
+    dashboard = deployment["spec"]["template"]["spec"]["containers"][0]
+    manual_index = next(
+        index
+        for index, item in enumerate(dashboard["env"])
+        if item["name"] == "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+    )
+    if drift == "noop":
+        dashboard["env"][manual_index]["value"] = "1"
+    elif drift == "value-from":
+        dashboard["env"][manual_index] = {
+            "name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED",
+            "valueFrom": {"secretKeyRef": {"name": "wrong", "key": "enabled"}},
+        }
+    elif drift == "duplicate":
+        dashboard["env"].append(copy.deepcopy(dashboard["env"][manual_index]))
+    elif drift == "missing":
+        dashboard["env"].pop(manual_index)
+    elif drift == "image":
+        dashboard["image"] = "registry.local/drift:reviewed-20261009"
+    elif drift == "other-env":
+        next(
+            item
+            for item in dashboard["env"]
+            if item["name"] == "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
+        )["value"] = "1"
+    elif drift == "replicas":
+        deployment["spec"]["replicas"] = 2
+    elif drift == "service":
+        service = next(item for item in desired_documents if item["kind"] == "Service")
+        service["spec"]["ports"][0]["port"] = 81
+    elif drift == "resource-set":
+        desired_documents.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "unexpected",
+                    "namespace": "a-stock",
+                    "labels": {"app.kubernetes.io/instance": "a-stock"},
+                },
+            }
+        )
+    elif drift == "cronjob":
+        desired_documents.append(
+            {
+                "apiVersion": "batch/v1",
+                "kind": "CronJob",
+                "metadata": {
+                    "name": "a-stock-data-collection",
+                    "namespace": "a-stock",
+                    "labels": {"app.kubernetes.io/instance": "a-stock"},
+                },
+                "spec": {"suspend": True},
+            }
+        )
+    else:
+        hook = next(
+            item
+            for item in desired_documents
+            if "helm.sh/hook" in ((item.get("metadata") or {}).get("annotations") or {})
+        )
+        hook["spec"]["template"]["spec"]["containers"][0]["command"] = [
+            "sh",
+            "-c",
+            "false",
+        ]
+    current = tmp_path / "manual-on.yaml"
+    desired = tmp_path / "manual-off.yaml"
+    _write_documents(current, current_documents)
+    _write_documents(desired, desired_documents)
+
+    completed = _run_validator(
+        "compare-manual-refresh-only",
+        "",
+        "--current",
+        str(current),
+        "--desired",
+        str(desired),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+    )
+
+    assert completed.returncode != 0
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_manual_refresh_runtime_verifier_requires_reviewed_ready_pod_environment(
+    tmp_path: Path,
+) -> None:
+    reviewed = _manual_refresh_render("0")
+    deployments, replicasets, pods = _sector_runtime_payloads(reviewed)
+    deployments_path = tmp_path / "deployments.json"
+    replicasets_path = tmp_path / "replicasets.json"
+    pods_path = tmp_path / "pods.json"
+    desired_path = tmp_path / "manual-off.yaml"
+    deployments_path.write_text(json.dumps(deployments), encoding="utf-8")
+    replicasets_path.write_text(json.dumps(replicasets), encoding="utf-8")
+    pods_path.write_text(json.dumps(pods), encoding="utf-8")
+    desired_path.write_text(reviewed, encoding="utf-8")
+
+    completed = _run_validator(
+        "verify-manual-refresh-runtime",
+        "",
+        "--deployments",
+        str(deployments_path),
+        "--replicasets",
+        str(replicasets_path),
+        "--pods",
+        str(pods_path),
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--digest",
+        f"sha256:{'d' * 64}",
+        "--require-value",
+        "0",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "a-stock-dashboard-reviewed"
+
+    dashboard = pods["items"][0]["spec"]["containers"][0]
+    next(
+        item
+        for item in dashboard["env"]
+        if item["name"] == "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+    )["value"] = "1"
+    pods_path.write_text(json.dumps(pods), encoding="utf-8")
+    rejected = _run_validator(
+        "verify-manual-refresh-runtime",
+        "",
+        "--deployments",
+        str(deployments_path),
+        "--replicasets",
+        str(replicasets_path),
+        "--pods",
+        str(pods_path),
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        "registry.local/frozen:reviewed-20261009",
+        "--digest",
+        f"sha256:{'d' * 64}",
+        "--require-value",
+        "0",
+    )
+    assert rejected.returncode != 0
+    assert "must be literal 0" in rejected.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_compare_release_exact_rejects_hook_drift(tmp_path: Path) -> None:
     reviewed = [item for item in yaml.safe_load_all(_render_sector_profile(SECTORS_OFF)) if item]
     drifted = copy.deepcopy(reviewed)
@@ -761,6 +1005,162 @@ def test_compare_release_exact_rejects_hook_drift(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "hook drift" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_hook_comparators_require_exact_and_reject_single_sided_hooks(
+    tmp_path: Path,
+) -> None:
+    current = [item for item in yaml.safe_load_all(_manual_refresh_render("1")) if item]
+    desired = [item for item in yaml.safe_load_all(_manual_refresh_render("0")) if item]
+    hooks = [
+        item
+        for item in desired
+        if "helm.sh/hook" in ((item.get("metadata") or {}).get("annotations") or {})
+    ]
+    hooks_path = tmp_path / "hooks.yaml"
+    _write_documents(hooks_path, hooks)
+    exact = _run_validator(
+        "compare-hooks-exact",
+        "",
+        "--current",
+        str(hooks_path),
+        "--desired",
+        str(hooks_path),
+    )
+    assert exact.returncode == 0, exact.stderr
+
+    for missing_side in ("current", "desired"):
+        current_documents = copy.deepcopy(current)
+        desired_documents = copy.deepcopy(desired)
+        if missing_side == "current":
+            current_documents = [
+                item
+                for item in current_documents
+                if "helm.sh/hook"
+                not in ((item.get("metadata") or {}).get("annotations") or {})
+            ]
+        else:
+            desired_documents = [
+                item
+                for item in desired_documents
+                if "helm.sh/hook"
+                not in ((item.get("metadata") or {}).get("annotations") or {})
+            ]
+        current_path = tmp_path / f"current-{missing_side}.yaml"
+        desired_path = tmp_path / f"desired-{missing_side}.yaml"
+        _write_documents(current_path, current_documents)
+        _write_documents(desired_path, desired_documents)
+
+        manual = _run_validator(
+            "compare-manual-refresh-only",
+            "",
+            "--current",
+            str(current_path),
+            "--desired",
+            str(desired_path),
+            "--release-name",
+            "a-stock",
+            "--namespace",
+            "a-stock",
+            "--image",
+            "registry.local/frozen:reviewed-20261009",
+        )
+        release = _run_validator(
+            "compare-release-exact",
+            "",
+            "--current",
+            str(current_path),
+            "--desired",
+            str(desired_path),
+        )
+
+        assert manual.returncode != 0
+        assert "hook drift" in manual.stderr
+        assert release.returncode != 0
+        assert "hook drift" in release.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_manual_live_comparator_normalizes_statefulset_and_pvc_server_fields(
+    tmp_path: Path,
+) -> None:
+    desired = [
+        item
+        for item in yaml.safe_load_all(_manual_refresh_render("1"))
+        if item
+        and "helm.sh/hook"
+        not in ((item.get("metadata") or {}).get("annotations") or {})
+    ]
+    live = copy.deepcopy(desired)
+    for item in live:
+        metadata = item.setdefault("metadata", {})
+        metadata.update(
+            {
+                "namespace": "a-stock",
+                "uid": f"uid-{metadata['name']}",
+                "resourceVersion": "42",
+                "generation": 3,
+                "creationTimestamp": "2026-10-15T00:00:00Z",
+            }
+        )
+        item["status"] = {}
+        if item["kind"] == "StatefulSet":
+            item["spec"].update(
+                {
+                    "podManagementPolicy": "OrderedReady",
+                    "revisionHistoryLimit": 10,
+                    "updateStrategy": {
+                        "type": "RollingUpdate",
+                        "rollingUpdate": {"partition": 0},
+                    },
+                    "persistentVolumeClaimRetentionPolicy": {
+                        "whenDeleted": "Retain",
+                        "whenScaled": "Retain",
+                    },
+                }
+            )
+            item["spec"]["template"]["spec"].update(
+                {
+                    "dnsPolicy": "ClusterFirst",
+                    "enableServiceLinks": True,
+                    "restartPolicy": "Always",
+                    "schedulerName": "default-scheduler",
+                    "terminationGracePeriodSeconds": 30,
+                    "serviceAccount": "default",
+                    "serviceAccountName": "default",
+                }
+            )
+        if item["kind"] == "PersistentVolumeClaim":
+            metadata["finalizers"] = ["kubernetes.io/pvc-protection"]
+            metadata.setdefault("annotations", {}).update(
+                {
+                    "pv.kubernetes.io/bind-completed": "yes",
+                    "pv.kubernetes.io/bound-by-controller": "yes",
+                    "volume.kubernetes.io/storage-provisioner": "rancher.io/local-path",
+                }
+            )
+            item["spec"].update(
+                {"volumeName": "pv-reviewed", "volumeMode": "Filesystem"}
+            )
+
+    desired_path = tmp_path / "manual-live-desired.yaml"
+    _write_documents(desired_path, desired)
+    payload = yaml.safe_dump(
+        {"apiVersion": "v1", "kind": "List", "items": live}, sort_keys=False
+    )
+    completed = _run_validator(
+        "compare-manual-refresh-live-desired",
+        payload,
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -1196,9 +1596,14 @@ def _run_generic_deploy(
     *,
     stored_overlay: Path,
     live_overlay: Path,
+    component: str = "all",
     outcome: str = "off",
     release_present: bool = True,
     live_label_drift: bool = False,
+    reviewed_head_state: str = "valid",
+    dirty_tree: bool = False,
+    preset_digest: str | None = None,
+    digest_drift_call: int | None = None,
     deploy_tmp_root: Path | None = None,
     image_size_output: str = "1048576",
     archive_available_kib: int = 4 * 1024 * 1024,
@@ -1206,7 +1611,7 @@ def _run_generic_deploy(
     tmpdir_available_kib: int | None = None,
     scp_exit_code: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], str, dict]:
-    repo, baseline, suspended, active, off, _ = _prepare_reviewed_repo(tmp_path)
+    repo, baseline, suspended, active, off, head = _prepare_reviewed_repo(tmp_path)
     overlays = {path.name: path for path in (suspended, active, off)}
     stored_manifest = tmp_path / "generic-stored.yaml"
     stored_manifest.write_text(
@@ -1276,12 +1681,36 @@ def _run_generic_deploy(
         ),
         encoding="utf-8",
     )
+    runtime_render = _render_reviewed(
+        repo, baseline, off, release_name="a-stock", namespace="a-stock"
+    ).replace("20260905-1904b66", "test-generic")
+    runtime_payloads = _runtime_payloads(
+        runtime_render, "a-stock", f"sha256:{'c' * 64}"
+    )
+    for payload in runtime_payloads:
+        for item in payload["items"]:
+            item.setdefault("metadata", {})["namespace"] = "a-stock"
+    runtime_deployments = tmp_path / "generic-runtime-deployments.json"
+    runtime_replicasets = tmp_path / "generic-runtime-replicasets.json"
+    runtime_pods = tmp_path / "generic-runtime-pods.json"
+    runtime_deployments.write_text(json.dumps(runtime_payloads[0]), encoding="utf-8")
+    runtime_replicasets.write_text(json.dumps(runtime_payloads[1]), encoding="utf-8")
+    runtime_pods.write_text(json.dumps(runtime_payloads[2]), encoding="utf-8")
+    drifted_runtime_pods = copy.deepcopy(runtime_payloads[2])
+    drifted_runtime_pods["items"][0]["metadata"]["ownerReferences"][0]["uid"] = (
+        "wrong-replicaset"
+    )
+    drifted_runtime_pods_path = tmp_path / "generic-runtime-pods-drifted.json"
+    drifted_runtime_pods_path.write_text(
+        json.dumps(drifted_runtime_pods), encoding="utf-8"
+    )
 
     fake_bin = tmp_path / "generic-bin"
     fake_bin.mkdir()
     calls = tmp_path / "generic-calls"
     released = tmp_path / "generic-released"
     post_read_failed = tmp_path / "generic-post-read-failed"
+    digest_calls = tmp_path / "generic-digest-calls"
     helm_wrapper = fake_bin / "helm"
     helm_wrapper.write_text(
         "#!/usr/bin/env bash\n"
@@ -1295,7 +1724,7 @@ def _run_generic_deploy(
         f"      fail-active) cp {active_state} {live_state}; exit 95 ;;\n"
         f"      signal-active) cp {active_state} {live_state}; touch {released}; kill -TERM \"$PPID\"; sleep 0.1 ;;\n"
         f"      post-read-active|rollout-active|postcondition-active) cp {active_state} {live_state}; touch {released} ;;\n"
-        f"      off|chart-drift) cp {off_state} {live_state}; touch {released} ;;\n"
+        f"      off|chart-drift|runtime-drift|prewrite-digest-drift|import-digest-missing|import-digest-mismatch) cp {off_state} {live_state}; touch {released} ;;\n"
         "      *) exit 98 ;;\n"
         "    esac\n"
         "    ;;\n"
@@ -1329,6 +1758,9 @@ def _run_generic_deploy(
         "  exit 0\n"
         "fi\n"
         f"if [[ \"$*\" == *\"get deployment\"* && -f {released} && \"$GENERIC_UPGRADE_OUTCOME\" == post-read-active && ! -f {post_read_failed} ]]; then touch {post_read_failed}; exit 96; fi\n"
+        f"if [[ \"$*\" == *\"get deployment --namespace\"* && \"$*\" == *\"-o json\"* ]]; then cat {runtime_deployments}; exit 0; fi\n"
+        f"if [[ \"$*\" == *\"get replicasets --namespace\"* && \"$*\" == *\"-o json\"* ]]; then cat {runtime_replicasets}; exit 0; fi\n"
+        f"if [[ \"$*\" == *\"get pods --namespace\"* && \"$*\" == *\"-o json\"* ]]; then if [[ \"$GENERIC_UPGRADE_OUTCOME\" == runtime-drift && -f {released} ]]; then cat {drifted_runtime_pods_path}; else cat {runtime_pods}; fi; exit 0; fi\n"
         "if [[ \"$*\" == *\"get deployment\"* ]]; then printf a-stock; exit 0; fi\n"
         "if [[ \"$*\" == *\"rollout status\"* ]]; then [[ \"$GENERIC_UPGRADE_OUTCOME\" != rollout-active ]] || exit 93; exit 0; fi\n"
         "exit 0\n",
@@ -1373,6 +1805,20 @@ def _run_generic_deploy(
         "if [[ \"$GENERIC_UPGRADE_OUTCOME\" == chart-drift && \"$*\" == *\"images import\"* ]]; then\n"
         f"  printf '\\n{{{{ fail \"SOURCE_CHART_DRIFT\" }}}}\\n' >> {repo / 'deploy' / 'helm' / 'a-stock' / 'templates' / 'market-data-collection-cronjob.yaml'}\n"
         "fi\n"
+        "if [[ \"$*\" == *\"images ls\"* && \"$*\" == *\"Target\"* ]]; then\n"
+        f"  printf '{{\"Name\":\"localhost/a-stock-market-environment:test-generic\",\"Target\":{{\"digest\":\"sha256:{'d' * 64}\"}}}}\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == *\"images ls\"* ]]; then\n"
+        f"  count=0; if [[ -f {digest_calls} ]]; then count=$(cat {digest_calls}); fi; count=$((count + 1)); printf '%s' \"$count\" > {digest_calls}\n"
+        "  if [[ \"$GENERIC_UPGRADE_OUTCOME\" == import-digest-missing && \"$count\" == 1 ]]; then exit 1; fi\n"
+        "  if [[ \"$GENERIC_DIGEST_DRIFT_CALL\" -gt 0 && \"$count\" -eq \"$GENERIC_DIGEST_DRIFT_CALL\" ]]; then\n"
+        f"    printf 'sha256:{'e' * 64}\\n'\n"
+        "  else\n"
+        f"    printf 'sha256:{'d' * 64}\\n'\n"
+        "  fi\n"
+        "  exit 0\n"
+        "fi\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1390,6 +1836,17 @@ def _run_generic_deploy(
     kubeconfig = tmp_path / "generic-kubeconfig"
     kubeconfig.write_text("fixture", encoding="utf-8")
     env_file = tmp_path / "generic.env"
+    reviewed_head_lines: list[str] = []
+    if reviewed_head_state == "valid":
+        reviewed_head_lines.append(f"REVIEWED_GIT_HEAD={head}")
+    elif reviewed_head_state == "mismatch":
+        reviewed_head_lines.append(f"REVIEWED_GIT_HEAD={'0' * 40}")
+    elif reviewed_head_state == "invalid":
+        reviewed_head_lines.append("REVIEWED_GIT_HEAD=ABC123")
+    elif reviewed_head_state != "missing":
+        raise AssertionError(f"unsupported reviewed_head_state: {reviewed_head_state}")
+    if preset_digest is not None:
+        reviewed_head_lines.append(f"FROZEN_IMAGE_DIGEST={preset_digest}")
     env_file.write_text(
         "\n".join(
             [
@@ -1400,6 +1857,7 @@ def _run_generic_deploy(
                 f"KUBECONFIG={kubeconfig}",
                 f"HELM_VALUES_FILE={baseline}",
                 "IMAGE_TAG=test-generic",
+                *reviewed_head_lines,
                 *(
                     [f"DEPLOY_TMP_ROOT={_bash_path(deploy_tmp_root)}"]
                     if deploy_tmp_root is not None
@@ -1410,14 +1868,24 @@ def _run_generic_deploy(
         ),
         encoding="utf-8",
     )
+    if dirty_tree:
+        (repo / "unreviewed.txt").write_text("dirty\n", encoding="utf-8")
+    command = ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)]
+    if component != "all":
+        command.extend(["--component", component])
     completed = subprocess.run(
-        ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
+        command,
         env={
             **os.environ,
             **({"TMPDIR": _bash_path(tmpdir)} if tmpdir is not None else {}),
             "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM or "helm",
             "GENERIC_UPGRADE_OUTCOME": outcome,
+            "GENERIC_DIGEST_DRIFT_CALL": str(
+                digest_drift_call
+                if digest_drift_call is not None
+                else (2 if outcome == "prewrite-digest-drift" else 0)
+            ),
             "GENERIC_RELEASE_PRESENT": str(release_present).lower(),
             "GENERIC_LIVE_LABEL_DRIFT": str(live_label_drift).lower(),
             "PODMAN_IMAGE_SIZE_OUTPUT": image_size_output,
@@ -1436,6 +1904,140 @@ def _run_generic_deploy(
     )
     call_log = calls.read_text(encoding="utf-8") if calls.exists() else ""
     return completed, call_log, json.loads(live_state.read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize("component", ["all", "service"])
+@pytest.mark.parametrize(
+    ("reviewed_head_state", "dirty_tree"),
+    [
+        ("missing", False),
+        ("mismatch", False),
+        ("invalid", False),
+        ("valid", True),
+    ],
+    ids=["missing-head", "mismatched-head", "invalid-head", "dirty-tree"],
+)
+def test_generic_all_service_rejects_unreviewed_source_before_target_access(
+    tmp_path: Path,
+    component: str,
+    reviewed_head_state: str,
+    dirty_tree: bool,
+) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        component=component,
+        reviewed_head_state=reviewed_head_state,
+        dirty_tree=dirty_tree,
+    )
+
+    assert completed.returncode != 0
+    if dirty_tree:
+        assert "clean working tree" in completed.stderr
+    elif reviewed_head_state == "invalid":
+        assert "full lowercase commit SHA" in completed.stderr
+    else:
+        assert "REVIEWED_GIT_HEAD" in completed.stderr or "reviewed Git HEAD" in completed.stderr
+    target_prefixes = ("ssh ", "kubectl ", "podman ", "scp ", "curl ", "nc ")
+    assert not any(line.startswith(target_prefixes) for line in calls.splitlines())
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("outcome", "preset_digest", "error"),
+    [
+        ("import-digest-missing", None, "could not resolve one exact"),
+        (
+            "import-digest-mismatch",
+            f"sha256:{'a' * 64}",
+            "imported image digest drift",
+        ),
+    ],
+)
+@pytest.mark.parametrize("component", ["all", "service"])
+def test_generic_all_service_rejects_import_digest_failure_before_helm_write(
+    tmp_path: Path,
+    outcome: str,
+    preset_digest: str | None,
+    error: str,
+    component: str,
+) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        component=component,
+        outcome=outcome,
+        preset_digest=preset_digest,
+    )
+
+    assert completed.returncode != 0
+    assert error in completed.stderr
+    assert "images import" in calls
+    assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("component", "digest_drift_call", "completed_components"),
+    [
+        ("service", 2, []),
+        ("all", 2, []),
+        ("all", 3, ["database"]),
+        ("all", 4, ["database", "service"]),
+    ],
+    ids=[
+        "service-before-write",
+        "all-before-database",
+        "all-before-service",
+        "all-before-final",
+    ],
+)
+def test_generic_deploy_rejects_manifest_digest_drift_before_each_helm_write(
+    tmp_path: Path,
+    component: str,
+    digest_drift_call: int,
+    completed_components: list[str],
+) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        component=component,
+        digest_drift_call=digest_drift_call,
+    )
+
+    assert completed.returncode != 0
+    assert "digest" in (completed.stdout + completed.stderr).lower()
+    digest_captures = [
+        line
+        for line in calls.splitlines()
+        if line.startswith("ssh ") and "images ls" in line and "matches += 1" in line
+    ]
+    upgrades = [line for line in calls.splitlines() if line.startswith("helm upgrade ")]
+    assert len(digest_captures) == digest_drift_call
+    assert len(upgrades) == len(completed_components)
+    for upgrade, completed_component in zip(upgrades, completed_components, strict=True):
+        assert f"--set component={completed_component}" in upgrade
+    assert not any("--set component=all" in upgrade for upgrade in upgrades)
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_service_rejects_runtime_owner_drift_after_rollout(tmp_path: Path) -> None:
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        component="service",
+        outcome="runtime-drift",
+    )
+
+    assert completed.returncode != 0
+    assert sum(line.startswith("helm upgrade ") for line in calls.splitlines()) == 1
+    assert "frozen_image_runtime_unproven" in completed.stdout
+    assert "controlled by ReplicaSet" in completed.stderr
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 @pytest.mark.parametrize("blocked_overlay", [ACTIVE, SUSPENDED], ids=["active", "suspended"])
@@ -1558,6 +2160,18 @@ def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -
         "generic deployment precondition: stored and live scheduling are off/absent"
     ) == 2
     assert calls.count("helm list --all --namespace a-stock") == 2
+    digest_captures = [
+        line
+        for line in calls.splitlines()
+        if line.startswith("ssh ") and "images ls" in line and "matches += 1" in line
+    ]
+    upgrades = [line for line in calls.splitlines() if line.startswith("helm upgrade ")]
+    assert len(digest_captures) == 4
+    assert len(upgrades) == 3
+    for upgrade, component in zip(
+        upgrades, ["database", "service", "all"], strict=True
+    ):
+        assert f"--set component={component}" in upgrade
     assert live["items"] == []
     assert "patch cronjob" not in calls
 
@@ -2191,6 +2805,98 @@ def _run_controlled_sector_entry(
     )
 
 
+def _controlled_manual_refresh_packet(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, str, str]:
+    repo, script, _, values = _component_fake_repo(tmp_path)
+    current_values = values[SECTORS_OFF.name]
+    manual_off_values = repo / "deploy" / "truenas" / "manual-off.yaml"
+    manual_off_values.write_text(
+        current_values.read_text(encoding="utf-8").replace(
+            "  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n    value: \"1\"",
+            "  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED\n    value: \"0\"",
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "manual off fixture"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    current_render = _render_sector_profile(
+        current_values,
+        chart=repo / "deploy" / "helm" / "a-stock",
+    )
+    desired_render = _render_sector_profile(
+        manual_off_values,
+        chart=repo / "deploy" / "helm" / "a-stock",
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    env_file = tmp_path / "controlled-manual-refresh.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"REVIEWED_GIT_HEAD={head}",
+                f"REVIEWED_CHART_SHA256={_chart_hash(repo)}",
+                "REVIEWED_MANUAL_OFF_VALUES_SHA256="
+                f"{hashlib.sha256(manual_off_values.read_bytes()).hexdigest()}",
+                "REVIEWED_MANUAL_OFF_RENDER_SHA256="
+                f"{hashlib.sha256(desired_render.encode()).hexdigest()}",
+                "FROZEN_IMAGE_REPOSITORY=registry.local/frozen",
+                "FROZEN_IMAGE_TAG=reviewed-20261009",
+                f"FROZEN_IMAGE_DIGEST=sha256:{'d' * 64}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return repo, script, env_file, manual_off_values, current_render, desired_render
+
+
+def _run_controlled_manual_refresh_entry(
+    script: Path,
+    env_file: Path,
+    manual_off_values: Path,
+    fake_bin: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            str(script),
+            "--env-file",
+            str(env_file),
+            "--disable-manual-refresh",
+            "--baseline-values",
+            str(manual_off_values),
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--release-name",
+            "a-stock",
+            "--namespace",
+            "a-stock",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_HELM": HELM or "helm",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _repair_target_stubs(
     tmp_path: Path,
     *,
@@ -2387,6 +3093,285 @@ def _repair_target_stubs(
     return fake_bin, calls
 
 
+def _manual_refresh_target_stubs(
+    tmp_path: Path,
+    *,
+    current_render: str,
+    desired_render: str,
+    job_state: str = "terminal",
+    hook_drift: str | None = None,
+    live_drift: str | None = None,
+) -> tuple[Path, Path]:
+    fake_bin = tmp_path / "manual-refresh-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "manual-refresh-calls.log"
+    state = tmp_path / "manual-refresh-upgraded"
+
+    def release_manifest(rendered: str) -> str:
+        return yaml.safe_dump_all(
+            [
+                item
+                for item in yaml.safe_load_all(rendered)
+                if item
+                and "helm.sh/hook"
+                not in ((item.get("metadata") or {}).get("annotations") or {})
+            ],
+            sort_keys=False,
+        )
+
+    def hook_manifest(rendered: str, *, drift: bool = False) -> str:
+        documents = [
+            copy.deepcopy(item)
+            for item in yaml.safe_load_all(rendered)
+            if item
+            and "helm.sh/hook"
+            in ((item.get("metadata") or {}).get("annotations") or {})
+        ]
+        if drift:
+            documents[0]["spec"]["template"]["spec"]["containers"][0]["command"] = [
+                "sh",
+                "-c",
+                "false",
+            ]
+        return yaml.safe_dump_all(documents, sort_keys=False)
+
+    def live_manifest(rendered: str, *, drift: str | None = None) -> str:
+        documents = []
+        for item in yaml.safe_load_all(rendered):
+            if not item or item.get("kind") not in {
+                "Deployment",
+                "Service",
+                "CronJob",
+                "StatefulSet",
+                "PersistentVolumeClaim",
+            }:
+                continue
+            item = copy.deepcopy(item)
+            item.setdefault("metadata", {})["namespace"] = "a-stock"
+            if drift == "statefulset" and item.get("kind") == "StatefulSet":
+                item["spec"]["replicas"] = 2
+            if drift == "pvc" and item.get("kind") == "PersistentVolumeClaim":
+                item["spec"]["resources"]["requests"]["storage"] = "9Gi"
+            if drift == "terminating-deployment" and item.get("kind") == "Deployment":
+                item["metadata"]["deletionTimestamp"] = "2026-10-15T01:02:03Z"
+            documents.append(item)
+        return yaml.safe_dump(
+            {"apiVersion": "v1", "kind": "List", "items": documents},
+            sort_keys=False,
+        )
+
+    current_manifest_path = tmp_path / "manual-current.yaml"
+    desired_manifest_path = tmp_path / "manual-desired.yaml"
+    current_hooks_path = tmp_path / "manual-current-hooks.yaml"
+    desired_hooks_path = tmp_path / "manual-desired-hooks.yaml"
+    current_live_path = tmp_path / "manual-current-live.yaml"
+    desired_live_path = tmp_path / "manual-desired-live.yaml"
+    current_manifest_path.write_text(release_manifest(current_render), encoding="utf-8")
+    desired_manifest_path.write_text(release_manifest(desired_render), encoding="utf-8")
+    current_hooks_path.write_text(
+        hook_manifest(current_render, drift=hook_drift == "before"),
+        encoding="utf-8",
+    )
+    desired_hooks_path.write_text(
+        hook_manifest(desired_render, drift=hook_drift == "after"),
+        encoding="utf-8",
+    )
+    current_live_path.write_text(
+        live_manifest(current_render, drift=live_drift), encoding="utf-8"
+    )
+    desired_live_path.write_text(live_manifest(desired_render), encoding="utf-8")
+
+    current_runtime = _sector_runtime_payloads(current_render)
+    desired_runtime = _sector_runtime_payloads(desired_render)
+    runtime_paths: list[tuple[Path, Path]] = []
+    for name, current_payload, desired_payload in zip(
+        ("deployments", "replicasets", "pods"), current_runtime, desired_runtime
+    ):
+        current_path = tmp_path / f"manual-current-{name}.json"
+        desired_path = tmp_path / f"manual-desired-{name}.json"
+        current_path.write_text(json.dumps(current_payload), encoding="utf-8")
+        desired_path.write_text(json.dumps(desired_payload), encoding="utf-8")
+        runtime_paths.append((current_path, desired_path))
+    (current_deployments, desired_deployments), (
+        current_replicasets,
+        desired_replicasets,
+    ), (current_pods, desired_pods) = runtime_paths
+
+    pvc_path = tmp_path / "manual-postgresql-pvc.json"
+    pvc_path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "name": "a-stock-postgresql-data",
+                    "namespace": "a-stock",
+                },
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "volumeName": "pv-postgresql",
+                },
+                "status": {"phase": "Bound"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    statefulset_path = tmp_path / "manual-postgresql-statefulset.json"
+    statefulset_path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "name": "a-stock-postgresql",
+                    "namespace": "a-stock",
+                },
+                "spec": {"replicas": 1},
+                "status": {"readyReplicas": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    helm_wrapper = fake_bin / "helm"
+    helm_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'helm %s\\n' \"$*\" >> {calls}\n"
+        "case \"$1\" in\n"
+        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
+        "  list) printf '[{\"name\":\"a-stock\"}]\\n' ;;\n"
+        f"  get) if [[ \"$2\" == hooks ]]; then if [[ -f {state} ]]; then cat {desired_hooks_path}; else cat {current_hooks_path}; fi; elif [[ -f {state} ]]; then cat {desired_manifest_path}; else cat {current_manifest_path}; fi ;;\n"
+        "  upgrade)\n"
+        "    [[ \" $* \" == *\" --no-hooks \"* ]] || exit 81\n"
+        "    [[ \" $* \" == *\" --atomic \"* ]] || exit 82\n"
+        "    [[ \" $* \" == *\" --wait \"* ]] || exit 83\n"
+        "    [[ \" $* \" == *\" --set component=all \"* ]] || exit 84\n"
+        "    [[ \" $* \" != *\" --install \"* ]] || exit 85\n"
+        f"    touch {state} ;;\n"
+        "  *) exit 86 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm_wrapper.chmod(0o755)
+
+    job_payloads = {
+        "terminal": {
+            "items": [
+                {
+                    "metadata": {"name": "completed-audit"},
+                    "status": {
+                        "succeeded": 1,
+                        "conditions": [{"type": "Complete", "status": "True"}],
+                    },
+                },
+                {
+                    "metadata": {"name": "failed-audit"},
+                    "status": {
+                        "failed": 1,
+                        "conditions": [
+                            {"type": "Failed", "status": "True", "reason": "Error"}
+                        ],
+                    },
+                },
+            ]
+        },
+        "active": {
+            "items": [
+                {
+                    "metadata": {"name": "active-job"},
+                    "status": {
+                        "active": 1,
+                        "conditions": [{"type": "Complete", "status": "False"}],
+                    },
+                }
+            ]
+        },
+        "missing-conditions": {
+            "items": [
+                {"metadata": {"name": "missing-conditions"}, "status": {"succeeded": 1}}
+            ]
+        },
+        "nonterminal": {
+            "items": [
+                {
+                    "metadata": {"name": "nonterminal"},
+                    "status": {
+                        "conditions": [
+                            {"type": "Complete", "status": "False"},
+                            {"type": "FailureTarget", "status": "True"},
+                        ]
+                    },
+                }
+            ]
+        },
+        "failed-count": {
+            "items": [
+                {
+                    "metadata": {"name": "failed-count"},
+                    "status": {
+                        "failed": 1,
+                        "conditions": [{"type": "Complete", "status": "True"}],
+                    },
+                }
+            ]
+        },
+        "invalid": {
+            "items": [
+                {
+                    "metadata": {"name": "invalid-active"},
+                    "status": {
+                        "active": False,
+                        "conditions": [{"type": "Complete", "status": "True"}],
+                    },
+                }
+            ]
+        },
+    }
+    jobs_payload = json.dumps(job_payloads[job_state], separators=(",", ":"))
+    kubectl_wrapper = fake_bin / "kubectl"
+    kubectl_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
+        "args=\"$*\"\n"
+        "if [[ \"$args\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment,service,cronjob,statefulset,pvc\"* ]]; then if [[ -f {state} ]]; then cat {desired_live_path}; else cat {current_live_path}; fi; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment --namespace\"* && \"$args\" == *\"-o json\"* ]]; then if [[ -f {state} ]]; then cat {desired_deployments}; else cat {current_deployments}; fi; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get replicasets --namespace\"* ]]; then if [[ -f {state} ]]; then cat {desired_replicasets}; else cat {current_replicasets}; fi; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get pods --namespace\"* ]]; then if [[ -f {state} ]]; then cat {desired_pods}; else cat {current_pods}; fi; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get jobs --namespace\"* ]]; then printf '{jobs_payload}'; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get cronjob --namespace\"* ]]; then printf 'apiVersion: v1\\nkind: List\\nitems: []\\n'; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get cronjob market-data-collection\"* ]]; then exit 0; fi\n"
+        "if [[ \"$args\" == *\"get secret \"* ]]; then printf 'secret-uid|11'; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get pvc \"* && \"$args\" == *\"jsonpath\"* ]]; then printf 'pvc-uid|12|pv-reviewed|Bound|5Gi'; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get pvc a-stock-postgresql-data\"* && \"$args\" == *\"-o json\"* ]]; then cat {pvc_path}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get statefulset a-stock-postgresql\"* ]]; then cat {statefulset_path}; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get deployment\"* && \"$args\" == *\"jsonpath\"* ]]; then printf a-stock; exit 0; fi\n"
+        "if [[ \"$args\" == *\"rollout status deployment/a-stock\"* ]]; then exit 0; fi\n"
+        "exit 87\n",
+        encoding="utf-8",
+    )
+    kubectl_wrapper.chmod(0o755)
+
+    ssh_wrapper = fake_bin / "ssh"
+    ssh_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"images ls\"* ]]; then\n"
+        f"  printf '{{\"Name\":\"registry.local/frozen:reviewed-20261009\",\"Target\":{{\"digest\":\"sha256:{'d' * 64}\"}}}}\\n'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ssh_wrapper.chmod(0o755)
+    for name in ("nc", "podman", "scp", "curl"):
+        executable = fake_bin / name
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '{name} %s\\n' \"$*\" >> {calls}\n"
+            + ("exit 0\n" if name == "nc" else "exit 88\n"),
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+    return fake_bin, calls
+
+
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_controlled_sectors_operation_rejects_dirty_tree_before_target_access(
     tmp_path: Path,
@@ -2400,6 +3385,189 @@ def test_controlled_sectors_operation_rejects_dirty_tree_before_target_access(
     assert completed.returncode != 0
     assert "clean working tree" in completed.stderr
     assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_manual_refresh_rejects_dirty_tree_before_target_access(
+    tmp_path: Path,
+) -> None:
+    repo, script, env_file, manual_off, _, _ = _controlled_manual_refresh_packet(
+        tmp_path
+    )
+    (repo / "unreviewed.txt").write_text("dirty\n", encoding="utf-8")
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_manual_refresh_entry(
+        script, env_file, manual_off, fake_bin
+    )
+
+    assert completed.returncode != 0
+    assert "clean working tree" in completed.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "REVIEWED_GIT_HEAD",
+        "REVIEWED_CHART_SHA256",
+        "REVIEWED_MANUAL_OFF_VALUES_SHA256",
+        "REVIEWED_MANUAL_OFF_RENDER_SHA256",
+    ],
+)
+def test_disable_manual_refresh_rejects_reviewed_drift_before_target_access(
+    tmp_path: Path, variable: str
+) -> None:
+    _, script, env_file, manual_off, _, _ = _controlled_manual_refresh_packet(
+        tmp_path
+    )
+    content = env_file.read_text(encoding="utf-8")
+    replacement_length = 40 if variable == "REVIEWED_GIT_HEAD" else 64
+    content = "\n".join(
+        f"{variable}={'0' * replacement_length}"
+        if line.startswith(f"{variable}=")
+        else line
+        for line in content.splitlines()
+    )
+    env_file.write_text(content + "\n", encoding="utf-8")
+    fake_bin, marker = _write_target_spies(tmp_path)
+
+    completed = _run_controlled_manual_refresh_entry(
+        script, env_file, manual_off, fake_bin
+    )
+
+    assert completed.returncode != 0
+    assert "reviewed" in completed.stderr.lower()
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_manual_refresh_runs_one_hook_free_same_image_upgrade_with_inactive_jobs(
+    tmp_path: Path,
+) -> None:
+    _, script, env_file, manual_off, current_render, desired_render = (
+        _controlled_manual_refresh_packet(tmp_path)
+    )
+    kubeconfig = tmp_path / "manual-refresh-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+    fake_bin, calls = _manual_refresh_target_stubs(
+        tmp_path,
+        current_render=current_render,
+        desired_render=desired_render,
+    )
+
+    completed = _run_controlled_manual_refresh_entry(
+        script, env_file, manual_off, fake_bin
+    )
+    call_log = calls.read_text(encoding="utf-8")
+    upgrades = [line for line in call_log.splitlines() if line.startswith("helm upgrade ")]
+
+    assert completed.returncode == 0, completed.stderr
+    assert len(upgrades) == 1
+    assert "--set image.repository=registry.local/frozen" in upgrades[0]
+    assert "--set image.tag=reviewed-20261009" in upgrades[0]
+    assert "--set component=all" in upgrades[0]
+    assert "--no-hooks" in upgrades[0]
+    assert "--atomic" in upgrades[0]
+    assert "--wait" in upgrades[0]
+    assert "--install" not in upgrades[0]
+    assert call_log.count("helm get hooks a-stock --namespace a-stock") == 3
+    assert call_log.count("kubectl get jobs --namespace a-stock -o json") == 3
+    assert "manual refresh disabled with same frozen image" in completed.stdout
+    for forbidden in (
+        "podman ",
+        "scp ",
+        "curl ",
+        "kubectl exec",
+        "scheduled-refresh",
+        "capabilities promote",
+        "images import",
+    ):
+        assert forbidden not in call_log
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "manual-already-off",
+        "job-active",
+        "job-missing-conditions",
+        "job-nonterminal",
+        "job-failed-count",
+        "job-invalid",
+        "digest",
+        "hook-before",
+        "live-statefulset",
+        "live-pvc",
+        "live-terminating-deployment",
+    ],
+)
+def test_disable_manual_refresh_rejects_unsafe_target_before_helm_write(
+    tmp_path: Path, failure: str
+) -> None:
+    _, script, env_file, manual_off, current_render, desired_render = (
+        _controlled_manual_refresh_packet(tmp_path)
+    )
+    kubeconfig = tmp_path / "manual-refresh-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+    if failure == "digest":
+        env_file.write_text(
+            env_file.read_text(encoding="utf-8").replace(
+                f"FROZEN_IMAGE_DIGEST=sha256:{'d' * 64}",
+                f"FROZEN_IMAGE_DIGEST=sha256:{'a' * 64}",
+            ),
+            encoding="utf-8",
+        )
+    fake_bin, calls = _manual_refresh_target_stubs(
+        tmp_path,
+        current_render=desired_render if failure == "manual-already-off" else current_render,
+        desired_render=desired_render,
+        job_state=failure.removeprefix("job-") if failure.startswith("job-") else "terminal",
+        hook_drift="before" if failure == "hook-before" else None,
+        live_drift=(
+            failure.removeprefix("live-") if failure.startswith("live-") else None
+        ),
+    )
+
+    completed = _run_controlled_manual_refresh_entry(
+        script, env_file, manual_off, fake_bin
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode != 0
+    assert "helm upgrade " not in call_log
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_manual_refresh_rejects_post_write_hook_drift(tmp_path: Path) -> None:
+    _, script, env_file, manual_off, current_render, desired_render = (
+        _controlled_manual_refresh_packet(tmp_path)
+    )
+    kubeconfig = tmp_path / "manual-refresh-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"KUBECONFIG={kubeconfig}\n")
+    fake_bin, calls = _manual_refresh_target_stubs(
+        tmp_path,
+        current_render=current_render,
+        desired_render=desired_render,
+        hook_drift="after",
+    )
+
+    completed = _run_controlled_manual_refresh_entry(
+        script, env_file, manual_off, fake_bin
+    )
+    call_log = calls.read_text(encoding="utf-8")
+
+    assert completed.returncode != 0
+    assert call_log.count("helm upgrade ") == 1
+    assert "stored Helm hooks differ from the reviewed packet" in completed.stderr
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2584,6 +3752,49 @@ def test_controlled_sectors_commands_are_narrow_and_hook_free() -> None:
     assert "scheduled-refresh" not in repair
     assert "kubectl exec" not in repair
     for forbidden in ("podman build", "podman save", "scp ", "images import", "kubectl cp"):
+        assert forbidden not in controlled
+
+
+def test_disable_manual_refresh_command_is_narrow_hook_free_and_fail_closed() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    controlled = source.split(
+        'if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then\n'
+        '  FROZEN_IMAGE=',
+        1,
+    )[1].split(
+        'if [[ "$OPERATION" == repair-sectors-off-release',
+        1,
+    )[0]
+
+    assert 'compare-manual-refresh-only' in controlled
+    assert 'compare-release-exact' in controlled
+    assert 'compare-hooks-exact' in controlled
+    assert controlled.count('helm get hooks "$RELEASE_NAME"') == 3
+    assert 'compare-manual-refresh-live-desired' in controlled
+    assert 'kubectl get deployment,service,cronjob,statefulset,pvc' in controlled
+    assert 'verify_live_database_contract' in controlled
+    assert 'verify_frozen_runtime_image' in controlled
+    assert 'verify_manual_refresh_runtime "$REVIEWED_MANUAL_OFF_RENDER" 0' in controlled
+    assert 'require_all_application_cronjobs_absent' in controlled
+    assert 'require_terminal_namespace_jobs' in controlled
+    assert 'require_no_active_namespace_jobs' not in controlled
+    assert 'require_namespace_jobs_absent' not in controlled
+    assert 'capture_preserved_resource_identities' in controlled
+    assert 'helm upgrade "$RELEASE_NAME"' in controlled
+    assert '--no-hooks' in controlled
+    assert '--atomic' in controlled
+    assert '--wait' in controlled
+    assert '--install' not in controlled
+    for forbidden in (
+        "podman build",
+        "podman save",
+        "scp ",
+        "images import",
+        "kubectl exec",
+        "capabilities promote",
+        "scheduled-refresh",
+        "alembic upgrade",
+    ):
         assert forbidden not in controlled
 
 
@@ -3401,6 +4612,13 @@ def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_
     tmp_path: Path,
 ) -> None:
     repo, script, baseline, _ = _component_fake_repo(tmp_path)
+    reviewed_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
     fake_bin, marker = _write_target_spies(tmp_path)
     env_file = tmp_path / "service.env"
     env_file.write_text(
@@ -3412,6 +4630,7 @@ def test_component_service_deploy_preflight_accepts_remote_image_dir_and_blocks_
                 f"HELM_VALUES_FILE={baseline}",
                 "REMOTE_IMAGE_DIR=/unreachable",
                 "IMAGE_TAG=test-service",
+                f"REVIEWED_GIT_HEAD={reviewed_head}",
                 "TARGET_KUBERNETES_VERSION=1.26.6",
                 "",
             ]

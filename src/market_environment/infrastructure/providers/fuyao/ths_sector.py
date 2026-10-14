@@ -11,7 +11,11 @@ from datetime import date, datetime, time, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ....domain.analysis.ths_sector import build_rankings, catalog_checksum
+from ....domain.analysis.ths_sector import (
+    build_rankings,
+    catalog_checksum,
+    catalog_observation_revision_id,
+)
 from ....domain.models.capability import ProviderCapabilityReport, redact
 from ....domain.models.ths_sector import (
     THS_TAGS,
@@ -88,6 +92,39 @@ class ThsCatalogSnapshotBundle:
     warnings: tuple[str, ...] = ()
     catalog_timestamps: tuple[datetime, ...] = ()
     snapshot_timestamps: tuple[datetime, ...] = ()
+    missing_live_codes: tuple[str, ...] = ()
+    missing_ranking_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        snapshot_codes = [snapshot.thscode for snapshot in self.snapshots]
+        if len(snapshot_codes) != len(set(snapshot_codes)):
+            raise ValueError("THS catalog snapshot bundle contains duplicate identities")
+        expected_live_gaps = tuple(
+            sorted(snapshot.thscode for snapshot in self.snapshots if not snapshot.has_live_values)
+        )
+        expected_ranking_gaps = tuple(
+            sorted(
+                snapshot.thscode
+                for snapshot in self.snapshots
+                if not snapshot.has_ranking_value
+            )
+        )
+        normalized_live_gaps = tuple(
+            sorted(normalize_thscode(code) for code in self.missing_live_codes)
+        )
+        normalized_ranking_gaps = tuple(
+            sorted(normalize_thscode(code) for code in self.missing_ranking_codes)
+        )
+        if len(normalized_live_gaps) != len(set(normalized_live_gaps)):
+            raise ValueError("missing_live_codes must contain unique identities")
+        if len(normalized_ranking_gaps) != len(set(normalized_ranking_gaps)):
+            raise ValueError("missing_ranking_codes must contain unique identities")
+        if normalized_live_gaps != expected_live_gaps:
+            raise ValueError("missing_live_codes do not match snapshot availability")
+        if normalized_ranking_gaps != expected_ranking_gaps:
+            raise ValueError("missing_ranking_codes do not match snapshot availability")
+        object.__setattr__(self, "missing_live_codes", normalized_live_gaps)
+        object.__setattr__(self, "missing_ranking_codes", normalized_ranking_gaps)
 
 
 def _canonical_checksum(value: Any) -> str:
@@ -112,20 +149,35 @@ class FuyaoThsSectorAdapter:
         self,
         client: FuyaoMarketClient,
         *,
-        catalog_revision: str,
         history_revision: str,
+        capability_revision: str | None = None,
         membership_revision: str | None = None,
+        catalog_revision: str | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.client = client
-        self.catalog_revision = str(catalog_revision).strip()
+        configured_capability = str(capability_revision or catalog_revision or "").strip()
+        legacy_catalog_revision = str(catalog_revision or "").strip()
+        if (
+            capability_revision is not None
+            and legacy_catalog_revision
+            and configured_capability != legacy_catalog_revision
+        ):
+            raise ValueError("capability_revision and legacy catalog_revision disagree")
+        self.capability_revision = configured_capability
         self.history_revision = str(history_revision).strip()
         self.membership_revision = str(
-            membership_revision or catalog_revision
+            membership_revision or configured_capability
         ).strip()
-        if not self.catalog_revision or not self.history_revision or not self.membership_revision:
-            raise ValueError("catalog, membership and history revisions are required")
+        if not self.capability_revision or not self.history_revision or not self.membership_revision:
+            raise ValueError("capability, membership and history revisions are required")
         self._now = now or (lambda: datetime.now(timezone.utc))
+
+    @property
+    def catalog_revision(self) -> str:
+        """Backward-compatible capability alias; never a catalog observation ID."""
+
+        return self.capability_revision
 
     @staticmethod
     def _rows(value: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -170,7 +222,11 @@ class FuyaoThsSectorAdapter:
                 except ValueError:
                     continue
         timestamp = cls._first(value, "date_ms", "dateMs", "timestamp")
-        return cls._timestamp(timestamp).date() if timestamp is not None else None
+        return (
+            cls._timestamp(timestamp).astimezone(SHANGHAI_ZONE).date()
+            if timestamp is not None
+            else None
+        )
 
     @staticmethod
     def _timestamp(value: Any) -> datetime:
@@ -200,7 +256,7 @@ class FuyaoThsSectorAdapter:
     ) -> ThsCatalogSnapshotBundle:
         if set(catalogs) != set(THS_TAGS):
             raise FuyaoMarketContractError("Fuyao THS catalog requires exactly four tags")
-        relations: list[ThsCatalogRelation] = []
+        catalog_rows: list[tuple[str, str, str]] = []
         provider_times: list[datetime] = []
         tag_counts: dict[str, int] = {}
         for tag in THS_TAGS:
@@ -224,12 +280,40 @@ class FuyaoThsSectorAdapter:
                         f"Fuyao THS catalog {tag} contains duplicate identity {code}"
                     )
                 seen[code] = name
-                relations.append(ThsCatalogRelation(self.catalog_revision, tag, code, name))
+                catalog_rows.append((tag, code, name))
             if not seen:
                 raise FuyaoMarketContractError(f"Fuyao THS catalog {tag} is empty")
             tag_counts[tag] = len(seen)
 
-        snapshot_rows: dict[str, Mapping[str, Any]] = {}
+        names_by_code: dict[str, set[str]] = {}
+        for _tag, code, name in catalog_rows:
+            names_by_code.setdefault(code, set()).add(name)
+        conflicting = {code: names for code, names in names_by_code.items() if len(names) != 1}
+        if conflicting:
+            raise FuyaoMarketContractError(
+                f"Fuyao THS cross-tag name conflict: {sorted(conflicting)}"
+            )
+
+        # Catalog identity is finalized from all four complete catalogs before
+        # daily snapshot values are inspected.  The temporary revision is not
+        # exposed and is deliberately excluded from the canonical checksum.
+        checksum_inputs = tuple(
+            ThsCatalogRelation("catalog-checksum-input", tag, code, name)
+            for tag, code, name in catalog_rows
+        )
+        checksum = catalog_checksum(checksum_inputs)
+        observation_revision = catalog_observation_revision_id(
+            provider="fuyao",
+            capability_revision=self.capability_revision,
+            as_of=as_of,
+            checksum=checksum,
+        )
+        relations = tuple(
+            ThsCatalogRelation(observation_revision, tag, code, name)
+            for tag, code, name in catalog_rows
+        )
+
+        snapshot_rows: dict[str, tuple[Mapping[str, Any], datetime]] = {}
         snapshot_times: list[datetime] = []
         for batch in snapshot_batches:
             timestamp = self._first(batch, "timestamp", "provider_timestamp", "providerTimestamp")
@@ -245,41 +329,21 @@ class FuyaoThsSectorAdapter:
                     raise FuyaoMarketContractError(
                         f"Fuyao THS snapshot contains duplicate identity {code}"
                     )
-                snapshot_rows[code] = row
-        # Identify snapshot rows for which the provider dropped every live market
-        # field (e.g. suspended / delisted / newly-listed `thscode`s whose day
-        # remains empty). Those rows would otherwise fail ThsSnapshotFact validation
-        # and abort the whole bundle, so they are demoted to a row-level warning and
-        # their catalog relations are dropped to keep the bundle invariant
-        # `set(snapshot_rows) == set(relations.thscode) == expected_codes`.
-        empty_market_codes: set[str] = set()
-        market_value_aliases = (
-            ("open", "open_price", "o"),
-            ("high", "high_price", "h"),
-            ("low", "low_price", "l"),
-            ("close", "close_price", "c", "last_price"),
-            ("volume", "vol"),
-            ("turnover", "amount", "amt", "f6"),
-        )
-        for code, row in snapshot_rows.items():
-            if all(
-                self._number(row, *aliases) is None
-                for aliases in market_value_aliases
-            ):
-                empty_market_codes.add(code)
-        if empty_market_codes:
-            snapshot_rows = {
-                code: row for code, row in snapshot_rows.items()
-                if code not in empty_market_codes
-            }
-            relations = tuple(
-                relation for relation in relations
-                if relation.thscode not in empty_market_codes
-            )
-            tag_counts = {
-                tag: sum(1 for relation in relations if relation.tag == tag)
-                for tag in THS_TAGS
-            }
+                explicit_row_date = self._first(
+                    row,
+                    "date",
+                    "trade_date",
+                    "tradeDate",
+                    "datetime",
+                    "date_ms",
+                    "dateMs",
+                    "timestamp",
+                )
+                if explicit_row_date is not None and self._date(row) != as_of:
+                    raise FuyaoMarketContractError(
+                        f"Fuyao THS snapshot row {code} date mismatch"
+                    )
+                snapshot_rows[code] = (row, provider_time)
         expected_codes = {relation.thscode for relation in relations}
         if set(snapshot_rows) != expected_codes:
             missing = sorted(expected_codes - set(snapshot_rows))
@@ -287,43 +351,40 @@ class FuyaoThsSectorAdapter:
             raise FuyaoMarketContractError(
                 f"Fuyao THS snapshot coverage mismatch; missing={missing}, extra={extra}"
             )
-        names_by_code: dict[str, set[str]] = {}
-        for relation in relations:
-            names_by_code.setdefault(relation.thscode, set()).add(relation.name)
-        conflicting = {code: names for code, names in names_by_code.items() if len(names) != 1}
-        if conflicting:
-            raise FuyaoMarketContractError(
-                f"Fuyao THS cross-tag name conflict: {sorted(conflicting)}"
-            )
 
         snapshots: list[ThsSnapshotFact] = []
-        missing_change_pct: list[str] = []
-        snapshot_time = max(snapshot_times)
+        missing_live_codes: list[str] = []
+        missing_ranking_codes: list[str] = []
         for code in sorted(snapshot_rows):
-            row = snapshot_rows[code]
-            change_pct = self._number(row, "price_change_ratio_pct", "change_pct", "changePct", "f3")
-            if change_pct is None:
-                # Provider gap: the snapshot row omits every alias for the daily
-                missing_change_pct.append(code)
-            snapshots.append(
-                ThsSnapshotFact(
-                    thscode=code,
-                    name=next(iter(names_by_code[code])),
-                    as_of=as_of,
-                    provider_timestamp=snapshot_time,
-                    change_pct=change_pct,
-                    open=self._number(row, "open", "open_price", "o"),
-                    high=self._number(row, "high", "high_price", "h"),
-                    low=self._number(row, "low", "low_price", "l"),
-                    close=self._number(row, "close", "close_price", "c", "last_price"),
-                    volume=self._number(row, "volume", "vol"),
-                    turnover=self._number(row, "turnover", "amount", "amt", "f6"),
+            row, row_provider_time = snapshot_rows[code]
+            observed_name = self._text(row, "name", "index_name", "industry_name")
+            expected_name = next(iter(names_by_code[code]))
+            if observed_name is not None and observed_name != expected_name:
+                raise FuyaoMarketContractError(
+                    f"Fuyao THS catalog/snapshot name mismatch for {code}"
                 )
+            change_pct = self._number(row, "price_change_ratio_pct", "change_pct", "changePct", "f3")
+            snapshot = ThsSnapshotFact(
+                thscode=code,
+                name=expected_name,
+                as_of=as_of,
+                provider_timestamp=row_provider_time,
+                change_pct=change_pct,
+                open=self._number(row, "open", "open_price", "o"),
+                high=self._number(row, "high", "high_price", "h"),
+                low=self._number(row, "low", "low_price", "l"),
+                close=self._number(row, "close", "close_price", "c", "last_price"),
+                volume=self._number(row, "volume", "vol"),
+                turnover=self._number(row, "turnover", "amount", "amt", "f6"),
             )
-        checksum = catalog_checksum(relations)
+            snapshots.append(snapshot)
+            if not snapshot.has_live_values:
+                missing_live_codes.append(code)
+            if not snapshot.has_ranking_value:
+                missing_ranking_codes.append(code)
         revision = ThsCatalogRevision(
-            revision_id=self.catalog_revision,
-            capability_revision=self.catalog_revision,
+            revision_id=observation_revision,
+            capability_revision=self.capability_revision,
             provider_timestamp=max((*provider_times, *snapshot_times)),
             fetched_at=fetched_at or self._now(),
             tag_counts=tag_counts,
@@ -332,14 +393,14 @@ class FuyaoThsSectorAdapter:
         rankings = build_rankings(
             relations,
             snapshots,
-            catalog_revision=self.catalog_revision,
+            catalog_revision=observation_revision,
             as_of=as_of,
         )
         warnings = (
             *tuple(
                 f"{code} snapshot row has no live market values for {as_of.isoformat()}; "
-                "dropped from snapshot and ranking for this revision"
-                for code in sorted(empty_market_codes)
+                "catalog and ranking relation retained without a daily bar"
+                for code in missing_live_codes
             ),
             *tuple(
                 f"{snapshot.thscode} volume is unavailable"
@@ -348,17 +409,19 @@ class FuyaoThsSectorAdapter:
             ),
             *tuple(
                 f"{thscode} changePct missing from provider snapshot"
-                for thscode in missing_change_pct
+                for thscode in missing_ranking_codes
             ),
         )
         return ThsCatalogSnapshotBundle(
-            revision,
-            tuple(relations),
-            tuple(snapshots),
-            rankings,
-            warnings,
-            tuple(provider_times),
-            tuple(snapshot_times),
+            revision=revision,
+            relations=relations,
+            snapshots=tuple(snapshots),
+            rankings=rankings,
+            warnings=warnings,
+            catalog_timestamps=tuple(provider_times),
+            snapshot_timestamps=tuple(snapshot_times),
+            missing_live_codes=tuple(missing_live_codes),
+            missing_ranking_codes=tuple(missing_ranking_codes),
         )
 
     def fetch_catalog_snapshot(

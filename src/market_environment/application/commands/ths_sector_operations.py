@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from ...domain.analysis.ths_sector import catalog_checksum, catalog_observation_revision_id
 from ...domain.models.ths_sector import (
     ThsBackfillCheckpoint,
     ThsBackfillRun,
@@ -310,7 +311,15 @@ class ThsCatalogSyncService:
                 )
             if requests_used > request.request_budget:
                 raise ThsOperationGateError("catalog sync exhausted its request budget")
-            bars = tuple(self._snapshot_bar(item, bundle.revision.capability_revision) for item in bundle.snapshots)
+            missing_live_codes, missing_ranking_codes = self._validate_bundle(
+                bundle,
+                request.as_of,
+            )
+            bars = tuple(
+                self._snapshot_bar(item, bundle.revision.revision_id)
+                for item in bundle.snapshots
+                if self._has_live_values(item)
+            )
             with self._uow_factory() as unit_of_work:
                 repository = unit_of_work.ths_sectors
                 repository.put_catalog_revision(bundle.revision, bundle.relations)
@@ -323,7 +332,14 @@ class ThsCatalogSyncService:
             membership_codes = tuple(
                 sorted(
                     {
-                        *(row.thscode for row in bundle.rankings if row.rank <= 10),
+                        *(
+                            row.thscode
+                            for row in bundle.rankings
+                            if row.rank <= 10
+                            and row.change_pct is not None
+                            and getattr(row, "quality", "ok")
+                            not in {"insufficient", "missing", "failed"}
+                        ),
                         *request.membership_thscodes,
                     }
                 )
@@ -389,17 +405,24 @@ class ThsCatalogSyncService:
                         "status": "failed",
                         "warning": str(exc),
                     }
+            value_gaps = bool(missing_live_codes or missing_ranking_codes)
             status = (
                 "success"
-                if not membership_failures and not membership_conflicts
+                if not membership_failures and not membership_conflicts and not value_gaps
                 else "partial"
             )
-            warning = None
-            if status == "partial":
-                warning = (
+            warning_parts: list[str] = []
+            if membership_failures or membership_conflicts:
+                warning_parts.append(
                     f"{membership_failures} membership code(s) failed; "
                     f"{membership_conflicts} conflict(s) retained"
                 )
+            if value_gaps:
+                warning_parts.append(
+                    f"{len(missing_live_codes)} live-value gap(s); "
+                    f"{len(missing_ranking_codes)} ranking-value gap(s)"
+                )
+            warning = "; ".join(warning_parts) or None
             completed = replace(
                 operation,
                 status=status,
@@ -412,9 +435,14 @@ class ThsCatalogSyncService:
                 progress={
                     "tagsCompleted": 4,
                     "catalogRows": len(bundle.relations),
+                    "expectedCodes": len({row.thscode for row in bundle.relations}),
+                    "barRows": len(bars),
+                    "missingLiveCodes": list(missing_live_codes),
+                    "missingRankingCodes": list(missing_ranking_codes),
                     "membershipCodes": membership_results,
                 },
                 result={
+                    "catalogRevisionId": bundle.revision.revision_id,
                     "catalogRevision": bundle.revision.revision_id,
                     "rankingRows": len(bundle.rankings),
                     "barRows": len(bars),
@@ -444,6 +472,98 @@ class ThsCatalogSyncService:
         with self._uow_factory() as unit_of_work:
             unit_of_work.ths_sectors.put_operation(operation)
             unit_of_work.commit()
+
+    @staticmethod
+    def _has_live_values(snapshot: Any) -> bool:
+        declared = getattr(snapshot, "has_live_values", None)
+        if declared is not None:
+            return bool(declared)
+        return any(
+            getattr(snapshot, name) is not None
+            for name in ("open", "high", "low", "close", "volume", "turnover")
+        )
+
+    @classmethod
+    def _validate_bundle(
+        cls,
+        bundle: Any,
+        as_of: date,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        revision_id = bundle.revision.revision_id
+        if revision_id == bundle.revision.capability_revision:
+            raise ValueError(
+                "catalog sync requires a date-and-content catalog observation revision"
+            )
+        relations = tuple(bundle.relations)
+        expected_checksum = catalog_checksum(relations)
+        if bundle.revision.checksum != expected_checksum:
+            raise ValueError("catalog sync catalog checksum does not match relations")
+        expected_revision = catalog_observation_revision_id(
+            provider=bundle.revision.source,
+            capability_revision=bundle.revision.capability_revision,
+            as_of=as_of,
+            checksum=expected_checksum,
+        )
+        if revision_id != expected_revision:
+            raise ValueError(
+                "catalog sync catalog revision does not match date-and-content identity"
+            )
+        snapshots = tuple(bundle.snapshots)
+        rankings = tuple(bundle.rankings)
+        relation_keys = [(row.tag, row.thscode) for row in relations]
+        ranking_keys = [(row.tag, row.thscode) for row in rankings]
+        if (
+            len(relation_keys) != len(set(relation_keys))
+            or len(ranking_keys) != len(set(ranking_keys))
+            or set(relation_keys) != set(ranking_keys)
+        ):
+            raise ValueError("catalog sync rankings do not cover complete catalog relations")
+        if any(row.revision_id != revision_id for row in relations):
+            raise ValueError("catalog sync relation revision mismatch")
+        if any(
+            row.catalog_revision != revision_id or row.as_of != as_of
+            for row in rankings
+        ):
+            raise ValueError("catalog sync ranking revision/date mismatch")
+        expected_codes = {row.thscode for row in relations}
+        observed_codes = [row.thscode for row in snapshots]
+        if len(observed_codes) != len(set(observed_codes)) or set(observed_codes) != expected_codes:
+            raise ValueError("catalog sync snapshot identities do not cover the catalog")
+        if any(row.as_of != as_of for row in snapshots):
+            raise ValueError("catalog sync snapshot date mismatch")
+        computed_live = {
+            row.thscode for row in snapshots if not cls._has_live_values(row)
+        }
+        computed_ranking = {
+            row.thscode for row in snapshots if row.change_pct is None
+        }
+
+        def declared(name: str, computed: set[str]) -> tuple[str, ...]:
+            value = getattr(bundle, name, None)
+            if value is None:
+                return tuple(sorted(computed))
+            normalized = tuple(str(code).strip().upper() for code in value)
+            if len(normalized) != len(set(normalized)) or set(normalized) != computed:
+                raise ValueError(f"catalog sync {name} do not match snapshot availability")
+            return tuple(sorted(normalized))
+
+        missing_live_codes = declared("missing_live_codes", computed_live)
+        missing_ranking_codes = declared("missing_ranking_codes", computed_ranking)
+        ranking_missing = {
+            row.thscode for row in rankings if row.change_pct is None
+        }
+        if ranking_missing != set(missing_ranking_codes):
+            raise ValueError(
+                "catalog sync missing_ranking_codes do not match ranking rows"
+            )
+        bar_codes = {
+            row.thscode for row in snapshots if cls._has_live_values(row)
+        }
+        if bar_codes & set(missing_live_codes) or bar_codes | set(
+            missing_live_codes
+        ) != expected_codes:
+            raise ValueError("catalog sync live-value coverage does not reconcile")
+        return missing_live_codes, missing_ranking_codes
 
     @staticmethod
     def _snapshot_bar(snapshot: Any, source_revision: str) -> ThsSectorBar:

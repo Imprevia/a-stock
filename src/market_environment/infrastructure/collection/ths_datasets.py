@@ -46,7 +46,9 @@ from ...domain.models.ths_sector import (
     ThsRankingRow,
     ThsSectorBar,
     ThsSectorBreadth,
+    normalize_thscode,
 )
+from ...application.ths_diagnostics import ThsBlockedBy, ThsDiagnostic, encode_ths_diagnostic
 from .committers import StandardSnapshotCommitter
 
 
@@ -69,6 +71,18 @@ def _canonical_checksum(value: Any) -> str:
 
 def _deduplicated(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value) for value in values if str(value).strip()))
+
+
+def _bounded_code_samples(values: Iterable[str], *, limit: int = 20) -> list[str]:
+    """Return deterministic, bounded THS code samples for quality metadata.
+
+    Candidate payloads keep the complete gap sets for reconciliation, while
+    the quality object is surfaced through multiple API layers and therefore
+    must never grow with the catalog size.  Sorting also keeps snapshots and
+    tests deterministic when the source values come from a set.
+    """
+
+    return sorted({str(value) for value in values if str(value).strip()})[:limit]
 
 
 def _quality(
@@ -165,13 +179,96 @@ def _candidate(
     )
 
 
+def _candidate_diagnostic(candidate: CollectionCandidate) -> str | None:
+    if candidate.status == "ok":
+        return None
+    payload = candidate.payload
+    missing_live = tuple(str(code) for code in payload.get("missingLiveCodes") or ())
+    missing_ranking = tuple(
+        str(code) for code in payload.get("missingRankingCodes") or ()
+    )
+    coverage = payload.get("coverage")
+    coverage = coverage if isinstance(coverage, Mapping) else {}
+    catalog_revision = _catalog_revision_id(payload)
+    if candidate.status == "insufficient":
+        blocked = (
+            ThsBlockedBy(
+                dataset="industry-ranking",
+                status="insufficient",
+                reason_code="THS_DEPENDENCY_INSUFFICIENT",
+                exact_date=candidate.identity.as_of,
+                catalog_revision_id=catalog_revision,
+            ),
+        )
+        return encode_ths_diagnostic(
+            ThsDiagnostic(
+                reason_code="THS_DEPENDENCY_INSUFFICIENT",
+                message="THS breadth has insufficient rankable candidates",
+                failure_stage="breadth-selection",
+                exact_date=candidate.identity.as_of,
+                retryable=True,
+                catalog_revision_id=catalog_revision,
+                expected_count=coverage.get("expectedCodes"),
+                usable_count=coverage.get("barCodes"),
+                blocked_by=blocked,
+            )
+        )
+    if not missing_live and not missing_ranking and candidate.identity.dataset == "sector-breadth":
+        return encode_ths_diagnostic(
+            ThsDiagnostic(
+                reason_code="THS_DEPENDENCY_INSUFFICIENT",
+                message="THS breadth completed with incomplete local prerequisites",
+                failure_stage="breadth-materialization",
+                exact_date=candidate.identity.as_of,
+                retryable=True,
+                catalog_revision_id=catalog_revision,
+                blocked_by=(
+                    ThsBlockedBy(
+                        dataset="sector-membership",
+                        status="partial",
+                        exact_date=candidate.identity.as_of,
+                        catalog_revision_id=catalog_revision,
+                    ),
+                ),
+            )
+        )
+    catalog = payload.get("catalog")
+    capability_revision = (
+        str(catalog.get("capabilityRevision"))
+        if isinstance(catalog, Mapping) and catalog.get("capabilityRevision") is not None
+        else None
+    )
+    return encode_ths_diagnostic(
+        ThsDiagnostic(
+            reason_code="THS_LIVE_VALUES_MISSING",
+            message="THS evidence is usable with declared daily value gaps",
+            failure_stage="market-value-classification",
+            exact_date=candidate.identity.as_of,
+            retryable=True,
+            capability_revision=capability_revision,
+            catalog_revision_id=catalog_revision,
+            expected_count=coverage.get("expectedCodes"),
+            observed_count=coverage.get("observedCodes"),
+            usable_count=coverage.get("barCodes"),
+            rankable_count=coverage.get("rankableCodes"),
+            bar_count=coverage.get("barCodes"),
+            missing_live_count=len(missing_live),
+            missing_live_codes=missing_live,
+            missing_ranking_count=len(missing_ranking),
+            missing_ranking_codes=missing_ranking,
+        )
+    )
+
+
 def _outcome(candidate: CollectionCandidate) -> CollectionOutcome:
     state = (
         CollectionTaskState.SUCCESS
         if candidate.status == "ok"
         else CollectionTaskState.PARTIAL
     )
-    warning = "; ".join(candidate.warnings) if candidate.warnings else None
+    warning = _candidate_diagnostic(candidate) or (
+        "; ".join(candidate.warnings) if candidate.warnings else None
+    )
     return CollectionOutcome(candidate.identity, state, candidate=candidate, warning=warning)
 
 
@@ -180,6 +277,10 @@ def _failure(
     message: str,
     *,
     category: AcquisitionFailureCategory = AcquisitionFailureCategory.INSUFFICIENT,
+    reason_code: str | None = None,
+    failure_stage: str = "dependency-validation",
+    retryable: bool = True,
+    catalog_revision_id: str | None = None,
 ) -> CollectionOutcome:
     failure = AcquisitionFailure(
         category=category,
@@ -187,10 +288,27 @@ def _failure(
         requested_as_of=identity.as_of,
         source=SOURCE,
     )
+    selected_reason = reason_code
+    if selected_reason is None:
+        selected_reason = (
+            "THS_DAILY_SNAPSHOT_INSUFFICIENT"
+            if identity.dataset == "industry-ranking"
+            else "THS_DEPENDENCY_INSUFFICIENT"
+        )
+    warning = encode_ths_diagnostic(
+        ThsDiagnostic(
+            reason_code=selected_reason,  # type: ignore[arg-type]
+            message=message,
+            failure_stage=failure_stage,
+            exact_date=identity.as_of,
+            retryable=retryable,
+            catalog_revision_id=catalog_revision_id,
+        )
+    )
     return CollectionOutcome(
         identity,
         CollectionTaskState.FAILED_MISSING,
-        warning=message,
+        warning=warning,
         failure=failure,
     )
 
@@ -213,6 +331,8 @@ def _decoded_ranking(row: Mapping[str, Any]) -> ThsRankingRow:
         ),
         catalog_revision=str(row["catalogRevision"]),
         as_of=_row_date(row["asOf"]),
+        quality=str(row.get("quality") or "ok"),
+        warnings=tuple(str(value) for value in row.get("warnings") or ()),
     )
 
 
@@ -258,6 +378,34 @@ def _rows(value: Any, field_name: str) -> tuple[Mapping[str, Any], ...]:
     return tuple(_mapping(item, field_name) for item in value)
 
 
+def _catalog_revision_id(payload: Mapping[str, Any]) -> str | None:
+    value = payload.get("catalogRevisionId") or payload.get("catalogRevision")
+    if value is None:
+        catalog = payload.get("catalog")
+        if isinstance(catalog, Mapping):
+            value = catalog.get("revision")
+    normalized = str(value).strip() if value is not None else ""
+    return normalized or None
+
+
+def _accepted_ranking_snapshot(
+    unit_of_work: MarketEnvironmentUnitOfWork,
+    *,
+    as_of: date,
+    catalog_revision: str,
+) -> CollectionCandidate | None:
+    snapshot = unit_of_work.snapshots.get(DatasetDate("industry-ranking", as_of))
+    if snapshot is None:
+        return None
+    if snapshot.actual_as_of not in (None, as_of):
+        raise ValueError("industry-ranking prerequisite date mismatch")
+    if snapshot.status not in {"ok", "partial", "degraded"}:
+        raise ValueError("industry-ranking prerequisite is insufficient")
+    if _catalog_revision_id(snapshot.payload) != catalog_revision:
+        raise ValueError("industry-ranking prerequisite catalog revision mismatch")
+    return snapshot
+
+
 def _snapshot_bar(snapshot: Any, *, source_revision: str, fetched_at: datetime) -> ThsSectorBar:
     values = {
         name: getattr(snapshot, name)
@@ -285,6 +433,25 @@ def _snapshot_bar(snapshot: Any, *, source_revision: str, fetched_at: datetime) 
     )
 
 
+def _has_live_values(snapshot: Any) -> bool:
+    declared = getattr(snapshot, "has_live_values", None)
+    if declared is not None:
+        return bool(declared)
+    return any(
+        getattr(snapshot, field_name) is not None
+        for field_name in ("open", "high", "low", "close", "volume", "turnover")
+    )
+
+
+def _declared_codes(value: Any, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be an array")
+    normalized = tuple(normalize_thscode(str(item)) for item in value)
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{field_name} contains duplicate THS codes")
+    return normalized
+
+
 def _ranking_payload(row: ThsRankingRow) -> dict[str, Any]:
     return {
         "tag": row.tag,
@@ -296,6 +463,8 @@ def _ranking_payload(row: ThsRankingRow) -> dict[str, Any]:
         "turnover": row.turnover,
         "catalogRevision": row.catalog_revision,
         "asOf": row.as_of.isoformat(),
+        "quality": row.quality,
+        "warnings": list(row.warnings),
     }
 
 
@@ -340,6 +509,10 @@ class ThsIndustryRankingCollector:
             relations = tuple(bundle.relations)
             snapshots = tuple(bundle.snapshots)
             rankings = tuple(bundle.rankings)
+            if revision.revision_id == revision.capability_revision:
+                raise ValueError(
+                    "ranking bundle uses capability revision as catalog observation identity"
+                )
             if set(revision.tag_counts) != set(THS_TAGS):
                 raise ValueError("ranking bundle does not contain all four THS tags")
             if any(row.as_of != identity.as_of for row in rankings):
@@ -347,13 +520,43 @@ class ThsIndustryRankingCollector:
             if len(rankings) != len(relations):
                 raise ValueError("ranking bundle does not cover every catalog relation")
 
+            expected_codes = {row.thscode for row in relations}
+            observed_codes = [row.thscode for row in snapshots]
+            if len(observed_codes) != len(set(observed_codes)):
+                raise ValueError("ranking bundle contains duplicate snapshot identities")
+            if set(observed_codes) != expected_codes:
+                raise ValueError("ranking bundle snapshot identities do not cover the catalog")
+            computed_missing_live = {
+                snapshot.thscode for snapshot in snapshots if not _has_live_values(snapshot)
+            }
+            computed_missing_ranking = {
+                snapshot.thscode for snapshot in snapshots if snapshot.change_pct is None
+            }
+            raw_missing_live = getattr(bundle, "missing_live_codes", None)
+            raw_missing_ranking = getattr(bundle, "missing_ranking_codes", None)
+            missing_live_codes = (
+                tuple(sorted(computed_missing_live))
+                if raw_missing_live is None
+                else _declared_codes(raw_missing_live, "missingLiveCodes")
+            )
+            missing_ranking_codes = (
+                tuple(sorted(computed_missing_ranking))
+                if raw_missing_ranking is None
+                else _declared_codes(raw_missing_ranking, "missingRankingCodes")
+            )
+            if set(missing_live_codes) != computed_missing_live:
+                raise ValueError("ranking bundle missingLiveCodes do not match observations")
+            if set(missing_ranking_codes) != computed_missing_ranking:
+                raise ValueError("ranking bundle missingRankingCodes do not match observations")
+
             bars = tuple(
                 _snapshot_bar(
                     snapshot,
-                    source_revision=revision.capability_revision,
+                    source_revision=revision.revision_id,
                     fetched_at=revision.fetched_at,
                 )
                 for snapshot in snapshots
+                if _has_live_values(snapshot)
             )
             warnings = _deduplicated(
                 (
@@ -361,9 +564,7 @@ class ThsIndustryRankingCollector:
                     *(warning for bar in bars for warning in bar.warnings),
                 )
             )
-            ranking_change_pct_missing = tuple(
-                row.thscode for row in rankings if row.change_pct is None
-            )
+            ranking_change_pct_missing = missing_ranking_codes
             if ranking_change_pct_missing:
                 warnings = _deduplicated(
                     (
@@ -374,7 +575,11 @@ class ThsIndustryRankingCollector:
                         ),
                     )
                 )
-            status = "partial" if warnings else "ok"
+            status = (
+                "partial"
+                if warnings or missing_live_codes or missing_ranking_codes
+                else "ok"
+            )
             missing_market_fields = tuple(
                 field_name
                 for field_name in ("open", "high", "low", "close", "volume", "turnover")
@@ -392,6 +597,7 @@ class ThsIndustryRankingCollector:
                 source_revision=revision.capability_revision,
                 fetched_at=revision.fetched_at,
                 extra_payload={
+                    "catalogRevisionId": revision.revision_id,
                     "catalogRevision": revision.revision_id,
                     "catalog": {
                         "revision": revision.revision_id,
@@ -412,6 +618,23 @@ class ThsIndustryRankingCollector:
                         ],
                     },
                     "marketRows": [_bar_payload(bar) for bar in bars],
+                    "missingLiveCodes": list(missing_live_codes),
+                    "missingRankingCodes": list(missing_ranking_codes),
+                    "coverage": {
+                        "relationCount": len(relations),
+                        "expectedCount": len(expected_codes),
+                        "observedCount": len(snapshots),
+                        "rankableCount": len(expected_codes) - len(missing_ranking_codes),
+                        "barCount": len(bars),
+                        "missingLiveCount": len(missing_live_codes),
+                        "missingRankingCount": len(missing_ranking_codes),
+                        "expectedCodes": len(expected_codes),
+                        "observedCodes": len(snapshots),
+                        "rankableCodes": len(expected_codes) - len(missing_ranking_codes),
+                        "barCodes": len(bars),
+                        "missingLiveCodes": len(missing_live_codes),
+                        "missingRankingCodes": len(missing_ranking_codes),
+                    },
                 },
                 available_fields=(
                     "changePct",
@@ -430,17 +653,34 @@ class ThsIndustryRankingCollector:
                 ),
                 missing_fields=missing_market_fields,
                 quality_extra={
+                    "catalogRevisionId": revision.revision_id,
                     "catalogRevision": revision.revision_id,
                     "tagCounts": dict(revision.tag_counts),
-                    "uniqueCodes": len(bars),
+                    # Canonical public coverage names.  Keep the historical
+                    # *Codes aliases below until all stored snapshots have
+                    # been re-materialized.
+                    "expectedCount": len(expected_codes),
+                    "observedCount": len(snapshots),
+                    "rankableCount": len(expected_codes) - len(missing_ranking_codes),
+                    "barCount": len(bars),
+                    "missingLiveCount": len(missing_live_codes),
+                    "missingRankingCount": len(missing_ranking_codes),
+                    "missingLiveCodes": _bounded_code_samples(missing_live_codes),
+                    "missingRankingCodes": _bounded_code_samples(missing_ranking_codes),
+                    "expectedCodes": len(expected_codes),
+                    "observedCodes": len(snapshots),
+                    "rankableCodes": len(expected_codes) - len(missing_ranking_codes),
+                    "barCodes": len(bars),
                 },
             )
             return _outcome(candidate)
         except Exception as exc:
+            del exc
             return _failure(
                 identity,
-                f"industry-ranking bundle rejected: {exc}",
+                "industry-ranking bundle failed catalog or snapshot validation",
                 category=AcquisitionFailureCategory.CONTRACT,
+                failure_stage="catalog-snapshot-validation",
             )
 
 
@@ -461,7 +701,9 @@ class ThsIndustryRankingCommitter:
         if request.outcome.state is CollectionTaskState.FAILED_RETAINED:
             raise ValueError("industry-ranking committer cannot commit retained failures")
 
-        revision, relations, rankings, bars = self._decode(request.candidate)
+        revision, relations, rankings, bars, _missing_live, _missing_ranking = self._decode(
+            request.candidate
+        )
         with self._unit_of_work_factory() as unit_of_work:
             def write(_connection: object) -> CollectionCandidate:
                 repository = unit_of_work.ths_sectors
@@ -502,6 +744,8 @@ class ThsIndustryRankingCommitter:
         tuple[ThsCatalogRelation, ...],
         tuple[ThsRankingRow, ...],
         tuple[ThsSectorBar, ...],
+        tuple[str, ...],
+        tuple[str, ...],
     ]:
         payload = candidate.payload
         catalog = _mapping(payload.get("catalog"), "catalog")
@@ -553,6 +797,14 @@ class ThsIndustryRankingCommitter:
             )
             for row in _rows(payload.get("marketRows"), "marketRows")
         )
+        missing_live_codes = _declared_codes(
+            payload.get("missingLiveCodes"),
+            "missingLiveCodes",
+        )
+        missing_ranking_codes = _declared_codes(
+            payload.get("missingRankingCodes"),
+            "missingRankingCodes",
+        )
         if len(rankings) != len(relations):
             raise ValueError("ranking commit payload does not cover the catalog")
         relation_keys = {(row.tag, row.thscode) for row in relations}
@@ -561,8 +813,27 @@ class ThsIndustryRankingCommitter:
             raise ValueError("ranking commit relation/rank identities do not reconcile")
         expected_codes = {row.thscode for row in relations}
         bar_codes = {row.thscode for row in bars}
-        if len(bar_codes) != len(bars) or bar_codes != expected_codes:
-            raise ValueError("ranking commit daily bars do not cover every unique code")
+        missing_live_set = set(missing_live_codes)
+        if len(bar_codes) != len(bars):
+            raise ValueError("ranking commit daily bars contain duplicate THS codes")
+        if not bar_codes <= expected_codes or not missing_live_set <= expected_codes:
+            raise ValueError("ranking commit live-value evidence references unknown codes")
+        if bar_codes & missing_live_set:
+            raise ValueError("ranking commit bar codes contradict missingLiveCodes")
+        if bar_codes | missing_live_set != expected_codes:
+            raise ValueError("ranking commit bars and missingLiveCodes do not cover the catalog")
+        ranking_values_by_code: dict[str, set[float | None]] = defaultdict(set)
+        for row in rankings:
+            ranking_values_by_code[row.thscode].add(row.change_pct)
+        if any(len(values) != 1 for values in ranking_values_by_code.values()):
+            raise ValueError("ranking commit shared-code ranking values conflict")
+        actual_missing_ranking = {
+            thscode
+            for thscode, values in ranking_values_by_code.items()
+            if values == {None}
+        }
+        if set(missing_ranking_codes) != actual_missing_ranking:
+            raise ValueError("ranking commit missingRankingCodes do not match rankings")
         if any(
             row.catalog_revision != revision.revision_id
             or row.as_of != candidate.identity.as_of
@@ -571,7 +842,28 @@ class ThsIndustryRankingCommitter:
             raise ValueError("ranking commit revision or date mismatch")
         if any(row.trading_date != candidate.identity.as_of for row in bars):
             raise ValueError("ranking commit daily bar date mismatch")
-        return revision, relations, rankings, bars
+        if any(row.source_revision != revision.revision_id for row in bars):
+            raise ValueError("ranking commit daily bar catalog revision mismatch")
+        coverage = _mapping(payload.get("coverage"), "coverage")
+        expected_coverage = {
+            "relationCount": len(relations),
+            "expectedCodes": len(expected_codes),
+            "observedCodes": len(expected_codes),
+            "rankableCodes": len(expected_codes) - len(missing_ranking_codes),
+            "barCodes": len(bars),
+            "missingLiveCodes": len(missing_live_codes),
+            "missingRankingCodes": len(missing_ranking_codes),
+        }
+        if any(int(coverage.get(key, -1)) != value for key, value in expected_coverage.items()):
+            raise ValueError("ranking commit coverage counts do not reconcile")
+        return (
+            revision,
+            relations,
+            rankings,
+            bars,
+            missing_live_codes,
+            missing_ranking_codes,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +901,58 @@ class ThsSectorTurnoverCollector:
                     category=AcquisitionFailureCategory.CONTRACT,
                 )
             catalog_revision = next(iter(revisions))
+            revision = repository.get_catalog_revision(catalog_revision)
+            if revision is None:
+                return _failure(
+                    identity,
+                    "sector-turnover catalog revision is unavailable",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                )
+            try:
+                ranking_snapshot = _accepted_ranking_snapshot(
+                    unit_of_work,
+                    as_of=identity.as_of,
+                    catalog_revision=catalog_revision,
+                )
+            except ValueError as exc:
+                del exc
+                return _failure(
+                    identity,
+                    "sector-turnover prerequisite failed revision or date validation",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                    reason_code="THS_DEPENDENCY_REVISION_MISMATCH",
+                    failure_stage="dependency-validation",
+                    catalog_revision_id=catalog_revision,
+                )
+            if ranking_snapshot is None:
+                return _failure(
+                    identity,
+                    "sector-turnover requires accepted same-day industry-ranking evidence",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                    reason_code="THS_DEPENDENCY_INSUFFICIENT",
+                    failure_stage="dependency-validation",
+                    catalog_revision_id=catalog_revision,
+                )
+            declared_missing_live = (
+                set(
+                    _declared_codes(
+                        ranking_snapshot.payload.get("missingLiveCodes", ()),
+                        "missingLiveCodes",
+                    )
+                )
+                if ranking_snapshot is not None
+                else set()
+            )
+            declared_missing_ranking = (
+                set(
+                    _declared_codes(
+                        ranking_snapshot.payload.get("missingRankingCodes", ()),
+                        "missingRankingCodes",
+                    )
+                )
+                if ranking_snapshot is not None
+                else set()
+            )
             names: dict[str, str] = {}
             tags: dict[str, set[str]] = defaultdict(set)
             for ranking in rankings:
@@ -629,6 +973,7 @@ class ThsSectorTurnoverCollector:
                         thscode,
                         start_date=identity.as_of,
                         end_date=identity.as_of,
+                        source_revision=catalog_revision,
                         offset=0,
                         limit=2,
                     )
@@ -640,6 +985,19 @@ class ThsSectorTurnoverCollector:
                 selected_bars[thscode] = exact[0]
                 warnings.extend(
                     f"{thscode}: {warning}" for warning in exact[0].warnings
+                )
+
+            actual_missing_live = set(names) - set(selected_bars)
+            if actual_missing_live != declared_missing_live:
+                return _failure(
+                    identity,
+                    "sector-turnover stored bars do not reconcile with declared missingLiveCodes",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                )
+            if declared_missing_live:
+                warnings.append(
+                    "same-day live values unavailable for "
+                    f"{len(declared_missing_live)} of {len(names)} THS codes"
                 )
 
         rows = tuple(
@@ -674,7 +1032,25 @@ class ThsSectorTurnoverCollector:
             source_revision=catalog_revision,
             fetched_at=fetched_at,
             state=status,
-            extra_payload={"catalogRevision": catalog_revision},
+            extra_payload={
+                "catalogRevisionId": catalog_revision,
+                "catalogRevision": catalog_revision,
+                "missingLiveCodes": sorted(declared_missing_live),
+                "coverage": {
+                    "expectedCount": len(names),
+                    "observedCount": len(rows),
+                    "rankableCount": len(names) - len(declared_missing_ranking),
+                    "barCount": len(rows),
+                    "missingLiveCount": len(declared_missing_live),
+                    "missingRankingCount": len(declared_missing_ranking),
+                    "expectedCodes": len(names),
+                    "observedCodes": len(rows),
+                    "rankableCodes": len(names) - len(declared_missing_ranking),
+                    "barCodes": len(rows),
+                    "missingLiveCodes": len(declared_missing_live),
+                    "missingRankingCodes": len(declared_missing_ranking),
+                },
+            },
             available_fields=tuple(
                 field_name
                 for field_name in ("open", "high", "low", "close", "volume", "turnover")
@@ -682,9 +1058,20 @@ class ThsSectorTurnoverCollector:
             ),
             missing_fields=missing_fields,
             quality_extra={
+                "catalogRevisionId": catalog_revision,
                 "catalogRevision": catalog_revision,
+                "expectedCount": len(names),
+                "observedCount": len(rows),
+                "rankableCount": len(names) - len(declared_missing_ranking),
+                "barCount": len(rows),
+                "missingLiveCount": len(declared_missing_live),
+                "missingRankingCount": len(declared_missing_ranking),
+                "missingLiveCodes": _bounded_code_samples(declared_missing_live),
+                "missingRankingCodes": _bounded_code_samples(declared_missing_ranking),
                 "expectedCodes": len(names),
-                "storedCodes": len(rows),
+                "observedCodes": len(rows),
+                "rankableCodes": len(names) - len(declared_missing_ranking),
+                "barCodes": len(rows),
             },
             source="local-ths-normalized",
             provider="local-postgresql",
@@ -898,6 +1285,97 @@ class ThsSectorBreadthCollector:
                 )
             catalog_revision = next(iter(revisions))
             try:
+                ranking_snapshot = _accepted_ranking_snapshot(
+                    unit_of_work,
+                    as_of=identity.as_of,
+                    catalog_revision=catalog_revision,
+                )
+            except ValueError as exc:
+                del exc
+                return _failure(
+                    identity,
+                    "sector-breadth prerequisite failed revision or date validation",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                    reason_code="THS_DEPENDENCY_REVISION_MISMATCH",
+                    failure_stage="dependency-validation",
+                    catalog_revision_id=catalog_revision,
+                )
+            if ranking_snapshot is None:
+                return _failure(
+                    identity,
+                    "sector-breadth requires accepted same-day industry-ranking evidence",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                    reason_code="THS_DEPENDENCY_INSUFFICIENT",
+                    failure_stage="dependency-validation",
+                    catalog_revision_id=catalog_revision,
+                )
+            turnover_snapshot = unit_of_work.snapshots.get(
+                DatasetDate("sector-turnover", identity.as_of)
+            )
+            if turnover_snapshot is None:
+                return _failure(
+                    identity,
+                    "sector-breadth requires same-day sector-turnover evidence",
+                )
+            if (
+                turnover_snapshot.actual_as_of not in (None, identity.as_of)
+                or turnover_snapshot.status not in {"ok", "partial", "degraded"}
+            ):
+                return _failure(
+                    identity,
+                    "sector-breadth sector-turnover prerequisite is insufficient",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                )
+            if _catalog_revision_id(turnover_snapshot.payload) != catalog_revision:
+                return _failure(
+                    identity,
+                    "sector-breadth prerequisites use incompatible catalog revisions",
+                    category=AcquisitionFailureCategory.CONTRACT,
+                )
+            rankable_rankings = tuple(
+                row
+                for row in rankings
+                if row.change_pct is not None
+                and row.quality not in {"insufficient", "missing", "failed"}
+            )
+            valid_candidates = {
+                tag: sum(row.tag == tag for row in rankable_rankings)
+                for tag in THS_TAGS
+            }
+            insufficient_tags = {
+                tag: count
+                for tag, count in valid_candidates.items()
+                if count < self.top_per_tag
+            }
+            if insufficient_tags:
+                warnings = tuple(
+                    f"{tag} has {count} rankable candidates; {self.top_per_tag} required"
+                    for tag, count in sorted(insufficient_tags.items())
+                )
+                candidate = _candidate(
+                    identity,
+                    rows=(),
+                    status="insufficient",
+                    warnings=warnings,
+                    source_revision=BREADTH_CALCULATION_REVISION,
+                    fetched_at=self.clock(),
+                    state="insufficient",
+                    extra_payload={
+                        "catalogRevisionId": catalog_revision,
+                        "catalogRevision": catalog_revision,
+                        "validCandidatesByTag": valid_candidates,
+                        "requiredCandidatesPerTag": self.top_per_tag,
+                    },
+                    quality_extra={
+                        "catalogRevision": catalog_revision,
+                        "validCandidatesByTag": valid_candidates,
+                        "requiredCandidatesPerTag": self.top_per_tag,
+                    },
+                    source="local-ths-breadth",
+                    provider="local-postgresql",
+                )
+                return _outcome(candidate)
+            try:
                 user_selected = tuple(
                     dict.fromkeys(
                         (
@@ -907,15 +1385,18 @@ class ThsSectorBreadthCollector:
                     )
                 )
                 selections = select_breadth_codes(
-                    rankings,
+                    rankable_rankings,
                     user_selected,
                     per_tag=self.top_per_tag,
                 )
             except ValueError as exc:
+                del exc
                 return _failure(
                     identity,
-                    f"sector-breadth selection rejected: {exc}",
+                    "sector-breadth selection rejected incompatible ranking evidence",
                     category=AcquisitionFailureCategory.CONTRACT,
+                    failure_stage="breadth-selection",
+                    catalog_revision_id=catalog_revision,
                 )
             facts_by_security = _member_facts_by_security(
                 repository,
@@ -981,9 +1462,21 @@ class ThsSectorBreadthCollector:
 
         statuses = {row.quality for row in breadth_rows}
         warnings = _deduplicated(
-            warning for row in breadth_rows for warning in row.warnings
+            (
+                *(warning for row in breadth_rows for warning in row.warnings),
+                *(
+                    ("industry-ranking prerequisite is partial",)
+                    if ranking_snapshot is not None and ranking_snapshot.status != "ok"
+                    else ()
+                ),
+                *(
+                    ("sector-turnover prerequisite is partial",)
+                    if turnover_snapshot.status != "ok"
+                    else ()
+                ),
+            )
         )
-        if statuses == {"ok"}:
+        if statuses == {"ok"} and not warnings:
             status = "ok"
         elif statuses & {"ok", "partial", "degraded"}:
             status = "partial"
@@ -997,7 +1490,12 @@ class ThsSectorBreadthCollector:
             source_revision=BREADTH_CALCULATION_REVISION,
             fetched_at=self.clock(),
             state=status,
-            extra_payload={"catalogRevision": catalog_revision},
+            extra_payload={
+                "catalogRevisionId": catalog_revision,
+                "catalogRevision": catalog_revision,
+                "validCandidatesByTag": valid_candidates,
+                "requiredCandidatesPerTag": self.top_per_tag,
+            },
             available_fields=(
                 "advanceRatio",
                 "advanceDeclineSpreadRatio",
@@ -1012,6 +1510,8 @@ class ThsSectorBreadthCollector:
             quality_extra={
                 "catalogRevision": catalog_revision,
                 "selectedCodes": len(breadth_rows),
+                "validCandidatesByTag": valid_candidates,
+                "requiredCandidatesPerTag": self.top_per_tag,
                 "limitsAvailable": limits_available,
                 "calculationRevision": BREADTH_CALCULATION_REVISION,
             },
@@ -1168,6 +1668,7 @@ class _ThsDatasetProjector:
                 "asOf": identity.as_of.isoformat(),
                 "rowCount": 0,
                 "state": "missing",
+                "catalogRevisionId": None,
                 "catalogRevision": None,
             }
         rows = candidate.payload.get("rows")
@@ -1179,7 +1680,11 @@ class _ThsDatasetProjector:
             "asOf": identity.as_of.isoformat(),
             "rowCount": len(rows),
             "state": status,
-            "catalogRevision": candidate.payload.get("catalogRevision"),
+            "catalogRevisionId": _catalog_revision_id(candidate.payload),
+            "catalogRevision": _catalog_revision_id(candidate.payload),
+            "coverage": dict(candidate.payload.get("coverage") or {})
+            if isinstance(candidate.payload.get("coverage"), Mapping)
+            else {},
             **self._extra(candidate, rows),
         }
 
@@ -1213,6 +1718,12 @@ class ThsIndustryRankingProjector(_ThsDatasetProjector):
                     if isinstance(row, Mapping) and row.get("thscode")
                 }
             ),
+            "missingLiveCodes": list(
+                candidate.payload.get("missingLiveCodes") or ()
+            ),
+            "missingRankingCodes": list(
+                candidate.payload.get("missingRankingCodes") or ()
+            ),
         }
 
 
@@ -1232,7 +1743,12 @@ class ThsSectorTurnoverProjector(_ThsDatasetProjector):
                 for field_name in ("open", "high", "low", "close", "volume", "turnover")
             ):
                 incomplete += 1
-        return {"incompleteRowCount": incomplete}
+        return {
+            "incompleteRowCount": incomplete,
+            "missingLiveCodes": list(
+                candidate.payload.get("missingLiveCodes") or ()
+            ),
+        }
 
 
 @dataclass(frozen=True, slots=True)

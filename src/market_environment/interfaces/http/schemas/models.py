@@ -82,6 +82,51 @@ SynchronizationConclusionCode = Literal[
     "undetermined-divergence",
     "undetermined-insufficient",
 ]
+ThsReasonCode = Literal[
+    "THS_LIVE_VALUES_MISSING",
+    "THS_DAILY_SNAPSHOT_INSUFFICIENT",
+    "THS_CATALOG_REVISION_COLLISION",
+    "THS_DEPENDENCY_INSUFFICIENT",
+    "THS_DEPENDENCY_REVISION_MISMATCH",
+]
+
+
+class ThsBlockedByDiagnostic(BaseModel):
+    dataset: str
+    status: str
+    reasonCode: ThsReasonCode | None = None
+    exactDate: date | None = None
+    catalogRevisionId: str | None = None
+
+
+class ThsDiagnosticResponse(BaseModel):
+    reasonCode: ThsReasonCode
+    message: str
+    failureStage: str
+    exactDate: date
+    retryable: bool
+    capabilityRevision: str | None = None
+    catalogRevisionId: str | None = None
+    expectedCount: int | None = Field(default=None, ge=0)
+    observedCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("observedCount", "observedCodes"),
+    )
+    usableCount: int | None = Field(default=None, ge=0)
+    rankableCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("rankableCount", "rankableCodes"),
+    )
+    barCount: int | None = Field(default=None, ge=0)
+    missingLiveCount: int | None = Field(default=None, ge=0)
+    missingLiveCodes: list[str] = Field(default_factory=list, max_length=20)
+    missingRankingCount: int | None = Field(default=None, ge=0)
+    missingRankingCodes: list[str] = Field(default_factory=list, max_length=20)
+    existingChecksum: str | None = None
+    observedChecksum: str | None = None
+    blockedBy: list[ThsBlockedByDiagnostic] = Field(default_factory=list, max_length=8)
 
 
 class MovingAverages(BaseModel):
@@ -287,6 +332,44 @@ class EvidenceQuality(BaseModel):
     derived: bool | None = None
     rankingMethod: str | None = None
     sourceRevision: str | None = None
+    catalogRevisionId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "catalogRevisionId",
+            "catalogRevision",
+            "revisionId",
+        ),
+    )
+    expectedCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("expectedCount", "expectedCodes"),
+    )
+    observedCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("observedCount", "observedCodes"),
+    )
+    usableCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("usableCount", "storedCodes"),
+    )
+    rankableCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("rankableCount", "rankableCodes"),
+    )
+    barCount: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("barCount", "barCodes"),
+    )
+    missingLiveCount: int | None = Field(default=None, ge=0)
+    missingLiveCodes: list[str] = Field(default_factory=list)
+    missingRankingCount: int | None = Field(default=None, ge=0)
+    missingRankingCodes: list[str] = Field(default_factory=list)
+    diagnostics: ThsDiagnosticResponse | None = None
     industryMappingRevision: str | None = None
     industryMappingCoverage: float | None = Field(default=None, ge=0, le=1)
     industryMappingCovered: int | None = Field(default=None, ge=0)
@@ -300,6 +383,40 @@ class EvidenceQuality(BaseModel):
     stockUniverseExcludedByReason: dict[str, int] | None = None
     stockUniverseUnclassifiedByReason: dict[str, int] | None = None
     sectorEnrichment: SectorEnrichmentQuality | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def retain_ths_missing_totals_before_sampling(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for codes_name, count_name in (
+            ("missingLiveCodes", "missingLiveCount"),
+            ("missingRankingCodes", "missingRankingCount"),
+        ):
+            codes = normalized.get(codes_name)
+            if count_name not in normalized and isinstance(
+                codes, (list, tuple, set, frozenset)
+            ):
+                normalized[count_name] = len(
+                    {str(item) for item in codes if item is not None}
+                )
+        return normalized
+
+    @field_validator("missingLiveCodes", "missingRankingCodes", mode="before")
+    @classmethod
+    def bound_ths_code_samples(cls, value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return []
+        return sorted({str(item) for item in value if item is not None})[:20]
+
+    @model_validator(mode="after")
+    def infer_ths_missing_counts(self) -> "EvidenceQuality":
+        if self.missingLiveCount is None and self.missingLiveCodes:
+            self.missingLiveCount = len(self.missingLiveCodes)
+        if self.missingRankingCount is None and self.missingRankingCodes:
+            self.missingRankingCount = len(self.missingRankingCodes)
+        return self
 
 
 def _validate_iso_date(value: str | None) -> str | None:
@@ -781,6 +898,35 @@ class ThsDatasetEvidence(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     state: str
     quality: EvidenceQuality
+    catalogRevisionId: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "catalogRevisionId",
+            "catalogRevision",
+            "revisionId",
+        ),
+    )
+    diagnostics: ThsDiagnosticResponse | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_catalog_revision_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        rows: list[Any] = []
+        for raw in normalized.get("rows") or []:
+            if not isinstance(raw, dict):
+                rows.append(raw)
+                continue
+            row = dict(raw)
+            revision = row.get("catalogRevisionId", row.get("catalogRevision"))
+            row.pop("catalogRevision", None)
+            if revision is not None:
+                row["catalogRevisionId"] = revision
+            rows.append(row)
+        normalized["rows"] = rows
+        return normalized
 
 
 class ActiveStock(BaseModel):
@@ -1063,6 +1209,8 @@ class CollectionTaskResponse(BaseModel):
     source: str
     observations: int
     warning: str | None
+    diagnostics: ThsDiagnosticResponse | None = None
+    catalogRevisionId: str | None = None
     # Provider fallback evidence includes both numeric durations and
     # structured source/revision/failure metadata.
     timings: dict[str, Any]
@@ -1095,6 +1243,8 @@ class CollectionAttemptSummary(BaseModel):
     source: str
     observations: int
     warning: str | None
+    diagnostics: ThsDiagnosticResponse | None = None
+    catalogRevisionId: str | None = None
     queuedAt: datetime | None
     startedAt: datetime | None
     completedAt: datetime | None
@@ -1118,6 +1268,7 @@ class DatasetCollectionStatus(BaseModel):
     settled: bool
     refreshWarning: str | None
     quality: dict[str, Any] | None = None
+    catalogRevisionId: str | None = None
     latestAttempt: CollectionAttemptSummary | None
     activeTaskId: str | None
     collectionAllowed: bool
@@ -1167,7 +1318,9 @@ ThsOperationStatus = Literal[
 
 
 class ThsCatalogRevisionResponse(BaseModel):
-    revisionId: str
+    catalogRevisionId: str = Field(
+        validation_alias=AliasChoices("catalogRevisionId", "revisionId")
+    )
     capabilityRevision: str
     providerTimestamp: datetime
     fetchedAt: datetime

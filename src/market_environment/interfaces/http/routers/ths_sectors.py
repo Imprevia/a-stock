@@ -39,7 +39,7 @@ def _catalog_payload(raw: dict) -> dict:
     return {
         "revision": (
             {
-                "revisionId": revision["id"],
+                "catalogRevisionId": revision["id"],
                 "capabilityRevision": revision["capabilityRevision"],
                 "providerTimestamp": revision["providerTimestamp"],
                 "fetchedAt": revision["fetchedAt"],

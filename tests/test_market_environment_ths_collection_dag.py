@@ -7,6 +7,7 @@ import pytest
 
 from src.market_environment.application.collection import DatasetCollectorRegistry
 from src.market_environment.domain.models import DATASET_IDS
+from src.market_environment.application.ths_diagnostics import parse_ths_diagnostic
 from src.market_environment.infrastructure.collection.coordinator import CollectionCoordinator
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
@@ -16,21 +17,30 @@ AS_OF = date(2026, 10, 12)
 AFTER_MARKET = datetime(2026, 10, 12, 15, 20, tzinfo=MARKET_TIME_ZONE)
 
 
-def _payload(dataset: str) -> dict:
-    return {
+def _payload(
+    dataset: str,
+    *,
+    status: str = "ok",
+    catalog_revision: str = "catalog-r1",
+) -> dict:
+    payload = {
         "asOf": AS_OF.isoformat(),
         "rows": [],
-        "state": "ok",
+        "state": status,
         "quality": {
             "dataset": dataset,
             "source": "fixture",
             "provider": "fixture",
-            "status": "ok",
+            "status": status,
             "observations": 1,
             "asOf": AS_OF.isoformat(),
             "warnings": [],
         },
     }
+    if dataset in {"industry-ranking", "sector-turnover", "sector-breadth"}:
+        payload["catalogRevisionId"] = catalog_revision
+        payload["catalogRevision"] = catalog_revision
+    return payload
 
 
 @dataclass
@@ -44,11 +54,23 @@ class RecordingCollector:
         self.calls.append(self.dataset_id)
         if self.dataset_id in self.failing:
             raise RuntimeError(f"{self.dataset_id} failed")
+        catalog_revision = "catalog-r1"
+        if self.dataset_id in {"sector-turnover", "sector-breadth"}:
+            ranking = self.store.get("industry-ranking", task.as_of)
+            if ranking is not None:
+                catalog_revision = str(
+                    ranking.payload.get("catalogRevisionId")
+                    or ranking.payload.get("catalogRevision")
+                    or catalog_revision
+                )
         self.store.put(
             SnapshotRecord(
                 dataset=self.dataset_id,
                 as_of=task.as_of,
-                payload=_payload(self.dataset_id),
+                payload=_payload(
+                    self.dataset_id,
+                    catalog_revision=catalog_revision,
+                ),
                 source="fixture",
                 status="ok",
                 observations=1,
@@ -84,8 +106,8 @@ def _coordinator(tmp_path, *, failing=()):
     ), store, calls
 
 
-def test_sector_breadth_retry_expands_missing_dependencies_in_order(tmp_path) -> None:
-    coordinator, store, calls = _coordinator(tmp_path)
+def test_sector_breadth_blocks_when_turnover_dependency_fails(tmp_path) -> None:
+    coordinator, store, calls = _coordinator(tmp_path, failing={"sector-turnover"})
     result = coordinator.collect(AS_OF, ["sector-breadth"])
 
     assert result.run.requested_datasets == (
@@ -93,9 +115,14 @@ def test_sector_breadth_retry_expands_missing_dependencies_in_order(tmp_path) ->
         "sector-turnover",
         "sector-breadth",
     )
-    assert calls == ["industry-ranking", "sector-turnover", "sector-breadth"]
-    assert all(task.status == "success" for task in result.tasks)
-    assert store.get("sector-breadth", AS_OF) is not None
+    assert calls == ["industry-ranking", "sector-turnover"]
+    statuses = {task.dataset: task.status for task in result.tasks}
+    assert statuses == {
+        "industry-ranking": "success",
+        "sector-turnover": "failed-missing",
+        "sector-breadth": "blocked",
+    }
+    assert store.get("sector-breadth", AS_OF) is None
 
 
 def test_failed_ranking_blocks_dependents_but_not_independent_siblings(tmp_path) -> None:
@@ -132,6 +159,87 @@ def test_breadth_retry_reuses_compatible_local_prerequisites(tmp_path) -> None:
     result = coordinator.collect(AS_OF, ["sector-breadth"])
     assert result.run.requested_datasets == ("sector-breadth",)
     assert calls == ["sector-breadth"]
+
+
+def test_partial_ranking_is_a_usable_turnover_prerequisite(tmp_path) -> None:
+    coordinator, store, calls = _coordinator(tmp_path)
+    store.put(
+        SnapshotRecord(
+            dataset="industry-ranking",
+            as_of=AS_OF,
+            payload=_payload("industry-ranking", status="partial"),
+            source="fixture",
+            status="partial",
+            observations=1,
+            warnings=("one declared live-value gap",),
+            fetched_at=AFTER_MARKET,
+            settled=True,
+        )
+    )
+
+    result = coordinator.collect(AS_OF, ["sector-turnover"])
+
+    assert result.run.requested_datasets == ("sector-turnover",)
+    assert calls == ["sector-turnover"]
+
+
+def test_breadth_retry_refreshes_revision_mismatched_turnover(tmp_path) -> None:
+    coordinator, store, calls = _coordinator(tmp_path)
+    for dataset, revision in (
+        ("industry-ranking", "catalog-r2"),
+        ("sector-turnover", "catalog-r1"),
+    ):
+        store.put(
+            SnapshotRecord(
+                dataset=dataset,
+                as_of=AS_OF,
+                payload=_payload(dataset, catalog_revision=revision),
+                source="fixture",
+                status="ok",
+                observations=1,
+                warnings=(),
+                fetched_at=AFTER_MARKET,
+                settled=True,
+            )
+        )
+
+    result = coordinator.collect(AS_OF, ["sector-breadth"])
+
+    assert result.run.requested_datasets == ("sector-turnover", "sector-breadth")
+    assert calls == ["sector-turnover", "sector-breadth"]
+    assert store.get("sector-turnover", AS_OF).payload["catalogRevisionId"] == "catalog-r2"
+
+
+def test_revision_mismatch_block_is_typed_and_lists_both_upstreams(tmp_path) -> None:
+    coordinator, store, calls = _coordinator(tmp_path, failing={"sector-turnover"})
+    for dataset, revision in (
+        ("industry-ranking", "catalog-r2"),
+        ("sector-turnover", "catalog-r1"),
+    ):
+        store.put(
+            SnapshotRecord(
+                dataset=dataset,
+                as_of=AS_OF,
+                payload=_payload(dataset, catalog_revision=revision),
+                source="fixture",
+                status="ok",
+                observations=1,
+                warnings=(),
+                fetched_at=AFTER_MARKET,
+                settled=True,
+            )
+        )
+    # Force the targeted turnover refresh to fail so the coordinator must emit
+    # a typed block for the incompatible pair rather than silently reusing it.
+    result = coordinator.collect(AS_OF, ["sector-breadth"], allow_historical_latest_only=False)
+    task = next(item for item in result.tasks if item.dataset == "sector-breadth")
+    diagnostic = parse_ths_diagnostic(task.warning)
+    assert diagnostic is not None
+    assert diagnostic.reason_code == "THS_DEPENDENCY_REVISION_MISMATCH"
+    assert {item.dataset for item in diagnostic.blocked_by} == {
+        "industry-ranking",
+        "sector-turnover",
+    }
 
 
 def test_legacy_sectors_is_rejected_with_migration_targets_before_io(tmp_path) -> None:

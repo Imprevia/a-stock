@@ -144,7 +144,7 @@ def test_ths_get_routes_are_local_and_map_frozen_contract() -> None:
     assert catalog.status_code == 200
     assert catalog.json() == {
         "revision": {
-            "revisionId": "catalog-r1",
+            "catalogRevisionId": "catalog-r1",
             "capabilityRevision": "cap-r1",
             "providerTimestamp": "2026-10-12T16:00:00+08:00",
             "fetchedAt": "2026-10-12T08:01:00Z",

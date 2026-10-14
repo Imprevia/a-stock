@@ -17,6 +17,7 @@ from src.market_environment.postgres_schema import SCHEMA_STATEMENTS
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = ROOT / "alembic" / "versions" / "0003_provider_capability_reports.py"
 ALEMBIC_ENV_PATH = ROOT / "alembic" / "env.py"
+ALEMBIC_VERSIONS_PATH = ROOT / "alembic" / "versions"
 
 
 class RecordingOperations:
@@ -69,7 +70,7 @@ def test_0003_revision_is_additive_and_matches_runtime_schema_contract() -> None
 
     destructive = re.compile(r"\b(alter|drop|update|delete|truncate)\b", re.IGNORECASE)
     assert all(destructive.search(statement) is None for statement in operations.statements)
-    assert MINIMUM_SCHEMA_VERSION == 9
+    assert MINIMUM_SCHEMA_VERSION == 10
     assert "provider_capability_reports" in REQUIRED_RUNTIME_TABLES
 
 
@@ -127,3 +128,29 @@ def test_alembic_runtime_does_not_bootstrap_schema_or_destructively_downgrade() 
     migration.op = operations
     migration.downgrade()
     assert operations.statements == []
+
+
+def test_all_alembic_revision_ids_fit_the_default_version_table_column() -> None:
+    revisions: dict[str, str] = {}
+    for migration_path in sorted(ALEMBIC_VERSIONS_PATH.glob("*.py")):
+        migration_tree = ast.parse(migration_path.read_text(encoding="utf-8"))
+        revision = next(
+            (
+                node.value.value
+                for node in migration_tree.body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "revision"
+                    for target in node.targets
+                )
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ),
+            None,
+        )
+        assert revision is not None, f"missing literal revision in {migration_path.name}"
+        revisions[migration_path.name] = revision
+
+    assert revisions
+    assert all(len(revision) <= 32 for revision in revisions.values()), revisions
+    assert len(set(revisions.values())) == len(revisions), revisions

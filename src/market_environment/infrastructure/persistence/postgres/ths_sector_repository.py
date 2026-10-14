@@ -243,12 +243,25 @@ class PostgresThsSectorRepository(ThsSectorRepository):
         ).mappings().first()
         return _catalog_revision(row) if row is not None else None
 
-    def latest_catalog_revision(self) -> ThsCatalogRevision | None:
+    def latest_catalog_revision(
+        self,
+        as_of: date | None = None,
+    ) -> ThsCatalogRevision | None:
+        where = ""
+        params: dict[str, Any] = {}
+        if as_of is not None:
+            where = (
+                "WHERE EXISTS (SELECT 1 FROM ths_industry_rankings ranking "
+                "WHERE ranking.catalog_revision_id=ths_catalog_revisions.revision_id "
+                "AND ranking.as_of=:as_of)"
+            )
+            params["as_of"] = as_of
         row = self.connection.execute(
             text(
-                """SELECT * FROM ths_catalog_revisions
+                f"""SELECT * FROM ths_catalog_revisions {where}
                 ORDER BY provider_timestamp DESC,fetched_at DESC,revision_id DESC LIMIT 1"""
-            )
+            ),
+            params,
         ).mappings().first()
         return _catalog_revision(row) if row is not None else None
 
@@ -340,15 +353,24 @@ class PostgresThsSectorRepository(ThsSectorRepository):
             }
             existing = self.connection.execute(
                 text(
-                    """SELECT checksum FROM ths_industry_rankings
+                    """SELECT checksum,quality_status,warnings_json
+                    FROM ths_industry_rankings
                     WHERE provider=:provider AND as_of=:as_of
                       AND catalog_revision_id=:catalog_revision_id AND tag=:tag
                       AND thscode=:thscode"""
                 ),
                 key,
-            ).scalar_one_or_none()
+            ).mappings().first()
             if existing is not None:
-                counts["identical" if str(existing) == checksum else "conflict"] += 1
+                stored_warnings = tuple(
+                    str(item) for item in _load(existing.get("warnings_json"), [])
+                )
+                identical = (
+                    str(existing["checksum"]) == checksum
+                    and str(existing.get("quality_status") or "ok") == ranking.quality
+                    and stored_warnings == tuple(ranking.warnings)
+                )
+                counts["identical" if identical else "conflict"] += 1
                 continue
             revision = self.get_catalog_revision(ranking.catalog_revision)
             if revision is None:
@@ -361,7 +383,7 @@ class PostgresThsSectorRepository(ThsSectorRepository):
                      fetched_at,checksum,quality_status,warnings_json)
                     VALUES (:provider,:as_of,:catalog_revision_id,:tag,:thscode,:rank,:display_name,
                      :change_pct,:volume,:turnover,:source_revision,:provider_timestamp,
-                     :fetched_at,:checksum,'ok','[]')"""
+                     :fetched_at,:checksum,:quality_status,:warnings_json)"""
                 ),
                 {
                     **key,
@@ -374,6 +396,8 @@ class PostgresThsSectorRepository(ThsSectorRepository):
                     "provider_timestamp": revision.provider_timestamp,
                     "fetched_at": revision.fetched_at,
                     "checksum": checksum,
+                    "quality_status": ranking.quality,
+                    "warnings_json": _json(list(ranking.warnings)),
                 },
             )
             counts["inserted"] += 1
@@ -394,6 +418,19 @@ class PostgresThsSectorRepository(ThsSectorRepository):
         if revision_id is not None:
             where.append("catalog_revision_id=:revision_id")
             params["revision_id"] = revision_id
+        else:
+            # Select exactly one revision for this date.  A plain date filter
+            # would silently merge immutable observations when the provider
+            # changes the catalog more than once in the same Shanghai session.
+            where.append(
+                "catalog_revision_id=("
+                "SELECT revision.revision_id FROM ths_catalog_revisions revision "
+                "WHERE EXISTS (SELECT 1 FROM ths_industry_rankings candidate "
+                "WHERE candidate.catalog_revision_id=revision.revision_id "
+                "AND candidate.as_of=:as_of) "
+                "ORDER BY revision.provider_timestamp DESC,revision.fetched_at DESC,"
+                "revision.revision_id DESC LIMIT 1)"
+            )
         rows = self.connection.execute(
             text(
                 f"""SELECT * FROM ths_industry_rankings WHERE {' AND '.join(where)}
@@ -424,6 +461,10 @@ class PostgresThsSectorRepository(ThsSectorRepository):
                 ),
                 catalog_revision=str(row["catalog_revision_id"]),
                 as_of=_date(row["as_of"]),  # type: ignore[arg-type]
+                quality=str(row.get("quality_status") or "ok"),
+                warnings=tuple(
+                    str(item) for item in _load(row.get("warnings_json"), [])
+                ),
             )
             for row in rows
         )
@@ -489,6 +530,7 @@ class PostgresThsSectorRepository(ThsSectorRepository):
         *,
         start_date: date | None,
         end_date: date | None,
+        source_revision: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         where = ["provider='fuyao'", "thscode=:thscode"]
         params: dict[str, Any] = {"thscode": normalize_thscode(thscode)}
@@ -498,6 +540,9 @@ class PostgresThsSectorRepository(ThsSectorRepository):
         if end_date is not None:
             where.append("trading_date<=:end_date")
             params["end_date"] = end_date
+        if source_revision is not None:
+            where.append("source_revision=:source_revision")
+            params["source_revision"] = source_revision
         return " AND ".join(where), params
 
     def list_sector_bars(
@@ -506,10 +551,16 @@ class PostgresThsSectorRepository(ThsSectorRepository):
         *,
         start_date: date | None = None,
         end_date: date | None = None,
+        source_revision: str | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> Sequence[ThsSectorBar]:
-        where, params = self._bars_filter(thscode, start_date=start_date, end_date=end_date)
+        where, params = self._bars_filter(
+            thscode,
+            start_date=start_date,
+            end_date=end_date,
+            source_revision=source_revision,
+        )
         rows = self.connection.execute(
             text(
                 f"""SELECT * FROM (

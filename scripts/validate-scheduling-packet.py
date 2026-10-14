@@ -19,8 +19,14 @@ TRACKED_LIVE_KINDS = {
     "Deployment": "apps/v1",
     "CronJob": "batch/v1",
 }
+MANUAL_REFRESH_LIVE_KINDS = {
+    **TRACKED_LIVE_KINDS,
+    "StatefulSet": "apps/v1",
+    "PersistentVolumeClaim": "v1",
+}
 SECTORS_ENABLED_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
 SECTORS_REVISION_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"
+MANUAL_REFRESH_ENV = "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
 SECTORS_DISABLED_ENVS = (
     "MARKET_ENVIRONMENT_SCRAPLING_ENABLED",
     "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED",
@@ -303,6 +309,10 @@ def helm_hooks(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def dump_documents(documents: list[dict[str, Any]]) -> None:
+    yaml.safe_dump_all(documents, sys.stdout, sort_keys=False)
+
+
 def _validate_resource_namespaces(
     documents: list[dict[str, Any]], namespace: str, description: str
 ) -> None:
@@ -535,15 +545,116 @@ def compare_sectors_config_only(
         fail("config-only rollout contains Deployment drift outside dashboard env")
 
 
+def validate_manual_refresh_packet(
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    required_value: str,
+) -> dict[str, Any]:
+    if required_value not in {"0", "1"}:
+        fail("required manual refresh value must be 0 or 1")
+    inspect(documents, release_name, namespace, "disabled")
+    _validate_resource_namespaces(documents, namespace, "manual-refresh packet")
+    deployment = _dashboard_deployment(
+        without_helm_hooks(documents), release_name, "manual-refresh packet"
+    )
+    spec = deployment.get("spec")
+    if not isinstance(spec, dict) or spec.get("replicas") != 1:
+        fail("manual-refresh packet Dashboard Deployment must have exactly one replica")
+    container = _dashboard_container(
+        deployment, "manual-refresh packet Dashboard Deployment"
+    )
+    if container.get("image") != expected_image:
+        fail(f"manual-refresh packet must preserve frozen image {expected_image}")
+    _validate_reviewed_hooks(documents, release_name, expected_image)
+    environment = _environment_index(container, "manual-refresh packet Dashboard")
+    if environment.get(MANUAL_REFRESH_ENV) != {
+        "name": MANUAL_REFRESH_ENV,
+        "value": required_value,
+    }:
+        fail(f"{MANUAL_REFRESH_ENV} must be literal {required_value}")
+    return {
+        "deployment": metadata_value(deployment, "name"),
+        "image": expected_image,
+        "manualRefreshEnabled": required_value,
+    }
+
+
+def compare_manual_refresh_only(
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+) -> None:
+    validate_manual_refresh_packet(
+        current, release_name, namespace, expected_image, "1"
+    )
+    validate_manual_refresh_packet(
+        desired, release_name, namespace, expected_image, "0"
+    )
+    current_hooks = helm_hooks(current)
+    desired_hooks = helm_hooks(desired)
+    if indexed(current_hooks) != indexed(desired_hooks):
+        fail("manual-refresh rollout contains Helm hook drift")
+
+    current_index = indexed(without_helm_hooks(current))
+    desired_index = indexed(without_helm_hooks(desired))
+    if current_index.keys() != desired_index.keys():
+        fail("manual-refresh rollout must preserve the complete release resource set")
+
+    deployment_keys = [key for key in current_index if key[1] == "Deployment"]
+    if len(deployment_keys) != 1:
+        fail("manual-refresh rollout must contain exactly one Deployment")
+    deployment_key = deployment_keys[0]
+    for key in current_index:
+        if key != deployment_key and current_index[key] != desired_index[key]:
+            fail(f"manual-refresh rollout contains non-Deployment drift: {key}")
+
+    before = copy.deepcopy(current_index[deployment_key])
+    after = copy.deepcopy(desired_index[deployment_key])
+    before_container = _dashboard_container(before, "current Dashboard Deployment")
+    after_container = _dashboard_container(after, "desired Dashboard Deployment")
+    before_environment = _environment_index(before_container, "current Dashboard")
+    after_environment = _environment_index(after_container, "desired Dashboard")
+    if before_environment.keys() != after_environment.keys():
+        fail("manual-refresh rollout must not add or remove environment variables")
+    for name in before_environment:
+        if name == MANUAL_REFRESH_ENV:
+            continue
+        if before_environment[name] != after_environment[name]:
+            fail(f"manual-refresh rollout contains unrelated environment drift: {name}")
+    for container in (before_container, after_container):
+        for item in container["env"]:
+            if item.get("name") == MANUAL_REFRESH_ENV:
+                item["value"] = "__reviewed_manual_refresh_transition__"
+    if before != after:
+        fail("manual-refresh rollout contains Deployment drift outside the reviewed value")
+
+
 def compare_release_exact(
     current: list[dict[str, Any]], desired: list[dict[str, Any]]
 ) -> None:
     current_hooks = helm_hooks(current)
     desired_hooks = helm_hooks(desired)
-    if current_hooks and desired_hooks and indexed(current_hooks) != indexed(desired_hooks):
+    if indexed(current_hooks) != indexed(desired_hooks):
         fail("stored release contains Helm hook drift")
     if indexed(without_helm_hooks(current)) != indexed(without_helm_hooks(desired)):
         fail("stored release manifest differs from the reviewed packet")
+
+
+def compare_hooks_exact(
+    current: list[dict[str, Any]], desired: list[dict[str, Any]]
+) -> None:
+    current_hooks = helm_hooks(current)
+    desired_hooks = helm_hooks(desired)
+    if len(current_hooks) != len(current):
+        fail("stored Helm hooks response contains a non-hook resource")
+    if len(desired_hooks) != len(desired):
+        fail("reviewed Helm hooks packet contains a non-hook resource")
+    if indexed(current_hooks) != indexed(desired_hooks):
+        fail("stored Helm hooks differ from the reviewed packet")
 
 
 def select_disabled_promotion_pod(
@@ -961,6 +1072,72 @@ def verify_runtime_image(
     image_id_digest(dashboard_statuses[0].get("imageID"))
 
 
+def verify_manual_refresh_runtime(
+    deployments_payload: dict[str, Any],
+    replicasets_payload: dict[str, Any],
+    pods_payload: dict[str, Any],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    image: str,
+    digest: str,
+    required_value: str,
+) -> str:
+    verify_runtime_image(
+        deployments_payload,
+        replicasets_payload,
+        pods_payload,
+        release_name,
+        namespace,
+        image,
+        digest,
+    )
+    validate_manual_refresh_packet(
+        desired, release_name, namespace, image, required_value
+    )
+    pods = kubernetes_json_items(pods_payload, "Pod", "Pod")
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for pod in pods:
+        if release_label(pod) != release_name:
+            continue
+        dashboards = named_entries(pod, ("spec", "containers"), "dashboard")
+        if dashboards:
+            if len(dashboards) != 1:
+                fail("manual-refresh Pod must contain exactly one dashboard container")
+            candidates.append((pod, dashboards[0]))
+    if len(candidates) != 1:
+        fail("manual-refresh verification requires exactly one release Dashboard Pod")
+    pod, dashboard = candidates[0]
+    runtime_environment = _environment_index(
+        dashboard, "manual-refresh Dashboard Pod"
+    )
+    if runtime_environment.get(MANUAL_REFRESH_ENV) != {
+        "name": MANUAL_REFRESH_ENV,
+        "value": required_value,
+    }:
+        fail(f"runtime {MANUAL_REFRESH_ENV} must be literal {required_value}")
+    desired_deployment = _dashboard_deployment(
+        without_helm_hooks(desired), release_name, "reviewed manual-refresh packet"
+    )
+    desired_environment = _environment_index(
+        _dashboard_container(
+            desired_deployment, "reviewed manual-refresh packet Deployment"
+        ),
+        "reviewed manual-refresh packet",
+    )
+    normalized_environment = copy.deepcopy(runtime_environment)
+    for name, live_item in normalized_environment.items():
+        desired_item = desired_environment.get(name)
+        if isinstance(desired_item, dict):
+            _normalize_omitted_empty_environment_value(live_item, desired_item)
+    if normalized_environment != desired_environment:
+        fail("manual-refresh Dashboard Pod environment differs from the reviewed packet")
+    pod_name = metadata_value(pod, "name")
+    if not isinstance(pod_name, str) or not pod_name:
+        fail("manual-refresh Dashboard Pod metadata.name is missing")
+    return pod_name
+
+
 def verify_deployment_image(payload: dict[str, Any], release_name: str, image: str) -> None:
     items = payload.get("items")
     if not isinstance(items, list):
@@ -1018,12 +1195,17 @@ def _metadata(document: dict[str, Any], description: str) -> dict[str, Any]:
 
 
 def _tracked_release_resources(
-    documents: list[dict[str, Any]], release_name: str, namespace: str, source: str
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    source: str,
+    tracked_kinds: dict[str, str] | None = None,
 ) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    tracked_kinds = TRACKED_LIVE_KINDS if tracked_kinds is None else tracked_kinds
     resources: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for document in documents:
         kind = document.get("kind")
-        if kind not in TRACKED_LIVE_KINDS:
+        if kind not in tracked_kinds:
             continue
         metadata = _metadata(document, f"{source} {kind}")
         labels = metadata.get("labels")
@@ -1037,7 +1219,7 @@ def _tracked_release_resources(
         name = metadata.get("name")
         if not isinstance(name, str) or not name:
             fail(f"{source} {kind} metadata.name must be a non-empty string")
-        expected_api_version = TRACKED_LIVE_KINDS[kind]
+        expected_api_version = tracked_kinds[kind]
         if document.get("apiVersion") != expected_api_version:
             fail(f"{source} {kind} apiVersion must equal {expected_api_version}")
         key = (expected_api_version, kind, namespace, name)
@@ -1252,6 +1434,83 @@ def _normalize_deployment(live: dict[str, Any], desired: dict[str, Any]) -> None
         )
 
 
+def _normalize_statefulset(live: dict[str, Any], desired: dict[str, Any]) -> None:
+    live_spec = live.get("spec")
+    desired_spec = desired.get("spec")
+    if not isinstance(live_spec, dict):
+        return
+    if not isinstance(desired_spec, dict):
+        desired_spec = {}
+    for key, value in (
+        ("podManagementPolicy", "OrderedReady"),
+        ("replicas", 1),
+        ("revisionHistoryLimit", 10),
+    ):
+        _drop_default(live_spec, desired_spec, key, value)
+    live_strategy = live_spec.get("updateStrategy")
+    desired_strategy = desired_spec.get("updateStrategy")
+    if isinstance(live_strategy, dict):
+        desired_strategy = desired_strategy if isinstance(desired_strategy, dict) else {}
+        _drop_default(live_strategy, desired_strategy, "type", "RollingUpdate")
+        live_rolling = live_strategy.get("rollingUpdate")
+        desired_rolling = desired_strategy.get("rollingUpdate")
+        if isinstance(live_rolling, dict):
+            desired_rolling = desired_rolling if isinstance(desired_rolling, dict) else {}
+            _drop_default(live_rolling, desired_rolling, "partition", 0)
+            if not live_rolling and "rollingUpdate" not in desired_strategy:
+                live_strategy.pop("rollingUpdate")
+        if not live_strategy and "updateStrategy" not in desired_spec:
+            live_spec.pop("updateStrategy")
+    retention = live_spec.get("persistentVolumeClaimRetentionPolicy")
+    desired_retention = desired_spec.get("persistentVolumeClaimRetentionPolicy")
+    if isinstance(retention, dict):
+        desired_retention = desired_retention if isinstance(desired_retention, dict) else {}
+        _drop_default(retention, desired_retention, "whenDeleted", "Retain")
+        _drop_default(retention, desired_retention, "whenScaled", "Retain")
+        if not retention and "persistentVolumeClaimRetentionPolicy" not in desired_spec:
+            live_spec.pop("persistentVolumeClaimRetentionPolicy")
+    live_template = live_spec.get("template")
+    desired_template = desired_spec.get("template")
+    if isinstance(live_template, dict):
+        _normalize_pod_template(
+            live_template, desired_template if isinstance(desired_template, dict) else {}
+        )
+
+
+def _normalize_persistent_volume_claim(
+    live: dict[str, Any], desired: dict[str, Any]
+) -> None:
+    live_metadata = _metadata(live, "live PersistentVolumeClaim")
+    desired_metadata = _metadata(desired, "desired PersistentVolumeClaim")
+    if "finalizers" not in desired_metadata and live_metadata.get("finalizers") == [
+        "kubernetes.io/pvc-protection"
+    ]:
+        live_metadata.pop("finalizers")
+    live_annotations = live_metadata.get("annotations")
+    desired_annotations = desired_metadata.get("annotations")
+    if isinstance(live_annotations, dict):
+        desired_annotations = (
+            desired_annotations if isinstance(desired_annotations, dict) else {}
+        )
+        for key in (
+            "pv.kubernetes.io/bind-completed",
+            "pv.kubernetes.io/bound-by-controller",
+            "volume.beta.kubernetes.io/storage-provisioner",
+            "volume.kubernetes.io/selected-node",
+            "volume.kubernetes.io/storage-provisioner",
+        ):
+            if key not in desired_annotations:
+                live_annotations.pop(key, None)
+    live_spec = live.get("spec")
+    desired_spec = desired.get("spec")
+    if not isinstance(live_spec, dict):
+        return
+    if not isinstance(desired_spec, dict):
+        desired_spec = {}
+    _drop_allocated(live_spec, desired_spec, "volumeName")
+    _drop_default(live_spec, desired_spec, "volumeMode", "Filesystem")
+
+
 def _normalize_cronjob(live: dict[str, Any], desired: dict[str, Any]) -> None:
     live_spec = live.get("spec")
     desired_spec = desired.get("spec")
@@ -1370,6 +1629,10 @@ def _normalize_live_desired_pair(
         _normalize_deployment(normalized_live, normalized_desired)
     elif kind == "CronJob":
         _normalize_cronjob(normalized_live, normalized_desired)
+    elif kind == "StatefulSet":
+        _normalize_statefulset(normalized_live, normalized_desired)
+    elif kind == "PersistentVolumeClaim":
+        _normalize_persistent_volume_claim(normalized_live, normalized_desired)
     _prune_omitted_empty(normalized_live, normalized_desired)
     _prune_omitted_empty(normalized_desired, normalized_live)
     return normalized_live, normalized_desired
@@ -1391,6 +1654,46 @@ def compare_live_desired(
         )
         if normalized_live != normalized_desired:
             fail(f"live declarative state differs from desired for {key}")
+
+
+def compare_manual_refresh_live_desired(
+    live: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+) -> None:
+    desired_non_hooks = without_helm_hooks(desired)
+    for source, documents in (("live", live), ("desired", desired_non_hooks)):
+        for document in documents:
+            kind = document.get("kind")
+            if kind not in MANUAL_REFRESH_LIVE_KINDS:
+                fail(f"{source} manual-refresh resource kind is not tracked: {kind}")
+            metadata = _metadata(document, f"{source} manual-refresh {kind}")
+            deletion_timestamp = metadata.get("deletionTimestamp")
+            if source == "live" and deletion_timestamp is not None and deletion_timestamp != "":
+                fail(f"live manual-refresh {kind} is terminating")
+    live_resources = _tracked_release_resources(
+        live,
+        release_name,
+        namespace,
+        "live",
+        MANUAL_REFRESH_LIVE_KINDS,
+    )
+    desired_resources = _tracked_release_resources(
+        desired_non_hooks,
+        release_name,
+        namespace,
+        "desired",
+        MANUAL_REFRESH_LIVE_KINDS,
+    )
+    if live_resources.keys() != desired_resources.keys():
+        fail("manual-refresh live release resource set differs from desired")
+    for key in live_resources:
+        normalized_live, normalized_desired = _normalize_live_desired_pair(
+            live_resources[key], desired_resources[key], release_name, namespace
+        )
+        if normalized_live != normalized_desired:
+            fail(f"manual-refresh live declarative state differs from desired for {key}")
 
 
 def parse_utc_now(value: str | None) -> datetime:
@@ -1572,6 +1875,14 @@ def main() -> None:
     live_desired.add_argument("--release-name", required=True)
     live_desired.add_argument("--namespace", required=True)
 
+    manual_live_desired = subparsers.add_parser("compare-manual-refresh-live-desired")
+    manual_live_desired.add_argument("--desired", type=Path, required=True)
+    manual_live_desired.add_argument("--release-name", required=True)
+    manual_live_desired.add_argument("--namespace", required=True)
+
+    extract_helm = subparsers.add_parser("extract-helm-documents")
+    extract_helm.add_argument("--part", choices=("release", "hooks"), required=True)
+
     sectors_packet = subparsers.add_parser("validate-sectors-packet")
     sectors_packet.add_argument("--release-name", required=True)
     sectors_packet.add_argument("--namespace", required=True)
@@ -1586,9 +1897,37 @@ def main() -> None:
     sectors_config.add_argument("--from-enabled", choices=("0", "1"), required=True)
     sectors_config.add_argument("--to-enabled", choices=("0", "1"), required=True)
 
+    manual_packet = subparsers.add_parser("validate-manual-refresh-packet")
+    manual_packet.add_argument("--release-name", required=True)
+    manual_packet.add_argument("--namespace", required=True)
+    manual_packet.add_argument("--image", required=True)
+    manual_packet.add_argument("--require-value", choices=("0", "1"), required=True)
+
+    manual_config = subparsers.add_parser("compare-manual-refresh-only")
+    manual_config.add_argument("--current", type=Path, required=True)
+    manual_config.add_argument("--desired", type=Path, required=True)
+    manual_config.add_argument("--release-name", required=True)
+    manual_config.add_argument("--namespace", required=True)
+    manual_config.add_argument("--image", required=True)
+
+    manual_runtime = subparsers.add_parser("verify-manual-refresh-runtime")
+    manual_runtime.add_argument("--deployments", type=Path, required=True)
+    manual_runtime.add_argument("--replicasets", type=Path, required=True)
+    manual_runtime.add_argument("--pods", type=Path, required=True)
+    manual_runtime.add_argument("--desired", type=Path, required=True)
+    manual_runtime.add_argument("--release-name", required=True)
+    manual_runtime.add_argument("--namespace", required=True)
+    manual_runtime.add_argument("--image", required=True)
+    manual_runtime.add_argument("--digest", required=True)
+    manual_runtime.add_argument("--require-value", choices=("0", "1"), required=True)
+
     release_exact = subparsers.add_parser("compare-release-exact")
     release_exact.add_argument("--current", type=Path, required=True)
     release_exact.add_argument("--desired", type=Path, required=True)
+
+    hooks_exact = subparsers.add_parser("compare-hooks-exact")
+    hooks_exact.add_argument("--current", type=Path, required=True)
+    hooks_exact.add_argument("--desired", type=Path, required=True)
 
     promotion_pod = subparsers.add_parser("select-disabled-promotion-pod")
     promotion_pod.add_argument("--release-name", required=True)
@@ -1659,6 +1998,20 @@ def main() -> None:
             args.release_name,
             args.namespace,
         )
+    elif args.command == "compare-manual-refresh-live-desired":
+        compare_manual_refresh_live_desired(
+            kubectl_list_documents(sys.stdin),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+        )
+    elif args.command == "extract-helm-documents":
+        documents = load_documents(sys.stdin)
+        dump_documents(
+            without_helm_hooks(documents)
+            if args.part == "release"
+            else helm_hooks(documents)
+        )
     elif args.command == "validate-sectors-packet":
         result = validate_sectors_packet(
             load_documents(sys.stdin),
@@ -1680,8 +2033,42 @@ def main() -> None:
             args.from_enabled,
             args.to_enabled,
         )
+    elif args.command == "validate-manual-refresh-packet":
+        result = validate_manual_refresh_packet(
+            load_documents(sys.stdin),
+            args.release_name,
+            args.namespace,
+            args.image,
+            args.require_value,
+        )
+        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+        sys.stdout.write("\n")
+    elif args.command == "compare-manual-refresh-only":
+        compare_manual_refresh_only(
+            load_path(args.current),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+            args.image,
+        )
+    elif args.command == "verify-manual-refresh-runtime":
+        print(
+            verify_manual_refresh_runtime(
+                load_json_path(args.deployments, "Deployment"),
+                load_json_path(args.replicasets, "ReplicaSet"),
+                load_json_path(args.pods, "Pod"),
+                load_path(args.desired),
+                args.release_name,
+                args.namespace,
+                args.image,
+                args.digest,
+                args.require_value,
+            )
+        )
     elif args.command == "compare-release-exact":
         compare_release_exact(load_path(args.current), load_path(args.desired))
+    elif args.command == "compare-hooks-exact":
+        compare_hooks_exact(load_path(args.current), load_path(args.desired))
     elif args.command == "select-disabled-promotion-pod":
         print(
             select_disabled_promotion_pod(

@@ -122,9 +122,11 @@ class ThsSnapshotFact:
         _required_text(self.name, "name")
         if self.provider_timestamp.tzinfo is None:
             raise ValueError("snapshot provider_timestamp must be timezone-aware")
-        # change_pct may be None when the provider snapshot omits the daily
-        # price-change field; the per-row missing signal is propagated through
-        # the bundle warnings rather than rejecting the whole snapshot.
+        # A provider response row is an identity/date observation even when its
+        # daily values are all null.  Availability is classified independently
+        # after exact identity coverage has been proven; durable sector bars
+        # retain their stricter non-empty invariant below.
+        _finite(self.change_pct, "change_pct")
         for field_name in ("open", "high", "low", "close", "volume", "turnover"):
             _non_negative(getattr(self, field_name), field_name)
         prices = (self.open, self.high, self.low, self.close)
@@ -136,8 +138,28 @@ class ThsSnapshotFact:
             value is not None and self.low > value for value in (self.open, self.high, self.close)
         ):
             raise ValueError("low must not be above another OHLC value")
-        if all(value is None for value in prices) and self.volume is None and self.turnover is None:
-            raise ValueError("snapshot fact requires at least one market value")
+
+    @property
+    def missing_live_fields(self) -> tuple[str, ...]:
+        """Return unavailable fields used to construct a durable daily bar."""
+
+        return tuple(
+            field_name
+            for field_name in ("open", "high", "low", "close", "volume", "turnover")
+            if getattr(self, field_name) is None
+        )
+
+    @property
+    def has_live_values(self) -> bool:
+        """Whether at least one non-ranking market value is proven."""
+
+        return len(self.missing_live_fields) < 6
+
+    @property
+    def has_ranking_value(self) -> bool:
+        """Whether this observation can participate in change-percent ranking."""
+
+        return self.change_pct is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,13 +173,18 @@ class ThsRankingRow:
     turnover: float | None
     catalog_revision: str
     as_of: date
+    quality: ThsQuality = "ok"
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.tag not in THS_TAGS:
             raise ValueError(f"unsupported THS tag: {self.tag}")
+        if self.quality not in {"ok", "partial", "degraded", "insufficient", "missing", "failed"}:
+            raise ValueError(f"unsupported THS ranking quality: {self.quality}")
         if self.rank <= 0:
             raise ValueError("rank must be positive")
         object.__setattr__(self, "thscode", normalize_thscode(self.thscode))
+        object.__setattr__(self, "warnings", tuple(str(value) for value in self.warnings))
         _required_text(self.name, "name")
         _required_text(self.catalog_revision, "catalog_revision")
         # change_pct may be None at the ranking level; sort logic in build_rankings

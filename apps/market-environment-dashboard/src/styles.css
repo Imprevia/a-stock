@@ -332,6 +332,12 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .sector-ranking-controls > div > strong { min-height: 38px; padding: 8px 9px; border: 1px solid #e0e7e4; background: #f8faf9; color: #45554e; font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
 .ths-ranking-scroll { max-width: 100%; margin-top: 16px; }
 .ths-ranking-table { min-width: 760px; }
+.ths-ranking-heading-status { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
+.ranking-partial-label { color: #806336; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.ths-ranking-table tr.ranking-row-unavailable { background: #fcfaf5; }
+.ranking-row-state { display: inline-flex; min-height: 26px; align-items: center; padding: 3px 7px; border-radius: 4px; font-size: 14px; font-weight: 700; white-space: nowrap; }
+.ranking-row-state.ok { background: #e7f3ed; color: #257153; }
+.ranking-row-state.insufficient { background: #f6f0df; color: #8b682e; }
 .inline-icon-command { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; border: 1px solid #cbdad4; border-radius: 4px; background: #fff; color: #39766b; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .inline-icon-command:disabled { cursor: not-allowed; opacity: .55; }
 .ths-breadth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
@@ -615,6 +621,11 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
 .collection-attempt-time { display: block; margin-top: 5px; color: #71807a; font-size: 14px; white-space: nowrap; }
 .collection-warning { max-width: 260px; color: #7c6863; line-height: 1.5; overflow-wrap: anywhere; }
 .collection-warning-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.ths-diagnostic-row td { display: table-cell; padding: 0 14px 14px; background: #fbfaf5; }
+.ths-diagnostic-details { display: flex; min-width: 0; flex-wrap: wrap; gap: 7px; padding: 11px 12px; border-left: 3px solid #b58a47; background: #f8f3e8; }
+.ths-diagnostic-details strong, .ths-diagnostic-details span { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.ths-diagnostic-details strong { color: #765b32; }
+.ths-diagnostic-details span { padding-left: 7px; border-left: 1px solid #d9c8a9; color: #756650; }
 .expand-button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: #34413c; cursor: pointer; }
 .core-detail-row td { display: table-cell; padding: 0 14px 14px; background: #f8faf9; }
 .limits-collection-detail { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 18px; padding: 13px 0 2px; }
@@ -740,6 +751,7 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
   .sector-view-tabs button:nth-child(3) { border-top: 1px solid #d9e3df; border-left: 0; }
   .sector-view-tabs button:nth-child(4) { border-top: 1px solid #d9e3df; }
   .ths-ranking-panel, .ths-breadth-panel, .ths-turnover-panel { padding: 16px; }
+  .ths-ranking-heading-status { align-items: flex-start; justify-content: flex-start; }
   .sector-ranking-controls, .sector-kline-controls { grid-template-columns: 1fr; }
   .sector-kline-controls .icon-button { width: 100%; }
   .sector-kline-coverage { grid-template-columns: 1fr; }
@@ -800,6 +812,11 @@ td:first-child span, td > span:not(.state-chip) { color: #96a09c; font-size: 14p
   .core-detail-row { padding: 0 14px 14px !important; background: #f8faf9; }
   .core-detail-row td { display: block; padding: 0; }
   .core-detail-row td::before { display: none; }
+  .ths-diagnostic-row { padding: 0 14px 14px !important; background: #fbfaf5; }
+  .ths-diagnostic-row td { display: block; padding: 0; }
+  .ths-diagnostic-row td::before { display: none; }
+  .ths-diagnostic-details { flex-direction: column; }
+  .ths-diagnostic-details span { padding: 0; border-left: 0; }
   .core-index-list > div { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 11px 0; }
   .core-index-list > div > span:nth-of-type(1), .core-index-list > div > span:nth-of-type(3), .core-index-list > div > em { grid-column: 1 / -1; }
   .collection-summary { align-items: flex-start; flex-direction: column; justify-content: center; gap: 5px; padding-block: 10px; }

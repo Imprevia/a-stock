@@ -17,6 +17,13 @@
 
 ## Status（状态）
 
+`superseded-catalog-identity-follow-up` · 2026-10-14：固定 capability revision 与 catalog observation
+identity 的耦合修复已由 active plan [`fix-ths-catalog-revision`](fix-ths-catalog-revision.md) 和 OpenSpec
+`fix-ths-catalog-revision` 接管。新 change 只 supersede 目录身份、完整目录 checksum、每日值缺口和 partial
+依赖语义；本 plan 的 `30/32` 历史进度、生产 release/CronJob 事实、旧成功数据及 failed/blocked 审计均不
+重标、不删除、不改写。新修复经用户批准新增 `0007_ths_catalog_identity`，仅删除不含交易日的
+冗余唯一约束；生产 migration 和恢复步骤仍需另行授权。
+
 `stage-10-11-cronjob-activated-observation-pending` · 2026-10-14 用户明确要求“启动 CronJob”，授权对生产 `a-stock/a-stock` 执行受控调度激活。写前只读确认 Helm revision 105 deployed、k3s `v1.26.6+k3s-6a894050-dirty`、controller/host timezone `Asia/Shanghai`、CronJob/Job absent、活动 collection run/task 均为 0、Dashboard/PostgreSQL 1/1 Ready 且 0 restart；冻结镜像为 `localhost/a-stock-market-environment:20261014-104800-b0a7c35`，containerd manifest digest `sha256:ef8b524bf3e143ec68348100ed9384be8bd21048637a03cd1c358fcaaf7a2ae7`。离线 `compare-add-suspended` 与 `compare-suspend-only`、server-side dry-run 均通过。受控入口随后创建 revision 106 的 Helm-owned suspended CronJob，再以 `ACTIVATION_CATCH_UP_MODE=next-schedule` 将 revision 107 激活；两次时间窗门禁均确认首次自然触发为 2026-10-14 16:30（Asia/Shanghai）。revision 106 → 107 的完整 manifest diff 只有 `spec.suspend: true -> false`；写后 CronJob UID `bfea250d-3ae4-4b16-b5a3-28a5ed8dd625` 未变、ACTIVE=0、LAST SCHEDULE 为空、namespace Job 为空，未创建一次性 Job 或手工调用 provider。
 
 `stage-10-5-production-migration-and-rollout-completed` · 2026-10-14 用户明确授权部署到 k3s 后，从 clean detached commit `b0a7c35` 执行受控生产发布。迁移前将 manual refresh 临时置 0，确认 active run/task 均为 0，并创建不可覆盖 PostgreSQL custom dump `a-stock-pgdump-20261014-1040-b0a7c35.dump`（2,800,385 bytes，SHA-256 `82286ef44b31c41a6c255c1011c342359ed716c6d608e0cc3f07cd2d5ae6e52c`）；该 dump 已在临时 PostgreSQL 16.4 中单事务恢复，读回 schema v8、846 catalog relations 和 846 rankings。`scripts/deploy-truenas-k3s.sh --component all` 使用 THS-on、schedule-off baseline，Helm revisions 102/103/104 依次完成 database migration、service rollout 和完整 release 收敛；最终 hook-free 恢复 manual refresh 形成 revision 105。生产现为 schema version 9、Alembic `0006_ths_rank_null_pct`、`change_pct IS NULLABLE=YES`；镜像 `localhost/a-stock-market-environment:20261014-104800-b0a7c35`，containerd manifest digest `sha256:ef8b524bf3e143ec68348100ed9384be8bd21048637a03cd1c358fcaaf7a2ae7`，Pod imageID `sha256:67089878f5d654a7dc7f6e8337bb0c6db11a3536a8d887dec720e2bed555f0f0`。Dashboard/PostgreSQL 均 1/1 Ready、0 restart；两个 PVC UID、两个 Secret UID、4 条 capability、846/2,376 THS normalized facts均未变化；首页、`/data-collection`、health、status 和 catalog provider-free GET 均 HTTP 200；CronJob/Job absent，调度保持 disabled/suspended。因执行时未到 15:10 且本轮只授权部署，未运行 provider collection；2026-10-13 的 `failed-missing/blocked` 审计按设计保留。

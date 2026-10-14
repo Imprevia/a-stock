@@ -272,6 +272,42 @@ promotion 不调用 provider，不创建 collection run，不写 snapshot/aggreg
 enabled flag 或 approved revision。off-first、promotion、enable、collection 和条件 off 必须分别记录
 实际 packet/hash/server-observed 证据；授权本身不能替代任何前置门禁或写后验收。
 
+### THS 目录 observation revision 冲突处置（2026-10-14）
+
+出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
+`sector-turnover` / `sector-breadth` 显示依赖阻塞时，先把它视为目录身份与每日行情可用性耦合事故，停止
+人工重复触发。固定 `fuyao-ths-catalog-v1` 是 capability revision，只批准接口/schema/权限/预算；新的目录
+观察身份对外保持 opaque，语义为
+`<provider>:<capabilityRevision>:<YYYY-MM-DD>:sha256:<full-catalog-checksum>`。checksum 必须来自行情对账前
+四类完整 `(tag, thscode, name)` 关系，不能因当日 OHLC/volume/turnover 或 `changePct` 为空而裁剪目录。
+
+事故期间禁止删除旧 revision、修改旧 checksum、重标旧 success/failed/blocked attempt、把缺失数值补 0、
+裁剪关系或用其他日期数据替代。身份/日期缺失、重复或冲突继续 fail closed；在场但值为空的行分别进入
+`missingLiveCodes` / `missingRankingCodes`。诊断 warning 允许使用
+`THS_DIAGNOSTIC_V1 {"reasonCode":...,"message":...}`，但只能包含有界 code 样本、计数、日期、revision、
+retryability 和 `blockedBy`；不得写 credential、签名 URL、敏感 header 或 raw provider payload。旧纯文本和
+无法解析的 envelope 必须原样展示，不得为兼容性改写历史。
+
+本修复包含一个窄范围 migration：数据库目标为 schema version 10，Alembic head 为
+`0007_ths_catalog_identity`；该 migration 仅删除 `ths_catalog_revisions` 上不含交易日的
+`UNIQUE (provider, capability_revision, checksum, fetched_at)`，不改写历史行。任何发布前先只读核对当前 release/image、CronJob、active writer、PVC/Secret、schema、
+capability、旧 fixed revision、排名/bar 和失败/blocked 审计。当前生产 CronJob 已在既有授权下激活；因此后续
+恢复若获单独授权，必须按以下顺序执行，不能把代码实施授权解释为生产授权：
+
+1. 通过受控入口暂停/关闭精确 schedule 和 manual writes，并证明没有 active collection writer。
+2. 创建不可覆盖的 `pg_dump -Fc`，记录字节数、SHA-256 与 PVC identity；在隔离 PostgreSQL 16 中恢复并读回
+   schema version 10、唯一约束变更、旧成功事实和失败/blocked 审计。
+3. 用 scheduling/manual collection off 的完整 baseline 部署单一受审不可变镜像；先做 health、provider-free
+   status/GET、schema/PVC/Secret/capability/history 零漂移验收。
+4. 上海结算后，在另一次 provider-write 授权下只运行依赖感知的 THS 三任务，核对新 observation revision、
+   完整 relation/ranking、`barCodes + missingLiveCodes` 对账、无零占位及精确下游诊断。
+5. 只有再次明确授权才恢复 reviewed schedule，并观察至少两个完成的上海交易日，验证同日重试幂等和跨日
+   observation 血缘；回滚也先停止 writer，且默认不删除新增 revision 或恢复数据库。
+
+2026-10-14 用户已明确授权本 change 的生产 tasks 7.1–7.5，包括暂停/恢复既定 schedule、关闭/恢复 manual
+writes、不可覆盖备份与隔离恢复、应用 `0007`、不可变镜像部署、盘后定向 THS 三任务 provider 写入及至少
+两个完成交易日的观察。授权不替代上述逐步门禁；任一步基线、备份恢复、迁移、健康或数据对账失败即停止。
+
 ### Fuyao THS 目录、K 线与成员导入（2026-10-12，离线实现与隔离 probe）
 
 Fuyao 动态接口索引为 `https://fuyao.aicubes.cn/llms-full.txt`（最后核对：
@@ -494,6 +530,8 @@ TrueNAS 直连部署使用受版本控制的 `deploy/truenas/values-secure-manua
 
 TrueNAS 的调度组件与 Dashboard 统一归属 Helm release `a-stock`。普通组件发布的 preflight、镜像工作前、Helm write 前和写后仍需核对 release-derived exact `a-stock-data-collection` 以及 legacy `market-data-collection` absent；schedule-only 操作只能通过 `--release-suspended` / `--activate-schedule` / `--disable-schedule` 三个专用入口。不得恢复独立 operator override 或使用裸 `kubectl apply` 创建同名 CronJob。
 
+冻结手工采集必须使用专用 `--disable-manual-refresh` 入口和一份从当前完整 release 基线生成、已审阅且只把 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 从 literal `"1"` 改为 `"0"` 的 full values packet。该入口必须绑定 clean worktree、full `REVIEWED_GIT_HEAD`、chart/values/render SHA-256 与当前冻结镜像三元组；写前验证 stored/live release 与 stored hooks 一致、所有 full packet 管理资源（至少包含 Dashboard Deployment/Service 与 PostgreSQL StatefulSet/PVC）在 Kubernetes server defaults 归一化后零漂移且均不处于 deletion 中、两个 application CronJob absent、namespace 中每个 retained Job 都有 `Complete=True` 或 `Failed=True` 终态、PostgreSQL 健康、PVC/Secret identity 已冻结，并证明 packet 除该 env value 外零漂移。Failed/Complete/Error Job 属于审计证据，必须保留，不能为了满足停写门禁而删除；queued、pending、retrying、active、conditions 缺失或其它未证明终态的 Job 一律视为潜在 writer。唯一 Helm 写入使用 `--no-hooks --atomic --wait`，不得构建/导入镜像、运行 schema migration、调用 provider 或提交 collection POST；写后必须证明 stored hooks 未漂移、Ready Pod 仍使用原 manifest digest、manual refresh 为 `0`、PVC/Secret/image、terminal-Job 和无 CronJob 条件均未漂移。失败不得自动把 manual refresh 恢复为 `1`。
+
 如果只读发现显示已有 active 或 suspended application CronJob，普通应用发布和回退必须停止。先用实际版本冻结 baseline + off overlay 和 hashes，取得 rollback-only exact authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>`。其中 digest 是下列 UTF-8、逐行 LF 结尾且保持顺序的 canonical payload 的 SHA-256；入口会在 SSH、目标 API 访问或 release mutation 前重算比较。该引用是 rollback-only 的独立 namespace：
 
 ```text
@@ -517,6 +555,19 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disabl
   --scheduling-overlay deploy/truenas/values-scheduled-off.yaml \
   --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
 ```
+
+调度关闭且 no-active-Job 检查通过后，生成并审阅当前完整 manual-off values packet，设置
+`REVIEWED_GIT_HEAD`、`REVIEWED_CHART_SHA256`、`REVIEWED_MANUAL_OFF_VALUES_SHA256`、
+`REVIEWED_MANUAL_OFF_RENDER_SHA256` 与 `FROZEN_IMAGE_REPOSITORY/TAG/DIGEST`，再执行：
+
+```bash
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-manual-refresh \
+  --baseline-values <REVIEWED_CURRENT_FULL_MANUAL_OFF_VALUES> \
+  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
+```
+
+该入口只允许 stored release 中 manual refresh 为 literal `"1"`，候选为 literal `"0"`；已经为 `0`、
+缺失、重复、`valueFrom` 或伴随任意其它资源/env/hook 漂移均拒绝且不得进入 Helm write。
 
 只有该命令的 server-observed postcondition 证明 exact CronJob 已删除后，才能重新运行普通入口。由于 CronJob 模板保留 `helm.sh/resource-policy: keep`，Helm off upgrade 后可能出现 stored manifest 已无 CronJob、但 live exact CronJob 仍存在的 retained-resource 状态；受控 `--disable-schedule` 会在确认该资源属于目标 release 且已是 typed `spec.suspend=true` 后删除它并再次证明 absent，禁止用裸 `kubectl delete` 绕过入口。instance label 缺失或漂移不是“资源不存在”的证据：normal validation 仍会 fail closed，但 active-to-off 的应急补偿按 release-derived exact API name 工作，不让 label 或非安全关键 shape drift 阻止暂停。任何 write、rollout 或写后状态读取失败都不得报告成功；应急检查把 existing resource 中任何非 typed `spec.suspend=true` 状态视为需补偿，至多一次精确 patch，再按同名读回只接受 absent 或 typed suspended。无法读取、补偿或证明时保持 uncertain/NO-GO；即使紧急暂停成功，下一次普通发布前仍必须先完成同一个受审 `--disable-schedule` 流程。
 
@@ -611,7 +662,7 @@ release 基线上先发布 `suspend=true`，再由 `--activate-schedule` 执行�
 数据库恢复必须使用 PostgreSQL 备份/恢复工具，并保留 PostgreSQL PVC UID、PV、容量、备份
 校验和及恢复时间线。
 
-普通应用发布脚本可使用新 tag（时间戳 + Git SHA），本地检查 `/api/health` 和首页，生成 SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`，再由脚本完成 release write 并等待 Dashboard rollout。本地容器 smoke 会注入仅满足启动配置校验的 loopback PostgreSQL URL `127.0.0.1:1`；健康和首页检查不得访问数据库、provider 或生产网络，实际 Deployment 仍只从既有 Kubernetes Secret 获取数据库连接。普通模式会冻结已验证的 chart/values，按 release-derived exact name 在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，在 Helm write 前重验 live state 与 frozen render hash，并在写后验证同一 postcondition。调度发布不通过这条普通构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 `--activate-schedule` 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values，激活前还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。入口不会自动创建 canary/Job。
+普通应用发布脚本可使用新 tag（时间戳 + Git SHA），但 `all` / `service` 候选在任何 SSH、目标 API、构建或镜像工作前必须要求 clean worktree，且 full `REVIEWED_GIT_HEAD` 与当前 HEAD 完全一致。本地检查 `/api/health` 和首页，生成 archive SHA-256 后通过 SCP 传输，在 1.20 执行 `k3s ctr --namespace k8s.io images import`；导入后必须解析并冻结该 exact tag 的 containerd manifest digest，在 Helm write 前重新验证 tag→digest 映射，写后经 Deployment→current ReplicaSet→唯一 Ready Pod owner chain 验证 repo/tag 与 runtime imageID，并再次核对 target manifest digest。本地容器 smoke 会注入仅满足启动配置校验的 loopback PostgreSQL URL `127.0.0.1:1`；健康和首页检查不得访问数据库、provider 或生产网络，实际 Deployment 仍只从既有 Kubernetes Secret 获取数据库连接。普通模式会冻结已验证的 chart/values，按 release-derived exact name 在所有构建/目标写操作前验证 stored/live scheduling 已为 off/absent，在 Helm write 前重验 live state 与 frozen render hash，并在写后验证同一 postcondition。调度发布不通过这条普通构建/导入路径：它必须使用 clean、无 drift 的已审阅 HEAD 和冻结镜像，先以 baseline 加唯一 overlay 离线 render。只读 discovery、exact suspended-CronJob server-side dry-run、suspended release 与 `--activate-schedule` 是分离模式；任何网络、构建或写操作前都必须校验最终合并后的 typed Helm values，激活前还必须证明候选相对已审阅 suspended release 只改变 `/spec/suspend`。入口不会自动创建 canary/Job。
 
 普通应用发布的 live declarative 比较会忽略 API server 生成的状态字段、分配字段和已批准的默认值；对于 Kubernetes 1.26 读回时省略的可选 EnvVar 空字符串（包括扶摇 revision），仅当 desired 明确为 `value: ""` 且 live 同名 EnvVar 同时没有 `value`/`valueFrom` 时视为等价。任何非空值、Secret 引用、变量缺失或其他 Deployment 字段差异仍会 fail closed，不得用裸 patch 绕过比较器。
 
@@ -832,7 +883,7 @@ PostgreSQL StatefulSet/ClusterIP Service ready
   -> suspended CronJob render/deploy
 ```
 
-当前 runtime schema 最低版本为 9；`alembic upgrade head` 必须依次应用到 `0006_ths_ranking_nullable_change_pct`。其中 `0004_sector_continuity`、`0005_ths_sector_datasets` 和 `0006_ths_ranking_nullable_change_pct` 均不重写旧 `sectors` 快照、task、capability 或聚合证据；0006 只解除 `ths_industry_rankings.change_pct` 的 NOT NULL 约束，以保留 provider 明确缺失的涨跌幅。若 migration Job 未达到 version 9，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
+当前修复后的 runtime schema 最低版本为 10；`alembic upgrade head` 必须依次应用到 `0007_ths_catalog_identity`。Alembic revision ID 必须保持不超过默认 `alembic_version.version_num VARCHAR(32)`，不得为命名便利扩大版本表。`0004_sector_continuity`、`0005_ths_sector_datasets` 和 `0006_ths_ranking_nullable_change_pct` 均不重写旧 `sectors` 快照、task、capability 或聚合证据；0006 只解除 `ths_industry_rankings.change_pct` 的 NOT NULL 约束，0007 只删除不含交易日的 `ths_catalog_revisions(provider, capability_revision, checksum, fetched_at)` 冗余唯一约束，以保留 provider 明确缺失的涨跌幅和跨日 observation 血缘。若 migration Job 未达到 version 10，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
 
 StatefulSet 未 ready 或 migration Job 失败时不得 rollout service/schedule；migration Job 使用同一 URL Secret，
 成功后检查 `alembic_version`，并把 Job 日志及 manifest hash 作为切换证据。

@@ -118,6 +118,9 @@ Explicit scheduling write modes never build, copy, import, or retag an image:
   --activate-schedule --baseline-values PATH --scheduling-overlay PATH --kube-version VERSION
   --disable-schedule --baseline-values PATH --scheduling-overlay PATH --kube-version VERSION
 
+Controlled manual collection freeze (same image, full reviewed packet):
+  --disable-manual-refresh --baseline-values PATH --kube-version VERSION
+
 Controlled Fuyao sectors modes:
   --stage-sectors-off --off-values PATH --enabled-values PATH --kube-version VERSION
   --repair-sectors-off-release --off-values PATH --enabled-values PATH --kube-version VERSION
@@ -218,6 +221,10 @@ while (($#)); do
       ;;
     --disable-schedule)
       set_operation disable-schedule
+      shift
+      ;;
+    --disable-manual-refresh)
+      set_operation disable-manual-refresh
       shift
       ;;
     --stage-sectors-off)
@@ -982,6 +989,14 @@ capture_containerd_image_digest() {
   printf '%s\n' "$digest"
 }
 
+verify_exact_containerd_image_digest() {
+  local image_ref="$1"
+  local expected_digest="$2"
+  local actual_digest
+  actual_digest="$(capture_containerd_image_digest "$image_ref")" || return 1
+  [[ "$actual_digest" == "$expected_digest" ]]
+}
+
 require_all_application_cronjobs_absent() {
   local phase="$1"
   local live_cronjobs legacy_cronjob
@@ -1005,6 +1020,64 @@ if not isinstance(items, list):
     raise SystemExit(f"{sys.argv[1]} Job response must contain an items list")
 if items:
     raise SystemExit(f"{sys.argv[1]} requires namespace Jobs absent")
+PYEOF
+}
+
+require_terminal_namespace_jobs() {
+  local phase="$1"
+  local payload
+  payload="$(kubectl get jobs --namespace "$NAMESPACE" -o json)" || return 1
+  JOBS_PAYLOAD="$payload" python3 - "$phase" <<'PYEOF'
+import json, os, sys
+payload = json.loads(os.environ["JOBS_PAYLOAD"])
+items = payload.get("items")
+if not isinstance(items, list):
+    raise SystemExit(f"{sys.argv[1]} Job response must contain an items list")
+for item in items:
+    if not isinstance(item, dict):
+        raise SystemExit(f"{sys.argv[1]} Job items must be objects")
+    status = item.get("status", {})
+    if not isinstance(status, dict):
+        raise SystemExit(f"{sys.argv[1]} Job status must be an object")
+    counts = {}
+    for field in ("active", "failed", "succeeded"):
+        value = status.get(field, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SystemExit(
+                f"{sys.argv[1]} Job status.{field} must be a non-negative integer"
+            )
+        counts[field] = value
+    active = counts["active"]
+    if active > 0:
+        name = (item.get("metadata") or {}).get("name", "<unknown>")
+        raise SystemExit(f"{sys.argv[1]} found active namespace Job {name}")
+    conditions = status.get("conditions")
+    if not isinstance(conditions, list) or not conditions:
+        raise SystemExit(f"{sys.argv[1]} Job must have terminal conditions")
+    terminal = set()
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            raise SystemExit(f"{sys.argv[1]} Job conditions must be objects")
+        condition_type = condition.get("type")
+        condition_status = condition.get("status")
+        if not isinstance(condition_type, str) or not condition_type:
+            raise SystemExit(f"{sys.argv[1]} Job condition.type must be non-empty")
+        if not isinstance(condition_status, str) or condition_status not in {
+            "True",
+            "False",
+            "Unknown",
+        }:
+            raise SystemExit(f"{sys.argv[1]} Job condition.status is invalid")
+        if condition_type in {"Complete", "Failed"} and condition_status == "True":
+            terminal.add(condition_type)
+    if len(terminal) != 1:
+        raise SystemExit(
+            f"{sys.argv[1]} Job must have exactly one Complete=True or Failed=True condition"
+        )
+    if counts["failed"] > 0 and "Failed" not in terminal:
+        raise SystemExit(f"{sys.argv[1]} failed Job count requires Failed=True")
+    if counts["succeeded"] > 0 and "Complete" not in terminal:
+        raise SystemExit(f"{sys.argv[1]} succeeded Job count requires Complete=True")
 PYEOF
 }
 
@@ -1085,6 +1158,32 @@ select_runtime_sectors_pod() {
     --require-enabled "$required_enabled" < "$pods_file"
 }
 
+verify_manual_refresh_runtime() {
+  local desired_packet="$1"
+  local required_value="$2"
+  local deployments_file="$TMP_DIR/manual-refresh-runtime-deployments.json"
+  local replicasets_file="$TMP_DIR/manual-refresh-runtime-replicasets.json"
+  local pods_file="$TMP_DIR/manual-refresh-runtime-pods.json"
+  local desired_file="$TMP_DIR/manual-refresh-runtime-reviewed.yaml"
+  printf '%s\n' "$desired_packet" > "$desired_file"
+  kubectl get deployment --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$deployments_file" \
+    || return 1
+  kubectl get replicasets --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$replicasets_file" \
+    || return 1
+  kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$pods_file" \
+    || return 1
+  python3 "$PACKET_VALIDATOR" verify-manual-refresh-runtime \
+    --release-name "$RELEASE_NAME" \
+    --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" \
+    --digest "$FROZEN_IMAGE_DIGEST" \
+    --deployments "$deployments_file" \
+    --replicasets "$replicasets_file" \
+    --pods "$pods_file" \
+    --desired "$desired_file" \
+    --require-value "$required_value" >/dev/null
+}
+
 deploy_helm_upgrade_with_component() {
   local component="$1"
   local image_repo="$2"
@@ -1121,6 +1220,10 @@ deploy_component_step() {
     verify_frozen_runtime_image "$image_repo" "$image_tag" "$FROZEN_IMAGE_DIGEST" \
       || { log "component step: name=$component phase=failed reason=frozen_image_runtime_unproven retryTarget=--component $component"; return 1; }
   fi
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+    verify_exact_containerd_image_digest "$image_repo:$image_tag" "$FROZEN_IMAGE_DIGEST" \
+      || { log "component step: name=$component phase=failed reason=containerd_manifest_digest_drift retryTarget=--component $component"; return 1; }
+  fi
   local helm_exit=0
   deploy_helm_upgrade_with_component "$component" "$image_repo" "$image_tag" || helm_exit=$?
   if (( helm_exit != 0 )); then
@@ -1153,6 +1256,10 @@ deploy_component_step() {
       [[ -n "$DEPLOYMENT_NAME" ]] || { log "component step: name=$component phase=failed reason=no_deployment_found"; return 1; }
       kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
         || { step_exit=$?; log "component step: name=$component phase=failed reason=rollout_timeout exitCode=$step_exit"; return "$step_exit"; }
+      if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+        verify_frozen_runtime_image "$image_repo" "$image_tag" "$FROZEN_IMAGE_DIGEST" \
+          || { log "component step: name=$component phase=failed reason=frozen_image_runtime_unproven retryTarget=--component $component"; return 1; }
+      fi
       log "component step: name=$component phase=completed rollout=ready"
       ;;
     schedule)
@@ -1401,10 +1508,17 @@ COMPONENT_BASELINE_SCHEDULED_STARTING_DEADLINE="${COMPONENT_BASELINE_FIELDS[19]}
 COMPONENT_BASELINE_SCHEDULED_ACTIVE_DEADLINE="${COMPONENT_BASELINE_FIELDS[20]}"
 
 CONTROLLED_SECTORS_OPERATION=""
+CONTROLLED_MANUAL_REFRESH_OPERATION=false
 case "$OPERATION" in
   stage-sectors-off|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
     CONTROLLED_SECTORS_OPERATION="$OPERATION"
+    COMPONENT_NAME=all
+    COMPONENT_SELECTED=true
+    ;;
+  disable-manual-refresh)
+    [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
+    CONTROLLED_MANUAL_REFRESH_OPERATION=true
     COMPONENT_NAME=all
     COMPONENT_SELECTED=true
     ;;
@@ -1462,6 +1576,8 @@ REVIEWED_ENABLED_VALUES_SHA256="${REVIEWED_ENABLED_VALUES_SHA256:-}"
 REVIEWED_OFF_RENDER_SHA256="${REVIEWED_OFF_RENDER_SHA256:-}"
 REVIEWED_ENABLED_RENDER_SHA256="${REVIEWED_ENABLED_RENDER_SHA256:-}"
 REVIEWED_REPORT_SHA256="${REVIEWED_REPORT_SHA256:-}"
+REVIEWED_MANUAL_OFF_VALUES_SHA256="${REVIEWED_MANUAL_OFF_VALUES_SHA256:-}"
+REVIEWED_MANUAL_OFF_RENDER_SHA256="${REVIEWED_MANUAL_OFF_RENDER_SHA256:-}"
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 INGRESS_HOST="${INGRESS_HOST:-a-stock.k3s.lan}"
 POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-a-stock-postgresql}"
@@ -1507,6 +1623,9 @@ case "$CONTROLLED_SECTORS_OPERATION" in
     done
     ;;
 esac
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+  [[ -n "$HELM_VALUES_FILE" ]] || die '--disable-manual-refresh requires --baseline-values'
+fi
 [[ "$GIT_UPDATE" =~ ^(true|false)$ ]] || die 'GIT_UPDATE must be true or false'
 [[ "$GIT_UPDATE" == false ]] || die 'GIT_UPDATE=true is unsupported; update and review the checkout before launching deployment'
 
@@ -1618,6 +1737,15 @@ case "$OPERATION" in
     [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die "$OPERATION requires --kube-version"
     ;;
 esac
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+  for command_name in ssh kubectl nc; do
+    command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
+  done
+  [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die '--disable-manual-refresh requires --kube-version'
+  [[ -z "$SCHEDULING_OVERLAY_FILE" ]] || die '--disable-manual-refresh does not accept a scheduling overlay'
+  require_generic_deploy_values "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" \
+    || die 'reviewed manual-off values must keep scheduled collection disabled/suspended'
+fi
 if [[ "$OPERATION" == deploy && -n "$SCHEDULING_OVERLAY_FILE" && "$COMPONENT_NAME" == "all" ]]; then
   die 'ordinary all-component deployment does not accept a scheduling overlay; use an explicit reviewed scheduling mode'
 fi
@@ -1632,7 +1760,7 @@ fi
 
 EARLY_RENDER_ARGS=()
 COMPONENT_RENDER_ARGS=()
-if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule || -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+if [[ "$OPERATION" == release-suspended || "$OPERATION" == activate-schedule || "$OPERATION" == disable-schedule || -n "$CONTROLLED_SECTORS_OPERATION" || "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
   [[ -n "$FROZEN_IMAGE_REPOSITORY" && -n "$FROZEN_IMAGE_TAG" ]] \
     || die "$OPERATION requires frozen image repository and tag"
   validate_scalar FROZEN_IMAGE_REPOSITORY "$FROZEN_IMAGE_REPOSITORY"
@@ -1851,7 +1979,7 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       report_effective_trigger "$PACKET_INSPECTION"
       GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       ;;
-    repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+    repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config|disable-manual-refresh)
       REQUIRED_SCHEDULING_STATE=disabled
       if ! RENDERED_PACKET="$(render_scheduling_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
         die "$OPERATION reviewed packet failed to render"
@@ -1859,6 +1987,12 @@ if [[ "$OPERATION" != read-only-discovery ]]; then
       inspect_scheduling_packet "$RENDERED_PACKET" disabled "$LOCAL_KUBERNETES_VERSION" >/dev/null \
         || die "$OPERATION requires both application CronJobs absent"
       GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
+      if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+        printf '%s\n' "$RENDERED_PACKET" | python3 "$PACKET_VALIDATOR" validate-manual-refresh-packet \
+          --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+          --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" --require-value 0 >/dev/null \
+          || die 'reviewed manual-off packet violates the disabled runtime contract'
+      fi
       ;;
   esac
 fi
@@ -1882,7 +2016,6 @@ if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
     --from-enabled 0 --to-enabled 1 \
     || die 'reviewed sectors profiles differ outside the enabled flag'
 fi
-
 chart_sha256() {
   git ls-files -z -- deploy/helm/a-stock \
     | sort -z \
@@ -1897,6 +2030,16 @@ verify_hash() {
   local actual="$3"
   [[ -n "$expected" ]] || die "$label expected SHA-256 is required"
   [[ "$expected" == "$actual" ]] || die "$label SHA-256 drift: expected $expected, got $actual"
+}
+
+verify_reviewed_deploy_source() {
+  [[ "$REVIEWED_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+    || die 'generic all/service deploy requires REVIEWED_GIT_HEAD as a full lowercase commit SHA'
+  [[ "$(git rev-parse HEAD)" == "$REVIEWED_GIT_HEAD" ]] \
+    || die 'reviewed Git HEAD does not match the checked-out source'
+  if [[ -n "$FROZEN_IMAGE_DIGEST" && ! "$FROZEN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    die 'FROZEN_IMAGE_DIGEST must be sha256 followed by 64 lowercase hex characters'
+  fi
 }
 
 # Scheduling operations require a clean working tree. Operators record
@@ -1935,6 +2078,18 @@ verify_controlled_sectors_packet() {
     [[ "$EXPECTED_REPAIR_HELM_REVISION" =~ ^[1-9][0-9]*$ ]] \
       || die 'repair-sectors-off-release requires EXPECTED_REPAIR_HELM_REVISION as a positive integer'
   fi
+}
+
+verify_controlled_manual_refresh_packet() {
+  [[ "$REVIEWED_GIT_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+    || die 'REVIEWED_GIT_HEAD must be a full lowercase commit SHA'
+  [[ "$(git rev-parse HEAD)" == "$REVIEWED_GIT_HEAD" ]] \
+    || die 'reviewed Git HEAD does not match the checked-out source'
+  verify_hash 'reviewed chart' "$REVIEWED_CHART_SHA256" "$(chart_sha256)"
+  verify_hash 'reviewed manual-off values' "$REVIEWED_MANUAL_OFF_VALUES_SHA256" \
+    "$(sha256sum "$HELM_VALUES_FILE" | awk '{print $1}')"
+  verify_hash 'reviewed manual-off render' "$REVIEWED_MANUAL_OFF_RENDER_SHA256" \
+    "$(sha256_text "$RENDERED_PACKET")"
 }
 
 verify_repair_release_state() {
@@ -2057,9 +2212,21 @@ case "$OPERATION" in
     assert_clean_worktree
     ;;
 esac
+GENERIC_IMMUTABLE_IMAGE_REQUIRED=false
+if [[ "$OPERATION" == deploy && -z "$CONTROLLED_SECTORS_OPERATION" \
+      && ( "$COMPONENT_NAME" == all || "$COMPONENT_NAME" == service ) ]]; then
+  GENERIC_IMMUTABLE_IMAGE_REQUIRED=true
+  assert_clean_worktree
+  verify_reviewed_deploy_source
+fi
 if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
   assert_clean_worktree
   verify_controlled_sectors_packet
+fi
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+  assert_clean_worktree
+  verify_controlled_manual_refresh_packet
+  REVIEWED_MANUAL_OFF_RENDER="$RENDERED_PACKET"
 fi
 
 case "$OPERATION" in
@@ -2083,6 +2250,10 @@ fi
 DEPLOY_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
 DEPLOY_IMAGE_TAG="$IMAGE_TAG"
 if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  DEPLOY_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
+  DEPLOY_IMAGE_TAG="$FROZEN_IMAGE_TAG"
+fi
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
   DEPLOY_IMAGE_REPOSITORY="$FROZEN_IMAGE_REPOSITORY"
   DEPLOY_IMAGE_TAG="$FROZEN_IMAGE_TAG"
 fi
@@ -2157,7 +2328,7 @@ OPERATION_CHART_DIR="$SOURCE_CHART_DIR"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 OPERATION_SCHEDULING_OVERLAY="$SCHEDULING_OVERLAY_FILE"
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|disable-manual-refresh|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     command -v flock >/dev/null 2>&1 || die 'required command not found: flock'
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
     if [[ "$COMMON_GIT_DIR" != /* ]]; then
@@ -2168,7 +2339,7 @@ case "$OPERATION" in
     ;;
 esac
 case "$OPERATION" in
-  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|server-dry-run|release-suspended|activate-schedule|disable-schedule|disable-manual-refresh|repair-sectors-off-release|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     SNAPSHOT_DIR="$TMP_DIR/release-packet"
     mkdir -p "$SNAPSHOT_DIR"
     cp -R "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart"
@@ -2222,12 +2393,17 @@ case "$OPERATION" in
       REVIEWED_OFF_RENDER="$SNAPSHOT_OFF_RENDER"
       REVIEWED_ENABLED_RENDER="$SNAPSHOT_ENABLED_RENDER"
     fi
+    if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+      [[ "$(sha256_text "$SNAPSHOT_RENDER")" == "$REVIEWED_MANUAL_OFF_RENDER_SHA256" ]] \
+        || die 'frozen reviewed manual-off packet hash drifted'
+      REVIEWED_MANUAL_OFF_RENDER="$SNAPSHOT_RENDER"
+    fi
     chmod -R a-w "$SNAPSHOT_DIR"
     RENDERED_PACKET="$SNAPSHOT_RENDER"
     ;;
 esac
 
-if [[ "$OPERATION" == deploy && -n "$(git status --porcelain)" ]]; then
+if [[ "$OPERATION" == deploy && "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" != true && -n "$(git status --porcelain)" ]]; then
   warn 'working tree is dirty; the image will include the current checkout as-is'
 fi
 
@@ -2280,7 +2456,7 @@ if [[ "$BUILD_PLATFORM" != "linux/${NODE_ARCH}" ]]; then
   warn "build platform $BUILD_PLATFORM differs from node architecture $NODE_ARCH"
 fi
 
-if [[ "$OPERATION" == deploy || "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
+if [[ "$OPERATION" == deploy || "$OPERATION" == disable-manual-refresh || "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
   if ! RESOLVED_CRONJOB_NAME="$(resolve_generic_cronjob_name "$TARGET_KUBERNETES_VERSION")"; then
     die 'could not resolve the release-derived application cronjob name'
   fi
@@ -2301,6 +2477,10 @@ if [[ -n "$CONTROLLED_SECTORS_OPERATION" && "$CONTROLLED_SECTORS_OPERATION" != s
   [[ "$(helm_release_presence)" == present ]] \
     || die "$CONTROLLED_SECTORS_OPERATION requires an existing Helm release"
 fi
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+  [[ "$(helm_release_presence)" == present ]] \
+    || die '--disable-manual-refresh requires an existing Helm release'
+fi
 
 if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
   require_all_application_cronjobs_absent 'stage-sectors-off precondition' \
@@ -2309,6 +2489,139 @@ if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     || die 'stage-sectors-off requires namespace Jobs absent'
   PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
     || die 'stage-sectors-off could not capture Secret/PVC metadata before execution'
+fi
+
+if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
+  FROZEN_IMAGE="$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG"
+  MANUAL_CURRENT_MANIFEST="$TMP_DIR/manual-refresh-current-manifest.yaml"
+  MANUAL_DESIRED_MANIFEST="$TMP_DIR/manual-refresh-desired-manifest.yaml"
+  MANUAL_CURRENT_HOOKS="$TMP_DIR/manual-refresh-current-hooks.yaml"
+  MANUAL_DESIRED_HOOKS="$TMP_DIR/manual-refresh-desired-hooks.yaml"
+  MANUAL_LIVE_BEFORE_MANIFEST="$TMP_DIR/manual-refresh-live-before.yaml"
+  MANUAL_LIVE_AFTER_MANIFEST="$TMP_DIR/manual-refresh-live-after.yaml"
+  MANUAL_POST_MANIFEST="$TMP_DIR/manual-refresh-post-manifest.yaml"
+  printf '%s\n' "$REVIEWED_MANUAL_OFF_RENDER" \
+    | python3 "$PACKET_VALIDATOR" extract-helm-documents --part release \
+      > "$MANUAL_DESIRED_MANIFEST" \
+    || die '--disable-manual-refresh could not extract the reviewed release manifest'
+  printf '%s\n' "$REVIEWED_MANUAL_OFF_RENDER" \
+    | python3 "$PACKET_VALIDATOR" extract-helm-documents --part hooks \
+      > "$MANUAL_DESIRED_HOOKS" \
+    || die '--disable-manual-refresh could not extract the reviewed Helm hooks'
+
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die '--disable-manual-refresh could not prove the exact Ready frozen runtime image'
+  require_all_application_cronjobs_absent '--disable-manual-refresh precondition' \
+    || die '--disable-manual-refresh could not prove both application CronJobs absent'
+  require_terminal_namespace_jobs '--disable-manual-refresh precondition' \
+    || die '--disable-manual-refresh requires every namespace Job to be terminal'
+  verify_live_database_contract \
+    || die '--disable-manual-refresh requires a healthy reviewed PostgreSQL runtime'
+  PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_MANUAL_OFF_RENDER")" \
+    || die '--disable-manual-refresh could not capture Secret/PVC metadata before execution'
+
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_CURRENT_MANIFEST"
+  helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_CURRENT_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-hooks-exact \
+    --current "$MANUAL_CURRENT_HOOKS" --desired "$MANUAL_DESIRED_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-manual-refresh-only \
+    --current "$MANUAL_CURRENT_MANIFEST" --desired "$MANUAL_DESIRED_MANIFEST" \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE"
+  kubectl get deployment,service,cronjob,statefulset,pvc --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$MANUAL_LIVE_BEFORE_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-manual-refresh-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired "$MANUAL_CURRENT_MANIFEST" < "$MANUAL_LIVE_BEFORE_MANIFEST"
+  verify_manual_refresh_runtime "$(cat "$MANUAL_CURRENT_MANIFEST")" 1 \
+    || die '--disable-manual-refresh requires one exact Ready Pod with manual refresh enabled'
+
+  # Rebind every local and target fact immediately before the only write.
+  assert_clean_worktree
+  verify_controlled_manual_refresh_packet
+  MANUAL_PRE_WRITE_RENDER="$(render_scheduling_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "" \
+    "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
+    || die '--disable-manual-refresh reviewed packet failed immediately before Helm write'
+  [[ "$(sha256_text "$MANUAL_PRE_WRITE_RENDER")" == "$REVIEWED_MANUAL_OFF_RENDER_SHA256" ]] \
+    || die '--disable-manual-refresh reviewed packet hash drifted immediately before Helm write'
+  printf '%s\n' "$MANUAL_PRE_WRITE_RENDER" | python3 "$PACKET_VALIDATOR" validate-manual-refresh-packet \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --image "$FROZEN_IMAGE" --require-value 0 >/dev/null \
+    || die '--disable-manual-refresh immediate packet violates the disabled runtime contract'
+  verify_generic_deploy_precondition
+  [[ "$(helm_release_presence)" == present ]] \
+    || die '--disable-manual-refresh release disappeared before Helm write'
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_CURRENT_MANIFEST"
+  helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_CURRENT_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-hooks-exact \
+    --current "$MANUAL_CURRENT_HOOKS" --desired "$MANUAL_DESIRED_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-manual-refresh-only \
+    --current "$MANUAL_CURRENT_MANIFEST" --desired "$MANUAL_DESIRED_MANIFEST" \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE"
+  kubectl get deployment,service,cronjob,statefulset,pvc --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$MANUAL_LIVE_BEFORE_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-manual-refresh-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired "$MANUAL_CURRENT_MANIFEST" < "$MANUAL_LIVE_BEFORE_MANIFEST"
+  verify_live_database_contract \
+    || die '--disable-manual-refresh PostgreSQL runtime drifted before Helm write'
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die '--disable-manual-refresh frozen runtime image drifted before Helm write'
+  verify_manual_refresh_runtime "$(cat "$MANUAL_CURRENT_MANIFEST")" 1 \
+    || die '--disable-manual-refresh runtime manual-refresh state drifted before Helm write'
+  require_all_application_cronjobs_absent '--disable-manual-refresh immediate pre-write' \
+    || die '--disable-manual-refresh scheduling drifted before Helm write'
+  require_terminal_namespace_jobs '--disable-manual-refresh immediate pre-write' \
+    || die '--disable-manual-refresh found a non-terminal namespace Job before Helm write'
+  PRESERVED_IDENTITIES_PRE_WRITE="$(capture_preserved_resource_identities "$REVIEWED_MANUAL_OFF_RENDER")" \
+    || die '--disable-manual-refresh could not recapture Secret/PVC metadata before Helm write'
+  [[ "$PRESERVED_IDENTITIES_PRE_WRITE" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+    || die '--disable-manual-refresh Secret/PVC metadata drifted before Helm write'
+
+  GENERIC_DEPLOY_IN_FLIGHT=true
+  log "disabling manual refresh with hook-free same-image packet image=$FROZEN_IMAGE"
+  helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
+    --namespace "$NAMESPACE" \
+    --values "$OPERATION_BASELINE_VALUES" \
+    --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
+    --set "image.tag=$FROZEN_IMAGE_TAG" \
+    --set component=all \
+    --no-hooks \
+    --atomic \
+    --wait \
+    --timeout "$HELM_TIMEOUT"
+  DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  [[ -n "$DEPLOYMENT_NAME" ]] || die '--disable-manual-refresh postcondition found no Dashboard Deployment'
+  kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s
+  helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_POST_MANIFEST"
+  helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$MANUAL_CURRENT_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-hooks-exact \
+    --current "$MANUAL_CURRENT_HOOKS" --desired "$MANUAL_DESIRED_HOOKS"
+  python3 "$PACKET_VALIDATOR" compare-release-exact \
+    --current "$MANUAL_POST_MANIFEST" --desired "$MANUAL_DESIRED_MANIFEST"
+  kubectl get deployment,service,cronjob,statefulset,pvc --namespace "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$MANUAL_LIVE_AFTER_MANIFEST"
+  python3 "$PACKET_VALIDATOR" compare-manual-refresh-live-desired \
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
+    --desired "$MANUAL_DESIRED_MANIFEST" < "$MANUAL_LIVE_AFTER_MANIFEST"
+  verify_live_database_contract \
+    || die '--disable-manual-refresh postcondition requires a healthy reviewed PostgreSQL runtime'
+  verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+    || die '--disable-manual-refresh postcondition could not prove the frozen runtime image'
+  verify_manual_refresh_runtime "$REVIEWED_MANUAL_OFF_RENDER" 0 \
+    || die '--disable-manual-refresh postcondition requires one exact Ready Pod with manual refresh disabled'
+  require_all_application_cronjobs_absent '--disable-manual-refresh postcondition' \
+    || die '--disable-manual-refresh postcondition could not prove both application CronJobs absent'
+  require_terminal_namespace_jobs '--disable-manual-refresh postcondition' \
+    || die '--disable-manual-refresh postcondition requires every namespace Job to be terminal'
+  PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_MANUAL_OFF_RENDER")" \
+    || die '--disable-manual-refresh postcondition could not capture Secret/PVC metadata'
+  [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
+    || die '--disable-manual-refresh changed preserved Secret/PVC metadata'
+  GENERIC_DEPLOY_IN_FLIGHT=false
+  log "manual refresh disabled with same frozen image=$FROZEN_IMAGE"
+  exit 0
 fi
 
 if [[ "$OPERATION" == repair-sectors-off-release || "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
@@ -2697,6 +3010,9 @@ else
     cd "$ARCHIVE_TMP_DIR"
     sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
   )
+  ARCHIVE_SHA256="$(awk '{print $1}' "$CHECKSUM_PATH")"
+  [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || die "could not determine the archive SHA-256 for $ARCHIVE_NAME"
 
   log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
   scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
@@ -2711,6 +3027,17 @@ sha256sum --check '$ARCHIVE_NAME.sha256'
 sudo -n k3s ctr --namespace k8s.io images import '$ARCHIVE_NAME'
 sudo -n k3s ctr --namespace k8s.io images list | grep -F -- '$IMAGE' >/dev/null
 "
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+    DISCOVERED_IMAGE_DIGEST="$(capture_containerd_image_digest "$IMAGE")" \
+      || die 'generic all/service deploy could not resolve one exact containerd manifest digest after import'
+    if [[ -n "$FROZEN_IMAGE_DIGEST" && "$FROZEN_IMAGE_DIGEST" != "$DISCOVERED_IMAGE_DIGEST" ]]; then
+      die "generic all/service imported image digest drift: expected $FROZEN_IMAGE_DIGEST, got $DISCOVERED_IMAGE_DIGEST"
+    fi
+    FROZEN_IMAGE_REPOSITORY="$IMAGE_REPOSITORY"
+    FROZEN_IMAGE_TAG="$IMAGE_TAG"
+    FROZEN_IMAGE_DIGEST="$DISCOVERED_IMAGE_DIGEST"
+    log "generic all/service image frozen: reviewedHead=$REVIEWED_GIT_HEAD archiveSha256=$ARCHIVE_SHA256 image=$IMAGE manifestDigest=$FROZEN_IMAGE_DIGEST"
+  fi
   if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     DISCOVERED_IMAGE_DIGEST="$(capture_containerd_image_digest "$IMAGE")" \
       || die 'stage-sectors-off could not resolve one exact containerd manifest digest after import'
@@ -2784,6 +3111,10 @@ if [[ "$COMPONENT_NAME" == "all" ]]; then
     || die 'component=all complete release packet drifted from preflight'
   inspect_scheduling_packet "$FULL_PACKET" disabled "$TARGET_KUBERNETES_VERSION" >/dev/null \
     || die 'component=all complete release packet could create or activate scheduled collection'
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+    verify_exact_containerd_image_digest "$DEPLOY_IMAGE_REPOSITORY:$DEPLOY_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+      || die 'component=all complete release containerd manifest digest drifted before Helm write'
+  fi
   helm upgrade --install "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
     --namespace "$NAMESPACE" \
     --create-namespace \
@@ -2820,6 +3151,10 @@ if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 
   [[ -n "$DEPLOYMENT_NAME" ]] || die 'component=all complete release deployment is missing'
   kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
     || die 'component=all complete release rollout failed'
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+    verify_frozen_runtime_image "$DEPLOY_IMAGE_REPOSITORY" "$DEPLOY_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
+      || die 'component=all complete release could not prove the frozen runtime image'
+  fi
   log 'component=all complete Helm release manifest consolidated'
 fi
 
@@ -2895,7 +3230,11 @@ elif [[ "$SCHEDULED_COLLECTION_SUSPEND" == true ]]; then
   log 'CronJob is suspended; do not unsuspend without accepted suspended release canary evidence and separate operator confirmation'
 fi
 
-log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
+if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+  log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE reviewedHead=$REVIEWED_GIT_HEAD archiveSha256=$ARCHIVE_SHA256 image=$IMAGE manifestDigest=$FROZEN_IMAGE_DIGEST"
+else
+  log "component summary: order=database->service->schedule status=completed component=$COMPONENT_NAME packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE image=$IMAGE"
+fi
 exit 0
 fi
 

@@ -83,13 +83,25 @@ class FakeThsRepository:
         self.state.relations = tuple(relations)
         return revision
 
+    def get_catalog_revision(self, revision_id):
+        revision = self.state.revision
+        if revision is None or revision.revision_id != revision_id:
+            return None
+        return revision
+
     def put_rankings(self, rankings):
         values = tuple(rankings)
         self.state.rankings = values
         return {"inserted": len(values), "identical": 0, "conflict": 0}
 
-    def list_rankings(self, as_of, **_kwargs):
-        return tuple(row for row in self.state.rankings if row.as_of == as_of)
+    def list_rankings(self, as_of, **kwargs):
+        revision_id = kwargs.get("revision_id")
+        return tuple(
+            row
+            for row in self.state.rankings
+            if row.as_of == as_of
+            and (revision_id is None or row.catalog_revision == revision_id)
+        )
 
     def put_sector_bars(self, bars):
         values = tuple(bars)
@@ -105,6 +117,7 @@ class FakeThsRepository:
         *,
         start_date=None,
         end_date=None,
+        source_revision=None,
         offset=0,
         limit=500,
     ):
@@ -114,6 +127,7 @@ class FakeThsRepository:
             if code == thscode
             and (start_date is None or trading_date >= start_date)
             and (end_date is None or trading_date <= end_date)
+            and (source_revision is None or bar.source_revision == source_revision)
         ]
         return tuple(sorted(values, key=lambda item: item.trading_date)[offset : offset + limit])
 
@@ -140,6 +154,9 @@ class FakeSnapshots:
     def put(self, candidate):
         self.state.snapshots[(candidate.identity.dataset, candidate.identity.as_of)] = candidate
         return candidate
+
+    def get(self, identity):
+        return self.state.snapshots.get((identity.dataset, identity.as_of))
 
 
 class FakeLeases:
@@ -250,6 +267,35 @@ def _commit_request(outcome):
     )
 
 
+def _local_ths_candidate(
+    dataset: str,
+    *,
+    catalog_revision: str = "catalog-r1",
+    status: str = "ok",
+) -> CollectionCandidate:
+    return CollectionCandidate(
+        identity=DatasetDate(dataset, AS_OF),
+        payload={
+            "asOf": AS_OF.isoformat(),
+            "rows": [],
+            "state": status,
+            "catalogRevisionId": catalog_revision,
+            "catalogRevision": catalog_revision,
+            "quality": {
+                "dataset": dataset,
+                "status": status,
+                "asOf": AS_OF.isoformat(),
+            },
+        },
+        source="fixture",
+        status=status,
+        observations=0,
+        warnings=(),
+        settled=True,
+        actual_as_of=AS_OF,
+    )
+
+
 def test_ranking_committer_writes_four_catalogs_and_shared_bars_atomically() -> None:
     calls: list[date] = []
 
@@ -332,10 +378,13 @@ def test_turnover_reads_normalized_same_day_bars_and_keeps_volume_separate() -> 
             volume=snapshot.volume,
             turnover=snapshot.turnover,
             source="fuyao",
-            source_revision="fuyao-catalog-v1",
+            source_revision="catalog-r1",
             checksum=f"bar-{snapshot.thscode}",
             fetched_at=FETCHED_AT,
         )
+    state.snapshots[("industry-ranking", AS_OF)] = _local_ths_candidate(
+        "industry-ranking"
+    )
     factory = FakeUowFactory(state)
     outcome = ThsSectorTurnoverCollector(factory, lambda: AS_OF).collect(
         DatasetDate("sector-turnover", AS_OF)
@@ -415,7 +464,13 @@ def test_breadth_uses_top10_user_selection_members_facts_and_limits() -> None:
         )
         for tag in THS_TAGS
     )
-    state = FakeState(rankings=rankings)
+    state = FakeState(
+        rankings=rankings,
+        snapshots={
+            ("industry-ranking", AS_OF): _local_ths_candidate("industry-ranking"),
+            ("sector-turnover", AS_OF): _local_ths_candidate("sector-turnover"),
+        },
+    )
     state.operations = (
         ThsOperation(
             run_id="catalog-sync-selected",
@@ -471,16 +526,17 @@ def test_breadth_uses_top10_user_selection_members_facts_and_limits() -> None:
         factory,
         lambda: AS_OF,
         clock=lambda: FETCHED_AT,
+        top_per_tag=1,
     ).collect(DatasetDate("sector-breadth", AS_OF))
 
     assert outcome.state is CollectionTaskState.SUCCESS
     assert len(outcome.candidate.payload["rows"]) == 1
     row = outcome.candidate.payload["rows"][0]
     assert set(row["selectionReasons"]) == {
-        "top-10:industry",
-        "top-10:cn_concept",
-        "top-10:region",
-        "top-10:tszs",
+        "top-1:industry",
+        "top-1:cn_concept",
+        "top-1:region",
+        "top-1:tszs",
         "user-selected",
     }
     assert row["memberCount"] == 2

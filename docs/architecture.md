@@ -527,10 +527,35 @@ host policy、单飞、短缓存、有限重试和按上海市场日隔离的缓
 tag 出现时保留分类关系和共享代码身份，不按名称、排名或模糊匹配擅自合并。跨 revision 的新增、删除、
 改名和跨 tag 冲突必须形成可审计差异，身份无法唯一证明时 fail closed，不能用旧目录或其他分类补齐。
 
+#### THS 目录观察版本完整性边界（2026-10-14）
+
+`capabilityRevision` 只标识已批准的 provider endpoint/schema/permission/request-budget 契约，不能再兼任
+目录主键。四类目录必须先完成身份、重复项、跨 tag 名称和非空计数校验，再以完整、排序后的
+`(tag, thscode, name)` 关系计算 canonical SHA-256 `catalogChecksum`；每日行情为空不得裁剪关系或改变
+checksum。目录观察身份 `catalogRevisionId` 由 `provider + capabilityRevision + 上海交易日 + 完整
+catalogChecksum` 确定，provider/fetch timestamp 不参与身份，因此同日同内容重试幂等、同日内容变化可
+并存、跨日同内容仍保持独立血缘。该值对 HTTP 客户端是 opaque string。
+
+快照身份集合必须与目录唯一代码集合精确一致，重复、额外、缺失或无法证明精确日期继续 fail closed；
+身份和日期有效后，值可用性独立分类。OHLC/volume/turnover 六项全空的代码进入 `missingLiveCodes`，不创建
+`ThsSectorBar`；`changePct` 为空的代码进入 `missingRankingCodes`，仍保留完整 ranking relation，并以
+`quality=insufficient` 和行级 warning 排在可排名行之后。两类缺口可重叠，也可分别出现；任何缺失值保持
+`null`，不得补零。原子提交必须证明 ranking keys 等于完整目录关系，且唯一代码满足
+`barCodes ∪ missingLiveCodes = catalogCodes`、两集合不相交。
+
+同一日期存在多个目录观察时，隐式精确日期读取只按 `provider_timestamp DESC, fetched_at DESC,
+revision_id DESC` 选择一个最新兼容 revision；显式 revision 读取只返回指定版本，禁止跨 revision 合并。
+排名、量价、宽度、Chapter 01 和依赖 DAG 必须传播同一 `catalogRevisionId`。本修复在 PostgreSQL schema
+version 10 / Alembic `0007_ths_catalog_identity` 中仅删除不含交易日的
+`UNIQUE (provider, capability_revision, checksum, fetched_at)`；保留 `(revision_id, provider)` 不可变身份，
+不更新或删除旧 fixed revision、旧成功事实及失败/blocked 审计。任务 warning 使用有界 `THS_DIAGNOSTIC_V1` 兼容封装；旧
+纯文本或格式错误内容原样回退，诊断不得包含凭据、签名 URL、敏感 header 或 raw provider payload。
+
 三个数据集的职责和依赖固定如下：
 
-- `industry-ranking` 从四类完整目录和同一上海交易日的完整快照生成稳定分类排名；目录、编号身份、日期或
-  100% 覆盖任一不足时不发布正式结果。当 provider 快照行确实缺少 `changePct`（如真实
+- `industry-ranking` 从四类完整目录和同一上海交易日的完整快照身份集合生成稳定分类排名；目录、编号
+  身份、日期或 100% 身份覆盖任一不足时不发布正式结果。身份有效但值为空属于可审计 partial，不删除目录
+  关系。当 provider 快照行确实缺少 `changePct`（如真实
   `883401.TI` 在 `/api/a-share-index/prices/snapshot` 不返回任何日涨跌幅 alias）时，adapter
   把缺失按行级 warning 透传，`ThsRankingRow.change_pct` 允许 `null`，排序键在该 tag 内把
   `None` 行排到末尾而非拒绝整份快照。capability policy 接受 partial 的两条独立证据门：
@@ -541,9 +566,11 @@ tag 出现时保留分类关系和共享代码身份，不按名称、排名或�
   `ths_industry_rankings.change_pct` 明确设为 nullable，禁止用 0 替代缺失值。重复 collection
   复用同一 catalog revision 时只比较 checksum、provider、capability revision 和 tag counts；provider
   每次抓取变化的 `provider_timestamp`/`fetched_at` 属于观察元数据，不得被误报为 revision 冲突。
-  快照 `close` 列必须 100% 覆盖，OHLC/volume/turnover/catalog identity 门禁不变。
+  `missingRankingCodes` 与行级质量；OHLC/volume/turnover 六项全空的行进入 `missingLiveCodes` 且不生成
+  全空 bar。catalog identity 门禁不变，缺失值保持 `null`。
 - `sector-turnover` 保存逐 `thscode` 日线的 `open`、`high`、`low`、`close`、`volume` 和
-  `turnover`。每日快照追加全部目录编号，历史接口按单编号请求；产品回填窗口最多近五年，每批最多
+  `turnover`。每日快照只追加已证明至少一个 bar 字段的编号，并报告 expected/bar/missing coverage；
+  声明的 live-value 缺口使结果为 partial 而非 dependency-blocked。历史接口按单编号请求；产品回填窗口最多近五年，每批最多
   60 个编号，以 checkpoint 记录编号、日期区间、revision、预算消耗和完成状态。重试必须幂等且可恢复，
   不得用空值、零值、其他日期或较低质量响应覆盖已验证事实。
 - `sector-breadth` 只计算当日四类 Top 10 与用户点选编号的内部结构。成员和个股事实以 Fuyao 全市场日 K、
@@ -556,8 +583,11 @@ current membership 由显式 `catalog-sync` 在 provider I/O 前同时解析 `in
 提交，单编号失败只令 operation 为 `partial`，不得回滚目录或已成功兄弟 membership。membership 开关与
 revision 独立于 catalog，默认关闭/空值。
 
-执行依赖为 `industry-ranking -> sector-turnover -> sector-breadth`，依赖失败时下游保持真实失败或不足，
-已经成功的兄弟任务和同日期结果不得被抹除。每个新数据集首次成功提交后均可触发 Chapter 01 原子重建；
+执行依赖为 `industry-ranking -> sector-turnover -> sector-breadth`。同日期、同 revision 的 compatible partial
+可继续执行：turnover 只消费 proven bars，breadth 先排除 `changePct=null` 或不可排名质量行；任一 tag 的有效
+候选少于配置 Top N 时返回该 tag 的 `insufficient` 计数，不把短列表包装为完整结果。真正的身份/日期失败、
+revision 不匹配或无兼容前置结果继续 blocked/insufficient；已经成功的兄弟任务和同日期结果不得被抹除。
+每个新数据集首次成功或 accepted partial 提交后均可触发 Chapter 01 原子重建；
 聚合删除旧 `sectors` 字段，新增 `industryRanking`、`sectorTurnover`、`sectorBreadth`，并把申万一级结果
 保留在独立 `sectorAnalysis`。THS 行业、概念、区域和特色指数 observation 不得进入申万一级
 `QTS-01-05-*` 规则输入，也不得改变 `core` 五指数、申万 taxonomy/membership 或 continuity backfill。

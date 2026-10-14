@@ -160,6 +160,66 @@ describe('data collection view', () => {
     expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({ asOf: '2026-09-15', datasets: ['sector-breadth'] })
   })
 
+  it('renders typed partial, failed and blocked THS diagnostics while retaining legacy warnings', async () => {
+    const ranking = dataset(
+      'industry-ranking',
+      undefined,
+      { status: 'partial', catalogRevisionId: 'catalog-r8' },
+      'partial',
+    )
+    Object.assign(ranking.latestAttempt!, {
+      warning: '部分代码缺少当日行情',
+      diagnostics: {
+        reasonCode: 'THS_LIVE_VALUES_MISSING', message: '部分代码缺少当日行情',
+        failureStage: 'snapshot-value-classification', exactDate: '2026-09-15', retryable: true,
+        catalogRevisionId: 'catalog-r8', expectedCount: 846, rankableCount: 844,
+        missingLiveCount: 2, missingLiveCodes: ['883422.TI', '883999.TI'],
+        missingRankingCount: 3,
+        missingRankingCodes: ['883422.TI', '884001.TI', '884002.TI'],
+      },
+    })
+    const turnover = dataset('sector-turnover', undefined, null, 'failed-missing')
+    Object.assign(turnover.latestAttempt!, {
+      warning: '每日快照身份校验失败',
+      diagnostics: {
+        reasonCode: 'THS_DAILY_SNAPSHOT_INSUFFICIENT', message: '每日快照身份校验失败',
+        failureStage: 'snapshot-identity-validation', exactDate: '2026-09-15', retryable: true,
+        expectedCount: 846, observedCount: 845,
+      },
+    })
+    const breadth = dataset('sector-breadth', undefined, null, 'blocked')
+    Object.assign(breadth.latestAttempt!, {
+      warning: '上游数据不足',
+      diagnostics: {
+        reasonCode: 'THS_DEPENDENCY_INSUFFICIENT', message: '上游数据不足',
+        failureStage: 'dependency-validation', exactDate: '2026-09-15', retryable: true,
+        blockedBy: [{ dataset: 'industry-ranking', status: 'insufficient' }],
+      },
+    })
+    const limits = dataset('limits')
+    limits.latestAttempt!.warning = '旧版纯文本 warning 保持可读'
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse({
+      datasets: allDatasets({
+        'industry-ranking': ranking,
+        'sector-turnover': turnover,
+        'sector-breadth': breadth,
+        limits,
+      }),
+    }) })))
+
+    wrapper = mount(DataCollectionView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('原因 THS_LIVE_VALUES_MISSING')
+    expect(wrapper.text()).toContain('可用 844 / 预期 846')
+    expect(wrapper.text()).toContain('当日行情缺失 2 个：883422.TI、883999.TI')
+    expect(wrapper.text()).toContain('不可排名 3 个：883422.TI、884001.TI、884002.TI')
+    expect(wrapper.text()).toContain('原因 THS_DAILY_SNAPSHOT_INSUFFICIENT')
+    expect(wrapper.text()).toContain('原因 THS_DEPENDENCY_INSUFFICIENT')
+    expect(wrapper.text()).toContain('上游：industry-ranking（insufficient）')
+    expect(wrapper.text()).toContain('旧版纯文本 warning 保持可读')
+  })
+
   it('shows explicit THS operation progress separately from daily tasks', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse({
       operations: [{
@@ -204,7 +264,18 @@ describe('data collection view', () => {
   })
 
   it('keeps the 390px layout structurally responsive without a page-level wide table', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse() })))
+    const ranking = dataset('industry-ranking', undefined, { status: 'partial' }, 'partial')
+    Object.assign(ranking.latestAttempt!, {
+      diagnostics: {
+        reasonCode: 'THS_LIVE_VALUES_MISSING', message: '部分代码缺少当日行情',
+        failureStage: 'snapshot-value-classification', exactDate: '2026-09-15', retryable: true,
+        expectedCount: 846, rankableCount: 844, missingLiveCount: 2,
+        missingLiveCodes: ['883422.TI', '883999.TI'],
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse({
+      datasets: allDatasets({ 'industry-ranking': ranking }),
+    }) })))
     window.innerWidth = 390
     window.dispatchEvent(new Event('resize'))
     wrapper = mount(DataCollectionView)
@@ -213,6 +284,9 @@ describe('data collection view', () => {
     expect(wrapper.find('.collection-page').exists()).toBe(true)
     expect(wrapper.find('.collection-table-wrap').exists()).toBe(true)
     expect(wrapper.findAll('.sector-dataset-row')).toHaveLength(3)
+    expect(wrapper.find('.ths-diagnostic-details').exists()).toBe(true)
+    const page = wrapper.find('.collection-page').element as HTMLElement
+    if (page.clientWidth > 0) expect(page.scrollWidth).toBeLessThanOrEqual(page.clientWidth)
     for (const node of wrapper.findAll('span, strong, button, th, td').filter((item) => item.isVisible())) {
       const fontSize = Number.parseFloat(getComputedStyle(node.element).fontSize)
       if (Number.isFinite(fontSize) && fontSize > 0) expect(fontSize).toBeGreaterThanOrEqual(14)

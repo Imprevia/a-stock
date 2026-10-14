@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from ....collection import manual_refresh_enabled
+from ....application.ths_diagnostics import ths_warning_response
 from ..schemas.models import (
     CollectionRunRequest,
     CollectionRunResponse,
@@ -31,6 +32,71 @@ from ..schemas import map_collection_run, map_collection_status
 
 
 router = APIRouter()
+THS_DATASETS = frozenset(
+    {"industry-ranking", "sector-turnover", "sector-breadth"}
+)
+
+
+def _catalog_revision_id(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _normalize_ths_quality(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    quality = dict(value)
+    revision = _catalog_revision_id(
+        quality.pop("catalogRevisionId", None),
+        quality.pop("catalogRevision", None),
+        quality.pop("revisionId", None),
+    )
+    if revision is not None:
+        quality["catalogRevisionId"] = revision
+    aliases = {
+        "expectedCodes": "expectedCount",
+        "observedCodes": "observedCount",
+        "rankableCodes": "rankableCount",
+        "storedCodes": "usableCount",
+        "barCodes": "barCount",
+    }
+    for legacy, public in aliases.items():
+        if public not in quality and legacy in quality:
+            quality[public] = quality.pop(legacy)
+        else:
+            quality.pop(legacy, None)
+    for name in ("missingLiveCodes", "missingRankingCodes"):
+        codes = quality.get(name)
+        if isinstance(codes, (list, tuple, set, frozenset)):
+            unique_codes = sorted({str(code) for code in codes})
+            count_name = (
+                "missingLiveCount"
+                if name == "missingLiveCodes"
+                else "missingRankingCount"
+            )
+            quality.setdefault(count_name, len(unique_codes))
+            quality[name] = unique_codes[:20]
+    diagnostic = None
+    warning = quality.get("warning")
+    if isinstance(warning, str):
+        message, diagnostic = ths_warning_response(warning)
+        quality["warning"] = message
+    warnings = quality.get("warnings")
+    if isinstance(warnings, (list, tuple)):
+        safe_warnings: list[object] = []
+        for item in warnings:
+            if isinstance(item, str):
+                message, parsed = ths_warning_response(item)
+                safe_warnings.append(message)
+                diagnostic = diagnostic or parsed
+            else:
+                safe_warnings.append(item)
+        quality["warnings"] = safe_warnings
+    if diagnostic is not None:
+        quality["diagnostics"] = diagnostic
+    return quality
 
 
 def _validate_as_of(as_of: date, effective_date: date) -> None:
@@ -45,19 +111,33 @@ def _resolve_as_of(as_of: date | None, effective_date: date) -> date:
 def _attempt_payload(record) -> dict | None:
     if record is None:
         return None
+    timings = dict(record.timings or {})
+    warning = record.warning
+    diagnostics = None
+    if record.dataset in THS_DATASETS:
+        warning, diagnostics = ths_warning_response(record.warning)
+    revision = _catalog_revision_id(
+        diagnostics.get("catalogRevisionId") if diagnostics else None,
+        timings.pop("catalogRevisionId", None),
+        timings.pop("catalogRevision", None),
+    )
+    if revision is not None:
+        timings["catalogRevisionId"] = revision
     return {
         "taskId": record.task_id,
         "runId": record.run_id,
         "status": record.status,
         "source": record.source,
         "observations": record.observations,
-        "warning": record.warning,
+        "warning": warning,
+        "diagnostics": diagnostics,
+        "catalogRevisionId": revision,
         "queuedAt": record.queued_at,
         "startedAt": record.started_at,
         "completedAt": record.completed_at,
         "durationMs": record.duration_ms,
         "settled": record.settled,
-        "timings": dict(record.timings or {}),
+        "timings": timings,
     }
 
 
@@ -88,23 +168,15 @@ def _attempt_payload_with_detail(record, detail) -> dict | None:
 
 
 def _task_payload(record, core_indices: Iterable, detail) -> dict:
-    return {
-        "taskId": record.task_id,
+    payload = _attempt_payload(record) or {}
+    payload.pop("runId", None)
+    payload.update({
         "dataset": record.dataset,
         "asOf": record.as_of,
-        "status": record.status,
-        "source": record.source,
-        "observations": record.observations,
-        "warning": record.warning,
-        "timings": dict(record.timings or {}),
-        "queuedAt": record.queued_at,
-        "startedAt": record.started_at,
-        "completedAt": record.completed_at,
-        "durationMs": record.duration_ms,
-        "settled": record.settled,
         "coreIndices": [_core_index_payload(item) for item in core_indices],
         "detail": detail,
-    }
+    })
+    return payload
 
 
 def _run_payload(result, *, extras) -> dict:
@@ -149,6 +221,16 @@ def _collection_status_response_payload(queries: CollectionQueries, as_of: date)
         attempt = item.get("latestAttempt")
         detail = item.get("detail") if item["dataset"] == "limits" else None
         core_indices = item.get("coreIndices") or ()
+        quality = (
+            _normalize_ths_quality(item.get("quality"))
+            if item["dataset"] in THS_DATASETS
+            else item.get("quality")
+        )
+        attempt_payload = _attempt_payload_with_detail(attempt, detail)
+        catalog_revision_id = _catalog_revision_id(
+            quality.get("catalogRevisionId") if quality else None,
+            attempt_payload.get("catalogRevisionId") if attempt_payload else None,
+        )
         datasets.append(
             {
                 "dataset": item["dataset"],
@@ -158,11 +240,12 @@ def _collection_status_response_payload(queries: CollectionQueries, as_of: date)
                 "lastSuccessAt": item.get("lastSuccessAt"),
                 "settled": item.get("settled"),
                 "refreshWarning": item.get("refreshWarning"),
-                "quality": item.get("quality"),
+                "quality": quality,
+                "catalogRevisionId": catalog_revision_id,
                 "activeTaskId": item.get("activeTaskId"),
                 "collectionAllowed": item.get("collectionAllowed"),
                 "restriction": item.get("restriction"),
-                "latestAttempt": _attempt_payload_with_detail(attempt, detail),
+                "latestAttempt": attempt_payload,
                 "coreIndices": [_core_index_payload(value) for value in core_indices],
                 "detail": detail,
             }

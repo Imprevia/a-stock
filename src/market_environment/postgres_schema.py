@@ -389,7 +389,7 @@ SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS sector_continuity_results_date_idx ON sector_continuity_results(as_of, calculation_version)",
     "CREATE INDEX IF NOT EXISTS sector_backfill_attempts_date_idx ON sector_backfill_attempts(as_of, status)",
     # Fuyao THS catalog, turnover, membership, backfill, and breadth evidence.
-    # These statements mirror migrations 0005 and 0006.
+    # These statements mirror migrations 0005 through 0007.
     """
     CREATE TABLE IF NOT EXISTS ths_catalog_revisions (
         revision_id TEXT PRIMARY KEY,
@@ -402,7 +402,6 @@ SCHEMA_STATEMENTS = (
         tag_checksums_json JSONB NOT NULL,
         checksum TEXT NOT NULL,
         UNIQUE (revision_id, provider),
-        UNIQUE (provider, capability_revision, checksum, fetched_at),
         CHECK (row_count > 0)
     )
     """,
@@ -739,6 +738,14 @@ def create_schema(engine: Engine) -> None:
                 """INSERT INTO schema_migrations(version, name, applied_at, checksum)
                    VALUES (9, 'ths-ranking-nullable-change-pct', CURRENT_TIMESTAMP,
                            'ths-ranking-nullable-change-pct')
+                   ON CONFLICT(version) DO NOTHING"""
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO schema_migrations(version, name, applied_at, checksum)
+                   VALUES (10, 'ths-catalog-revision-identity', CURRENT_TIMESTAMP,
+                           'ths-catalog-revision-identity')
                    ON CONFLICT(version) DO NOTHING"""
             )
         )

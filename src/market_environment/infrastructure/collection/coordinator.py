@@ -25,6 +25,11 @@ from ...application.ports import (
 )
 from ...application.mappers import snapshot_to_candidate
 from ...domain.models import CollectionOutcome, CollectionTaskState, DatasetDate
+from ...application.ths_diagnostics import (
+    ThsBlockedBy,
+    ThsDiagnostic,
+    encode_ths_diagnostic,
+)
 from ..providers.fuyao.config import FuyaoCollectionConfig
 from ..providers.fuyao.market import FuyaoMarketAdapter
 from ..providers import (
@@ -68,6 +73,122 @@ DATASET_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "sector-turnover": ("industry-ranking",),
     "sector-breadth": ("industry-ranking", "sector-turnover"),
 }
+
+
+def _ths_catalog_revision(snapshot: Any | None) -> str | None:
+    if snapshot is None or not isinstance(snapshot.payload, dict):
+        return None
+    payload = snapshot.payload
+    value = payload.get("catalogRevisionId") or payload.get("catalogRevision")
+    if value is None and isinstance(payload.get("catalog"), dict):
+        value = payload["catalog"].get("revision")
+    normalized = str(value).strip() if value is not None else ""
+    return normalized or None
+
+
+def _accepted_ths_snapshot(snapshot: Any | None, as_of: date) -> bool:
+    if snapshot is None or snapshot.as_of != as_of:
+        return False
+    if snapshot.status not in {"ok", "partial", "degraded"}:
+        return False
+    if not isinstance(snapshot.payload, dict):
+        return False
+    payload_as_of = snapshot.payload.get("asOf")
+    if payload_as_of not in (None, as_of.isoformat()):
+        return False
+    return _ths_catalog_revision(snapshot) is not None
+
+
+def _ths_block_warning(
+    task: "CollectionTaskRecord",
+    blocked_by: tuple[str, ...],
+    store: Any,
+) -> str:
+    diagnostic_datasets = (
+        DATASET_DEPENDENCIES.get(task.dataset, blocked_by)
+        if task.dataset == "sector-breadth"
+        else blocked_by
+    )
+    entries: list[ThsBlockedBy] = []
+    mismatch = False
+    dependency_revisions: set[str] = set()
+    for dataset in diagnostic_datasets:
+        snapshot = store.get(dataset, task.as_of)
+        revision = _ths_catalog_revision(snapshot)
+        if revision is not None:
+            dependency_revisions.add(revision)
+        entries.append(
+            ThsBlockedBy(
+                dataset=dataset,
+                status=str(getattr(snapshot, "status", "missing")),
+                exact_date=task.as_of,
+                catalog_revision_id=revision,
+            )
+        )
+        if snapshot is not None and not _accepted_ths_snapshot(snapshot, task.as_of):
+            mismatch = True
+    if len(dependency_revisions) > 1:
+        mismatch = True
+    reason = (
+        "THS_DEPENDENCY_REVISION_MISMATCH"
+        if mismatch
+        else "THS_DEPENDENCY_INSUFFICIENT"
+    )
+    return encode_ths_diagnostic(
+        ThsDiagnostic(
+            reason_code=reason,
+            message="THS downstream task prerequisites are not compatible",
+            failure_stage="dependency-coordination",
+            exact_date=task.as_of,
+            retryable=True,
+            blocked_by=tuple(entries),
+        )
+    )
+
+
+def _ths_exception_warning(task: "CollectionTaskRecord", error: Exception, store: Any) -> str:
+    # Exception text is inspected only to classify a known immutable conflict;
+    # it is never persisted or exposed to the client.
+    text = str(error).lower()
+    existing = store.get(task.dataset, task.as_of)
+    catalog_revision = _ths_catalog_revision(existing)
+    if "conflicting ths catalog revision" in text or "catalog revision checksum" in text:
+        return encode_ths_diagnostic(
+            ThsDiagnostic(
+                reason_code="THS_CATALOG_REVISION_COLLISION",
+                message="THS catalog observation revision conflicts with retained content",
+                failure_stage="catalog-persistence",
+                exact_date=task.as_of,
+                retryable=False,
+                catalog_revision_id=catalog_revision,
+            )
+        )
+    if task.dataset == "industry-ranking":
+        return encode_ths_diagnostic(
+            ThsDiagnostic(
+                reason_code="THS_DAILY_SNAPSHOT_INSUFFICIENT",
+                message="THS catalog or daily snapshot validation failed",
+                failure_stage="collection-commit",
+                exact_date=task.as_of,
+                retryable=True,
+                catalog_revision_id=catalog_revision,
+            )
+        )
+    reason = (
+        "THS_DEPENDENCY_REVISION_MISMATCH"
+        if "revision" in text or "date" in text
+        else "THS_DEPENDENCY_INSUFFICIENT"
+    )
+    return encode_ths_diagnostic(
+        ThsDiagnostic(
+            reason_code=reason,
+            message="THS dependent dataset could not consume compatible local evidence",
+            failure_stage="dependency-collection",
+            exact_date=task.as_of,
+            retryable=True,
+            catalog_revision_id=catalog_revision,
+        )
+    )
 SUCCESSFUL_TASK_STATUSES = frozenset({"success", "partial"})
 TERMINAL_TASK_STATUSES = frozenset(
     {"success", "partial", "failed-retained", "failed-missing", "busy", "blocked"}
@@ -363,8 +484,12 @@ class CollectionCoordinator:
                         "blocked",
                         expected_statuses=("queued",),
                         warning=(
-                            "blocked by incompatible sector prerequisites: "
-                            + ", ".join(blocked_by)
+                            _ths_block_warning(task, blocked_by, self.store)
+                            if task.dataset in {"sector-turnover", "sector-breadth"}
+                            else (
+                                "blocked by incompatible sector prerequisites: "
+                                + ", ".join(blocked_by)
+                            )
                         ),
                         completed_at=self._market_now(),
                     )
@@ -536,7 +661,7 @@ class CollectionCoordinator:
             if dataset not in expanded:
                 continue
             for dependency in DATASET_DEPENDENCIES.get(dataset, ()):
-                if self.store.get(dependency, as_of) is None:
+                if not self._compatible_local_dependency(dependency, as_of):
                     expanded.add(dependency)
         return tuple(dataset for dataset in SUPPORTED_COLLECTION_DATASETS if dataset in expanded)
 
@@ -551,12 +676,26 @@ class CollectionCoordinator:
         tasks = {item.dataset: item for item in self.store.list_collection_tasks(run_id)}
         blocked: list[str] = []
         for dependency in dependencies:
-            if self.store.get(dependency, task.as_of) is not None:
+            if self._compatible_local_dependency(dependency, task.as_of):
                 continue
             prerequisite = tasks.get(dependency)
             if prerequisite is None or prerequisite.status not in SUCCESSFUL_TASK_STATUSES:
                 blocked.append(dependency)
         return tuple(blocked)
+
+    def _compatible_local_dependency(self, dataset: str, as_of: date) -> bool:
+        snapshot = self.store.get(dataset, as_of)
+        if dataset not in {"industry-ranking", "sector-turnover"}:
+            return snapshot is not None
+        if not _accepted_ths_snapshot(snapshot, as_of):
+            return False
+        if dataset == "industry-ranking":
+            return True
+        ranking = self.store.get("industry-ranking", as_of)
+        return (
+            _accepted_ths_snapshot(ranking, as_of)
+            and _ths_catalog_revision(snapshot) == _ths_catalog_revision(ranking)
+        )
 
     def _execute_task(
         self,
@@ -638,17 +777,31 @@ class CollectionCoordinator:
                     self.store.set_refresh_warning(
                         task.dataset,
                         task.as_of,
-                        str(exc),
+                        (
+                            _ths_exception_warning(task, exc, self.store)
+                            if task.dataset in {
+                                "industry-ranking",
+                                "sector-turnover",
+                                "sector-breadth",
+                            }
+                            else str(exc)
+                        ),
                         lease=lease,
                         now=self._market_now().astimezone(ZoneInfo("UTC")),
                     )
                 except LeaseFenceError as fence_exc:
                     return self._fenced_task_result(task, fence_exc, started)
+            warning = (
+                _ths_exception_warning(task, exc, self.store)
+                if task.dataset
+                in {"industry-ranking", "sector-turnover", "sector-breadth"}
+                else str(exc)
+            )
             result = self.store.transition_collection_task(
                 task.task_id,
                 "failed-retained" if existing else "failed-missing",
                 expected_statuses=("collecting",),
-                warning=str(exc),
+                warning=warning,
                 completed_at=self._market_now(),
                 duration_ms=self._milliseconds(started),
             )
@@ -785,6 +938,9 @@ class CollectionCoordinator:
             phase_timings = dict(candidate.timings.phases_ms)
             if candidate.timings.total_ms is not None:
                 phase_timings["providerCollectionMs"] = candidate.timings.total_ms
+            catalog_revision_id = _ths_catalog_revision(candidate)
+            if catalog_revision_id is not None:
+                phase_timings["catalogRevisionId"] = catalog_revision_id
             return self.store.transition_collection_task(
                 task.task_id,
                 committed_outcome.state.value,

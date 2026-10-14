@@ -5,9 +5,13 @@ from fastapi.testclient import TestClient
 from src.market_environment.bootstrap.app import create_app
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.domain.models import DATASET_IDS
+from src.market_environment.application.ths_diagnostics import (
+    ThsDiagnostic,
+    encode_ths_diagnostic,
+)
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.service import MarketEnvironmentService
-from src.market_environment.schemas import CollectionTaskResponse
+from src.market_environment.schemas import CollectionTaskResponse, EvidenceQuality
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
 from tests.market_environment_api_support import (
     FakeCollectionCommands,
@@ -220,6 +224,82 @@ def test_api_exposes_core_and_section_endpoints(monkeypatch) -> None:
     assert service.calls == [("core", None), ("chapter01", "breadth")]
 
 
+def test_chapter_api_normalizes_ths_revision_and_typed_diagnostics_locally() -> None:
+    class DiagnosticChapterService(StubService):
+        def get_chapter01(self, as_of: date, section: str):
+            payload = super().get_chapter01(as_of, section)
+            diagnostic = encode_ths_diagnostic(
+                ThsDiagnostic(
+                    reason_code="THS_LIVE_VALUES_MISSING",
+                    message="一个目录编号缺少当日行情",
+                    failure_stage="snapshot-value-classification",
+                    exact_date=as_of,
+                    retryable=True,
+                    catalog_revision_id="catalog-r8",
+                    expected_count=2,
+                    rankable_count=1,
+                    missing_live_count=1,
+                    missing_live_codes=("883422.TI",),
+                )
+            )
+            ranking = payload["chapter01"]["industryRanking"]
+            ranking.update(
+                {
+                    "state": "partial",
+                    "catalogRevision": "catalog-r8",
+                    "rows": [
+                        {
+                            "tag": "industry",
+                            "rank": 2,
+                            "thscode": "883422.TI",
+                            "name": "空行情样本",
+                            "changePct": None,
+                            "volume": None,
+                            "turnover": None,
+                            "catalogRevision": "catalog-r8",
+                            "asOf": as_of.isoformat(),
+                            "quality": "insufficient",
+                            "warnings": ["当日市场字段全部缺失"],
+                        }
+                    ],
+                }
+            )
+            ranking["quality"].update(
+                {
+                    "status": "partial",
+                    "observations": 2,
+                    "warning": diagnostic,
+                    "warnings": [diagnostic],
+                    "catalogRevision": "catalog-r8",
+                    "expectedCodes": 2,
+                    "rankableCount": 1,
+                    "missingLiveCount": 1,
+                    "missingLiveCodes": ["883422.TI"],
+                }
+            )
+            return payload
+
+    service = DiagnosticChapterService()
+    response = TestClient(
+        build_test_app(
+            market_queries=service,
+            effective_date=date(2026, 9, 14),
+        )
+    ).get("/api/market-environment/chapter-01?as_of=2026-08-28&section=sectors")
+
+    assert response.status_code == 200
+    ranking = response.json()["chapter01"]["industryRanking"]
+    assert ranking["catalogRevisionId"] == "catalog-r8"
+    assert "catalogRevision" not in ranking
+    assert ranking["quality"]["catalogRevisionId"] == "catalog-r8"
+    assert ranking["quality"]["expectedCount"] == 2
+    assert ranking["quality"]["warning"] == "一个目录编号缺少当日行情"
+    assert ranking["diagnostics"]["reasonCode"] == "THS_LIVE_VALUES_MISSING"
+    assert ranking["rows"][0]["catalogRevisionId"] == "catalog-r8"
+    assert "catalogRevision" not in ranking["rows"][0]
+    assert service.calls == [("chapter01", "sectors")]
+
+
 def test_api_exposes_provider_free_next_session_endpoint(monkeypatch) -> None:
     service = StubService()
     response = TestClient(
@@ -400,6 +480,59 @@ def test_collection_status_exposes_attempt_timings(monkeypatch, tmp_path) -> Non
     }
 
 
+def test_collection_status_decodes_local_ths_diagnostic_without_provider_call(
+    monkeypatch, tmp_path
+) -> None:
+    provider = CollectionProvider()
+    coordinator = collection_coordinator(tmp_path, provider)
+    result = coordinator.collect(AS_OF, ["industry-ranking"])
+    task = result.tasks[0]
+    warning = encode_ths_diagnostic(
+        ThsDiagnostic(
+            reason_code="THS_LIVE_VALUES_MISSING",
+            message="2 个目录编号缺少当日行情",
+            failure_stage="snapshot-value-classification",
+            exact_date=AS_OF,
+            retryable=True,
+            catalog_revision_id="catalog-r8",
+            expected_count=846,
+            rankable_count=844,
+            missing_live_count=2,
+            missing_live_codes=("883999.TI", "883422.TI"),
+        )
+    )
+    coordinator.store.transition_collection_task(
+        task.task_id,
+        task.status,
+        expected_statuses=(task.status,),
+        warning=warning,
+        timings={"catalogRevision": "catalog-r8"},
+    )
+    provider.calls.clear()
+
+    response = TestClient(
+        build_test_app(collection_queries=coordinator, effective_date=AS_OF)
+    ).get(f"/api/market-environment/data-collection?as_of={AS_OF.isoformat()}")
+
+    assert response.status_code == 200
+    row = next(
+        item
+        for item in response.json()["datasets"]
+        if item["dataset"] == "industry-ranking"
+    )
+    attempt = row["latestAttempt"]
+    assert attempt["warning"] == "2 个目录编号缺少当日行情"
+    assert attempt["catalogRevisionId"] == "catalog-r8"
+    assert attempt["timings"]["catalogRevisionId"] == "catalog-r8"
+    assert "catalogRevision" not in attempt["timings"]
+    assert attempt["diagnostics"]["reasonCode"] == "THS_LIVE_VALUES_MISSING"
+    assert attempt["diagnostics"]["missingLiveCodes"] == [
+        "883422.TI",
+        "883999.TI",
+    ]
+    assert provider.calls == []
+
+
 def test_collection_status_exposes_derived_quality_from_local_snapshot(monkeypatch, tmp_path) -> None:
     coordinator = collection_coordinator(tmp_path)
     coordinator.store.put(
@@ -494,6 +627,35 @@ def test_collection_task_timings_accept_ths_revision_metadata() -> None:
     assert response.timings["sourceRevision"] == "fuyao-ths-catalog-v1"
     assert response.timings["catalogRevision"] == "catalog-fixture-r1"
     assert response.timings["requestBudget"] == 12
+
+
+def test_ths_quality_bounds_missing_samples_without_truncating_total_count() -> None:
+    codes = [f"{index:06d}.TI" for index in range(25)]
+
+    quality = EvidenceQuality.model_validate(
+        {
+            "dataset": "industry-ranking",
+            "source": "fuyao-ths",
+            "provider": "fuyao",
+            "status": "partial",
+            "observations": 25,
+            "warnings": [],
+            "catalogRevision": "catalog-r8",
+            "expectedCodes": 846,
+            "observedCodes": 846,
+            "rankableCodes": 821,
+            "barCodes": 821,
+            "missingLiveCodes": list(reversed(codes)),
+        }
+    ).model_dump()
+
+    assert quality["catalogRevisionId"] == "catalog-r8"
+    assert quality["expectedCount"] == 846
+    assert quality["observedCount"] == 846
+    assert quality["rankableCount"] == 821
+    assert quality["barCount"] == 821
+    assert quality["missingLiveCount"] == 25
+    assert quality["missingLiveCodes"] == codes[:20]
 
 
 def test_collection_full_run_reports_partial_and_keeps_successes(monkeypatch, tmp_path) -> None:

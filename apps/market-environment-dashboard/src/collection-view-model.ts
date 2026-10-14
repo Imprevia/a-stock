@@ -3,6 +3,7 @@ import type {
   CollectionTaskStatus,
   DatasetCollectionStatus,
 } from './collection-api'
+import type { ThsDiagnostic } from './types'
 
 export const STATUS_LABELS: Record<CollectionTaskStatus, string> = {
   queued: '等待采集',
@@ -33,6 +34,66 @@ export function availabilityLabel(item: DatasetCollectionStatus) {
 
 export function attemptLabel(item: DatasetCollectionStatus) {
   return item.latestAttempt ? STATUS_LABELS[item.latestAttempt.status] : '尚未采集'
+}
+
+function qualityDiagnostic(item: DatasetCollectionStatus): ThsDiagnostic | null {
+  const value = item.quality?.diagnostics
+  if (!value || typeof value !== 'object') return null
+  return value as ThsDiagnostic
+}
+
+export function collectionDiagnostic(item: DatasetCollectionStatus): ThsDiagnostic | null {
+  return item.latestAttempt?.diagnostics ?? qualityDiagnostic(item)
+}
+
+export function diagnosticCoverageLabel(
+  item: DatasetCollectionStatus,
+  diagnostic: ThsDiagnostic,
+): string | null {
+  const expected = diagnostic.expectedCount
+  const usable = diagnostic.usableCount
+    ?? (item.dataset === 'industry-ranking' ? diagnostic.rankableCount : null)
+    ?? (item.dataset === 'sector-turnover' ? diagnostic.barCount : null)
+    ?? diagnostic.observedCount
+  if (expected == null || usable == null) return null
+  return `可用 ${usable.toLocaleString('zh-CN')} / 预期 ${expected.toLocaleString('zh-CN')}`
+}
+
+export function diagnosticMissingLabel(diagnostic: ThsDiagnostic): string | null {
+  const format = (label: string, totalValue: number | null | undefined, values: string[]) => {
+    const samples = [...new Set(values)]
+    const total = totalValue ?? samples.length
+    if (!total && !samples.length) return null
+    const sampleText = samples.length ? samples.join('、') : '未提供样例'
+    const remaining = Math.max(0, total - samples.length)
+    return `${label} ${total} 个：${sampleText}${remaining ? `（另 ${remaining} 个）` : ''}`
+  }
+  const parts = [
+    format('当日行情缺失', diagnostic.missingLiveCount, diagnostic.missingLiveCodes ?? []),
+    format('不可排名', diagnostic.missingRankingCount, diagnostic.missingRankingCodes ?? []),
+  ].filter((value): value is string => Boolean(value))
+  return parts.length ? parts.join('；') : null
+}
+
+export function diagnosticDependencyLabel(diagnostic: ThsDiagnostic): string | null {
+  if (!diagnostic.blockedBy?.length) return null
+  return `上游：${diagnostic.blockedBy.map((item) => (
+    `${item.dataset}（${item.status}${item.reasonCode ? ` · ${item.reasonCode}` : ''}）`
+  )).join('；')}`
+}
+
+export function collectionDiagnosticDetails(item: DatasetCollectionStatus): string[] {
+  const diagnostic = collectionDiagnostic(item)
+  if (!diagnostic) return []
+  return [
+    `原因 ${diagnostic.reasonCode}`,
+    diagnosticCoverageLabel(item, diagnostic),
+    diagnosticMissingLabel(diagnostic),
+    diagnosticDependencyLabel(diagnostic),
+    diagnostic.catalogRevisionId ? `目录版本 ${diagnostic.catalogRevisionId}` : null,
+    `阶段 ${diagnostic.failureStage}`,
+    diagnostic.retryable ? '可重试' : '不可直接重试',
+  ].filter((value): value is string => Boolean(value))
 }
 
 export function canRetryDataset(

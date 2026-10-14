@@ -143,6 +143,17 @@ def test_characterizes_missing_chapter_quality_and_exact_date(monkeypatch) -> No
         "derived": None,
         "rankingMethod": None,
         "sourceRevision": None,
+        "catalogRevisionId": None,
+        "expectedCount": None,
+        "observedCount": None,
+        "usableCount": None,
+        "rankableCount": None,
+        "barCount": None,
+        "missingLiveCount": None,
+        "missingLiveCodes": [],
+        "missingRankingCount": None,
+        "missingRankingCodes": [],
+        "diagnostics": None,
         "industryMappingRevision": None,
         "industryMappingCoverage": None,
         "industryMappingCovered": None,
@@ -191,7 +202,12 @@ def test_characterizes_partial_run_and_sibling_success(monkeypatch, tmp_path) ->
     assert tasks["breadth"]["observations"] == 3
     assert tasks["industry-ranking"]["status"] == "failed-missing"
     assert tasks["industry-ranking"]["source"] == "none"
-    assert "normalized Fuyao THS collector" in tasks["industry-ranking"]["warning"]
+    assert tasks["industry-ranking"]["warning"] == (
+        "THS catalog or daily snapshot validation failed"
+    )
+    assert tasks["industry-ranking"]["diagnostics"]["reasonCode"] == (
+        "THS_DAILY_SNAPSHOT_INSUFFICIENT"
+    )
     assert tasks["sector-turnover"]["status"] == "blocked"
     assert tasks["sector-breadth"]["status"] == "blocked"
 

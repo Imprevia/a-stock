@@ -96,18 +96,20 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 
 | 代码区 | 预期职责 | 必须同步的事实文档 |
 |---|---|---|
-| `src/market_environment/domain/models/` | 四类 THS 目录、共享代码身份、排名、OHLC/volume/turnover、当日宽度、质量 lineage 和回填 checkpoint 等不可变模型 | `docs/architecture.md`、`docs/product-specs/market-environment-dashboard.md` |
+| `src/market_environment/domain/models/`、`src/market_environment/domain/analysis/` | capability/catalog observation revision 分离、完整目录 checksum/ID、共享代码身份、snapshot observation availability、`missingLiveCodes`/`missingRankingCodes`、排名行质量、OHLC/volume/turnover、当日宽度、质量 lineage 和回填 checkpoint 等不可变模型与纯计算 | `docs/architecture.md`、`docs/product-specs/market-environment-dashboard.md` |
 | `src/market_environment/application/ports/` | 目录/量价/宽度 repositories、UoW、capability、预算、checkpoint 和 provider-free query 协议 | `docs/architecture.md`、`docs/runbooks.md` |
-| `src/market_environment/application/commands/` | 显式目录同步、单编号/60 编号分批历史回填、dump 导入、三数据集编排与可恢复写入 | `docs/runbooks.md`、active plan |
-| `src/market_environment/application/queries/` | 目录、K 线、宽度、任务状态和回填进度的精确日期只读投影 | 产品规格、`docs/runbooks.md` |
-| `src/market_environment/infrastructure/providers/fuyao/`、`src/market_environment/infrastructure/providers/tdx/` | Fuyao 四类目录/指数历史/成员事实 adapter 与 TDX 精确日期降级；只输出 typed provider facts 和脱敏证据 | `docs/architecture.md`、`docs/runbooks.md` |
-| `src/market_environment/infrastructure/persistence/postgres/`、`src/market_environment/postgres_schema.py`、`alembic/versions/` | additive migration、目录/量价/宽度/checkpoint repositories、幂等冲突和 lease/fencing | `docs/architecture.md`、`docs/runbooks.md`、active plan |
-| `src/market_environment/infrastructure/collection/`、`src/market_environment/bootstrap/registries.py` | `industry-ranking -> sector-turnover -> sector-breadth` 依赖、失败隔离、请求预算和公共 dataset 注册 | `docs/architecture.md`、`docs/runbooks.md`、active plan |
+| `src/market_environment/application/commands/` | 显式目录同步复用 daily collection 的完整目录/revision/partial 原子规则，另含单编号/60 编号分批历史回填、dump 导入、三数据集编排与可恢复写入 | `docs/runbooks.md`、active plan |
+| `src/market_environment/application/queries/` | 目录、K 线、宽度、任务状态和回填进度的精确日期只读投影；隐式读取只选一个最新兼容 revision，显式读取不跨 revision 合并 | 产品规格、`docs/runbooks.md` |
+| `src/market_environment/infrastructure/providers/fuyao/`、`src/market_environment/infrastructure/providers/tdx/` | Fuyao adapter 只做四类完整响应归一化、身份/日期验证和值可用性分类，TDX 负责精确日期降级；均只输出 typed provider facts 和脱敏证据，不决定目录持久化身份 | `docs/architecture.md`、`docs/runbooks.md` |
+| `src/market_environment/infrastructure/persistence/postgres/`、`src/market_environment/postgres_schema.py`、`alembic/versions/` | 不可变 catalog observation、ranking quality/warning round-trip、显式/单一最新 revision 读取、目录/量价/宽度/checkpoint repositories、幂等冲突和 lease/fencing；本修复以 schema v10 / `0007_ths_catalog_identity` 删除不含交易日的冗余唯一约束，保留 revision identity；Alembic revision ID 必须适配默认 32 字符版本列 | `docs/architecture.md`、`docs/runbooks.md`、active plan |
+| `src/market_environment/infrastructure/collection/`、`src/market_environment/bootstrap/registries.py` | `industry-ranking -> sector-turnover -> sector-breadth` 的完整 ranking、bar/gap 对账、same-date/same-revision compatible-partial 谓词、失败隔离、请求预算和公共 dataset 注册 | `docs/architecture.md`、`docs/runbooks.md`、active plan |
 | `src/market_environment/infrastructure/materialization_support.py`、`src/trading_system/data/` | Chapter 01 的 `industryRanking`/`sectorTurnover`/`sectorBreadth`/`sectorAnalysis` 原子重建和 snapshot bridge | `docs/architecture.md`、产品规格、交易规则工程规格 |
-| `src/market_environment/interfaces/http/`、`src/market_environment/interfaces/cli/`、`src/market_environment/cli.py` | provider-free GET、受门禁保护的显式 POST/CLI、进度与错误 DTO；稳定根级 CLI 只做转发 | 产品规格、API 契约、`docs/runbooks.md` |
-| `apps/market-environment-dashboard/` | 数据管理页三任务卡，以及第 05 页排名、板块宽度、量价 K 线、申万持续性四视图 | 产品规格、设计规范、`docs/runbooks.md` |
+| `src/market_environment/interfaces/http/`、`src/market_environment/interfaces/cli/`、`src/market_environment/cli.py` | provider-free GET、受门禁保护的显式 POST/CLI、opaque `catalogRevisionId`、optional typed/bounded THS diagnostics 与 legacy warning 兼容；稳定根级 CLI 只做转发 | 产品规格、API 契约、`docs/runbooks.md` |
+| `apps/market-environment-dashboard/` | 数据管理页三任务 coverage/missing/reason/blockedBy 诊断，以及第 05 页 partial 排名、行级 unavailable、板块宽度、量价 K 线、申万持续性四视图 | 产品规格、设计规范、`docs/runbooks.md` |
 
-上述路径是 `add-fuyao-ths-sector-datasets` 的预计归属，不授权真实 provider、非测试数据库、生产部署或调度操作。
+上述路径由 `add-fuyao-ths-sector-datasets` 建立，`fix-ths-catalog-revision` 仅修复目录观察身份、partial
+语义和诊断兼容，并以 `0007` 删除一个冗余唯一约束；不授权真实 provider、生产 migration、非测试数据库、
+生产部署或调度操作。
 THS 目录同步和回填不得进入申万 continuity backfill、普通 GET、根级兼容 shim 或默认调度；THS observation
 不得作为申万一级 `QTS-01-05-*` 输入。旧 `sectors` 数据库证据只能由审计查询读取，不得在 migration、repository
 或 materialization 中重命名、覆写或伪装成新数据集。

@@ -55,14 +55,14 @@ function ranking(asOf = '2026-09-03') {
   return {
     state: 'ok',
     asOf,
-    revisionId: 'catalog-r7',
-    quality: { dataset: 'industry-ranking', source: 'fuyao', provider: 'fuyao', status: 'ok', observations: 4, asOf, warnings: [] },
+    catalogRevisionId: 'catalog-r7',
+    quality: { dataset: 'industry-ranking', source: 'fuyao', provider: 'fuyao', status: 'ok', observations: 4, asOf, warnings: [], expectedCount: 5, rankableCount: 5 },
     rows: [
-      { tag: 'industry', rank: 1, thscode: '885001.TI', name: '农林牧渔', changePct: 2.35, volume: 120000000, turnover: 1500000000, catalogRevision: 'catalog-r7', asOf },
-      { tag: 'industry', rank: 2, thscode: '885002.TI', name: '半导体', changePct: -1.2, volume: 80000000, turnover: 900000000, catalogRevision: 'catalog-r7', asOf },
-      { tag: 'cn_concept', rank: 1, thscode: '886001.TI', name: '人工智能', changePct: 1.5, volume: 60000000, turnover: 700000000, catalogRevision: 'catalog-r7', asOf },
-      { tag: 'region', rank: 1, thscode: '887001.TI', name: '上海板块', changePct: 0.5, volume: null, turnover: 500000000, catalogRevision: 'catalog-r7', asOf },
-      { tag: 'tszs', rank: 1, thscode: '888001.TI', name: '特色样本', changePct: 0.2, volume: 30000000, turnover: 400000000, catalogRevision: 'catalog-r7', asOf },
+      { tag: 'industry', rank: 1, thscode: '885001.TI', name: '农林牧渔', changePct: 2.35, volume: 120000000, turnover: 1500000000, catalogRevisionId: 'catalog-r7', asOf, quality: 'ok', warnings: [] },
+      { tag: 'industry', rank: 2, thscode: '885002.TI', name: '半导体', changePct: -1.2, volume: 80000000, turnover: 900000000, catalogRevisionId: 'catalog-r7', asOf, quality: 'ok', warnings: [] },
+      { tag: 'cn_concept', rank: 1, thscode: '886001.TI', name: '人工智能', changePct: 1.5, volume: 60000000, turnover: 700000000, catalogRevisionId: 'catalog-r7', asOf, quality: 'ok', warnings: [] },
+      { tag: 'region', rank: 1, thscode: '887001.TI', name: '上海板块', changePct: 0.5, volume: null, turnover: 500000000, catalogRevisionId: 'catalog-r7', asOf, quality: 'partial', warnings: ['volume missing'] },
+      { tag: 'tszs', rank: 1, thscode: '888001.TI', name: '特色样本', changePct: 0.2, volume: 30000000, turnover: 400000000, catalogRevisionId: 'catalog-r7', asOf, quality: 'ok', warnings: [] },
     ],
   }
 }
@@ -91,6 +91,7 @@ function makeResponse(options: {
   rankingAsOf?: string
   breadthAsOf?: string
   analysis?: Record<string, unknown> | null
+  rankingOverride?: ReturnType<typeof ranking>
 } = {}) {
   const asOf = '2026-09-03'
   return {
@@ -103,7 +104,7 @@ function makeResponse(options: {
       coverage: 0.75,
       combinationOverview: { strength: 'fixture', stage: 'fixture', capitalAcceptance: 'fixture', tradingMode: 'fixture', confidence: 'fixture', evidence: [] },
       assessment: { state: 'fixture', confidence: 'fixture', evidence: [], risks: [], nextConfirmation: '', invalidation: '' },
-      industryRanking: ranking(options.rankingAsOf),
+      industryRanking: options.rankingOverride ?? ranking(options.rankingAsOf),
       sectorTurnover: {
         state: 'ok', asOf,
         rows: [],
@@ -180,6 +181,40 @@ describe('Document05SectorsPage', () => {
     expect(wrapper.text()).toContain('样本二')
     expect(wrapper.text()).toContain('industry-top-10、user-selected')
     expect(wrapper.text()).toContain('一个成员缺少 MA20')
+  })
+
+  it('shows partial and unavailable ranking rows and excludes them from breadth actions', async () => {
+    const partial = ranking()
+    partial.state = 'partial'
+    partial.quality.status = 'partial'
+    partial.quality.expectedCount = 7
+    partial.quality.rankableCount = 5
+    partial.rows.push(
+      {
+        tag: 'industry', rank: 3, thscode: '883422.TI', name: '全空行情样本',
+        changePct: null, volume: null, turnover: null, catalogRevisionId: 'catalog-r7',
+        asOf: '2026-09-03', quality: 'insufficient', warnings: ['当日市场字段全部缺失'],
+      },
+      {
+        tag: 'industry', rank: 4, thscode: '883999.TI', name: '缺少涨跌幅样本',
+        changePct: null, volume: 1000, turnover: 2000, catalogRevisionId: 'catalog-r7',
+        asOf: '2026-09-03', quality: 'insufficient', warnings: ['changePct missing'],
+      },
+    )
+
+    const wrapper = await mountPage({ rankingOverride: partial })
+
+    expect(wrapper.text()).toContain('部分排名 · 可排名 5 / 7')
+    const allNullRow = wrapper.findAll('.ths-ranking-table tbody tr')
+      .find((row) => row.text().includes('883422.TI'))!
+    const missingChangeRow = wrapper.findAll('.ths-ranking-table tbody tr')
+      .find((row) => row.text().includes('883999.TI'))!
+    expect(allNullRow.text()).toContain('当日行情缺失')
+    expect(allNullRow.text()).toContain('--')
+    expect(missingChangeRow.text()).toContain('不可排名')
+    expect(allNullRow.find('button').attributes('disabled')).toBeDefined()
+    expect(missingChangeRow.find('button').attributes('disabled')).toBeDefined()
+    expect(allNullRow.find('button').attributes('title')).toContain('不进入 Top-N')
   })
 
   it('keeps THS observation separate from Shenwan continuity evidence', async () => {
@@ -282,6 +317,9 @@ describe('Document05SectorsPage', () => {
 
     expect(wrapper.find('.sector-view-tabs').exists()).toBe(true)
     expect(wrapper.find('.ths-ranking-scroll').exists()).toBe(true)
+    expect(wrapper.find('.ths-ranking-scroll').classes()).toContain('table-scroll')
+    const root = wrapper.element as HTMLElement
+    if (root.clientWidth > 0) expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth)
     for (const node of wrapper.findAll('p, span, strong, button, th, td, label, input, select').filter((item) => item.isVisible())) {
       const fontSize = Number.parseFloat(getComputedStyle(node.element).fontSize)
       if (Number.isFinite(fontSize) && fontSize > 0) expect(fontSize).toBeGreaterThanOrEqual(14)

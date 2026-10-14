@@ -61,6 +61,17 @@ def _normalize_sql(statement: str) -> str:
     return " ".join(statement.split()).lower()
 
 
+def _remove_pre_0007_catalog_unique(statement: str) -> str:
+    """Project historical 0005 DDL onto the post-0007 fresh-schema shape."""
+
+    return re.sub(
+        r"\s*,\s*unique\s*\(provider,\s*capability_revision,\s*checksum,\s*fetched_at\)",
+        "",
+        statement,
+        flags=re.IGNORECASE,
+    )
+
+
 class RecordingOperations:
     def __init__(self) -> None:
         self.statements: list[str] = []
@@ -103,7 +114,10 @@ def test_0005_revision_is_additive_and_matches_runtime_schema_contract() -> None
 
     assert migration.revision == "0005_ths_sector_datasets"
     assert migration.down_revision == "0004_sector_continuity"
-    assert tuple(map(_normalize_sql, operations.statements[:-1])) == tuple(
+    assert tuple(
+        _normalize_sql(_remove_pre_0007_catalog_unique(statement))
+        for statement in operations.statements[:-1]
+    ) == tuple(
         map(_normalize_sql, _runtime_ths_statements())
     )
     assert "values (8, 'add-ths-sector-datasets'" in _normalize_sql(

@@ -208,15 +208,15 @@ def build_container(
     ths_capability_policy = _build_ths_capability_policy(repository)
 
     def ths_adapter_factory(
-        catalog_revision: str,
+        capability_revision: str,
         history_revision: str | None,
         membership_revision: str | None = None,
     ) -> FuyaoThsSectorAdapter:
         return FuyaoThsSectorAdapter(
             FuyaoMarketClient(transport_gateway=transport_gateway),
-            catalog_revision=catalog_revision,
-            history_revision=history_revision or catalog_revision,
-            membership_revision=membership_revision or catalog_revision,
+            capability_revision=capability_revision,
+            history_revision=history_revision or capability_revision,
+            membership_revision=membership_revision or capability_revision,
             now=lambda: _market_now(clock).astimezone(timezone.utc),
         )
 

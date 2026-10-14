@@ -25,6 +25,7 @@ import {
   availabilityLabel,
   canCollectAll,
   canRetryDataset,
+  collectionDiagnosticDetails,
   getCollectionStatusRequestDate,
   isRunActive,
   resolveCollectionSelectedDate,
@@ -143,6 +144,7 @@ function collectionQuality(item: DatasetCollectionStatus) {
     status?: string
     rankingMethod?: string
     industryMappingCoverage?: number
+    catalogRevisionId?: string
     catalogRevision?: string
     sourceRevision?: string
     coverage?: number
@@ -151,7 +153,10 @@ function collectionQuality(item: DatasetCollectionStatus) {
   if (!quality) return null
   if (SECTOR_DATASETS.has(item.dataset)) {
     const details = [quality.status ? qualityLabel(quality.status) : null]
-    const revision = quality.catalogRevision ?? quality.sourceRevision
+    const revision = item.catalogRevisionId
+      ?? quality.catalogRevisionId
+      ?? quality.catalogRevision
+      ?? quality.sourceRevision
     if (revision) details.push(`版本 ${revision}`)
     if (quality.coverage != null) details.push(`覆盖 ${(quality.coverage * 100).toFixed(0)}%`)
     if (quality.dependency) details.push(`依赖 ${quality.dependency}`)
@@ -336,6 +341,14 @@ onMounted(loadStatus)
                     :title="item.restriction || undefined"
                     @click="retryDataset(item)"
                   ><RotateCcw :size="15" /><span>重新采集</span></button>
+                </td>
+              </tr>
+              <tr v-if="collectionDiagnosticDetails(item).length" class="ths-diagnostic-row">
+                <td colspan="8">
+                  <div class="ths-diagnostic-details" role="status" :aria-label="`${DATASET_LABELS[item.dataset]}诊断详情`">
+                    <strong>THS 诊断</strong>
+                    <span v-for="detail in collectionDiagnosticDetails(item)" :key="detail">{{ detail }}</span>
+                  </div>
                 </td>
               </tr>
               <tr v-if="item.dataset === 'core' && expandedCore" class="core-detail-row">
