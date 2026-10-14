@@ -193,7 +193,10 @@ podman stop a-stock-smoke
 在 VM 中：
 
 ```bash
-export ARCHIVE="a-stock-market-environment-${IMAGE_TAG}.tar"
+export DEPLOY_TMP_ROOT=/dev/shm  # 或本机专用大盘；先用 df -h 核对容量
+export ARCHIVE_TMP_DIR="$(mktemp -d -p "$DEPLOY_TMP_ROOT" a-stock-deploy-image.XXXXXX)"
+trap 'rm -rf -- "$ARCHIVE_TMP_DIR"' EXIT INT TERM HUP
+export ARCHIVE="$ARCHIVE_TMP_DIR/a-stock-market-environment-${IMAGE_TAG}.tar"
 podman save --format docker-archive --output "$ARCHIVE" "$IMAGE"
 sha256sum "$ARCHIVE" >"${ARCHIVE}.sha256"
 ls -lh "$ARCHIVE" "${ARCHIVE}.sha256"

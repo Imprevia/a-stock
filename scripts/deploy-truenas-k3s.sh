@@ -19,6 +19,83 @@ is_absolute_path() {
   [[ "$1" == /* || "$1" =~ ^[[:alpha:]]:[/\\].*$ ]]
 }
 
+filesystem_available_bytes() {
+  LC_ALL=C df -Pk -- "$1" | awk 'NR == 2 { printf "%.0f\n", $4 * 1024 }'
+}
+
+archive_required_bytes() {
+  local image_size_bytes="$1"
+  local margin_bytes=$((image_size_bytes / 4))
+  local minimum_margin_bytes=$((256 * 1024 * 1024))
+  if ((margin_bytes < minimum_margin_bytes)); then
+    margin_bytes="$minimum_margin_bytes"
+  fi
+  printf '%s\n' "$((image_size_bytes + margin_bytes))"
+}
+
+bytes_to_mib_ceil() {
+  printf '%s\n' "$((($1 + 1024 * 1024 - 1) / (1024 * 1024)))"
+}
+
+select_archive_temp_root() {
+  local required_bytes="$1"
+  local explicit=false
+  local candidate canonical available_bytes duplicate existing
+  local -a candidates=()
+  local -a checked=()
+  local -a rejected=()
+
+  if [[ -n "${DEPLOY_TMP_ROOT:-}" ]]; then
+    explicit=true
+    candidates+=("$DEPLOY_TMP_ROOT")
+  else
+    if [[ -n "${TMPDIR:-}" ]]; then
+      candidates+=("$TMPDIR")
+    fi
+    candidates+=(/dev/shm /tmp)
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    if ! is_absolute_path "$candidate"; then
+      if [[ "$explicit" == true ]]; then
+        die 'DEPLOY_TMP_ROOT must be an absolute path'
+      fi
+      rejected+=("$candidate (not absolute)")
+      continue
+    fi
+    if [[ ! -d "$candidate" || ! -w "$candidate" || ! -x "$candidate" ]]; then
+      if [[ "$explicit" == true ]]; then
+        die "DEPLOY_TMP_ROOT must be an existing writable directory: $candidate"
+      fi
+      rejected+=("$candidate (unavailable)")
+      continue
+    fi
+    canonical="$(readlink -f -- "$candidate")" \
+      || die "failed to resolve image archive temp root: $candidate"
+    duplicate=false
+    for existing in "${checked[@]}"; do
+      if [[ "$existing" == "$canonical" ]]; then
+        duplicate=true
+        break
+      fi
+    done
+    if [[ "$duplicate" == true ]]; then
+      continue
+    fi
+    checked+=("$canonical")
+    available_bytes="$(filesystem_available_bytes "$canonical")"
+    [[ "$available_bytes" =~ ^[0-9]+$ ]] \
+      || die "failed to read available bytes for image archive temp root: $canonical"
+    if ((available_bytes >= required_bytes)); then
+      printf '%s\n' "$canonical"
+      return 0
+    fi
+    rejected+=("$canonical ($(bytes_to_mib_ceil "$available_bytes") MiB available)")
+  done
+
+  die "image archive requires $(bytes_to_mib_ceil "$required_bytes") MiB including safety margin; checked ${rejected[*]:-no usable directories}. Set DEPLOY_TMP_ROOT to a writable filesystem with enough free space"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: bash scripts/deploy-truenas-k3s.sh [--env-file PATH]
@@ -1360,6 +1437,7 @@ K3S_API_LOCAL_PORT="${K3S_API_LOCAL_PORT:-16443}"
 REMOTE_IMAGE_DIR="${REMOTE_IMAGE_DIR:-}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-localhost/a-stock-market-environment}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
+DEPLOY_TMP_ROOT="${DEPLOY_TMP_ROOT:-}"
 NAMESPACE="${CLI_NAMESPACE:-${NAMESPACE:-a-stock}}"
 RELEASE_NAME="${CLI_RELEASE_NAME:-${RELEASE_NAME:-a-stock}}"
 HELM_VALUES_FILE="${HELM_VALUES_FILE:-}"
@@ -2019,6 +2097,7 @@ remote() {
 }
 
 TMP_DIR="$(mktemp -d -t a-stock-deploy.XXXXXX)"
+ARCHIVE_TMP_DIR=''
 SMOKE_NAME="a-stock-smoke-$$"
 SMOKE_CREATED=false
 K3S_TUNNEL_PID=''
@@ -2053,8 +2132,19 @@ cleanup() {
     kill "$K3S_TUNNEL_PID" >/dev/null 2>&1 || true
     wait "$K3S_TUNNEL_PID" 2>/dev/null || true
   fi
+  if [[ -n "$ARCHIVE_TMP_DIR" ]]; then
+    case "$ARCHIVE_TMP_DIR" in
+      */a-stock-deploy-image.*)
+        chmod -R u+w "$ARCHIVE_TMP_DIR" >/dev/null 2>&1 || true
+        rm -rf -- "$ARCHIVE_TMP_DIR"
+        ;;
+      *)
+        warn "refusing to remove unexpected image archive temp directory: $ARCHIVE_TMP_DIR"
+        ;;
+    esac
+  fi
   chmod -R u+w "$TMP_DIR" >/dev/null 2>&1 || true
-  rm -rf "$TMP_DIR"
+  rm -rf -- "$TMP_DIR"
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -2583,18 +2673,36 @@ else
   podman stop "$SMOKE_NAME" >/dev/null
   SMOKE_CREATED=false
 
-  ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
+  IMAGE_SIZE_RAW="$(podman image inspect --format '{{.Size}}' "$IMAGE")"
+  [[ "$IMAGE_SIZE_RAW" =~ ^[1-9][0-9]{0,17}$ ]] \
+    || die "could not determine a positive local image size for $IMAGE"
+  IMAGE_SIZE_BYTES=$((10#$IMAGE_SIZE_RAW))
+  ARCHIVE_REQUIRED_BYTES="$(archive_required_bytes "$IMAGE_SIZE_BYTES")"
+  ARCHIVE_TMP_ROOT="$(select_archive_temp_root "$ARCHIVE_REQUIRED_BYTES")"
+  ARCHIVE_TMP_DIR="$(mktemp -d -p "$ARCHIVE_TMP_ROOT" a-stock-deploy-image.XXXXXX)" \
+    || die "failed to create image archive temp directory under $ARCHIVE_TMP_ROOT"
+  ARCHIVE_AVAILABLE_BYTES="$(filesystem_available_bytes "$ARCHIVE_TMP_DIR")"
+  [[ "$ARCHIVE_AVAILABLE_BYTES" =~ ^[0-9]+$ ]] \
+    || die "failed to confirm available bytes for image archive workspace: $ARCHIVE_TMP_DIR"
+  if ((ARCHIVE_AVAILABLE_BYTES < ARCHIVE_REQUIRED_BYTES)); then
+    die "image archive workspace dropped below the required $(bytes_to_mib_ceil "$ARCHIVE_REQUIRED_BYTES") MiB before export"
+  fi
+  log "image archive workspace: root=$ARCHIVE_TMP_ROOT available=$(bytes_to_mib_ceil "$ARCHIVE_AVAILABLE_BYTES")MiB required=$(bytes_to_mib_ceil "$ARCHIVE_REQUIRED_BYTES")MiB"
+
+  ARCHIVE_PATH="$ARCHIVE_TMP_DIR/$ARCHIVE_NAME"
   CHECKSUM_PATH="${ARCHIVE_PATH}.sha256"
   log "exporting $ARCHIVE_NAME"
   podman save --format docker-archive --output "$ARCHIVE_PATH" "$IMAGE"
   (
-    cd "$TMP_DIR"
+    cd "$ARCHIVE_TMP_DIR"
     sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
   )
 
   log "copying archive to $SSH_TARGET:$REMOTE_IMAGE_DIR"
   scp -P "$TRUENAS_SSH_PORT" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
     "$SSH_TARGET:$REMOTE_IMAGE_DIR/"
+  rm -rf -- "$ARCHIVE_TMP_DIR"
+  ARCHIVE_TMP_DIR=''
 
   log 'verifying and importing the image into k3s containerd'
   remote "set -eu

@@ -1199,6 +1199,12 @@ def _run_generic_deploy(
     outcome: str = "off",
     release_present: bool = True,
     live_label_drift: bool = False,
+    deploy_tmp_root: Path | None = None,
+    image_size_output: str = "1048576",
+    archive_available_kib: int = 4 * 1024 * 1024,
+    tmpdir: Path | None = None,
+    tmpdir_available_kib: int | None = None,
+    scp_exit_code: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], str, dict]:
     repo, baseline, suspended, active, off, _ = _prepare_reviewed_repo(tmp_path)
     overlays = {path.name: path for path in (suspended, active, off)}
@@ -1334,6 +1340,7 @@ def _run_generic_deploy(
     podman_wrapper.write_text(
         "#!/usr/bin/env bash\n"
         f"printf 'podman %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$1 $2\" == \"image inspect\" ]]; then printf '%s\\n' \"$PODMAN_IMAGE_SIZE_OUTPUT\"; exit 0; fi\n"
         "if [[ \"$1\" == save ]]; then\n"
         "  while (($#)); do\n"
         "    if [[ \"$1\" == --output ]]; then : > \"$2\"; exit 0; fi\n"
@@ -1345,6 +1352,17 @@ def _run_generic_deploy(
         encoding="utf-8",
     )
     podman_wrapper.chmod(0o755)
+    df_wrapper = fake_bin / "df"
+    df_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        "target=\"${@: -1}\"\n"
+        "available=\"$ARCHIVE_AVAILABLE_KIB\"\n"
+        "if [[ -n \"${ARCHIVE_LOW_SPACE_PATH:-}\" && \"$target\" == \"$ARCHIVE_LOW_SPACE_PATH\"* ]]; then available=\"$ARCHIVE_LOW_SPACE_KIB\"; fi\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'fixture 8388608 0 %s 0%% /fixture\\n' \"$available\"\n",
+        encoding="utf-8",
+    )
+    df_wrapper.chmod(0o755)
     ssh_wrapper = fake_bin / "ssh"
     ssh_wrapper.write_text(
         "#!/usr/bin/env bash\n"
@@ -1364,7 +1382,7 @@ def _run_generic_deploy(
         executable.write_text(
             "#!/usr/bin/env bash\n"
             f"printf '{name} %s\\n' \"$*\" >> {calls}\n"
-            "exit 0\n",
+            + ("exit \"$SCP_EXIT_CODE\"\n" if name == "scp" else "exit 0\n"),
             encoding="utf-8",
         )
         executable.chmod(0o755)
@@ -1382,6 +1400,11 @@ def _run_generic_deploy(
                 f"KUBECONFIG={kubeconfig}",
                 f"HELM_VALUES_FILE={baseline}",
                 "IMAGE_TAG=test-generic",
+                *(
+                    [f"DEPLOY_TMP_ROOT={_bash_path(deploy_tmp_root)}"]
+                    if deploy_tmp_root is not None
+                    else []
+                ),
                 "",
             ]
         ),
@@ -1391,11 +1414,21 @@ def _run_generic_deploy(
         ["bash", str(repo / "scripts" / SCRIPT.name), "--env-file", str(env_file)],
         env={
             **os.environ,
+            **({"TMPDIR": _bash_path(tmpdir)} if tmpdir is not None else {}),
             "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "REAL_HELM": HELM or "helm",
             "GENERIC_UPGRADE_OUTCOME": outcome,
             "GENERIC_RELEASE_PRESENT": str(release_present).lower(),
             "GENERIC_LIVE_LABEL_DRIFT": str(live_label_drift).lower(),
+            "PODMAN_IMAGE_SIZE_OUTPUT": image_size_output,
+            "ARCHIVE_AVAILABLE_KIB": str(archive_available_kib),
+            "ARCHIVE_LOW_SPACE_PATH": _bash_path(tmpdir) if tmpdir is not None else "",
+            "ARCHIVE_LOW_SPACE_KIB": str(
+                tmpdir_available_kib
+                if tmpdir_available_kib is not None
+                else archive_available_kib
+            ),
+            "SCP_EXIT_CODE": str(scp_exit_code),
         },
         capture_output=True,
         text=True,
@@ -1527,6 +1560,115 @@ def test_generic_deploy_success_proves_schedule_remains_absent(tmp_path: Path) -
     assert calls.count("helm list --all --namespace a-stock") == 2
     assert live["items"] == []
     assert "patch cronjob" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_uses_and_cleans_explicit_archive_temp_root(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive-root"
+    archive_root.mkdir()
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        deploy_tmp_root=archive_root,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"image archive workspace: root={archive_root.resolve()}" in completed.stdout
+    save_call = next(line for line in calls.splitlines() if line.startswith("podman save"))
+    assert f"--output {archive_root.resolve()}/a-stock-deploy-image." in save_call
+    assert list(archive_root.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    HELM is None or not Path("/dev/shm").is_dir(),
+    reason="helm or /dev/shm is unavailable",
+)
+def test_generic_deploy_falls_back_from_small_tmpdir_to_dev_shm(tmp_path: Path) -> None:
+    control_tmpdir = tmp_path / "control-tmp"
+    control_tmpdir.mkdir()
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        tmpdir=control_tmpdir,
+        tmpdir_available_kib=1,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "image archive workspace: root=/dev/shm" in completed.stdout
+    save_call = next(line for line in calls.splitlines() if line.startswith("podman save"))
+    archive_path = Path(save_call.split("--output ", 1)[1].split(" ", 1)[0])
+    assert archive_path.parent.parent == Path("/dev/shm")
+    assert not archive_path.parent.exists()
+    assert list(control_tmpdir.iterdir()) == []
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_cleans_archive_workspace_when_scp_fails(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive-root"
+    archive_root.mkdir()
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        deploy_tmp_root=archive_root,
+        scp_exit_code=88,
+    )
+
+    assert completed.returncode == 88
+    save_call = next(line for line in calls.splitlines() if line.startswith("podman save"))
+    archive_path = Path(save_call.split("--output ", 1)[1].split(" ", 1)[0])
+    assert not archive_path.parent.exists()
+    assert "images import" not in calls
+    assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_generic_deploy_rejects_insufficient_explicit_archive_space_before_save(
+    tmp_path: Path,
+) -> None:
+    archive_root = tmp_path / "archive-root"
+    archive_root.mkdir()
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        deploy_tmp_root=archive_root,
+        archive_available_kib=1,
+    )
+
+    assert completed.returncode != 0
+    assert "image archive requires" in completed.stderr
+    assert "Set DEPLOY_TMP_ROOT" in completed.stderr
+    assert "podman build" in calls
+    assert "podman image inspect" in calls
+    assert "podman save" not in calls
+    assert "scp " not in calls
+    assert "images import" not in calls
+    assert "helm upgrade" not in calls
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize("image_size_output", ["", "0", "abc", "0123"])
+def test_generic_deploy_rejects_invalid_image_size_before_save(
+    tmp_path: Path, image_size_output: str
+) -> None:
+    archive_root = tmp_path / "archive-root"
+    archive_root.mkdir()
+    completed, calls, _ = _run_generic_deploy(
+        tmp_path,
+        stored_overlay=OFF,
+        live_overlay=OFF,
+        deploy_tmp_root=archive_root,
+        image_size_output=image_size_output,
+    )
+
+    assert completed.returncode != 0
+    assert "could not determine a positive local image size" in completed.stderr
+    assert "podman save" not in calls
+    assert "scp " not in calls
+    assert "helm upgrade" not in calls
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -2751,6 +2893,7 @@ def test_stage_sectors_off_stops_before_helm_when_imported_digest_is_unavailable
     podman_wrapper.write_text(
         "#!/usr/bin/env bash\n"
         f"printf 'podman %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$1 $2\" == \"image inspect\" ]]; then printf '1048576\\n'; exit 0; fi\n"
         "if [[ \"$1\" == save ]]; then\n"
         "  while (($#)); do\n"
         "    if [[ \"$1\" == --output ]]; then : > \"$2\"; exit 0; fi\n"
@@ -2816,6 +2959,7 @@ def test_component_deploy_routes_around_image_work_without_target_access(
                 f"HELM_VALUES_FILE={baseline}",
                 "IMAGE_TAG=test-component",
                 "TARGET_KUBERNETES_VERSION=1.26.6",
+                "DEPLOY_TMP_ROOT=relative-path-that-must-not-be-read",
                 "",
             ]
         ),

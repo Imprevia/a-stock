@@ -545,6 +545,8 @@ ssh admin@<truenas-host> 'systemctl is-enabled k3s && systemctl is-active k3s'
 
 当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH、SCP 和 netcat，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。默认 `K3S_API_SSH_TUNNEL=true`，脚本把临时 kubeconfig 指向 1.21 回环端口，并经 SSH 转发到 TrueNAS `127.0.0.1:6443`；SSH 服务必须允许该目标的 TCP forwarding。脚本退出时自动关闭隧道，不要求也不建议向局域网开放 `6443/tcp`。
 
+`all` / `service` 会在本地生成完整镜像归档。脚本在 `podman save` 前按镜像实际大小加 25%（最低 256 MiB）安全余量检查临时文件系统；若 `deploy.env` 显式设置 `DEPLOY_TMP_ROOT`，该路径必须是可写绝对目录且容量足够，否则立即失败。未设置时依次检查 `TMPDIR`、`/dev/shm`、`/tmp` 并选择首个满足条件的位置，退出时删除本次 `a-stock-deploy-image.*` 目录。内存较小的机器不要盲目使用 `/dev/shm`，应指向专用大盘。`database` / `schedule` 不导出镜像，不执行该门禁。发布前后可用 `df -h / /dev/shm "${DEPLOY_TMP_ROOT:-/tmp}"` 核对容量；禁止用 `podman system prune -a --volumes` 腾空间，因为这会破坏回滚镜像或本地恢复环境。该门禁只保护本地镜像归档，不替代 Podman graphRoot 与远端 `REMOTE_IMAGE_DIR` 的容量监控。
+
 首次配置：
 
 ```bash
