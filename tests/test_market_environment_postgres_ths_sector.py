@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -33,7 +33,16 @@ def _migration_statements() -> tuple[str, ...]:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.UPGRADE_STATEMENTS[:-1]
+    # The repository fixture represents the post-0006 schema. SQLite cannot
+    # execute PostgreSQL's ALTER COLUMN DROP NOT NULL, so model the final
+    # nullable declaration directly while the migration test covers the DDL.
+    return tuple(
+        statement.replace(
+            "change_pct DOUBLE PRECISION NOT NULL",
+            "change_pct DOUBLE PRECISION",
+        )
+        for statement in module.UPGRADE_STATEMENTS[:-1]
+    )
 
 
 def _sqlite_sql(statement: str) -> str:
@@ -110,6 +119,74 @@ def test_catalog_idempotency_revision_coexistence_and_shared_code_identity(repos
         repo.put_catalog_revision(_revision("catalog-r1", "different"), _relations("catalog-r1"))
 
 
+def test_catalog_revision_retries_ignore_observation_timestamp_drift(repository) -> None:
+    repo, connection = repository
+    original = _revision("catalog-r1", "checksum-r1")
+    repo.put_catalog_revision(original, _relations(original.revision_id))
+
+    retry = ThsCatalogRevision(
+        revision_id=original.revision_id,
+        capability_revision=original.capability_revision,
+        provider_timestamp=original.provider_timestamp + timedelta(minutes=5),
+        fetched_at=original.fetched_at + timedelta(minutes=6),
+        tag_counts=original.tag_counts,
+        checksum=original.checksum,
+        source=original.source,
+    )
+    repo.put_catalog_revision(retry, _relations(retry.revision_id))
+
+    assert connection.execute(
+        text("SELECT COUNT(*) FROM ths_catalog_revisions WHERE revision_id='catalog-r1'")
+    ).scalar_one() == 1
+
+
+class _MappingResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self._rows
+
+
+class _ReadOnlyConnection:
+    def __init__(self, row):
+        self.row = row
+
+    def execute(self, *_args, **_kwargs):
+        return _MappingResult([self.row])
+
+
+def test_list_rankings_round_trips_nullable_provider_values() -> None:
+    connection = _ReadOnlyConnection(
+        {
+            "tag": "industry",
+            "rank": 1,
+            "thscode": "885001.TI",
+            "display_name": "共享板块",
+            "change_pct": None,
+            "volume": None,
+            "turnover": None,
+            "catalog_revision_id": "catalog-r1",
+            "as_of": date(2026, 10, 10),
+        }
+    )
+    repo = PostgresThsSectorRepository(connection, now=lambda: NOW)
+
+    assert repo.list_rankings(date(2026, 10, 10), tag="industry") == (
+        ThsRankingRow(
+            tag="industry",
+            rank=1,
+            thscode="885001.TI",
+            name="共享板块",
+            change_pct=None,
+            volume=None,
+            turnover=None,
+            catalog_revision="catalog-r1",
+            as_of=date(2026, 10, 10),
+        ),
+    )
+
+
 def test_bar_same_checksum_is_idempotent_conflict_does_not_overwrite_and_revisions_coexist(repository) -> None:
     repo, connection = repository
     revision = _revision("catalog-r1", "checksum-r1")
@@ -174,6 +251,30 @@ def test_rankings_memberships_and_generic_operation_round_trip(repository) -> No
     repo.put_operation(operation)
     assert repo.get_operation("catalog-run-1") == operation
     assert repo.list_operations(kind="catalog-sync", status="success") == (operation,)
+
+
+def test_rankings_with_missing_change_pct_write_and_read_back(repository) -> None:
+    repo, _connection = repository
+    revision = _revision("catalog-r1", "checksum-r1")
+    repo.put_catalog_revision(revision, _relations(revision.revision_id))
+    ranking = ThsRankingRow(
+        tag="industry",
+        rank=1,
+        thscode="885001.TI",
+        name="共享板块",
+        change_pct=None,
+        volume=None,
+        turnover=None,
+        catalog_revision="catalog-r1",
+        as_of=date(2026, 10, 10),
+    )
+
+    assert repo.put_rankings((ranking,)) == {
+        "inserted": 1,
+        "identical": 0,
+        "conflict": 0,
+    }
+    assert repo.list_rankings(date(2026, 10, 10), tag="industry") == (ranking,)
 
 
 def test_backfill_run_and_checkpoints_use_generic_operation_state(repository) -> None:

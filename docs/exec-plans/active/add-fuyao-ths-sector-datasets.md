@@ -12,10 +12,12 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**10 实地打通（10.1 + 10.2 + 10.3 + 10.4 + 10.5 dry-run + 10.9 完成；10.5 apply 首次运行暴露旧镜像断链，正在部署已审 partial `changePct` 修复后重试；10.6 起继续分步授权）**
+- 当前阶段：**10 实地打通（10.1 + 10.2 + 10.3 + 10.4 + 10.5 apply + 10.9 完成；10.5 后续 collection revision 幂等与 nullable `changePct` 回归已修复并完成离线验证；生产 0006 migration/重新采集仍需单独授权；10.6 起继续分步授权）**
 - 阶段序列：OpenSpec → 事实文档 → 数据模型/持久化 → provider/应用编排 → API/CLI → 前端 → 全量验证 → 回写
 
 ## Status（状态）
+
+`stage-10-5-collection-idempotency-regression-fix` · 代码修复、0006 migration、真实本地 PostgreSQL upgrade 演练和回归测试均完成；生产当前仍是 schema v8，需单独授权迁移与重新采集。最终 focused 58 passed、全库 1432 passed / 6 skipped；OpenSpec strict、docs-contract full、Alembic head 和 git diff --check 均通过。
 
 `stage-10-1-partial-change-pct-rule-and-tests` · 用户选 B 路径：adapter 在 snapshot 行确实缺少 `changePct` 时把缺失按行级 warning 透传而非拒绝；`ThsRankingRow` / `ThsSnapshotFact` 字段允许 `null`；`build_rankings` 把 `None` 行排到 per-tag 末尾；`_probe_catalog` 报告 `changePctCoverage`、`changePctCoverageThreshold`、`changePctMissingCodes`、`changePctMissingTags` 四个新证据字段；capability policy `_validate_ths_catalog` 调整 evidence 门为 `changePctCoverage >= 0.99` 且 `changePctMissingTags` 为空（四个 tag 必须仍有非空 `change_pct`）；`requiredFieldsComplete` 含义收紧到 `close` 列 100%；`ThsIndustryRankingCollector` 把 `changePct` 缺失行的 thscode 附加 warning 并把 `changePct` 加入 `missingFields`；`ThsIndustryRankingCommitter._decode` 用 `_decoded_ranking` 接受 `null`。离线 focused `518 passed`、前端 `139 passed`、OpenSpec strict、docs-contract full、git diff --check 全过；未触动任何 provider、production PostgreSQL、Helm、Secret、PVC、调度或 CronJob。
 
@@ -62,6 +64,8 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 `stage-10-5-catalog-sync-applied` · 2026-10-13 17:28（Asia/Shanghai）从已审 commit `8f0a6bc` 构建并部署包含 `955ee33` partial `changePct` 修复的镜像 `localhost/a-stock-market-environment:20261013-162900-8f0a6bc`，containerd digest `sha256:d63399666230e655b2c4e5bcf7cc7fb7985657ebea55c3707d0210a5b2e98600`，Helm release 99 → 100。部署前后的完整 manifest 仅 runtime image tag 变化（空白行差异除外）；`--no-hooks` 未运行 migration，CronJob 仍 absent，THS env、Secret、PVC UID、PostgreSQL 保持不变，Pod 1/1 Ready、0 重启，Pod 内 `/api/health` HTTP 200。新 Pod 上重试同一 catalog-sync 参数成功：`runId=8226a1b725d74d1a81829372736be4b3`、`status=success`、`total_items=45`、`completed_items=45`、`failed_items=0`、`conflict_items=0`、`requests_used=56/60`；结果为 `catalogRows=846`、`rankingRows=846`、`barRows=846`、`membershipCodes=41`。生产 PG 计数：`ths_catalog_revisions=1`、`ths_catalog_relations=846`（`industry=320/cn_concept=390/region=33/tszs=103`）、`ths_industry_rankings=846`、`ths_sector_daily_bars=846`、`ths_sector_identities=846`、`ths_sector_memberships=2376`（显式 `886042.TI=203`）；`/api/market-environment/ths/catalog` 返回 `revision=fuyao-ths-catalog-v1,total=846`。失败 run `4c1e51239ffb4cdb881299e74d5da379` 作为审计记录保留，未产生 authoritative writes。证据：`/tmp/a-stock-10.5-apply-{retry,attempt}-20261013.txt`、`/tmp/a-stock-10.5-image-fix-{pre,dryrun,upgrade,poststate,validation}-20261013.txt`、`/tmp/a-stock-10.5-rows-after-20261013.txt`。
 
+`stage-10-5-collection-idempotency-regression-fix` · 2026-10-13 生产只读核查发现：同一 `fuyao-ths-catalog-v1` revision 的重复 `industry-ranking` collection 因 provider 每次返回新的 `provider_timestamp/fetched_at`，被 `PostgresThsSectorRepository.put_catalog_revision` 错判为 revision checksum 冲突；生产 run `09aa80a7a8c647d589cd9fd41f5c1864` 的排名任务 `3531075a631b4eed8f5edbc45de9d4bc` 因此为 `failed-missing`，量价/宽度按 DAG 正确记录为 `blocked`，normalized 846 行事实保持不变。修复已落地：catalog revision 幂等只比较 checksum/provider/capability/tag counts，忽略抓取时间漂移；`list_rankings()` 对 nullable `changePct`、volume、turnover 做安全 round-trip；新增 `0006_ths_ranking_nullable_change_pct`，将 runtime 最低 schema 版本提升至 9。生产 PostgreSQL、迁移、Helm、Secret、PVC、调度和重新采集均不在本次代码验证范围。
+
 ## 事实源
 
 - `openspec/changes/add-fuyao-ths-sector-datasets/`
@@ -84,6 +88,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 - [x] 更新数据管理页与第 05 页四视图，验证桌面和 390px 响应式边界
 - [x] 完成 focused/full 测试、前端测试/构建、规则三门禁、OpenSpec strict 和 docs-contract full
 - [x] 补齐 task 9.1 的 THS real-probe 工具链：四类 catalog/snapshot、代表编号 current membership/单编号 history，以及 daily/incremental/adjustment dump 的临时下载、schema/checksum 探测和六份脱敏 capability reports
+- [x] 修复 10.5 后续 collection 的 catalog revision 幂等时间漂移与 nullable `changePct` PostgreSQL round-trip，并覆盖重复 revision 写入、nullable ranking 读取和 migration 版本 9 的回归测试；生产 migration/重采集仍待授权
 - [x] 为六个精确 THS revision 注册 promotion evidence policy；离线测试证明预签名 URL、API key、原始响应和临时 dump 不进入 stdout、报告或持久化 evidence
 - [x] 修复 current membership 运行时断链：`catalog-sync` 在双 revision/capability 预检和总预算门禁后，同步四类 Top 10 与显式点选编号，逐编号隔离失败并调用 `put_sector_memberships`；增加独立 membership env/Helm 配置和消费测试
 - [x] 按官方 dump schema 探测 daily/incremental 的 `thscode`、`date_ms` 与价格字段；adjustment 仅含公司行动事件项，在复权公式及前收盘证据实现前报告 `ineligible`，不得将 synthetic `adjustment_factor` fixture 晋升为真实能力
@@ -102,6 +107,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 ## Completion Evidence（完成证据）
 
+- 10.5 collection regression fix 已完成：`put_catalog_revision` 对同 revision 的抓取时间漂移保持幂等，`list_rankings` 能安全读取 nullable `change_pct`/`volume`/`turnover`；新增 `0006_ths_ranking_nullable_change_pct` 并将 runtime schema minimum 提升至 9。最终 THS/迁移 focused `58 passed`、全库 `1432 passed, 6 skipped`；未执行生产 migration、部署或重新采集。
 - 10.5 catalog sync 已完成真实 apply：旧镜像失败 run `4c1e51239ffb4cdb881299e74d5da379` 保留为失败审计且零 normalized 写入；切换至包含 `955ee33` 的镜像后，成功 run `8226a1b725d74d1a81829372736be4b3` 写入 846 catalog/ranking/bar/identity 行、2,376 membership facts（含显式 `886042.TI` 203 行），API catalog 已从空态变为 `revision=fuyao-ths-catalog-v1,total=846`。
 - 10.5 修复发布保持受控：Helm release 99 → 100，镜像为 `20261013-162900-8f0a6bc`，Pod 1/1 Ready 且 0 重启，PostgreSQL/PVC/Secret 未变，`schema_migrations` 未新增，CronJob/Job absent，Pod 内 health 200；manifest 语义差异仅 runtime image tag。
 - OpenSpec apply 进度仍为 `30/32`；9.1 的 probe/tooling 子项已完成，但 capability apply/promotion 与 9.2 生产操作仍未完成。`openspec validate add-fuyao-ths-sector-datasets --strict` 通过。
@@ -130,6 +136,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 - Fuyao adjustment dump 真实契约不直接提供 `adjustment_factor`；复权因子推导所需公式、公司行动顺序和前收盘证据尚未实现，因此 adjustment capability 必须保持 `ineligible`。
 - membership / history / industry-ranking 三份 report 已在 10.3 apply 写入生产 `provider_capability_reports`；生产当前保留 4 行（旧 `fuyao/sectors` + 3 个新 eligible revision），10.5 成功 run 使用其中 catalog/membership 两个精确 revision。
 - 生产 PostgreSQL 已 apply alembic `0004 add-sector-continuity-facts` + `0005 add-ths-sector-datasets`；10.5 catalog sync 已完成首次正式写入。剩余真实动作是 10.6 history backfill、10.7 member import probe/import 判定和 10.8 全量 dry-run，仍按“分别授权”要求执行。
+- 代码已要求 runtime schema version 9；生产当前只读证据仍是 v8，需在下一次受控发布中运行 `alembic upgrade head` 应用 0006 后再启用 nullable `changePct` 写入路径。
 - 当前生产 release 仍保留历史 `sectors` fallback（`MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED=1, approvedRevision=fuyao-market-v2`）；仓库新公共运行时已退役该标识，公共 API 已切换至 `/api/market-environment/ths/*`，旧 `sectors` 路径仅作为审计兼容。
 
 - `MARKET_ENVIRONMENT_FUYAO_THS_CATALOG_ENABLED` 等 6 个新 capability 与 `MARKET_ENVIRONMENT_THS_WRITES_AUTHORIZED` 当前为 1；写入仍必须经 capability policy + 双 revision 预检 + 请求预算门禁，调度继续保持 disabled/suspended。
@@ -147,7 +154,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 ## Next Step（下一步）
 
-当前有效下一步：10.5 catalog sync 已成功并完成本地 API/数据库核验；等待用户单独授权 10.6 单次小批 history backfill（先 dry-run/预算核对），之后再按顺序处理 10.7 member import 与 10.8 全量 dry-run。默认调度仍 `enabled=false / suspend=true`；隔离 PG 容器清理仍需用户复述 `cleanup`。
+当前有效下一步：先在受控发布窗口应用 0006 schema migration 并重新验证失败批次恢复为成功，再等待用户单独授权 10.6 单次小批 history backfill（先 dry-run/预算核对），之后按顺序处理 10.7 member import 与 10.8 全量 dry-run。默认调度仍 `enabled=false / suspend=true`；隔离 PG 容器清理仍需用户复述 `cleanup`。
 
 以下两段是 10.5 apply 前的历史 pre-state 快照，已由 `stage-10-5-catalog-sync-applied` supersede，不作为当前运行状态。
 

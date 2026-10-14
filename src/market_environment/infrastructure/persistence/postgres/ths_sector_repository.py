@@ -139,12 +139,14 @@ class PostgresThsSectorRepository(ThsSectorRepository):
             {"revision_id": revision.revision_id},
         ).mappings().first()
         if existing is not None:
+            # Provider timestamps describe an observation, not the immutable
+            # identity of a catalog revision.  A repeated collection of the
+            # same revision naturally fetches at a different time, so those
+            # timestamps must not turn an idempotent write into a conflict.
             if (
                 str(existing["checksum"]) != revision.checksum
                 or str(existing["provider"]) != revision.source
                 or str(existing["capability_revision"]) != revision.capability_revision
-                or _datetime(existing["provider_timestamp"]) != revision.provider_timestamp.astimezone(timezone.utc)
-                or _datetime(existing["fetched_at"]) != revision.fetched_at.astimezone(timezone.utc)
                 or dict(_load(existing["tag_counts_json"], {})) != dict(revision.tag_counts)
             ):
                 raise ValueError("conflicting THS catalog revision checksum")
@@ -405,9 +407,21 @@ class PostgresThsSectorRepository(ThsSectorRepository):
                 rank=int(row["rank"]),
                 thscode=str(row["thscode"]),
                 name=str(row["display_name"]),
-                change_pct=float(row["change_pct"]),
-                volume=row.get("volume"),
-                turnover=row.get("turnover"),
+                change_pct=(
+                    float(row["change_pct"])
+                    if row.get("change_pct") is not None
+                    else None
+                ),
+                volume=(
+                    float(row["volume"])
+                    if row.get("volume") is not None
+                    else None
+                ),
+                turnover=(
+                    float(row["turnover"])
+                    if row.get("turnover") is not None
+                    else None
+                ),
                 catalog_revision=str(row["catalog_revision_id"]),
                 as_of=_date(row["as_of"]),  # type: ignore[arg-type]
             )

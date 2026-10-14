@@ -164,7 +164,7 @@ def test_runtime_factory_checks_connectivity_and_schema_with_select_only() -> No
     )
 
     assert factory.validate_runtime().version == MINIMUM_SCHEMA_VERSION
-    assert MINIMUM_SCHEMA_VERSION == 8
+    assert MINIMUM_SCHEMA_VERSION == 9
     assert THS_RUNTIME_TABLES <= REQUIRED_RUNTIME_TABLES
     assert connection.closed is True
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in connection.statements)

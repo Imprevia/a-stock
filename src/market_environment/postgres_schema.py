@@ -389,7 +389,7 @@ SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS sector_continuity_results_date_idx ON sector_continuity_results(as_of, calculation_version)",
     "CREATE INDEX IF NOT EXISTS sector_backfill_attempts_date_idx ON sector_backfill_attempts(as_of, status)",
     # Fuyao THS catalog, turnover, membership, backfill, and breadth evidence.
-    # These statements mirror alembic/versions/0005_ths_sector_datasets.py.
+    # These statements mirror migrations 0005 and 0006.
     """
     CREATE TABLE IF NOT EXISTS ths_catalog_revisions (
         revision_id TEXT PRIMARY KEY,
@@ -462,6 +462,7 @@ SCHEMA_STATEMENTS = (
         CHECK (turnover IS NULL OR turnover >= 0)
     )
     """,
+    "ALTER TABLE ths_industry_rankings ALTER COLUMN change_pct DROP NOT NULL",
     """
     CREATE TABLE IF NOT EXISTS ths_sector_daily_bars (
         provider TEXT NOT NULL,
@@ -730,6 +731,14 @@ def create_schema(engine: Engine) -> None:
                 """INSERT INTO schema_migrations(version, name, applied_at, checksum)
                    VALUES (8, 'add-ths-sector-datasets', CURRENT_TIMESTAMP,
                            'add-ths-sector-datasets')
+                   ON CONFLICT(version) DO NOTHING"""
+            )
+        )
+        connection.execute(
+            text(
+                """INSERT INTO schema_migrations(version, name, applied_at, checksum)
+                   VALUES (9, 'ths-ranking-nullable-change-pct', CURRENT_TIMESTAMP,
+                           'ths-ranking-nullable-change-pct')
                    ON CONFLICT(version) DO NOTHING"""
             )
         )

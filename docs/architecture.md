@@ -535,7 +535,11 @@ tag 出现时保留分类关系和共享代码身份，不按名称、排名或�
   `changePctCoverage >= 0.99` 且 `changePctMissingTags` 为空（即四个 tag 都至少有非空
   `change_pct`），任何 tag 整列缺失仍记 `ineligible`；committer/collector 接受 `changePct=null`
   行落库，质量仍按现有规则标记为 `partial`，前端 `ThsIndustryRankingRow.changePct` 类型同步为
-  `number | null`。快照 `close` 列必须 100% 覆盖，OHLC/volume/turnover/catalog identity 门禁不变。
+  `number | null`。PostgreSQL migration `0006_ths_ranking_nullable_change_pct` 将
+  `ths_industry_rankings.change_pct` 明确设为 nullable，禁止用 0 替代缺失值。重复 collection
+  复用同一 catalog revision 时只比较 checksum、provider、capability revision 和 tag counts；provider
+  每次抓取变化的 `provider_timestamp`/`fetched_at` 属于观察元数据，不得被误报为 revision 冲突。
+  快照 `close` 列必须 100% 覆盖，OHLC/volume/turnover/catalog identity 门禁不变。
 - `sector-turnover` 保存逐 `thscode` 日线的 `open`、`high`、`low`、`close`、`volume` 和
   `turnover`。每日快照追加全部目录编号，历史接口按单编号请求；产品回填窗口最多近五年，每批最多
   60 个编号，以 checkpoint 记录编号、日期区间、revision、预算消耗和完成状态。重试必须幂等且可恢复，

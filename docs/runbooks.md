@@ -828,7 +828,7 @@ PostgreSQL StatefulSet/ClusterIP Service ready
   -> suspended CronJob render/deploy
 ```
 
-当前 runtime schema 最低版本为 8；`alembic upgrade head` 必须依次应用到 `0005_ths_sector_datasets`，其中 `0004_sector_continuity` 和 `0005_ths_sector_datasets` 均为 additive migration，不重写旧 `sectors` 快照、task、capability 或聚合证据。若 migration Job 未达到 version 8，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
+当前 runtime schema 最低版本为 9；`alembic upgrade head` 必须依次应用到 `0006_ths_ranking_nullable_change_pct`。其中 `0004_sector_continuity`、`0005_ths_sector_datasets` 和 `0006_ths_ranking_nullable_change_pct` 均不重写旧 `sectors` 快照、task、capability 或聚合证据；0006 只解除 `ths_industry_rankings.change_pct` 的 NOT NULL 约束，以保留 provider 明确缺失的涨跌幅。若 migration Job 未达到 version 9，Dashboard/CronJob 必须保持 fail closed；不得通过应用启动时调用 `create_schema` 绕过 migration。
 
 StatefulSet 未 ready 或 migration Job 失败时不得 rollout service/schedule；migration Job 使用同一 URL Secret，
 成功后检查 `alembic_version`，并把 Job 日志及 manifest hash 作为切换证据。
