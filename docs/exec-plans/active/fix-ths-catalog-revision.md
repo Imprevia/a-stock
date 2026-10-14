@@ -18,11 +18,13 @@
 
 ## Status（状态）
 
-`production-rollout-7.1` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
+`production-rollout-paused-audit-job-gc` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
 `0007_ths_catalog_revision_identity` 修正为 `0007_ths_catalog_identity`。短 ID 已通过真实 PostgreSQL 16
 完整 Alembic 升级、默认 32 字符版本列和跨日期事务回归；2026-10-15 已完成 7.1 manual-freeze 与 7.3
-不可变镜像发布控制的离线复核，OpenSpec 6.6 已完成。下一步重新捕获生产只读基线并执行 7.1 停写门禁；
-在完成该步骤前不执行迁移、部署或 provider 写入。
+不可变镜像发布控制的离线复核，OpenSpec 6.6 已完成。2026-10-15 执行 7.1 时已把 schedule 与 manual
+writes 安全关闭，但 schedule 入口删除 Helm-retained CronJob 时由 Kubernetes owner-reference 级联删除了原
+`Failed=True` 审计 Job/Pod。PostgreSQL collection run/task 审计仍完整；因 Kubernetes Job 证据不可恢复，
+7.1 保持未完成，7.2 及后续生产动作暂停等待处置决定。
 集成审查确认原有
 `ths_catalog_revisions` 还包含 `UNIQUE (provider, capability_revision, checksum, fetched_at)`：该约束没有
 交易日维度，无法在固定时钟、离线 replay/import 等合法场景中同时保存两个“日期不同、目录 checksum
@@ -96,7 +98,25 @@
   失败，其余 `1512 passed, 6 skipped`；受影响两文件在 build 完成后复跑 `28 passed`，随后顺序全量后端
   `.venv/bin/python -m pytest -p no:cacheprovider tests -q` →
   `1524 passed, 6 skipped, 1 warning in 533.20s`。warning 仍为 Starlette `BlockingPortal` 已知弃用提示。
-- 生产：7.1–7.5 已授权，当前尚未执行；每步证据将在完成后追加。
+- 生产：7.1–7.5 已授权；7.1 已执行到安全停写，但因下述 Kubernetes Job 审计缺口保持未完成并暂停。
+- 7.1 只读基线（2026-10-15 01:25 Asia/Shanghai）：Helm revision 107、k3s
+  `v1.26.6+k3s-6a894050-dirty`、镜像 `20261014-104800-b0a7c35`、containerd manifest digest
+  `sha256:ef8b524b…2ae7`、Dashboard/PostgreSQL Ready 且 0 restart；schema v9 / Alembic
+  `0006_ths_rank_null_pct`。CronJob 为 `30 16 * * 1-5`、`suspend=false`、active=0；唯一 Job
+  `a-stock-data-collection-29866110` 为 `Failed=True`/active=0。manual=1，THS writes/capability 开关保持 on；
+  active lease/run/task/THS operation 全为 0。旧目录 revision/checksum 为
+  `fuyao-ths-catalog-v1` / `b6997cd2…525ce`，relations/rankings/bars 均 846；4 条 capability 不变。
+  2026-10-14 有 3 个 collection run、11 个 task，包含原失败/blocked 链。
+- 7.1 停写执行：第一次 `--disable-schedule` 产生 revision 108；Helm stored release 已 off，但 retained
+  CronJob 仍 active shape，入口拒绝删除并 fail-safe patch 为 `suspend=true`。确认所有 writer=0 后重跑，
+  revision 109 删除 exact retained CronJob并证明 absent。`--disable-manual-refresh` 使用 clean reviewed HEAD
+  `cca2690d4b65c98f865d421192ab8229514170c9`、reviewed chart/values/render hashes 与同一 frozen image，
+  revision 110 以 `--no-hooks --atomic --wait` 完成，manual=0、Ready=1、POST 返回 403、schema 仍 v9，两个
+  PVC 与两个应用 Secret UID 不变。数据库旧 846 事实及 2026-10-14 审计哈希保持可读，所有 writer=0。
+- 7.1 阻塞：revision 109 删除 CronJob 使用 Kubernetes 默认级联语义，导致其 owner Job
+  `a-stock-data-collection-29866110` 与 Pod 被垃圾回收，`kubectl get/logs` 均 NotFound；manual-off 入口没有
+  删除 Job。数据库对应 run/task 仍保留（3 runs / 11 tasks），但不能伪造或重建原 Job。未执行 7.2
+  backup/migration、7.3 deployment 或任何 provider 调用。
 
 ## Remaining Gaps（剩余缺口）
 
@@ -114,9 +134,13 @@
 - 生产现状仍保留固定 `fuyao-ths-catalog-v1` 目录 revision 与 2026-10-14 的 checksum collision/blocked 审计；不得通过改写历史记录消除。
 - 任务 7.x 的生产备份、部署、provider 写入、调度恢复及跨交易日观察已获授权但尚待逐步执行；至少两个
   完成交易日的观察存在自然时间边界，未获得足够日期证据前不得勾选 7.5。
+- 7.1 的 schedule/manual writer 已安全关闭，但 exact failed Kubernetes Job 被 CronJob 删除的默认级联回收；
+  该证据不可原样恢复。必须先决定是否以保留的 PostgreSQL run/task 审计和已捕获 pre-state 作为显式缺口继续，
+  或停止本 rollout；无论选择哪条路径，schedule disable 入口都需先改为 orphan-preserving 删除并补回归，避免
+  后续再次删除 completed/failed Job。不得创建替代 Job 冒充原证据。
 
 ## Next Step（下一步）
 
-创建并复核 clean reviewed commit，重新捕获生产 release/image、PVC/Secret、schema、capability、旧目录与
-2026-10-14 failed/blocked 审计基线；随后按 runbook 执行 7.1 的 exact schedule/manual 停写入口，证明没有
-active writer 后再进入 7.2 的不可覆盖备份和隔离恢复。
+保持 CronJob absent、manual=0 和所有 writer=0，不执行 7.2–7.5。先由操作责任人决定如何处理已被级联回收的
+failed Kubernetes Job 证据；获准继续时，先更新 schedule disable 入口为保留 terminal Job 的 orphan 删除并完成
+离线回归，再从当前 revision 110 只读复核后进入 7.2 的不可覆盖备份和隔离恢复。
