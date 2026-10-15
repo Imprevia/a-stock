@@ -8,9 +8,11 @@ from datetime import date
 
 from src.market_environment.bootstrap.app import create_app
 from src.market_environment.interfaces.http.dependencies import (
+    get_automation_write_enabled,
     get_collection_commands,
     get_collection_queries,
     get_effective_market_date,
+    get_full_collection_commands,
     get_market_queries,
     get_ths_sector_commands,
     get_ths_sector_queries,
@@ -34,6 +36,8 @@ def build_test_app(
     market_queries=None,
     collection_queries=None,
     collection_commands=None,
+    full_collection_commands=None,
+    automation_write_enabled: bool | None = None,
     ths_queries=None,
     ths_commands=None,
     effective_date: date | None = None,
@@ -45,6 +49,14 @@ def build_test_app(
         app.dependency_overrides[get_collection_queries] = lambda: collection_queries
     if collection_commands is not None:
         app.dependency_overrides[get_collection_commands] = lambda: collection_commands
+    if full_collection_commands is not None:
+        app.dependency_overrides[get_full_collection_commands] = (
+            lambda: full_collection_commands
+        )
+    if automation_write_enabled is not None:
+        app.dependency_overrides[get_automation_write_enabled] = (
+            lambda: automation_write_enabled
+        )
     if ths_queries is not None:
         app.dependency_overrides[get_ths_sector_queries] = lambda: ths_queries
     if ths_commands is not None:

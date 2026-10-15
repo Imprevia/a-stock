@@ -6,10 +6,8 @@ import copy
 import json
 import re
 import sys
-from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -17,7 +15,6 @@ import yaml
 TRACKED_LIVE_KINDS = {
     "Service": "v1",
     "Deployment": "apps/v1",
-    "CronJob": "batch/v1",
 }
 MANUAL_REFRESH_LIVE_KINDS = {
     **TRACKED_LIVE_KINDS,
@@ -45,8 +42,6 @@ SEMVER_PATTERN = re.compile(
     r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
     r"(?:\+(?P<build>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
-ACTIVATION_SAFETY_BUFFER_SECONDS = 300
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def fail(message: str) -> None:
@@ -69,49 +64,6 @@ def load_path(path: Path) -> list[dict[str, Any]]:
             return load_documents(stream)
     except OSError as exc:
         fail(f"could not read {path}: {exc}")
-
-
-def load_values_path(path: Path) -> dict[str, Any]:
-    documents = load_path(path)
-    if len(documents) != 1:
-        fail(f"Helm values file {path} must contain exactly one YAML mapping")
-    return documents[0]
-
-
-def merge_values(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = copy.deepcopy(base)
-    for key, value in override.items():
-        current = merged.get(key)
-        if isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = merge_values(current, value)
-        elif value is None:
-            merged.pop(key, None)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
-def validate_generic_deploy_values(paths: list[Path]) -> None:
-    merged: dict[str, Any] = {}
-    for path in paths:
-        merged = merge_values(merged, load_values_path(path))
-
-    market_environment = merged.get("marketEnvironment")
-    scheduled = (
-        market_environment.get("scheduledCollection")
-        if isinstance(market_environment, dict)
-        else None
-    )
-    if not isinstance(scheduled, dict):
-        fail("ordinary deployment requires typed scheduledCollection values")
-
-    enabled = scheduled.get("enabled")
-    suspend = scheduled.get("suspend")
-    if enabled is not False or suspend is not True:
-        fail(
-            "ordinary deployment requires scheduledCollection.enabled=false "
-            "and scheduledCollection.suspend=true"
-        )
 
 
 def load_json(stream: Any, description: str) -> dict[str, Any]:
@@ -143,130 +95,24 @@ def parse_semver(value: Any) -> tuple[tuple[int, int, int], tuple[str, ...]]:
     return core, prerelease if prerelease != ("",) else ()
 
 
-def compare_semver(
-    left: tuple[tuple[int, int, int], tuple[str, ...]],
-    right: tuple[tuple[int, int, int], tuple[str, ...]],
-) -> int:
-    if left[0] != right[0]:
-        return -1 if left[0] < right[0] else 1
-    left_prerelease, right_prerelease = left[1], right[1]
-    if not left_prerelease or not right_prerelease:
-        if left_prerelease == right_prerelease:
-            return 0
-        return -1 if left_prerelease else 1
-    for left_identifier, right_identifier in zip(left_prerelease, right_prerelease):
-        if left_identifier == right_identifier:
-            continue
-        left_numeric = left_identifier.isdigit()
-        right_numeric = right_identifier.isdigit()
-        if left_numeric and right_numeric:
-            return -1 if int(left_identifier) < int(right_identifier) else 1
-        if left_numeric != right_numeric:
-            return -1 if left_numeric else 1
-        return -1 if left_identifier < right_identifier else 1
-    if len(left_prerelease) == len(right_prerelease):
-        return 0
-    return -1 if len(left_prerelease) < len(right_prerelease) else 1
-
-
 def normalize_semver(value: Any) -> str:
     parse_semver(value)
     return value.removeprefix("v")
 
 
-def cronjob_for(
-    documents: list[dict[str, Any]], release_name: str, namespace: str
-) -> dict[str, Any] | None:
-    cronjobs = [item for item in documents if item.get("kind") == "CronJob"]
-    if len(cronjobs) > 1:
-        fail("rendered packet must contain at most one CronJob")
-    if not cronjobs:
-        return None
-
-    cronjob = cronjobs[0]
-    metadata = cronjob.get("metadata")
-    if cronjob.get("apiVersion") != "batch/v1" or not isinstance(metadata, dict):
-        fail("scheduled resource must be one batch/v1 CronJob")
-    if metadata.get("namespace") != namespace:
-        fail(f"CronJob namespace must equal {namespace}")
-    labels = metadata.get("labels")
-    if not isinstance(labels, dict) or labels.get("app.kubernetes.io/instance") != release_name:
-        fail(f"CronJob release label must equal {release_name}")
-    name = metadata.get("name")
-    if not isinstance(name, str) or not name:
-        fail("CronJob metadata.name must be a non-empty string")
-    return cronjob
-
-
-def inspect(
-    documents: list[dict[str, Any]],
-    release_name: str,
-    namespace: str,
-    required_state: str,
-    kube_version: str | None = None,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    cronjob = cronjob_for(documents, release_name, namespace)
-    if cronjob is None:
-        state = "disabled"
-        result = {
-            "enabled": False,
-            "suspend": None,
-            "state": state,
-            "releaseName": release_name,
-            "namespace": namespace,
-        }
-    else:
-        spec = cronjob.get("spec")
-        if not isinstance(spec, dict) or type(spec.get("suspend")) is not bool:
-            fail("CronJob spec.suspend must be a boolean")
-        schedule = spec.get("schedule")
-        if not isinstance(schedule, str) or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* 1-5", schedule):
-            fail("CronJob spec.schedule must be one numeric weekday trigger")
-        minute, hour = (int(item) for item in schedule.split()[:2])
-        if minute > 59 or hour > 23:
-            fail("CronJob spec.schedule must contain a valid clock time")
-        starting_deadline = spec.get("startingDeadlineSeconds")
-        if type(starting_deadline) is not int or starting_deadline <= 0:
-            fail("CronJob spec.startingDeadlineSeconds must be a positive integer")
-        time_zone = spec.get("timeZone")
-        if time_zone is not None and time_zone != "Asia/Shanghai":
-            fail("native CronJob timeZone must equal Asia/Shanghai")
-        strategy = "native" if time_zone is not None else "controller"
-        if kube_version is not None:
-            actual_version = parse_semver(kube_version)
-            if strategy == "native" and compare_semver(
-                actual_version, parse_semver("1.27.0")
-            ) < 0:
-                fail(
-                    "native scheduling requires Kubernetes 1.27.0 stable or later; "
-                    f"got {kube_version}"
-                )
-        controller_timezone = None
-        if strategy == "controller":
-            if schedule == "30 8 * * 1-5":
-                controller_timezone = "Etc/UTC"
-            elif schedule == "30 16 * * 1-5":
-                controller_timezone = "Asia/Shanghai"
-            else:
-                fail("controller CronJob schedule is not an approved Shanghai 16:30 mapping")
-        state = "suspended" if spec["suspend"] else "active"
-        result = {
-            "enabled": True,
-            "suspend": spec["suspend"],
-            "state": state,
-            "releaseName": release_name,
-            "namespace": namespace,
-            "name": cronjob["metadata"]["name"],
-            "strategy": strategy,
-            "controllerTimeZone": controller_timezone,
-            "schedule": schedule,
-            "timeZone": time_zone,
-            "startingDeadlineSeconds": starting_deadline,
-        }
-
-    if required_state != "any" and state != required_state:
-        fail(f"scheduling packet must be {required_state}, got {state}")
-    return cronjob, result
+def require_no_cronjobs(
+    documents: list[dict[str, Any]], description: str
+) -> None:
+    cronjob_names = [
+        str((item.get("metadata") or {}).get("name", "<unnamed>"))
+        for item in documents
+        if item.get("kind") == "CronJob"
+    ]
+    if cronjob_names:
+        fail(
+            f"{description} must not contain a CronJob: "
+            + ", ".join(cronjob_names)
+        )
 
 
 def resource_key(document: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -466,7 +312,7 @@ def validate_sectors_packet(
 ) -> dict[str, Any]:
     if required_enabled not in {"0", "1"}:
         fail("required sectors enabled value must be 0 or 1")
-    inspect(documents, release_name, namespace, "disabled")
+    require_no_cronjobs(documents, "sectors packet")
     _validate_resource_namespaces(documents, namespace, "sectors packet")
     release_documents = without_helm_hooks(documents)
     deployment = _dashboard_deployment(release_documents, release_name, "sectors packet")
@@ -554,7 +400,7 @@ def validate_manual_refresh_packet(
 ) -> dict[str, Any]:
     if required_value not in {"0", "1"}:
         fail("required manual refresh value must be 0 or 1")
-    inspect(documents, release_name, namespace, "disabled")
+    require_no_cronjobs(documents, "manual-refresh packet")
     _validate_resource_namespaces(documents, namespace, "manual-refresh packet")
     deployment = _dashboard_deployment(
         without_helm_hooks(documents), release_name, "manual-refresh packet"
@@ -737,55 +583,6 @@ def select_disabled_promotion_pod(
     if not isinstance(name, str) or not name:
         fail("promotion Dashboard Pod metadata.name is missing")
     return name
-
-
-def compare_add_suspended(
-    current: list[dict[str, Any]], desired: list[dict[str, Any]], release_name: str, namespace: str
-) -> None:
-    if any(item.get("kind") == "CronJob" for item in current):
-        fail("suspended release requires the application CronJob to be absent")
-    cronjob, _ = inspect(desired, release_name, namespace, "suspended")
-    assert cronjob is not None
-    desired_without_cronjob = [item for item in desired if item is not cronjob]
-    if indexed(without_helm_hooks(current)) != indexed(
-        without_helm_hooks(desired_without_cronjob)
-    ):
-        fail("suspended release contains drift outside the new CronJob")
-
-
-def compare_suspend_only(
-    current: list[dict[str, Any]], desired: list[dict[str, Any]], release_name: str, namespace: str
-) -> None:
-    current_cronjob, _ = inspect(current, release_name, namespace, "suspended")
-    desired_cronjob, _ = inspect(desired, release_name, namespace, "active")
-    assert current_cronjob is not None and desired_cronjob is not None
-    current_index = indexed(without_helm_hooks(current))
-    desired_index = indexed(without_helm_hooks(desired))
-    if current_index.keys() != desired_index.keys():
-        fail("active release contains drift outside the suspended resource set")
-
-    for key in current_index:
-        before = copy.deepcopy(current_index[key])
-        after = copy.deepcopy(desired_index[key])
-        if key[1] == "CronJob":
-            before["spec"].pop("suspend", None)
-            after["spec"].pop("suspend", None)
-        if before != after:
-            fail(f"suspended release contains drift outside CronJob spec.suspend: {key}")
-
-
-def compare_remove_cronjob(
-    current: list[dict[str, Any]], desired: list[dict[str, Any]], release_name: str, namespace: str
-) -> None:
-    current_cronjob, _ = inspect(current, release_name, namespace, "any")
-    if current_cronjob is None:
-        fail("schedule rollback requires an existing application CronJob")
-    inspect(desired, release_name, namespace, "disabled")
-    current_without_cronjob = [item for item in current if item is not current_cronjob]
-    if indexed(without_helm_hooks(current_without_cronjob)) != indexed(
-        without_helm_hooks(desired)
-    ):
-        fail("schedule rollback contains drift outside CronJob removal")
 
 
 def kubernetes_json_items(
@@ -1511,58 +1308,6 @@ def _normalize_persistent_volume_claim(
     _drop_default(live_spec, desired_spec, "volumeMode", "Filesystem")
 
 
-def _normalize_cronjob(live: dict[str, Any], desired: dict[str, Any]) -> None:
-    live_spec = live.get("spec")
-    desired_spec = desired.get("spec")
-    if not isinstance(live_spec, dict):
-        return
-    if not isinstance(desired_spec, dict):
-        desired_spec = {}
-    for key, value in (
-        ("concurrencyPolicy", "Allow"),
-        ("failedJobsHistoryLimit", 1),
-        ("successfulJobsHistoryLimit", 3),
-        ("suspend", False),
-    ):
-        _drop_default(live_spec, desired_spec, key, value)
-    live_job_template = live_spec.get("jobTemplate")
-    desired_job_template = desired_spec.get("jobTemplate")
-    if not isinstance(live_job_template, dict):
-        return
-    if not isinstance(desired_job_template, dict):
-        desired_job_template = {}
-    live_job_metadata = live_job_template.get("metadata")
-    desired_job_metadata = desired_job_template.get("metadata")
-    if isinstance(live_job_metadata, dict):
-        _drop_default(
-            live_job_metadata,
-            desired_job_metadata if isinstance(desired_job_metadata, dict) else {},
-            "creationTimestamp",
-            None,
-        )
-    live_job_spec = live_job_template.get("spec")
-    desired_job_spec = desired_job_template.get("spec")
-    if not isinstance(live_job_spec, dict):
-        return
-    if not isinstance(desired_job_spec, dict):
-        desired_job_spec = {}
-    for key, value in (
-        ("backoffLimit", 6),
-        ("completionMode", "NonIndexed"),
-        ("completions", 1),
-        ("manualSelector", False),
-        ("parallelism", 1),
-        ("suspend", False),
-    ):
-        _drop_default(live_job_spec, desired_job_spec, key, value)
-    live_template = live_job_spec.get("template")
-    desired_template = desired_job_spec.get("template")
-    if isinstance(live_template, dict):
-        _normalize_pod_template(
-            live_template, desired_template if isinstance(desired_template, dict) else {}
-        )
-
-
 def _prune_omitted_empty(live: Any, desired: Any) -> None:
     if isinstance(live, dict):
         desired_mapping = desired if isinstance(desired, dict) else {}
@@ -1627,8 +1372,6 @@ def _normalize_live_desired_pair(
         _normalize_service(normalized_live, normalized_desired)
     elif kind == "Deployment":
         _normalize_deployment(normalized_live, normalized_desired)
-    elif kind == "CronJob":
-        _normalize_cronjob(normalized_live, normalized_desired)
     elif kind == "StatefulSet":
         _normalize_statefulset(normalized_live, normalized_desired)
     elif kind == "PersistentVolumeClaim":
@@ -1647,7 +1390,7 @@ def compare_live_desired(
     live_resources = _tracked_release_resources(live, release_name, namespace, "live")
     desired_resources = _tracked_release_resources(desired, release_name, namespace, "desired")
     if live_resources.keys() != desired_resources.keys():
-        fail("live Service/Deployment/CronJob resource set differs from desired")
+        fail("live Service/Deployment resource set differs from desired")
     for key in live_resources:
         normalized_live, normalized_desired = _normalize_live_desired_pair(
             live_resources[key], desired_resources[key], release_name, namespace
@@ -1696,120 +1439,6 @@ def compare_manual_refresh_live_desired(
             fail(f"manual-refresh live declarative state differs from desired for {key}")
 
 
-def parse_utc_now(value: str | None) -> datetime:
-    if value is None:
-        return datetime.now(timezone.utc).replace(microsecond=0)
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        fail(f"invalid activation time: {value}")
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        fail("activation time must include a UTC offset")
-    return parsed.astimezone(timezone.utc).replace(microsecond=0)
-
-
-def audit_timestamp(value: datetime, target_timezone: timezone | ZoneInfo) -> str:
-    rendered = value.astimezone(target_timezone).isoformat(timespec="seconds")
-    return rendered.replace("+00:00", "Z")
-
-
-def activation_trigger_pair(
-    now: datetime, scheduler_timezone: ZoneInfo, hour: int, minute: int
-) -> tuple[datetime, datetime]:
-    local_date = now.astimezone(scheduler_timezone).date()
-    candidates = []
-    for offset in range(-8, 9):
-        candidate_date = local_date + timedelta(days=offset)
-        if candidate_date.weekday() < 5:
-            candidates.append(
-                datetime.combine(
-                    candidate_date,
-                    time(hour=hour, minute=minute),
-                    tzinfo=scheduler_timezone,
-                ).astimezone(timezone.utc)
-            )
-    previous = [candidate for candidate in candidates if candidate <= now]
-    following = [candidate for candidate in candidates if candidate > now]
-    if not previous or not following:
-        fail("could not determine the surrounding weekday schedule triggers")
-    return max(previous), min(following)
-
-
-def validate_activation_window(
-    inspection: dict[str, Any], mode: str, now_value: str | None
-) -> dict[str, Any]:
-    if (
-        inspection.get("enabled") is not True
-        or inspection.get("suspend") is not False
-        or inspection.get("state") != "active"
-    ):
-        fail("activation window requires an active scheduling inspection")
-
-    schedule = inspection.get("schedule")
-    if not isinstance(schedule, str) or not re.fullmatch(r"\d{1,2} \d{1,2} \* \* 1-5", schedule):
-        fail("activation inspection has an invalid weekday schedule")
-    minute, hour = (int(item) for item in schedule.split()[:2])
-    if minute > 59 or hour > 23:
-        fail("activation inspection schedule has an invalid clock time")
-    starting_deadline = inspection.get("startingDeadlineSeconds")
-    if type(starting_deadline) is not int or starting_deadline <= 0:
-        fail("activation inspection startingDeadlineSeconds must be a positive integer")
-
-    strategy = inspection.get("strategy")
-    if strategy == "native":
-        if inspection.get("timeZone") != "Asia/Shanghai":
-            fail("native activation inspection must use Asia/Shanghai")
-        scheduler_timezone_name = "Asia/Shanghai"
-    elif strategy == "controller":
-        scheduler_timezone_name = inspection.get("controllerTimeZone")
-        if not isinstance(scheduler_timezone_name, str):
-            fail("controller activation inspection must declare its timezone")
-        expected_schedule = {
-            "Etc/UTC": "30 8 * * 1-5",
-            "Asia/Shanghai": "30 16 * * 1-5",
-        }.get(scheduler_timezone_name)
-        if schedule != expected_schedule:
-            fail("controller activation inspection has an unapproved timezone mapping")
-    else:
-        fail("activation inspection strategy must be native or controller")
-
-    scheduler_timezone = ZoneInfo(scheduler_timezone_name)
-    now = parse_utc_now(now_value)
-    previous, following = activation_trigger_pair(now, scheduler_timezone, hour, minute)
-    deadline = previous + timedelta(seconds=starting_deadline)
-    seconds_after_previous = int((now - previous).total_seconds())
-    seconds_until_next = int((following - now).total_seconds())
-
-    if mode == "immediate-catch-up":
-        if now > deadline:
-            fail("immediate-catch-up is outside the previous trigger deadline")
-    elif mode == "next-schedule":
-        if now <= deadline:
-            fail("next-schedule requires the previous trigger deadline to have passed")
-        if seconds_until_next < ACTIVATION_SAFETY_BUFFER_SECONDS:
-            fail("next-schedule is inside the next-trigger safety buffer")
-    else:
-        fail(f"unsupported activation mode: {mode}")
-
-    return {
-        "allowed": True,
-        "decision": "allowed",
-        "mode": mode,
-        "nowUtc": audit_timestamp(now, timezone.utc),
-        "schedule": schedule,
-        "schedulerTimeZone": scheduler_timezone_name,
-        "startingDeadlineSeconds": starting_deadline,
-        "safetyBufferSeconds": ACTIVATION_SAFETY_BUFFER_SECONDS,
-        "secondsAfterPreviousTrigger": seconds_after_previous,
-        "secondsUntilNextTrigger": seconds_until_next,
-        "previousTriggerUtc": audit_timestamp(previous, timezone.utc),
-        "previousTriggerShanghai": audit_timestamp(previous, SHANGHAI),
-        "previousDeadlineUtc": audit_timestamp(deadline, timezone.utc),
-        "nextTriggerUtc": audit_timestamp(following, timezone.utc),
-        "nextTriggerShanghai": audit_timestamp(following, SHANGHAI),
-    }
-
-
 def parse_server_version(payload: Any) -> str:
     if not isinstance(payload, dict):
         fail("Kubernetes /version response must be an object")
@@ -1826,30 +1455,6 @@ def main() -> None:
     subparsers.add_parser("parse-version")
     normalize_version = subparsers.add_parser("normalize-version")
     normalize_version.add_argument("--version", required=True)
-    activation_window = subparsers.add_parser("validate-activation-window")
-    activation_window.add_argument(
-        "--mode", choices=("next-schedule", "immediate-catch-up"), required=True
-    )
-    activation_window.add_argument("--now")
-    generic_values = subparsers.add_parser("validate-generic-deploy-values")
-    generic_values.add_argument("--values", type=Path, action="append", required=True)
-
-    for name in ("inspect", "extract-suspended"):
-        child = subparsers.add_parser(name)
-        child.add_argument("--release-name", required=True)
-        child.add_argument("--namespace", required=True)
-        child.add_argument("--kube-version")
-        child.add_argument(
-            "--require-state", choices=("any", "disabled", "suspended", "active"), default="any"
-        )
-
-    for name in ("compare-add-suspended", "compare-suspend-only", "compare-remove-cronjob"):
-        child = subparsers.add_parser(name)
-        child.add_argument("--release-name", required=True)
-        child.add_argument("--namespace", required=True)
-        child.add_argument("--current", type=Path, required=True)
-        child.add_argument("--desired", type=Path, required=True)
-
     for name in ("verify-deployment-image", "verify-pod-image"):
         child = subparsers.add_parser(name)
         child.add_argument("--release-name", required=True)
@@ -1948,39 +1553,6 @@ def main() -> None:
         print(parse_server_version(payload))
     elif args.command == "normalize-version":
         print(normalize_semver(args.version))
-    elif args.command == "validate-activation-window":
-        result = validate_activation_window(
-            load_json(sys.stdin, "scheduling inspection"), args.mode, args.now
-        )
-        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
-        sys.stdout.write("\n")
-    elif args.command == "validate-generic-deploy-values":
-        validate_generic_deploy_values(args.values)
-    elif args.command in {"inspect", "extract-suspended"}:
-        documents = load_documents(sys.stdin)
-        cronjob, result = inspect(
-            documents,
-            args.release_name,
-            args.namespace,
-            args.require_state,
-            args.kube_version,
-        )
-        if args.command == "inspect":
-            json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
-            sys.stdout.write("\n")
-        else:
-            if cronjob is None:
-                fail("suspended CronJob is missing")
-            yaml.safe_dump(cronjob, sys.stdout, sort_keys=False)
-    elif args.command in {"compare-add-suspended", "compare-suspend-only", "compare-remove-cronjob"}:
-        current = load_path(args.current)
-        desired = load_path(args.desired)
-        if args.command == "compare-add-suspended":
-            compare_add_suspended(current, desired, args.release_name, args.namespace)
-        elif args.command == "compare-suspend-only":
-            compare_suspend_only(current, desired, args.release_name, args.namespace)
-        else:
-            compare_remove_cronjob(current, desired, args.release_name, args.namespace)
     elif args.command == "verify-runtime-image":
         verify_runtime_image(
             load_json_path(args.deployments, "Deployment"),

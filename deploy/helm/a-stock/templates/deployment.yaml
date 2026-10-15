@@ -1,6 +1,6 @@
 {{- $component := default "all" .Values.component -}}
-{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
-{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- if not (has $component (list "all" "database" "service")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, or service" $component) -}}
 {{- end -}}
 {{- if has $component (list "all" "service") }}
 {{- if or (not .Values.database.enabled) (not .Values.database.existingSecret) }}
@@ -58,6 +58,8 @@ spec:
           env:
             - name: TZ
               value: {{ .Values.marketEnvironment.timezone | quote }}
+            - name: MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED
+              value: {{ ternary "1" "0" .Values.marketEnvironment.automationRefreshEnabled | quote }}
             - name: MARKET_ENVIRONMENT_SCRAPLING_ENABLED
               value: {{ ternary "1" "0" .Values.marketEnvironment.scrapling.enabled | quote }}
             - name: MARKET_ENVIRONMENT_SCRAPLING_ALLOWLIST

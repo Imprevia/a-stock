@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from ...domain.models import (
     CollectionCandidate,
     DatasetDate,
+    FullCollectionSemantics,
+    IdempotencyBinding,
+    IdempotencyClaim,
+    IdempotencyKey,
+    StructuredTaskFailure,
     MaterializationRevision,
 )
 from ...domain.models.sector_continuity import (
@@ -62,6 +67,55 @@ class CollectionTaskRepository(Protocol):
     def list_tasks(self, run_id: str) -> Sequence[object]: ...
 
     def save_task(self, task: object) -> object: ...
+
+
+@runtime_checkable
+class CollectionIdempotencyRepository(Protocol):
+    def get_binding(
+        self,
+        operation_scope: str,
+        key: IdempotencyKey,
+    ) -> IdempotencyBinding | None: ...
+
+    def claim(
+        self,
+        key: IdempotencyKey,
+        semantics: FullCollectionSemantics,
+        *,
+        run_id: str,
+        task_ids: Mapping[str, str],
+        now: datetime,
+    ) -> IdempotencyClaim: ...
+
+    def acquire_submission(
+        self,
+        operation_scope: str,
+        key: IdempotencyKey,
+        *,
+        owner: str,
+        now: datetime,
+        lease_seconds: float,
+    ) -> IdempotencyBinding | None: ...
+
+    def mark_submitted(
+        self,
+        operation_scope: str,
+        key: IdempotencyKey,
+        *,
+        owner: str,
+        now: datetime,
+        recovery_seconds: float,
+    ) -> IdempotencyBinding: ...
+
+    def mark_submission_failed(
+        self,
+        operation_scope: str,
+        key: IdempotencyKey,
+        *,
+        owner: str,
+        failure: StructuredTaskFailure,
+        now: datetime,
+    ) -> IdempotencyBinding: ...
 
 
 @runtime_checkable

@@ -13,7 +13,12 @@ from ...application.ports.core_committers import (
     CoreIndexCommitEvidence,
     CoreTradingSessionEvidence,
 )
-from ...domain.models import CollectionCandidate, CollectionTaskState
+from ...domain.models import (
+    CollectionCandidate,
+    CollectionFailureCategory,
+    CollectionTaskState,
+    StructuredTaskFailure,
+)
 from ..legacy.snapshot_store import (
     CollectionTaskRecord,
     CoreIndexResultRecord,
@@ -185,12 +190,29 @@ class CoreDatasetCommitter:
         warning = request.outcome.warning
         if warning is None and request.candidate.warnings:
             warning = "; ".join(request.candidate.warnings)
+        failure = None
+        if request.outcome.state is CollectionTaskState.FAILED_RETAINED:
+            failure = (
+                StructuredTaskFailure.from_acquisition(
+                    request.outcome.failure,
+                    retained=True,
+                )
+                if request.outcome.failure is not None
+                else StructuredTaskFailure(
+                    category=CollectionFailureCategory.INTERNAL,
+                    message=warning or "core collection failed; retained same-date snapshot",
+                    retryable=True,
+                    retained=True,
+                    stage="collection",
+                )
+            )
         updated_task = replace(
             task,
             status=request.outcome.state.value,
             source=request.candidate.source,
             observations=request.candidate.observations,
             warning=warning,
+            failure=failure,
             timings=dict(request.task_timings),
             completed_at=request.completed_at,
             duration_ms=request.duration_ms,

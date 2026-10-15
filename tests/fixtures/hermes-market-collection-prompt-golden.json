@@ -1,0 +1,212 @@
+{
+  "schemaVersion": "hermes-market-collection/v1",
+  "canonicalDatasets": [
+    "core",
+    "breadth",
+    "limits",
+    "industry-ranking",
+    "sector-turnover",
+    "sector-breadth",
+    "activeDirection"
+  ],
+  "cases": [
+    {
+      "name": "all-success",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "run",
+        "targetDate": "2026-10-15",
+        "runId": "run-success",
+        "status": "success",
+        "statusUrl": "http://192.168.1.20:32001/api/market-environment/collection-runs/run-success",
+        "httpStatus": 200,
+        "message": null,
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": [
+          {"dataset": "core", "status": "success", "source": "sina-kline", "observations": 6, "durationMs": 10, "warning": null, "failure": null},
+          {"dataset": "breadth", "status": "success", "source": "eastmoney", "observations": 5200, "durationMs": 20, "warning": null, "failure": null},
+          {"dataset": "limits", "status": "success", "source": "fuyao", "observations": 88, "durationMs": 30, "warning": null, "failure": null},
+          {"dataset": "industry-ranking", "status": "success", "source": "ths", "observations": 90, "durationMs": 40, "warning": null, "failure": null},
+          {"dataset": "sector-turnover", "status": "success", "source": "ths", "observations": 90, "durationMs": 50, "warning": null, "failure": null},
+          {"dataset": "sector-breadth", "status": "success", "source": "ths", "observations": 90, "durationMs": 60, "warning": null, "failure": null},
+          {"dataset": "activeDirection", "status": "success", "source": "eastmoney", "observations": 50, "durationMs": 70, "warning": null, "failure": null}
+        ]
+      },
+      "expected": {
+        "title": "成功",
+        "successes": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth", "activeDirection"],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": []
+      }
+    },
+    {
+      "name": "mixed-partial-and-failures",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "run",
+        "targetDate": "2026-10-15",
+        "runId": "run-partial",
+        "status": "partial",
+        "statusUrl": "http://192.168.1.20:32001/api/market-environment/collection-runs/run-partial",
+        "httpStatus": 200,
+        "message": null,
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": [
+          {"dataset": "core", "status": "success", "source": "sina-kline", "observations": 6, "durationMs": 10, "warning": null, "failure": null},
+          {"dataset": "breadth", "status": "partial", "source": "tdx-daily-package", "observations": 5100, "durationMs": 20, "warning": "使用降级来源", "failure": null},
+          {"dataset": "limits", "status": "failed-retained", "source": "fuyao", "observations": 80, "durationMs": 30, "warning": "保留同日旧数据", "failure": {"category": "provider-unavailable", "message": "数据源暂不可用", "retryable": true, "retained": true}},
+          {"dataset": "industry-ranking", "status": "failed-missing", "source": "ths", "observations": null, "durationMs": 40, "warning": null, "failure": {"category": "insufficient", "message": "没有同日数据", "retryable": false, "retained": false}},
+          {"dataset": "sector-turnover", "status": "blocked", "source": null, "observations": null, "durationMs": 0, "warning": null, "failure": {"category": "dependency", "message": "industry-ranking 未就绪", "retryable": true, "retained": false}},
+          {"dataset": "sector-breadth", "status": "busy", "source": null, "observations": null, "durationMs": 0, "warning": null, "failure": {"category": "concurrency", "message": "同日任务持有租约", "retryable": true, "retained": false}},
+          {"dataset": "activeDirection", "status": "success", "source": "eastmoney", "observations": 50, "durationMs": 70, "warning": null, "failure": null}
+        ]
+      },
+      "expected": {
+        "title": "部分成功",
+        "successes": ["core", "activeDirection"],
+        "partials": ["breadth"],
+        "failuresOrRetentions": ["limits", "industry-ranking"],
+        "blockedOrBusy": ["sector-turnover", "sector-breadth"],
+        "missing": []
+      }
+    },
+    {
+      "name": "one-canonical-result-missing",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "run",
+        "targetDate": "2026-10-15",
+        "runId": "run-missing",
+        "status": "partial",
+        "statusUrl": "http://192.168.1.20:32001/api/market-environment/collection-runs/run-missing",
+        "httpStatus": 200,
+        "message": null,
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": [
+          {"dataset": "core", "status": "success", "source": "sina-kline", "observations": 6, "durationMs": 10, "warning": null, "failure": null},
+          {"dataset": "breadth", "status": "success", "source": "eastmoney", "observations": 5200, "durationMs": 20, "warning": null, "failure": null},
+          {"dataset": "limits", "status": "success", "source": "fuyao", "observations": 88, "durationMs": 30, "warning": null, "failure": null},
+          {"dataset": "industry-ranking", "status": "success", "source": "ths", "observations": 90, "durationMs": 40, "warning": null, "failure": null},
+          {"dataset": "sector-turnover", "status": "success", "source": "ths", "observations": 90, "durationMs": 50, "warning": null, "failure": null},
+          {"dataset": "sector-breadth", "status": "success", "source": "ths", "observations": 90, "durationMs": 60, "warning": null, "failure": null}
+        ]
+      },
+      "expected": {
+        "title": "部分成功",
+        "successes": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth"],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": ["activeDirection"]
+      }
+    },
+    {
+      "name": "endpoint-unreachable-is-batch-only",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "endpoint-unreachable",
+        "targetDate": "2026-10-15",
+        "runId": null,
+        "status": "unreachable",
+        "statusUrl": null,
+        "httpStatus": null,
+        "message": "无法连接后端：TimeoutError",
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": true,
+        "retryable": true,
+        "tasks": []
+      },
+      "expected": {
+        "title": "接口不可达",
+        "successes": [],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth", "activeDirection"]
+      }
+    },
+    {
+      "name": "request-rejected-is-batch-only",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "rejected",
+        "targetDate": "2026-10-15",
+        "runId": null,
+        "status": "rejected",
+        "statusUrl": null,
+        "httpStatus": 422,
+        "message": "结算前不能采集",
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": []
+      },
+      "expected": {
+        "title": "请求被拒绝",
+        "successes": [],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth", "activeDirection"]
+      }
+    },
+    {
+      "name": "skipped-is-batch-only",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "skipped",
+        "targetDate": "2026-10-17",
+        "runId": null,
+        "status": "skipped",
+        "statusUrl": null,
+        "httpStatus": 200,
+        "message": "周末不采集",
+        "idempotencyKey": "hermes-market-collection-2026-10-17-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": []
+      },
+      "expected": {
+        "title": "已跳过",
+        "successes": [],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth", "activeDirection"]
+      }
+    },
+    {
+      "name": "still-running-is-batch-only",
+      "input": {
+        "schemaVersion": "hermes-market-collection/v1",
+        "kind": "still-running",
+        "targetDate": "2026-10-15",
+        "runId": "run-active",
+        "status": "collecting",
+        "statusUrl": "http://192.168.1.20:32001/api/market-environment/collection-runs/run-active",
+        "httpStatus": 202,
+        "message": null,
+        "idempotencyKey": "hermes-market-collection-2026-10-15-1630",
+        "uncertainReplay": false,
+        "retryable": false,
+        "tasks": []
+      },
+      "expected": {
+        "title": "仍在运行",
+        "successes": [],
+        "partials": [],
+        "failuresOrRetentions": [],
+        "blockedOrBusy": [],
+        "missing": ["core", "breadth", "limits", "industry-ranking", "sector-turnover", "sector-breadth", "activeDirection"]
+      }
+    }
+  ]
+}

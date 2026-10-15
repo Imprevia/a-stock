@@ -391,6 +391,7 @@ class _CollectionTaskRepository:
             source=record.source,
             observations=record.observations,
             warning=record.warning,
+            failure=record.failure,
             timings=dict(record.timings),
             completed_at=record.completed_at,
             duration_ms=record.duration_ms,

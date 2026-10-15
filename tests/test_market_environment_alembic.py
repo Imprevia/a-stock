@@ -70,7 +70,7 @@ def test_0003_revision_is_additive_and_matches_runtime_schema_contract() -> None
 
     destructive = re.compile(r"\b(alter|drop|update|delete|truncate)\b", re.IGNORECASE)
     assert all(destructive.search(statement) is None for statement in operations.statements)
-    assert MINIMUM_SCHEMA_VERSION == 10
+    assert MINIMUM_SCHEMA_VERSION == 11
     assert "provider_capability_reports" in REQUIRED_RUNTIME_TABLES
 
 
