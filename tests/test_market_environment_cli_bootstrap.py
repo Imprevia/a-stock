@@ -64,16 +64,15 @@ def test_cli_help_does_not_construct_container(monkeypatch) -> None:
     assert exit_info.value.code == 0
 
 
-def test_scheduled_refresh_uses_cli_container_and_closes_it(
+def test_snapshot_refresh_uses_cli_container_and_closes_it(
     monkeypatch,
     tmp_path,
     capsys,
 ) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
     provider = CollectionProvider()
     coordinator = CollectionCoordinator(
         provider,
-        SnapshotStore(tmp_path / "scheduled.sqlite3"),
+        SnapshotStore(tmp_path / "refresh.sqlite3"),
         now=lambda: AFTER_MARKET,
         rebuild_aggregate=lambda _as_of: None,
     )
@@ -94,15 +93,49 @@ def test_scheduled_refresh_uses_cli_container_and_closes_it(
     )
 
     exit_code = market_cli.main(
-        ["snapshots", "scheduled-refresh", "--dataset", "breadth"],
-        now=lambda: AFTER_MARKET,
+        [
+            "snapshots",
+            "refresh",
+            "--as-of",
+            AS_OF.isoformat(),
+            "--dataset",
+            "breadth",
+        ],
     )
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["trigger"] == "scheduled"
+    assert "trigger" not in payload
     assert payload["asOf"] == AS_OF.isoformat()
     assert payload["status"] == "success"
     assert [item["dataset"] for item in payload["datasets"]] == ["breadth"]
     assert provider.calls == ["breadth"]
     assert container.closed is True
+
+
+def test_snapshots_help_keeps_explicit_maintenance_without_scheduled_refresh(
+    capsys,
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        market_cli.main(["snapshots", "--help"])
+
+    output = capsys.readouterr().out
+    assert exit_info.value.code == 0
+    assert "scheduled-refresh" not in output
+    assert "refresh" in output
+    assert "relabel-date" in output
+    assert "relabel-rollback" in output
+
+
+def test_removed_scheduled_refresh_is_rejected_before_runtime_construction(
+    monkeypatch,
+) -> None:
+    def fail_builder(*args, **kwargs):
+        raise AssertionError("removed command must not construct runtime dependencies")
+
+    monkeypatch.setattr(market_cli, "build_cli_container", fail_builder)
+
+    with pytest.raises(SystemExit) as exit_info:
+        market_cli.main(["snapshots", "scheduled-refresh"])
+
+    assert exit_info.value.code == 2

@@ -28,6 +28,7 @@ persistence:
 
 marketEnvironment:
   timezone: Asia/Shanghai
+  automationRefreshEnabled: false
   persistentCache: true
   settlementTime: "15:10"
   scrapling:
@@ -48,10 +49,6 @@ marketEnvironment:
         enabled: false
         approvedRevision: fuyao-market-v2
         shadowEnabled: false
-  scheduledCollection:
-    enabled: false
-    suspend: true
-
 extraEnv:
   - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
     value: "1"

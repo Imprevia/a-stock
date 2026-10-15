@@ -116,6 +116,7 @@ def test_top_level_settings_are_immutable_and_side_effect_free() -> None:
     settings = MarketEnvironmentSettings.from_environment(
         {
             "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED": "0",
+            "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED": "1",
             "MARKET_ENVIRONMENT_PERSISTENT_CACHE": "1",
             "MARKET_ENVIRONMENT_LIMITS_V1_ENABLED": "0",
             "MARKET_ENVIRONMENT_SETTLEMENT_TIME": "15:20",
@@ -129,6 +130,7 @@ def test_top_level_settings_are_immutable_and_side_effect_free() -> None:
     assert settings.settlement_time == time(15, 20)
     assert settings.open_time == time(9, 31)
     assert settings.manual_refresh_enabled is False
+    assert settings.automation_refresh_enabled is True
     assert settings.persistent_cache_enabled is True
     assert settings.limits_v1_enabled is False
     assert settings.sector_enrichment_enabled is False
@@ -138,6 +140,23 @@ def test_top_level_settings_are_immutable_and_side_effect_free() -> None:
 
     with pytest.raises(FrozenInstanceError):
         settings.collection_workers = 4
+
+
+def test_automation_refresh_defaults_off_independently_from_manual_refresh() -> None:
+    default_settings = MarketEnvironmentSettings.from_environment({})
+    manual_off = MarketEnvironmentSettings.from_environment(
+        {"MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED": "0"}
+    )
+    automation_on = MarketEnvironmentSettings.from_environment(
+        {"MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED": "1"}
+    )
+
+    assert default_settings.manual_refresh_enabled is True
+    assert default_settings.automation_refresh_enabled is False
+    assert manual_off.manual_refresh_enabled is False
+    assert manual_off.automation_refresh_enabled is False
+    assert automation_on.manual_refresh_enabled is True
+    assert automation_on.automation_refresh_enabled is True
 
 
 def test_top_level_settings_require_explicit_sector_enrichment_opt_in() -> None:
@@ -239,6 +258,16 @@ def test_container_builds_from_fake_repository_collector_clock_and_executors() -
     assert container.reads.market_environment.store is repository
     assert container.reads.collection.coordinator.provider is collector
     assert container.commands.collection.executor is task_executor
+    assert (
+        container.commands.full_collection.submission_service.commands
+        is container.commands.collection
+    )
+    assert (
+        container.commands.full_collection.submission_service.queries
+        is container.reads.collection
+    )
+    assert container.commands.full_collection.settlement_boundary == time(15, 10)
+    assert container.commands.full_collection.monotonic_clock() == 123.0
     assert not hasattr(container.reads, "task_executor")
     assert not hasattr(container.commands, "market_environment")
     assert task_executor.submissions == []

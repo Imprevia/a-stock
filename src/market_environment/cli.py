@@ -70,11 +70,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="collect the latest N confirmed sessions; values above 1 require --dataset limits",
     )
-    scheduled_refresh = snapshot_commands.add_parser(
-        "scheduled-refresh",
-        help="refresh the current Shanghai market date after settlement",
-    )
-    _add_dataset_arguments(scheduled_refresh)
     relabel = snapshot_commands.add_parser(
         "relabel-date",
         aliases=["relabel", "migrate-date", "date-relabel", "migrate"],
@@ -823,52 +818,6 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
     return 0 if result.run.status == "success" else 2
 
 
-def _run_scheduled_refresh(
-    args,
-    injected_coordinator: CollectionCoordinator | None,
-    now: Callable[[], datetime] | None,
-) -> int:
-    current = _market_now(now)
-    calendar_date = current.date()
-    selected = tuple(args.datasets or SUPPORTED_COLLECTION_DATASETS)
-
-    if current.weekday() >= 5:
-        _print_payload(
-            {
-                "trigger": "scheduled",
-                "asOf": calendar_date.isoformat(),
-                "status": "skipped",
-                "reason": "weekend",
-                "datasets": [],
-            }
-        )
-        return 0
-
-    as_of = effective_market_date(current)
-    try:
-        if current.time().replace(tzinfo=None) < settlement_time():
-            raise ValueError("scheduled refresh is only allowed after the configured settlement time")
-        with _collection_coordinator_scope(
-            injected_coordinator,
-            clock=lambda: current,
-        ) as active_coordinator:
-            result = active_coordinator.collect(as_of, selected)
-    except ValueError as exc:
-        _print_payload(
-            {
-                "trigger": "scheduled",
-                "asOf": as_of.isoformat(),
-                "status": "rejected",
-                "error": str(exc),
-                "datasets": [],
-            }
-        )
-        return 2
-
-    _print_payload(_collection_payload(result, trigger="scheduled"))
-    return 0 if result.run.status == "success" else 2
-
-
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1360,8 +1309,6 @@ def main(
     if args.command == "snapshots" and args.snapshot_command == "refresh":
         with _collection_coordinator_scope(coordinator) as active_coordinator:
             return _run_snapshot_refresh(args, active_coordinator)
-    if args.command == "snapshots" and args.snapshot_command == "scheduled-refresh":
-        return _run_scheduled_refresh(args, coordinator, now)
     if args.command == "snapshots" and args.snapshot_command in {"relabel-date", "relabel", "migrate-date", "date-relabel", "migrate"}:
         # Date relabels must always select their backend explicitly.  In
         # particular, never fall back to MARKET_ENVIRONMENT_SNAPSHOT_PATH:

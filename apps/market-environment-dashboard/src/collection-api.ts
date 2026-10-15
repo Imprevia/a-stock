@@ -13,6 +13,20 @@ export const COLLECTION_DATASETS = [
 export type CollectionDataset = typeof COLLECTION_DATASETS[number]
 export type CollectionRunStatus = 'queued' | 'collecting' | 'success' | 'partial' | 'failed'
 export type CollectionTaskStatus = 'queued' | 'collecting' | 'success' | 'partial' | 'failed-retained' | 'failed-missing' | 'blocked' | 'busy'
+export type CollectionFailureCategory =
+  | 'configuration'
+  | 'engine-unavailable'
+  | 'network'
+  | 'rate-limit'
+  | 'permission'
+  | 'challenge'
+  | 'contract'
+  | 'date-mismatch'
+  | 'insufficient'
+  | 'internal'
+  | 'dependency'
+  | 'concurrency'
+  | 'worker-interrupted'
 
 export const LEGACY_SECTORS_MIGRATION_MESSAGE = '数据集 sectors 已停止支持；请改用 industry-ranking、sector-turnover 或 sector-breadth。'
 
@@ -30,6 +44,17 @@ export interface CoreIndexCollectionResult {
   durationMs: number | null
 }
 
+export interface CollectionTaskFailure {
+  category: CollectionFailureCategory
+  message: string
+  retryable: boolean
+  retained: boolean
+  source?: string | null
+  stage?: string | null
+  code?: string | null
+  blockedBy?: string[]
+}
+
 export interface CollectionAttempt {
   taskId: string
   runId: string
@@ -37,6 +62,7 @@ export interface CollectionAttempt {
   source: string
   observations: number
   warning: string | null
+  failure?: CollectionTaskFailure | null
   diagnostics?: ThsDiagnostic | null
   catalogRevisionId?: string | null
   queuedAt: string | null

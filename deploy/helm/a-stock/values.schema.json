@@ -7,10 +7,9 @@
       "enum": [
         "all",
         "database",
-        "service",
-        "schedule"
+        "service"
       ],
-      "description": "Component intent for the componentized TrueNAS k3s entry point. `all` preserves the existing one-click behaviour; `database`, `service`, and `schedule` constrain rendering to the matching subset of resources."
+      "description": "Component intent for the componentized TrueNAS k3s entry point. `all` preserves the existing one-click behaviour; `database` and `service` constrain rendering to the matching subset of resources."
     },
     "database": {
       "type": "object",
@@ -69,14 +68,40 @@
       "type": "object",
       "required": [
         "timezone",
-        "scheduledCollection"
+        "automationRefreshEnabled"
       ],
+      "additionalProperties": false,
       "properties": {
         "timezone": {
           "type": "string",
           "enum": [
             "Asia/Shanghai"
           ]
+        },
+        "automationRefreshEnabled": {
+          "type": "boolean"
+        },
+        "persistentCache": {
+          "type": "boolean"
+        },
+        "snapshotPath": {
+          "type": "string"
+        },
+        "settlementTime": {
+          "type": "string",
+          "pattern": "^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "crawlFallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "hosts"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "hosts": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
         },
         "scrapling": {
           "type": "object",
@@ -175,29 +200,6 @@
             "maxOverflow": {"type": "integer", "minimum": 0},
             "poolTimeoutSeconds": {"type": "integer", "minimum": 1},
             "statementTimeoutMs": {"type": "integer", "minimum": 100}
-          }
-        },
-        "scheduledCollection": {
-          "type": "object",
-          "required": [
-            "enabled",
-            "suspend",
-            "controllerTimeZoneVerified",
-            "controllerCanaryVerified"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "suspend": {
-              "type": "boolean"
-            },
-            "controllerTimeZoneVerified": {
-              "type": "boolean"
-            },
-            "controllerCanaryVerified": {
-              "type": "boolean"
-            }
           }
         }
       }

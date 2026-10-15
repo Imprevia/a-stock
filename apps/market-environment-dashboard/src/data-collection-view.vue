@@ -26,6 +26,7 @@ import {
   canCollectAll,
   canRetryDataset,
   collectionDiagnosticDetails,
+  collectionWarning,
   getCollectionStatusRequestDate,
   isRunActive,
   resolveCollectionSelectedDate,
@@ -167,11 +168,6 @@ function collectionQuality(item: DatasetCollectionStatus) {
   if (quality.rankingMethod) details.push('本地成交额排序')
   if (quality.industryMappingCoverage != null) details.push(`行业映射 ${(quality.industryMappingCoverage * 100).toFixed(0)}%`)
   return details.filter(Boolean).join(' · ')
-}
-
-function collectionWarning(item: DatasetCollectionStatus) {
-  const warnings = [item.latestAttempt?.warning, item.refreshWarning, item.restriction]
-  return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))].join('；')
 }
 
 function operationStatusLabel(value?: string | null) {

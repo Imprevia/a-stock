@@ -83,9 +83,7 @@ def test_helm_scrapling_profile_is_disabled_and_empty_by_default() -> None:
         },
         "allowlist": [],
     }
-    scheduled = values["marketEnvironment"]["scheduledCollection"]
-    assert scheduled["enabled"] is False
-    assert scheduled["suspend"] is True
+    assert "scheduledCollection" not in values["marketEnvironment"]
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
@@ -103,7 +101,7 @@ def test_default_helm_render_uses_base_image_without_secret_or_cronjob() -> None
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
-def test_enhanced_helm_render_is_explicit_empty_and_still_suspended() -> None:
+def test_enhanced_helm_render_is_explicit_empty_and_has_no_cronjob() -> None:
     documents = _render(
         "--kube-version",
         "1.27.0",
@@ -113,19 +111,11 @@ def test_enhanced_helm_render_is_explicit_empty_and_still_suspended() -> None:
         "marketEnvironment.scrapling.image.repository=registry.local/a-stock-enhanced",
         "--set",
         "marketEnvironment.scrapling.image.tag=reviewed",
-        "--set",
-        "marketEnvironment.scheduledCollection.enabled=true",
-        "--set",
-        "marketEnvironment.scheduledCollection.suspend=true",
     )
     deployment = _resource(documents, "Deployment")
-    cronjob = _resource(documents, "CronJob")
-    containers = (
-        deployment["spec"]["template"]["spec"]["containers"][0],
-        cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0],
-    )
+    containers = (deployment["spec"]["template"]["spec"]["containers"][0],)
 
-    assert cronjob["spec"]["suspend"] is True
+    assert all(document.get("kind") != "CronJob" for document in documents)
     assert all(document.get("kind") != "Secret" for document in documents)
     for container in containers:
         environment = _environment(container)

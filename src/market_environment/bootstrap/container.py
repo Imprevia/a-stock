@@ -20,7 +20,11 @@ from src.trading_system.data.provider_transport import (
 from src.trading_system.data.provider_scrapling import ScraplingStaticHttpEngine
 
 from ..application.collection import DatasetCollectorRegistry
-from ..application.commands import ThsOperationGates
+from ..application.commands import (
+    FullCollectionCommand,
+    RecoverableCollectionSubmissionService,
+    ThsOperationGates,
+)
 from ..application.ports import (
     CollectionCommandPort,
     CollectionQueryPort,
@@ -98,6 +102,7 @@ class ReadDependencies:
 @dataclass(frozen=True, slots=True)
 class CommandDependencies:
     collection: CollectionCommandPort
+    full_collection: FullCollectionCommand
     aggregate: RebuilderAggregateCommandAdapter
     timezone_preferences: TimezoneCommandAdapter
     ths_sectors: Any
@@ -407,15 +412,35 @@ def build_container(
         effective_date=lambda: effective_market_date(_market_now(clock)),
     )
 
+    collection_queries = CoordinatorCollectionQueryAdapter(coordinator)
+    collection_commands = CoordinatorCollectionCommandAdapter(
+        coordinator,
+        task_executor,
+    )
+    full_collection = FullCollectionCommand(
+        unit_of_work_factory=unit_of_work_factory,
+        submission_service=RecoverableCollectionSubmissionService(
+            unit_of_work_factory=unit_of_work_factory,
+            commands=collection_commands,
+            queries=collection_queries,
+            executor=task_executor,
+            clock=lambda: _market_now(clock).astimezone(timezone.utc),
+        ),
+        queries=collection_queries,
+        clock=clock,
+        settlement_boundary=settings.settlement_time,
+        monotonic_clock=adapters.monotonic_clock,
+    )
     reads = ReadDependencies(
         market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
-        collection=CoordinatorCollectionQueryAdapter(coordinator),
+        collection=collection_queries,
         timezone_preferences=TimezoneQueryAdapter(timezone_repository),
         ths_sectors=ths_queries,
         clock=clock,
     )
     commands = CommandDependencies(
-        collection=CoordinatorCollectionCommandAdapter(coordinator, task_executor),
+        collection=collection_commands,
+        full_collection=full_collection,
         aggregate=RebuilderAggregateCommandAdapter(rebuilder),
         timezone_preferences=TimezoneCommandAdapter(timezone_repository),
         ths_sectors=ths_commands,

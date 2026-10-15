@@ -36,10 +36,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default (printf "%s-data" (include "a-stock.fullname" .)) .Values.persistence.existingClaim }}
 {{- end }}
 
-{{- define "a-stock.dataCollectionName" -}}
-{{- printf "%s-data-collection" (include "a-stock.fullname" .) | trunc 52 | trimSuffix "-" }}
-{{- end }}
-
 {{- define "a-stock.postgresqlName" -}}
 {{- printf "%s-postgresql" (include "a-stock.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}

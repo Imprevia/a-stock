@@ -11,6 +11,13 @@ from src.market_environment.application.ports import (
     CollectionTaskRepository,
     CoreIndexResultRepository,
 )
+from src.market_environment.domain.models import (
+    CollectionFailureCategory,
+    StructuredTaskFailure,
+)
+from src.market_environment.infrastructure.collection.coordinator import (
+    CollectionCoordinator,
+)
 from src.market_environment.infrastructure.persistence.postgres import (
     PostgresCollectionRunRepository,
     PostgresCollectionTaskRepository,
@@ -47,8 +54,8 @@ def collection_connection():
         CREATE TABLE collection_tasks (
             task_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, dataset TEXT NOT NULL,
             as_of DATE NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL,
-            observations INTEGER NOT NULL, warning TEXT, timings_json TEXT NOT NULL,
-            queued_at TEXT, started_at TEXT, completed_at TEXT,
+            observations INTEGER NOT NULL, warning TEXT, failure_json TEXT,
+            timings_json TEXT NOT NULL, queued_at TEXT, started_at TEXT, completed_at TEXT,
             duration_ms REAL, settled INTEGER NOT NULL,
             UNIQUE(run_id, dataset)
         )
@@ -70,6 +77,11 @@ def collection_connection():
         """
         CREATE TABLE snapshot_entries (
             dataset TEXT NOT NULL, as_of DATE NOT NULL, PRIMARY KEY(dataset, as_of)
+        )
+        """,
+        """
+        CREATE TABLE collection_idempotency_bindings (
+            run_id TEXT NOT NULL UNIQUE, submission_state TEXT NOT NULL
         )
         """,
     ):
@@ -95,6 +107,24 @@ def _task(task_id: str, dataset: str, *, status: str = "queued") -> CollectionTa
         status=status,
         queued_at=NOW,
     )
+
+
+class RepositoryStatusStore:
+    def __init__(self, runs, tasks) -> None:
+        self.runs = runs
+        self.tasks = tasks
+
+    def expire_inactive_collection_tasks(self, *, now) -> int:
+        return self.tasks.expire_inactive(now=now)
+
+    def get_collection_run(self, run_id: str):
+        return self.runs.get_run(run_id)
+
+    def list_collection_tasks(self, run_id: str):
+        return self.tasks.list_tasks(run_id)
+
+    def update_collection_run(self, run_id: str, status: str, **values):
+        return self.runs.transition_run(run_id, status, **values)
 
 
 def test_run_repository_preserves_legal_transitions(collection_connection) -> None:
@@ -146,6 +176,95 @@ def test_task_repository_expected_state_and_restart_recovery(collection_connecti
     assert tasks.get_task("task-core").status == "failed-retained"
     assert tasks.get_task("task-breadth").status == "failed-missing"
     assert "retryable" in tasks.get_task("task-breadth").warning
+    assert (
+        tasks.get_task("task-core").failure.category
+        is CollectionFailureCategory.WORKER_INTERRUPTED
+    )
+    assert tasks.get_task("task-core").failure.retained is True
+    assert tasks.get_task("task-breadth").failure.retained is False
+
+
+@pytest.mark.parametrize("submission_state", ("reserved", "submitted"))
+def test_status_read_expiration_preserves_claimed_queued_tasks(
+    collection_connection,
+    submission_state: str,
+) -> None:
+    runs = PostgresCollectionRunRepository(collection_connection)
+    tasks = PostgresCollectionTaskRepository(collection_connection)
+    runs.create_run(_run())
+    tasks.create_task(_task("task-core", "core"))
+    collection_connection.exec_driver_sql(
+        """
+        INSERT INTO collection_idempotency_bindings(run_id, submission_state)
+        VALUES (?, ?)
+        """,
+        ("run-1", submission_state),
+    )
+
+    coordinator = object.__new__(CollectionCoordinator)
+    coordinator.store = RepositoryStatusStore(runs, tasks)
+    coordinator._now = lambda: NOW + timedelta(minutes=10)
+
+    status = coordinator.get_run("run-1")
+
+    assert status is not None
+    assert status.run.status == "queued"
+    assert status.tasks[0].status == "queued"
+    queued = tasks.get_task("task-core")
+    assert queued is not None
+    assert queued.status == "queued"
+    assert queued.failure is None
+
+
+def test_task_repository_failure_codec_survives_repository_restart(
+    collection_connection,
+) -> None:
+    runs = PostgresCollectionRunRepository(collection_connection)
+    tasks = PostgresCollectionTaskRepository(collection_connection)
+    runs.create_run(_run())
+    failure = StructuredTaskFailure(
+        category=CollectionFailureCategory.CONCURRENCY,
+        message="another task owns the dataset/date lease",
+        retryable=True,
+        retained=False,
+        stage="lease-acquisition",
+        blocked_by=("industry-ranking",),
+    )
+    tasks.create_task(
+        CollectionTaskRecord(
+            task_id="task-core",
+            run_id="run-1",
+            dataset="core",
+            as_of=AS_OF,
+            status="busy",
+            warning="another task owns the lease",
+            failure=failure,
+            queued_at=NOW,
+        )
+    )
+
+    restarted = PostgresCollectionTaskRepository(collection_connection)
+    restored = restarted.get_task("task-core")
+    assert restored.failure == failure
+    assert restored.warning == "another task owns the lease"
+
+    preserved = restarted.transition_task(
+        "task-core",
+        "busy",
+        expected_statuses=("busy",),
+        timings={"leaseWaitMs": 3.5},
+    )
+    assert preserved.failure == failure
+    assert preserved.timings == {"leaseWaitMs": 3.5}
+
+    successful = restarted.transition_task(
+        "task-core",
+        "success",
+        expected_statuses=("busy",),
+        source="fixture",
+        observations=1,
+    )
+    assert successful.failure is None
 
 
 def test_active_task_requires_matching_unexpired_owner_lease(collection_connection) -> None:

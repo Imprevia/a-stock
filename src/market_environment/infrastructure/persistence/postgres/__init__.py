@@ -16,6 +16,7 @@ _EXPORTS = {
     "ProviderCapabilityPromotionUnitOfWork": ".capability_unit_of_work",
     "PostgresCollectionRunRepository": ".collection_repositories",
     "PostgresCollectionTaskRepository": ".collection_repositories",
+    "PostgresCollectionIdempotencyRepository": ".idempotency_repository",
     "PostgresCoreIndexResultRepository": ".collection_repositories",
     "PostgresLeaseRepository": ".lease_repository",
     "PostgresMaterializedAggregateRepository": ".aggregate_repository",

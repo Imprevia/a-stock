@@ -35,6 +35,8 @@ spec:
           env:
             - name: TZ
               value: Asia/Shanghai
+            - name: MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED
+              value: "0"
             - name: MARKET_ENVIRONMENT_DATABASE_URL
               valueFrom:
                 secretKeyRef:

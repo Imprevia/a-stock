@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
@@ -28,6 +28,21 @@ CollectionTaskState = Literal[
     "failed-missing",
     "busy",
     "blocked",
+]
+CollectionFailureCategory = Literal[
+    "configuration",
+    "engine-unavailable",
+    "network",
+    "rate-limit",
+    "permission",
+    "challenge",
+    "contract",
+    "date-mismatch",
+    "insufficient",
+    "internal",
+    "dependency",
+    "concurrency",
+    "worker-interrupted",
 ]
 EvidenceQualityStatus = Literal[
     "ok",
@@ -1201,6 +1216,17 @@ class CoreIndexCollectionResult(BaseModel):
     durationMs: float | None
 
 
+class CollectionTaskFailureResponse(BaseModel):
+    category: CollectionFailureCategory
+    message: str
+    retryable: bool
+    retained: bool
+    source: str | None = None
+    stage: str | None = None
+    code: str | None = None
+    blockedBy: list[str] = Field(default_factory=list)
+
+
 class CollectionTaskResponse(BaseModel):
     taskId: str
     dataset: CollectionDataset
@@ -1209,6 +1235,7 @@ class CollectionTaskResponse(BaseModel):
     source: str
     observations: int
     warning: str | None
+    failure: CollectionTaskFailureResponse | None = None
     diagnostics: ThsDiagnosticResponse | None = None
     catalogRevisionId: str | None = None
     # Provider fallback evidence includes both numeric durations and
@@ -1221,6 +1248,12 @@ class CollectionTaskResponse(BaseModel):
     settled: bool
     coreIndices: list[CoreIndexCollectionResult] = Field(default_factory=list)
     detail: LimitsCollectionDetail | None = None
+
+    @model_validator(mode="after")
+    def validate_success_has_no_failure(self) -> "CollectionTaskResponse":
+        if self.status in {"success", "partial"} and self.failure is not None:
+            raise ValueError("success and partial collection tasks must have null failure")
+        return self
 
 
 class CollectionRunResponse(BaseModel):
@@ -1236,6 +1269,34 @@ class CollectionRunResponse(BaseModel):
     tasks: list[CollectionTaskResponse]
 
 
+class FullCollectionRunResponse(CollectionRunResponse):
+    outcome: Literal["run"] = "run"
+    targetDate: date
+    statusUrl: str
+
+    @model_validator(mode="after")
+    def validate_target_date(self) -> "FullCollectionRunResponse":
+        if self.targetDate != self.asOf:
+            raise ValueError("targetDate must match the collection run asOf date")
+        return self
+
+
+class FullCollectionSkippedResponse(BaseModel):
+    outcome: Literal["skipped"] = "skipped"
+    targetDate: date
+    status: Literal["skipped"] = "skipped"
+    reason: str
+    runId: None = None
+    statusUrl: None = None
+    tasks: list[CollectionTaskResponse] = Field(default_factory=list, max_length=0)
+
+
+FullCollectionResponse = Annotated[
+    FullCollectionRunResponse | FullCollectionSkippedResponse,
+    Field(discriminator="outcome"),
+]
+
+
 class CollectionAttemptSummary(BaseModel):
     taskId: str
     runId: str
@@ -1243,6 +1304,7 @@ class CollectionAttemptSummary(BaseModel):
     source: str
     observations: int
     warning: str | None
+    failure: CollectionTaskFailureResponse | None = None
     diagnostics: ThsDiagnosticResponse | None = None
     catalogRevisionId: str | None = None
     queuedAt: datetime | None
@@ -1257,6 +1319,12 @@ class CollectionAttemptSummary(BaseModel):
     promotionQuality: str | None = None
     promotionDependency: str | None = None
     warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_success_has_no_failure(self) -> "CollectionAttemptSummary":
+        if self.status in {"success", "partial"} and self.failure is not None:
+            raise ValueError("success and partial collection attempts must have null failure")
+        return self
 
 
 class DatasetCollectionStatus(BaseModel):

@@ -135,6 +135,7 @@ class FakeRepositories:
     snapshots: object = "snapshots"
     collection_runs: object = "collection-runs"
     collection_tasks: object = "collection-tasks"
+    collection_idempotency: object = "collection-idempotency"
     core_index_results: object = "core-index-results"
     leases: object = "leases"
     trading_sessions: object = "trading-sessions"
@@ -164,7 +165,7 @@ def test_runtime_factory_checks_connectivity_and_schema_with_select_only() -> No
     )
 
     assert factory.validate_runtime().version == MINIMUM_SCHEMA_VERSION
-    assert MINIMUM_SCHEMA_VERSION == 10
+    assert MINIMUM_SCHEMA_VERSION == 11
     assert THS_RUNTIME_TABLES <= REQUIRED_RUNTIME_TABLES
     assert connection.closed is True
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in connection.statements)

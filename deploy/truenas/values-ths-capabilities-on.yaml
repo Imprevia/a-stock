@@ -1,6 +1,6 @@
 # Plan 10.4 — turn on the THS writes gate and per-dataset enable/revision flags
-# without changing image, PVC, Secret, scheduledCollection state or the existing
-# `sectors` fallback. Only the `marketEnvironment.fuyao.ths` block is allowed
+# without changing image, PVC, Secret, or the existing `sectors` fallback.
+# Only the `marketEnvironment.fuyao.ths` block is allowed
 # to drift from the live release. All other fields must round-trip identical
 # with the live `helm get values` output captured at 2026-10-13 10:24
 # (Asia/Shanghai); secret reference/pvc/keep/dump image all stay on the
@@ -33,6 +33,7 @@ ingress:
 
 marketEnvironment:
   timezone: Asia/Shanghai
+  automationRefreshEnabled: false
   persistentCache: true
   settlementTime: "15:10"
   scrapling:
@@ -74,10 +75,6 @@ marketEnvironment:
         enabled: true
         approvedRevision: fuyao-market-v2
         shadowEnabled: false
-  scheduledCollection:
-    enabled: false
-    suspend: true
-
 persistence:
   enabled: true
   existingClaim: a-stock-data
