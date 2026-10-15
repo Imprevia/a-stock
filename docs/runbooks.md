@@ -389,8 +389,9 @@ retryability 和 `blockedBy`；不得写 credential、签名 URL、敏感 header
 `0007_ths_catalog_identity`；该 migration 仅删除 `ths_catalog_revisions` 上不含交易日的
 `UNIQUE (provider, capability_revision, checksum, fetched_at)`，不改写历史行。任何发布前先只读核对当前
 release/image、两个历史 CronJob identity、active writer、PVC/Secret、schema、capability、旧 fixed revision、
-排名/bar 和失败/blocked 审计。2026-10-15 revision 113 的当前只读基线为两个 CronJob 和全部 Job absent、
-manual refresh 关闭且没有活动 writer；不得为补证重建 Kubernetes schedule。
+排名/bar 和失败/blocked 审计。2026-10-15 revision 113 是本 change 发布前只读基线；task 7.2 完成后当前为
+revision 116 / schema v11/0008，两个 CronJob 和全部 Job absent、manual/automation 关闭且没有活动 writer；
+不得为补证重建 Kubernetes schedule。
 
 后续生产恢复已由 `replace-market-collection-scheduling-with-hermes` 7.x 接管：先完成不可覆盖备份和
 automation/manual 均关闭的不可变部署，再单独授权启用 automation gate 和盘后 canary；另行选择 delivery
@@ -630,6 +631,16 @@ TrueNAS 的普通组件只包含 `all`、`database` 和 `service`。历史 `sche
 
 冻结手工采集必须使用专用 `--disable-manual-refresh` 入口和一份从当前完整 release 基线生成、已审阅且只把 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 从 literal `"1"` 改为 `"0"` 的 full values packet。该入口必须绑定 clean worktree、full `REVIEWED_GIT_HEAD`、chart/values/render SHA-256 与当前冻结镜像三元组；写前验证 stored/live release 与 stored hooks 一致、所有 full packet 管理资源（至少包含 Dashboard Deployment/Service 与 PostgreSQL StatefulSet/PVC）在 Kubernetes server defaults 归一化后零漂移且均不处于 deletion 中、两个 application CronJob absent、namespace 中每个 retained Job 都有 `Complete=True` 或 `Failed=True` 终态、PostgreSQL 健康、PVC/Secret identity 已冻结，并证明 packet 除该 env value 外零漂移。Failed/Complete/Error Job 属于审计证据，必须保留，不能为了满足停写门禁而删除；queued、pending、retrying、active、conditions 缺失或其它未证明终态的 Job 一律视为潜在 writer。唯一 Helm 写入使用 `--no-hooks --atomic --wait`，不得构建/导入镜像、运行 schema migration、调用 provider 或提交 collection POST；写后必须证明 stored hooks 未漂移、Ready Pod 仍使用原 manifest digest、manual refresh 为 `0`、PVC/Secret/image、terminal-Job 和无 CronJob 条件均未漂移。失败不得自动把 manual refresh 恢复为 `1`。
 
+启用 Hermes full endpoint 必须使用专用 `--enable-automation-refresh` 入口和一份从当前完整 release 基线生成、
+已审阅且只把 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED` 从 literal `"0"` 改为 `"1"` 的 full values
+packet。该入口复用上述 clean worktree、reviewed HEAD、chart/values/render hash、exact frozen image、stored/live
+release/hook、PostgreSQL、PVC/Secret、terminal Job 与 former CronJob 门禁，并额外要求 manual refresh 在写前写后
+均为 `0`、活动 collection run/task/lease 均为 0。唯一 Helm 写入使用 `--no-hooks --atomic --wait`，不得
+build/import 镜像、执行 migration、创建 Job 或调用 provider；写后 stored manifest 必须与 reviewed full release
+精确一致且唯一语义差异是 automation `0→1`。该入口只启用 gate，不自动发送 full POST；canary 必须在独立的
+盘后步骤使用唯一 `Idempotency-Key` 执行。任一 packet/live/identity/writer 漂移都在 Helm write 前停止，失败不
+自动执行 provider 或进入 Hermes job 安装。
+
 如果只读发现显示任一历史 CronJob，普通应用发布和回退必须停止。仓库不再提供 schedule mutation 或清理
 模式；处置必须新建 exact-resource 计划，冻结 stored/live/Job 证据并另获授权。证明两个 identity 都 absent 后，
 才可生成并审阅当前完整 manual-off values packet，设置
@@ -678,7 +689,7 @@ ssh admin@<truenas-host> 'systemctl is-enabled k3s && systemctl is-active k3s'
 
 当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH、SCP 和 netcat，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。默认 `K3S_API_SSH_TUNNEL=true`，脚本把临时 kubeconfig 指向 1.21 回环端口，并经 SSH 转发到 TrueNAS `127.0.0.1:6443`；SSH 服务必须允许该目标的 TCP forwarding。脚本退出时自动关闭隧道，不要求也不建议向局域网开放 `6443/tcp`。
 
-`all` / `service` 会在本地生成完整镜像归档。脚本在 `podman save` 前按镜像实际大小加 25%（最低 256 MiB）安全余量检查临时文件系统；若 `deploy.env` 显式设置 `DEPLOY_TMP_ROOT`，该路径必须是可写绝对目录且容量足够，否则立即失败。未设置时依次检查 `TMPDIR`、`/dev/shm`、`/tmp` 并选择首个满足条件的位置，退出时删除本次 `a-stock-deploy-image.*` 目录。内存较小的机器不要盲目使用 `/dev/shm`，应指向专用大盘。`database` / `schedule` 不导出镜像，不执行该门禁。发布前后可用 `df -h / /dev/shm "${DEPLOY_TMP_ROOT:-/tmp}"` 核对容量；禁止用 `podman system prune -a --volumes` 腾空间，因为这会破坏回滚镜像或本地恢复环境。该门禁只保护本地镜像归档，不替代 Podman graphRoot 与远端 `REMOTE_IMAGE_DIR` 的容量监控。
+`all` / `service` 会在本地生成完整镜像归档。脚本在 `podman save` 前按镜像实际大小加 25%（最低 256 MiB）安全余量检查临时文件系统；若 `deploy.env` 显式设置 `DEPLOY_TMP_ROOT`，该路径必须是可写绝对目录且容量足够，否则立即失败。未设置时依次检查 `TMPDIR`、`/dev/shm`、`/tmp` 并选择首个满足条件的位置，退出时删除本次 `a-stock-deploy-image.*` 目录。内存较小的机器不要盲目使用 `/dev/shm`，应指向专用大盘。`database` 不导出镜像，不执行该门禁；已退役的 `schedule` component 不再是有效参数。发布前后可用 `df -h / /dev/shm "${DEPLOY_TMP_ROOT:-/tmp}"` 核对容量；禁止用 `podman system prune -a --volumes` 腾空间，因为这会破坏回滚镜像或本地恢复环境。该门禁只保护本地镜像归档，不替代 Podman graphRoot 与远端 `REMOTE_IMAGE_DIR` 的容量监控。
 
 首次配置：
 
@@ -761,8 +772,9 @@ location / {
 
 ### TrueNAS NodePort 与采集写入口
 
-当前生产事实必须在每次发布前只读复核，历史 revision 不能替代 live evidence。2026-10-15 的基线为 revision 113、
-两个旧 CronJob identity 与 namespace Job absent、manual=0、active writer=0。Dashboard Service 固定为
+当前生产事实必须在每次发布前只读复核，历史 revision 不能替代 live evidence。task 7.2 发布前基线为 revision 113；
+2026-10-15 发布后当前为 revision 116 / schema v11/0008、两个旧 CronJob identity 与 namespace Job absent、
+manual=0、automation=0、active writer=0。Dashboard Service 固定为
 `NodePort:32001`；镜像、单副本、PostgreSQL StatefulSet/Service、数据库 Secret、安全上下文与 CronJob
 absent 均不得被普通写入口变更。
 
@@ -791,6 +803,13 @@ Job UID/Complete condition/安全日志或等价生命周期记录、schema v11 
 `/api/health`、`/data-collection`、OpenAPI 和 provider-free status GET。启用 automation、执行 canary 或提交
 任何 provider-backed POST 均属于另外的明确写授权，不能作为部署健康检查。观察 collection run/task、provider
 warning/限流、PostgreSQL lock/连接池、任务时长与数据库 PVC 增长，并记录实际可达边界和最终 revision。
+
+2026-10-15 task 7.2 按该合同完成：candidate `6d96224f84e362960332ca89a8e6855e4f1c123f`，image
+`20261015-150231-6d96224`，archive SHA-256 `cf2fac20…6de0`，containerd manifest digest
+`sha256:a61f6b1b…7e78`。revision 114 的唯一 schema hook UID `33aea8df-dff0-4a30-8755-d797f0126b29`
+产生 `SuccessfulCreate`/`Completed` events 后按 `hook-succeeded` 清理；revisions 115/116 分别以 `--no-hooks`
+完成 service/final convergence。最终 v11/0008、manual/automation=0、writer/CronJob/Job=0，provider-free GET
+与 OpenAPI 通过，旧计数、PVC/Secret UID 和备份 hash 未漂移。该证据不授权 task 7.3 的 gate 或 provider 写入。
 
 若出现异常请求、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长，第一步暂停 Hermes job 并设置
 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED=0`；manual 继续为 0。验证两个写入口都拒绝且没有新 run/provider

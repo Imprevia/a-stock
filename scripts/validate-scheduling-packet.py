@@ -24,6 +24,7 @@ MANUAL_REFRESH_LIVE_KINDS = {
 SECTORS_ENABLED_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
 SECTORS_REVISION_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"
 MANUAL_REFRESH_ENV = "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
+AUTOMATION_REFRESH_ENV = "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED"
 SECTORS_DISABLED_ENVS = (
     "MARKET_ENVIRONMENT_SCRAPLING_ENABLED",
     "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED",
@@ -391,6 +392,52 @@ def compare_sectors_config_only(
         fail("config-only rollout contains Deployment drift outside dashboard env")
 
 
+def _validate_refresh_gate_packet(
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    required_value: str,
+    *,
+    gate_environment: str,
+    description: str,
+    require_manual_off: bool = False,
+) -> dict[str, Any]:
+    if required_value not in {"0", "1"}:
+        fail(f"required {description} value must be 0 or 1")
+    require_no_cronjobs(documents, f"{description} packet")
+    _validate_resource_namespaces(documents, namespace, f"{description} packet")
+    deployment = _dashboard_deployment(
+        without_helm_hooks(documents), release_name, f"{description} packet"
+    )
+    spec = deployment.get("spec")
+    if not isinstance(spec, dict) or spec.get("replicas") != 1:
+        fail(f"{description} packet Dashboard Deployment must have exactly one replica")
+    container = _dashboard_container(
+        deployment, f"{description} packet Dashboard Deployment"
+    )
+    if container.get("image") != expected_image:
+        fail(f"{description} packet must preserve frozen image {expected_image}")
+    _validate_reviewed_hooks(documents, release_name, expected_image)
+    environment = _environment_index(container, f"{description} packet Dashboard")
+    if environment.get(gate_environment) != {
+        "name": gate_environment,
+        "value": required_value,
+    }:
+        fail(f"{gate_environment} must be literal {required_value}")
+    if require_manual_off and environment.get(MANUAL_REFRESH_ENV) != {
+        "name": MANUAL_REFRESH_ENV,
+        "value": "0",
+    }:
+        fail(f"{MANUAL_REFRESH_ENV} must remain literal 0")
+    return {
+        "deployment": metadata_value(deployment, "name"),
+        "image": expected_image,
+        "environment": gate_environment,
+        "value": required_value,
+    }
+
+
 def validate_manual_refresh_packet(
     documents: list[dict[str, Any]],
     release_name: str,
@@ -398,33 +445,83 @@ def validate_manual_refresh_packet(
     expected_image: str,
     required_value: str,
 ) -> dict[str, Any]:
-    if required_value not in {"0", "1"}:
-        fail("required manual refresh value must be 0 or 1")
-    require_no_cronjobs(documents, "manual-refresh packet")
-    _validate_resource_namespaces(documents, namespace, "manual-refresh packet")
-    deployment = _dashboard_deployment(
-        without_helm_hooks(documents), release_name, "manual-refresh packet"
+    return _validate_refresh_gate_packet(
+        documents,
+        release_name,
+        namespace,
+        expected_image,
+        required_value,
+        gate_environment=MANUAL_REFRESH_ENV,
+        description="manual-refresh",
     )
-    spec = deployment.get("spec")
-    if not isinstance(spec, dict) or spec.get("replicas") != 1:
-        fail("manual-refresh packet Dashboard Deployment must have exactly one replica")
-    container = _dashboard_container(
-        deployment, "manual-refresh packet Dashboard Deployment"
+
+
+def validate_automation_refresh_packet(
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    required_value: str,
+) -> dict[str, Any]:
+    return _validate_refresh_gate_packet(
+        documents,
+        release_name,
+        namespace,
+        expected_image,
+        required_value,
+        gate_environment=AUTOMATION_REFRESH_ENV,
+        description="automation-refresh",
+        require_manual_off=True,
     )
-    if container.get("image") != expected_image:
-        fail(f"manual-refresh packet must preserve frozen image {expected_image}")
-    _validate_reviewed_hooks(documents, release_name, expected_image)
-    environment = _environment_index(container, "manual-refresh packet Dashboard")
-    if environment.get(MANUAL_REFRESH_ENV) != {
-        "name": MANUAL_REFRESH_ENV,
-        "value": required_value,
-    }:
-        fail(f"{MANUAL_REFRESH_ENV} must be literal {required_value}")
-    return {
-        "deployment": metadata_value(deployment, "name"),
-        "image": expected_image,
-        "manualRefreshEnabled": required_value,
-    }
+
+
+def _compare_refresh_gate_only(
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    *,
+    gate_environment: str,
+    description: str,
+) -> None:
+    current_hooks = helm_hooks(current)
+    desired_hooks = helm_hooks(desired)
+    if indexed(current_hooks) != indexed(desired_hooks):
+        fail(f"{description} rollout contains Helm hook drift")
+
+    current_index = indexed(without_helm_hooks(current))
+    desired_index = indexed(without_helm_hooks(desired))
+    if current_index.keys() != desired_index.keys():
+        fail(f"{description} rollout must preserve the complete release resource set")
+
+    deployment_keys = [key for key in current_index if key[1] == "Deployment"]
+    if len(deployment_keys) != 1:
+        fail(f"{description} rollout must contain exactly one Deployment")
+    deployment_key = deployment_keys[0]
+    for key in current_index:
+        if key != deployment_key and current_index[key] != desired_index[key]:
+            fail(f"{description} rollout contains non-Deployment drift: {key}")
+
+    before = copy.deepcopy(current_index[deployment_key])
+    after = copy.deepcopy(desired_index[deployment_key])
+    before_container = _dashboard_container(before, "current Dashboard Deployment")
+    after_container = _dashboard_container(after, "desired Dashboard Deployment")
+    before_environment = _environment_index(before_container, "current Dashboard")
+    after_environment = _environment_index(after_container, "desired Dashboard")
+    if before_environment.keys() != after_environment.keys():
+        fail(f"{description} rollout must not add or remove environment variables")
+    for name in before_environment:
+        if name == gate_environment:
+            continue
+        if before_environment[name] != after_environment[name]:
+            fail(f"{description} rollout contains unrelated environment drift: {name}")
+    for container in (before_container, after_container):
+        for item in container["env"]:
+            if item.get("name") == gate_environment:
+                item["value"] = "__reviewed_refresh_gate_transition__"
+    if before != after:
+        fail(f"{description} rollout contains Deployment drift outside the reviewed value")
 
 
 def compare_manual_refresh_only(
@@ -440,43 +537,39 @@ def compare_manual_refresh_only(
     validate_manual_refresh_packet(
         desired, release_name, namespace, expected_image, "0"
     )
-    current_hooks = helm_hooks(current)
-    desired_hooks = helm_hooks(desired)
-    if indexed(current_hooks) != indexed(desired_hooks):
-        fail("manual-refresh rollout contains Helm hook drift")
+    _compare_refresh_gate_only(
+        current,
+        desired,
+        release_name,
+        namespace,
+        expected_image,
+        gate_environment=MANUAL_REFRESH_ENV,
+        description="manual-refresh",
+    )
 
-    current_index = indexed(without_helm_hooks(current))
-    desired_index = indexed(without_helm_hooks(desired))
-    if current_index.keys() != desired_index.keys():
-        fail("manual-refresh rollout must preserve the complete release resource set")
 
-    deployment_keys = [key for key in current_index if key[1] == "Deployment"]
-    if len(deployment_keys) != 1:
-        fail("manual-refresh rollout must contain exactly one Deployment")
-    deployment_key = deployment_keys[0]
-    for key in current_index:
-        if key != deployment_key and current_index[key] != desired_index[key]:
-            fail(f"manual-refresh rollout contains non-Deployment drift: {key}")
-
-    before = copy.deepcopy(current_index[deployment_key])
-    after = copy.deepcopy(desired_index[deployment_key])
-    before_container = _dashboard_container(before, "current Dashboard Deployment")
-    after_container = _dashboard_container(after, "desired Dashboard Deployment")
-    before_environment = _environment_index(before_container, "current Dashboard")
-    after_environment = _environment_index(after_container, "desired Dashboard")
-    if before_environment.keys() != after_environment.keys():
-        fail("manual-refresh rollout must not add or remove environment variables")
-    for name in before_environment:
-        if name == MANUAL_REFRESH_ENV:
-            continue
-        if before_environment[name] != after_environment[name]:
-            fail(f"manual-refresh rollout contains unrelated environment drift: {name}")
-    for container in (before_container, after_container):
-        for item in container["env"]:
-            if item.get("name") == MANUAL_REFRESH_ENV:
-                item["value"] = "__reviewed_manual_refresh_transition__"
-    if before != after:
-        fail("manual-refresh rollout contains Deployment drift outside the reviewed value")
+def compare_automation_refresh_only(
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+) -> None:
+    validate_automation_refresh_packet(
+        current, release_name, namespace, expected_image, "0"
+    )
+    validate_automation_refresh_packet(
+        desired, release_name, namespace, expected_image, "1"
+    )
+    _compare_refresh_gate_only(
+        current,
+        desired,
+        release_name,
+        namespace,
+        expected_image,
+        gate_environment=AUTOMATION_REFRESH_ENV,
+        description="automation-refresh",
+    )
 
 
 def compare_release_exact(
@@ -869,6 +962,88 @@ def verify_runtime_image(
     image_id_digest(dashboard_statuses[0].get("imageID"))
 
 
+def _verify_refresh_gate_runtime(
+    deployments_payload: dict[str, Any],
+    replicasets_payload: dict[str, Any],
+    pods_payload: dict[str, Any],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    image: str,
+    digest: str,
+    required_value: str,
+    *,
+    gate_environment: str,
+    description: str,
+    require_manual_off: bool = False,
+) -> str:
+    verify_runtime_image(
+        deployments_payload,
+        replicasets_payload,
+        pods_payload,
+        release_name,
+        namespace,
+        image,
+        digest,
+    )
+    _validate_refresh_gate_packet(
+        desired,
+        release_name,
+        namespace,
+        image,
+        required_value,
+        gate_environment=gate_environment,
+        description=description,
+        require_manual_off=require_manual_off,
+    )
+    pods = kubernetes_json_items(pods_payload, "Pod", "Pod")
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for pod in pods:
+        if release_label(pod) != release_name:
+            continue
+        dashboards = named_entries(pod, ("spec", "containers"), "dashboard")
+        if dashboards:
+            if len(dashboards) != 1:
+                fail(f"{description} Pod must contain exactly one dashboard container")
+            candidates.append((pod, dashboards[0]))
+    if len(candidates) != 1:
+        fail(f"{description} verification requires exactly one release Dashboard Pod")
+    pod, dashboard = candidates[0]
+    runtime_environment = _environment_index(
+        dashboard, f"{description} Dashboard Pod"
+    )
+    if runtime_environment.get(gate_environment) != {
+        "name": gate_environment,
+        "value": required_value,
+    }:
+        fail(f"runtime {gate_environment} must be literal {required_value}")
+    if require_manual_off and runtime_environment.get(MANUAL_REFRESH_ENV) != {
+        "name": MANUAL_REFRESH_ENV,
+        "value": "0",
+    }:
+        fail(f"runtime {MANUAL_REFRESH_ENV} must remain literal 0")
+    desired_deployment = _dashboard_deployment(
+        without_helm_hooks(desired), release_name, f"reviewed {description} packet"
+    )
+    desired_environment = _environment_index(
+        _dashboard_container(
+            desired_deployment, f"reviewed {description} packet Deployment"
+        ),
+        f"reviewed {description} packet",
+    )
+    normalized_environment = copy.deepcopy(runtime_environment)
+    for name, live_item in normalized_environment.items():
+        desired_item = desired_environment.get(name)
+        if isinstance(desired_item, dict):
+            _normalize_omitted_empty_environment_value(live_item, desired_item)
+    if normalized_environment != desired_environment:
+        fail(f"{description} Dashboard Pod environment differs from the reviewed packet")
+    pod_name = metadata_value(pod, "name")
+    if not isinstance(pod_name, str) or not pod_name:
+        fail(f"{description} Dashboard Pod metadata.name is missing")
+    return pod_name
+
+
 def verify_manual_refresh_runtime(
     deployments_payload: dict[str, Any],
     replicasets_payload: dict[str, Any],
@@ -880,59 +1055,46 @@ def verify_manual_refresh_runtime(
     digest: str,
     required_value: str,
 ) -> str:
-    verify_runtime_image(
+    return _verify_refresh_gate_runtime(
         deployments_payload,
         replicasets_payload,
         pods_payload,
+        desired,
         release_name,
         namespace,
         image,
         digest,
+        required_value,
+        gate_environment=MANUAL_REFRESH_ENV,
+        description="manual-refresh",
     )
-    validate_manual_refresh_packet(
-        desired, release_name, namespace, image, required_value
+
+
+def verify_automation_refresh_runtime(
+    deployments_payload: dict[str, Any],
+    replicasets_payload: dict[str, Any],
+    pods_payload: dict[str, Any],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    image: str,
+    digest: str,
+    required_value: str,
+) -> str:
+    return _verify_refresh_gate_runtime(
+        deployments_payload,
+        replicasets_payload,
+        pods_payload,
+        desired,
+        release_name,
+        namespace,
+        image,
+        digest,
+        required_value,
+        gate_environment=AUTOMATION_REFRESH_ENV,
+        description="automation-refresh",
+        require_manual_off=True,
     )
-    pods = kubernetes_json_items(pods_payload, "Pod", "Pod")
-    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for pod in pods:
-        if release_label(pod) != release_name:
-            continue
-        dashboards = named_entries(pod, ("spec", "containers"), "dashboard")
-        if dashboards:
-            if len(dashboards) != 1:
-                fail("manual-refresh Pod must contain exactly one dashboard container")
-            candidates.append((pod, dashboards[0]))
-    if len(candidates) != 1:
-        fail("manual-refresh verification requires exactly one release Dashboard Pod")
-    pod, dashboard = candidates[0]
-    runtime_environment = _environment_index(
-        dashboard, "manual-refresh Dashboard Pod"
-    )
-    if runtime_environment.get(MANUAL_REFRESH_ENV) != {
-        "name": MANUAL_REFRESH_ENV,
-        "value": required_value,
-    }:
-        fail(f"runtime {MANUAL_REFRESH_ENV} must be literal {required_value}")
-    desired_deployment = _dashboard_deployment(
-        without_helm_hooks(desired), release_name, "reviewed manual-refresh packet"
-    )
-    desired_environment = _environment_index(
-        _dashboard_container(
-            desired_deployment, "reviewed manual-refresh packet Deployment"
-        ),
-        "reviewed manual-refresh packet",
-    )
-    normalized_environment = copy.deepcopy(runtime_environment)
-    for name, live_item in normalized_environment.items():
-        desired_item = desired_environment.get(name)
-        if isinstance(desired_item, dict):
-            _normalize_omitted_empty_environment_value(live_item, desired_item)
-    if normalized_environment != desired_environment:
-        fail("manual-refresh Dashboard Pod environment differs from the reviewed packet")
-    pod_name = metadata_value(pod, "name")
-    if not isinstance(pod_name, str) or not pod_name:
-        fail("manual-refresh Dashboard Pod metadata.name is missing")
-    return pod_name
 
 
 def verify_deployment_image(payload: dict[str, Any], release_name: str, image: str) -> None:
@@ -1485,6 +1647,13 @@ def main() -> None:
     manual_live_desired.add_argument("--release-name", required=True)
     manual_live_desired.add_argument("--namespace", required=True)
 
+    automation_live_desired = subparsers.add_parser(
+        "compare-automation-refresh-live-desired"
+    )
+    automation_live_desired.add_argument("--desired", type=Path, required=True)
+    automation_live_desired.add_argument("--release-name", required=True)
+    automation_live_desired.add_argument("--namespace", required=True)
+
     extract_helm = subparsers.add_parser("extract-helm-documents")
     extract_helm.add_argument("--part", choices=("release", "hooks"), required=True)
 
@@ -1525,6 +1694,34 @@ def main() -> None:
     manual_runtime.add_argument("--image", required=True)
     manual_runtime.add_argument("--digest", required=True)
     manual_runtime.add_argument("--require-value", choices=("0", "1"), required=True)
+
+    automation_packet = subparsers.add_parser("validate-automation-refresh-packet")
+    automation_packet.add_argument("--release-name", required=True)
+    automation_packet.add_argument("--namespace", required=True)
+    automation_packet.add_argument("--image", required=True)
+    automation_packet.add_argument(
+        "--require-value", choices=("0", "1"), required=True
+    )
+
+    automation_config = subparsers.add_parser("compare-automation-refresh-only")
+    automation_config.add_argument("--current", type=Path, required=True)
+    automation_config.add_argument("--desired", type=Path, required=True)
+    automation_config.add_argument("--release-name", required=True)
+    automation_config.add_argument("--namespace", required=True)
+    automation_config.add_argument("--image", required=True)
+
+    automation_runtime = subparsers.add_parser("verify-automation-refresh-runtime")
+    automation_runtime.add_argument("--deployments", type=Path, required=True)
+    automation_runtime.add_argument("--replicasets", type=Path, required=True)
+    automation_runtime.add_argument("--pods", type=Path, required=True)
+    automation_runtime.add_argument("--desired", type=Path, required=True)
+    automation_runtime.add_argument("--release-name", required=True)
+    automation_runtime.add_argument("--namespace", required=True)
+    automation_runtime.add_argument("--image", required=True)
+    automation_runtime.add_argument("--digest", required=True)
+    automation_runtime.add_argument(
+        "--require-value", choices=("0", "1"), required=True
+    )
 
     release_exact = subparsers.add_parser("compare-release-exact")
     release_exact.add_argument("--current", type=Path, required=True)
@@ -1571,6 +1768,13 @@ def main() -> None:
             args.namespace,
         )
     elif args.command == "compare-manual-refresh-live-desired":
+        compare_manual_refresh_live_desired(
+            kubectl_list_documents(sys.stdin),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+        )
+    elif args.command == "compare-automation-refresh-live-desired":
         compare_manual_refresh_live_desired(
             kubectl_list_documents(sys.stdin),
             load_path(args.desired),
@@ -1626,6 +1830,38 @@ def main() -> None:
     elif args.command == "verify-manual-refresh-runtime":
         print(
             verify_manual_refresh_runtime(
+                load_json_path(args.deployments, "Deployment"),
+                load_json_path(args.replicasets, "ReplicaSet"),
+                load_json_path(args.pods, "Pod"),
+                load_path(args.desired),
+                args.release_name,
+                args.namespace,
+                args.image,
+                args.digest,
+                args.require_value,
+            )
+        )
+    elif args.command == "validate-automation-refresh-packet":
+        result = validate_automation_refresh_packet(
+            load_documents(sys.stdin),
+            args.release_name,
+            args.namespace,
+            args.image,
+            args.require_value,
+        )
+        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+        sys.stdout.write("\n")
+    elif args.command == "compare-automation-refresh-only":
+        compare_automation_refresh_only(
+            load_path(args.current),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+            args.image,
+        )
+    elif args.command == "verify-automation-refresh-runtime":
+        print(
+            verify_automation_refresh_runtime(
                 load_json_path(args.deployments, "Deployment"),
                 load_json_path(args.replicasets, "ReplicaSet"),
                 load_json_path(args.pods, "Pod"),

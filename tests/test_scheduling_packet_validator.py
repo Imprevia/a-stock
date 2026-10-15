@@ -774,3 +774,78 @@ def test_live_compare_rejects_resource_set_change(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "resource set differs" in completed.stderr
+
+
+def _automation_release(value: str, *, manual: str = "0") -> list[dict[str, Any]]:
+    resources = _desired_resources()
+    dashboard = resources[1]["spec"]["template"]["spec"]["containers"][0]
+    dashboard["env"] = [
+        {"name": "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED", "value": value},
+        {"name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "value": manual},
+        {"name": "UNCHANGED", "value": "reviewed"},
+    ]
+    return resources
+
+
+def _run_automation_compare(
+    tmp_path: Path,
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+) -> subprocess.CompletedProcess[str]:
+    current_path = tmp_path / "automation-current.yaml"
+    desired_path = tmp_path / "automation-desired.yaml"
+    current_path.write_text(yaml.safe_dump_all(current, sort_keys=False), encoding="utf-8")
+    desired_path.write_text(yaml.safe_dump_all(desired, sort_keys=False), encoding="utf-8")
+    return _run(
+        "compare-automation-refresh-only",
+        "",
+        "--current",
+        str(current_path),
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        IMAGE,
+    )
+
+
+def test_automation_refresh_compare_accepts_only_zero_to_one(tmp_path: Path) -> None:
+    completed = _run_automation_compare(
+        tmp_path, _automation_release("0"), _automation_release("1")
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_automation_refresh_compare_rejects_unrelated_drift(tmp_path: Path) -> None:
+    current = _automation_release("0")
+    desired = _automation_release("1")
+    desired[1]["spec"]["template"]["spec"]["containers"][0]["env"][2][
+        "value"
+    ] = "drifted"
+
+    completed = _run_automation_compare(tmp_path, current, desired)
+
+    assert completed.returncode != 0
+    assert "unrelated environment drift" in completed.stderr
+
+
+def test_automation_refresh_packet_requires_manual_refresh_off() -> None:
+    completed = _run(
+        "validate-automation-refresh-packet",
+        yaml.safe_dump_all(_automation_release("1", manual="1"), sort_keys=False),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        IMAGE,
+        "--require-value",
+        "1",
+    )
+
+    assert completed.returncode != 0
+    assert "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED must remain literal 0" in completed.stderr

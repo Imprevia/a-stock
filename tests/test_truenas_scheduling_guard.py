@@ -525,6 +525,60 @@ def test_component_helm_write_hook_flags_are_explicit(tmp_path: Path) -> None:
     assert final_all.count("--no-hooks") == 1
 
 
+def test_automation_refresh_write_is_hook_free_and_does_not_build_or_import() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    marker = (
+        'if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then\n'
+        '  FROZEN_IMAGE='
+    )
+    block = script.split(marker, 1)[1].split(
+        '\nfi\n\nif [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then', 1
+    )[0]
+
+    assert "helm upgrade" in block
+    assert block.count("--no-hooks") == 1
+    assert "--atomic" in block
+    assert "--wait" in block
+    assert "podman " not in block
+    assert "scp " not in block
+    assert "images import" not in block
+    assert "alembic" not in block
+    assert "collection-runs/full" not in block
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"), [("0|0|0", 0), ("1|0|0", 1), ("0|1|0", 1), ("0|0|1", 1)]
+)
+def test_automation_refresh_writer_guard_requires_zero_counts(
+    counts: str, expected: int
+) -> None:
+    function_source = _bash_function_source("require_no_active_collection_writers")
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "\n".join(
+                [
+                    "set -eu",
+                    "log() { :; }",
+                    "warn() { :; }",
+                    'kubectl() { printf "%s\\n" "$WRITER_COUNTS"; }',
+                    'RELEASE_NAME="a-stock"',
+                    'NAMESPACE="a-stock"',
+                    function_source,
+                    "require_no_active_collection_writers",
+                ]
+            ),
+        ],
+        env={**os.environ, "WRITER_COUNTS": counts},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == expected
+
+
 def test_database_failure_stops_later_component_phases(tmp_path: Path) -> None:
     attempts = tmp_path / "component-attempts.log"
     function_source = _bash_function_source("deploy_step_or_exit")
