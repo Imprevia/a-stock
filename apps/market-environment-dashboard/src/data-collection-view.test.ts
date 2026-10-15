@@ -220,6 +220,49 @@ describe('data collection view', () => {
     expect(wrapper.text()).toContain('旧版纯文本 warning 保持可读')
   })
 
+  it('renders safe structured messages for retained, missing, blocked and busy attempts while keeping partial warnings', async () => {
+    const retained = dataset('limits', undefined, null, 'failed-retained')
+    const missing = dataset('breadth', undefined, null, 'failed-missing')
+    const blocked = dataset('sector-breadth', undefined, null, 'blocked')
+    const busy = dataset('activeDirection', undefined, null, 'busy')
+    const partial = dataset('industry-ranking', undefined, null, 'partial')
+    const attempts = [
+      [retained, 'network', '结构化保留原因', true],
+      [missing, 'contract', '结构化缺失原因', false],
+      [blocked, 'dependency', '结构化阻塞原因', false],
+      [busy, 'concurrency', '结构化忙碌原因', false],
+    ] as const
+    for (const [item, category, message, retainedValue] of attempts) {
+      Object.assign(item.latestAttempt!, {
+        warning: `不应优先展示的 ${category} warning`,
+        failure: { category, message, retryable: true, retained: retainedValue },
+      })
+    }
+    partial.latestAttempt!.warning = '部分结果兼容提示'
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse({
+      datasets: allDatasets({
+        limits: retained,
+        breadth: missing,
+        'sector-breadth': blocked,
+        activeDirection: busy,
+        'industry-ranking': partial,
+      }),
+    }) })))
+
+    wrapper = mount(DataCollectionView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('失败，保留旧值')
+    expect(wrapper.text()).toContain('失败，暂无数据')
+    expect(wrapper.text()).toContain('依赖阻塞')
+    expect(wrapper.text()).toContain('已有任务运行')
+    expect(wrapper.text()).toContain('部分成功')
+    for (const message of ['结构化保留原因', '结构化缺失原因', '结构化阻塞原因', '结构化忙碌原因', '部分结果兼容提示']) {
+      expect(wrapper.text()).toContain(message)
+    }
+    expect(wrapper.text()).not.toContain('不应优先展示的 network warning')
+  })
+
   it('shows explicit THS operation progress separately from daily tasks', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => statusResponse({
       operations: [{
@@ -266,6 +309,7 @@ describe('data collection view', () => {
   it('keeps the 390px layout structurally responsive without a page-level wide table', async () => {
     const ranking = dataset('industry-ranking', undefined, { status: 'partial' }, 'partial')
     Object.assign(ranking.latestAttempt!, {
+      failure: null,
       diagnostics: {
         reasonCode: 'THS_LIVE_VALUES_MISSING', message: '部分代码缺少当日行情',
         failureStage: 'snapshot-value-classification', exactDate: '2026-09-15', retryable: true,

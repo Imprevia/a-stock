@@ -223,7 +223,7 @@ def test_0004_migration_is_additive_idempotent_after_runtime_schema_advances():
     migration.upgrade()
 
     assert migration.down_revision == "0003_provider_capability_reports"
-    assert MINIMUM_SCHEMA_VERSION == 10
+    assert MINIMUM_SCHEMA_VERSION == 11
     for table in (
         "sector_taxonomy_revisions", "sector_industries", "sector_membership_intervals",
         "sector_security_daily_facts", "sector_benchmark_facts",

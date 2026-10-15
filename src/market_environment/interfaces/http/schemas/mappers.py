@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
+from datetime import date
 from typing import Any
 
 from ....application.ths_diagnostics import ths_warning_response
 from .models import (
     Chapter01Response,
+    CollectionTaskFailureResponse,
     CollectionRunResponse,
     CollectionStatusResponse,
+    FullCollectionRunResponse,
+    FullCollectionSkippedResponse,
     MarketEnvironmentResponse,
     NextSessionComparisonResponse,
     TimezonePreferencesResponse,
@@ -96,6 +101,36 @@ def map_collection_run(payload):
     return CollectionRunResponse.model_validate(payload).model_dump()
 
 
+def map_collection_failure(payload):
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        serializer = getattr(payload, "to_dict", None)
+        if not callable(serializer):
+            raise TypeError("collection failure must be a mapping or expose to_dict()")
+        payload = serializer()
+    return CollectionTaskFailureResponse.model_validate(payload).model_dump()
+
+
+def map_full_collection_run(payload, *, status_url: str):
+    merged = {
+        **payload,
+        "outcome": "run",
+        "targetDate": payload["asOf"],
+        "statusUrl": status_url,
+    }
+    return FullCollectionRunResponse.model_validate(merged).model_dump()
+
+
+def map_full_collection_skipped(*, target_date: date, reason: str):
+    return FullCollectionSkippedResponse.model_validate(
+        {
+            "targetDate": target_date,
+            "reason": reason,
+        }
+    ).model_dump()
+
+
 def map_collection_status(payload, *, manual_refresh_enabled):
     merged = {
         "asOf": payload["asOf"],
@@ -111,8 +146,11 @@ def map_collection_status(payload, *, manual_refresh_enabled):
 
 __all__ = [
     "map_chapter01",
+    "map_collection_failure",
     "map_collection_run",
     "map_collection_status",
+    "map_full_collection_run",
+    "map_full_collection_skipped",
     "map_market_environment",
     "map_next_session",
     "map_timezone_preferences",

@@ -21,6 +21,3 @@ marketEnvironment:
   snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
   settlementTime: "15:10"
-  scheduledCollection:
-    enabled: false
-    suspend: true

@@ -25,7 +25,7 @@ TrueNAS SCALE 24.04 宿主机
 - TrueNAS 与 VM 的系统架构通常都是 `amd64`；如果不是，构建时必须改为目标节点架构。
 - 本教程按单节点 k3s 编写。本地导入的镜像只存在于导入它的节点；多节点环境必须向每个可能调度 Pod 的节点导入相同镜像，或使用镜像仓库。
 - 使用不可变镜像 tag，例如 `2026.09.02-1`。不要重复覆盖 `latest` 或已经发布过的 tag，否则 containerd 可能继续运行旧镜像。
-- TrueNAS 的内部 k3s 和 Apps 状态属于平台管理边界。升级 TrueNAS 前应备份 Helm values、SQLite 和必要的镜像归档。
+- TrueNAS 的内部 k3s 和 Apps 状态属于平台管理边界。升级 TrueNAS 前应备份 Helm values、PostgreSQL 和必要的镜像归档；旧 SQLite 只作为已停写迁移输入或历史归档保留。
 
 文档中的占位符需要替换：
 
@@ -328,19 +328,21 @@ ingress:
   className: traefik
   host: stock.example.lan
 
-persistence:
+database:
   enabled: true
-  storageClass: ix-storage-class
-  size: 2Gi
-  keep: true
+  existingSecret: a-stock-postgresql
+  persistence:
+    enabled: true
+    storageClass: ix-storage-class
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    keep: true
 
 marketEnvironment:
   timezone: Asia/Shanghai
-  snapshotPath: /data/snapshots.sqlite3
   persistentCache: true
-  scheduledCollection:
-    enabled: false
-    suspend: true
+  automationRefreshEnabled: false
 ```
 
 按第 10 节的实际输出替换 `storageClass` 和 `className`，按本次构建替换 tag。为 `<APP_HOST>` 创建指向 `<TRUENAS_IP>` 的 DNS A/AAAA 记录；没有内部 DNS 时，可先在访问电脑的 hosts 文件中添加映射。
@@ -359,7 +361,10 @@ helm template a-stock deploy/helm/a-stock \
 
 ## 13. 首次部署到 k3s
 
-在 VM 仓库根目录创建私有部署环境文件，将 `HELM_VALUES_FILE` 指向上一节已审阅的完整 `values-truenas.yaml`，并保持 `SCHEDULED_COLLECTION_ENABLED=false`、`SCHEDULED_COLLECTION_SUSPEND=true`。生产写操作只使用仓库的 fail-closed 入口，不直接执行 Helm write：
+在 VM 仓库根目录创建私有部署环境文件，将 `HELM_VALUES_FILE` 指向上一节已审阅的完整
+`values-truenas.yaml`。候选 Chart/values 不得包含 Kubernetes 市场数据调度资源或调度开关；自动化入口由
+`marketEnvironment.automationRefreshEnabled=false` 独立保持关闭。生产写操作只使用仓库的 fail-closed
+入口，不直接执行 Helm write：
 
 ```bash
 cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
@@ -367,7 +372,12 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-入口必须在首个 Helm render、build/import、SSH 或目标 API 访问前证明最终合并的调度值为 typed `enabled=false`、`suspend=true`，随后证明 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次验证 live CronJob 仍不存在。若这是对既有 release 的幂等部署，先执行只读 discovery；stored 或 live 状态发现 active/suspended CronJob 时不得继续普通发布，必须先按第 15 节完成受审 `--disable-schedule`。
+普通入口在构建、镜像导出/传输/导入或 Helm write 前，先执行只读 fail-closed discovery：读取 Helm stored
+manifest，并分别 exact GET release-derived former identity（release `a-stock` 的示例是
+`a-stock-data-collection`）与 legacy `market-data-collection`。任一 active 或 suspended CronJob 存在，或
+stored/live/API/认证/传输状态无法确定时，必须在 build/write 前停止。当前脚本只读取并拒绝，不暂停、patch、
+删除、接管或激活遗留资源；处置必须另建 exact-resource 计划并取得独立授权。成功写入后再次证明两个 identity
+均 absent。
 
 检查 release 和 Kubernetes 资源：
 
@@ -410,27 +420,29 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-即使只更新镜像，也必须重新提交完整 baseline values；不得设置 scheduling overlay、继承 release 中无法审阅的历史值或直接执行 Helm write。任何 precondition、write、rollout 或写后调度查询失败都不能报告成功；失败恢复必须把意外 active CronJob 精确暂停并证明状态至少为 absent/suspended，无法证明时保持 uncertain/NO-GO。失败后转入受审 `--disable-schedule`，不得直接重试普通入口。
+即使只更新镜像，也必须重新提交完整 baseline values；不得设置调度 overlay、继承 release 中无法审阅的
+历史值或直接执行 Helm write。每次普通发布都先执行第 13 节的 stored/live 双 identity 只读检查；任一旧
+CronJob 存在或状态不确定时保持 NO-GO，且不进入 build/write。当前脚本不提供暂停、删除或其它调度 mutation；
+遗留资源处置必须另建计划，普通入口不得直接重试或尝试“修复”。
 
 ## 15. 回滚
 
-先用只读 discovery 捕获实际 release/version/stored values/live resources。历史 revision 只用于审计，不能直接恢复：
+先用只读命令捕获实际 release/version/stored values/live resources。历史 revision 只用于审计，不能直接恢复：
 
 ```bash
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-only-discovery \
-  --release-name a-stock --namespace a-stock
+helm status a-stock --namespace a-stock
+helm get values a-stock --namespace a-stock
+helm get manifest a-stock --namespace a-stock
+kubectl get cronjob a-stock-data-collection --namespace a-stock --ignore-not-found -o yaml
+kubectl get cronjob market-data-collection --namespace a-stock --ignore-not-found -o yaml
+kubectl get jobs --namespace a-stock -o yaml
 ```
 
-若发现 active 或 suspended application CronJob，应用回退必须先停止。冻结并审阅 baseline + off overlay、实际 Kubernetes version 和全部 hashes，取得 exact rollback authorization，并设置 `SCHEDULE_ROLLBACK_AUTHORIZATION_REF=rollback-v1:<approval-id>:<binding-sha256>` 后执行。digest 必须绑定 runbook 定义的 canonical payload，包括 `operation=--disable-schedule`、release、namespace、normalized Kubernetes version、reviewed HEAD 与全部 packet hashes（rollback-v1 namespace 与其它生产授权引用相互独立）：
-
-```bash
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
-  --baseline-values deploy/truenas/values-secure-manual-collection.yaml \
-  --scheduling-overlay deploy/truenas/values-scheduled-off.yaml \
-  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
-```
-
-只有 `--disable-schedule` 的 server-observed postcondition 证明 exact CronJob 已删除后，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口重建应用。active-to-off 失败会按 release-derived exact API name 补偿；label/shape drift 不得阻止暂停，读回无法证明 absent 或 typed `spec.suspend=true` 时必须保持 uncertain/NO-GO：
+若只读 discovery 发现 release-derived former identity 或 legacy `market-data-collection`，应用回退必须停止。
+普通部署脚本不会修改该资源；先建立 exact-resource 遗留处置计划，冻结 stored manifest、live resource、Job、
+release、namespace 与数据恢复证据，并取得覆盖具体动作的独立授权。只有另行处置及随后普通入口的只读检查都证明
+两个 identity absent，才可检出已审阅的回退 commit，设置新的不可变 rollback image tag，并运行同一普通入口
+重建应用：
 
 ```bash
 git checkout '<REVIEWED_ROLLBACK_COMMIT_OR_TAG>'
@@ -447,57 +459,40 @@ sudo k3s ctr --namespace k8s.io images remove \
 
 删除前核对受审回退包，确认不再需要该 tag。
 
-## 16. SQLite 备份与恢复
+## 16. PostgreSQL 备份与恢复
 
-Chart 默认把数据库放在 `/data/snapshots.sqlite3`，PVC 默认带 `helm.sh/resource-policy: keep`。卸载 release 不等于已经完成备份。
-
-创建 SQLite 在线一致性备份：
-
-```bash
-kubectl --namespace a-stock exec deployment/a-stock -- \
-  python -c "import sqlite3; src=sqlite3.connect('/data/snapshots.sqlite3'); dst=sqlite3.connect('/data/snapshots.backup.sqlite3'); src.backup(dst); dst.close(); src.close()"
-```
-
-下载备份到 VM：
+运行时事实源是 PostgreSQL StatefulSet 和 Retain RWO PVC；Dashboard 不挂载数据库卷。升级、回退或 schema
+变更前创建不可覆盖的 custom-format 逻辑备份，记录 release、数据库 Service、PostgreSQL PVC UID/PV、schema
+version、备份路径和 SHA-256。以下命令把备份流写到 VM 当前目录，不在容器中留下凭据或临时文件：
 
 ```bash
-kubectl --namespace a-stock exec deployment/a-stock -- \
-  cat /data/snapshots.backup.sqlite3 \
-  > "a-stock-snapshots-$(date +%Y%m%d-%H%M%S).sqlite3"
+backup="a-stock-postgresql-$(date +%Y%m%d-%H%M%S).dump"
+kubectl --namespace a-stock exec statefulset/a-stock-postgresql -- \
+  pg_dump -Fc --no-owner --no-privileges -U '<DB_USER>' -d '<DB_NAME>' \
+  > "$backup"
+test -s "$backup"
+sha256sum "$backup"
 ```
 
-检查文件非空并生成校验和：
-
-```bash
-ls -lh a-stock-snapshots-*.sqlite3
-sha256sum a-stock-snapshots-*.sqlite3
-```
-
-恢复前先停止 Deployment，避免覆盖正在使用的数据库：
-
-```bash
-kubectl --namespace a-stock scale deployment/a-stock --replicas=0
-```
-
-恢复属于破坏性操作。确认 namespace、release、PVC 和备份文件无误后，使用挂载同一 PVC 的临时维护 Pod 写回，完成后再把 Deployment 恢复为 1。不要直接编辑 SQLite 二进制文件，也不要在 Pod 运行时用普通文件复制覆盖数据库。
+恢复演练必须先指向新建的隔离 PostgreSQL 实例，使用 `pg_restore --single-transaction --exit-on-error`，再核对
+schema、关键表行数、日期覆盖和 checksum。生产恢复属于破坏性操作，必须另建计划并冻结目标 database、PVC、
+备份 hash 与恢复时间线；不要删除/替换 PostgreSQL PVC，也不要把旧 SQLite 归档重新挂载为运行时回退。
 
 ## 17. 退役
 
-仓库当前不提供通用 release 退役入口。不得直接执行原始 `helm uninstall`：它会绕过 release lock、stored/live CronJob 前置检查和失败补偿。退役必须另建受审操作包，先冻结 namespace、release、exact CronJob、完整 Helm values、PVC/PV 身份及恢复路径，再由覆盖精确动作的授权执行。
+仓库当前不提供通用 release 退役入口。不得直接执行原始 `helm uninstall`：它会绕过 release lock、stored/live
+former CronJob identity 检查和数据保护门禁。退役必须另建受审操作包，先冻结 namespace、release、两个 former
+identity、完整 Helm values、PostgreSQL PVC/PV 身份及恢复路径，再由覆盖精确动作的授权执行。
 
-默认 `persistence.keep=true`，受审退役流程应先检查 Chart 创建的 PVC：
+`database.persistence.keep=true` 时，受审退役流程仍须先检查 Chart 创建的 PostgreSQL PVC：
 
 ```bash
 kubectl --namespace a-stock get pvc
 ```
 
-只有在完成备份、明确不再需要数据并确认目标名称后，才手动删除 PVC：
-
-```bash
-kubectl --namespace a-stock delete pvc a-stock-data
-```
-
-删除 PVC 可能触发 StorageClass 回收底层数据，通常不可恢复。删除 namespace 前同样要检查其中是否还有其他资源。
+删除 PostgreSQL PVC 可能触发 StorageClass 回收底层数据，通常不可恢复；本教程不提供删除命令。只有独立退役
+计划完成备份/恢复演练、解析 exact PVC 名称和 UID、确认不再需要数据并取得破坏性操作授权后才能处置。删除
+namespace 前同样要检查其中是否还有其他资源。
 
 ## 18. 常见故障
 
@@ -524,7 +519,7 @@ kubectl --namespace a-stock describe pvc a-stock-data
 kubectl get storageclass
 ```
 
-确认 `persistence.storageClass` 使用 TrueNAS 实际存在的 StorageClass，并检查 provisioner Pod 和事件。
+确认 `database.persistence.storageClass` 使用 TrueNAS 实际存在的 StorageClass，并检查 provisioner Pod 和事件。
 
 ### Ingress 返回 404
 
@@ -573,8 +568,8 @@ sudo k3s kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.
 - [ ] StorageClass 和 IngressClass 来自目标集群实际输出。
 - [ ] `helm lint` 和 `helm template` 通过。
 - [ ] 通用写操作只使用 `scripts/deploy-truenas-k3s.sh`，提交完整 baseline values，且未继承历史 values、直接调用 Helm write 或恢复历史 revision。
-- [ ] 首个 Helm render/build/image work/SSH/目标 API 访问前候选 baseline 为 typed `enabled=false`、`suspend=true`，Helm stored manifest 与 live state 均无 application CronJob；若此前存在，已先使用 rollback-only canonical-digest ref 完成受审 `--disable-schedule`。
-- [ ] 发布后 `kubectl --namespace a-stock get cronjob` 不包含应用 CronJob；只有另行授权的受控调度路径可保留 `suspend=true` 的资源。
+- [ ] 任何 build、镜像工作或 Helm write 前，普通入口已只读证明 stored manifest 不含 CronJob，release-derived former identity 与 legacy `market-data-collection` 均 absent；不确定或遗留资源存在时已停止，未由普通脚本 mutation。
+- [ ] 发布后再次 exact GET 两个 former identity 并证明均 absent；重新引入 Kubernetes 调度必须另立 OpenSpec change。
 - [ ] Deployment rollout、Pod、PVC、Ingress 和 `/api/health` 正常。
-- [ ] SQLite 已备份，旧稳定镜像尚未删除。
+- [ ] PostgreSQL custom-format 备份、SHA-256 和隔离恢复演练已记录，旧稳定镜像尚未删除。
 - [ ] 临时 kubeconfig 导出副本已从 TrueNAS 数据集删除。

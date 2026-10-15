@@ -23,6 +23,7 @@ import {
   canCollectAll,
   canRetryDataset,
   collectionDiagnosticDetails,
+  collectionWarning,
   getCollectionStatusRequestDate,
   resolveCollectionSelectedDate,
   statusTone,
@@ -85,6 +86,23 @@ describe('collection view model', () => {
     expect(availabilityLabel(dataset)).toBe('可用 · 已结算')
     expect(attemptLabel(dataset)).toBe('失败，保留旧值')
     expect(statusTone(dataset.latestAttempt?.status)).toBe('warning')
+  })
+
+  it('prefers the safe structured failure message and keeps warning fallback compatibility', () => {
+    expect(collectionWarning({
+      ...dataset,
+      latestAttempt: {
+        ...dataset.latestAttempt!,
+        warning: '旧版原始 warning',
+        failure: {
+          category: 'network',
+          message: '数据源暂时不可用',
+          retryable: true,
+          retained: true,
+        },
+      },
+    })).toBe('数据源暂时不可用')
+    expect(collectionWarning(dataset)).toBe('provider unavailable')
   })
 
   it('controls row retry, full collection, disabled actions, and core expansion', () => {

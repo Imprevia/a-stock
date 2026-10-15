@@ -24,7 +24,13 @@ from ...application.ports import (
     LimitHistoryPreparer,
 )
 from ...application.mappers import snapshot_to_candidate
-from ...domain.models import CollectionOutcome, CollectionTaskState, DatasetDate
+from ...domain.models import (
+    CollectionFailureCategory,
+    CollectionOutcome,
+    CollectionTaskState,
+    DatasetDate,
+    StructuredTaskFailure,
+)
 from ...application.ths_diagnostics import (
     ThsBlockedBy,
     ThsDiagnostic,
@@ -189,6 +195,67 @@ def _ths_exception_warning(task: "CollectionTaskRecord", error: Exception, store
             catalog_revision_id=catalog_revision,
         )
     )
+
+
+def _ths_exception_failure(
+    task: "CollectionTaskRecord",
+    error: Exception,
+    *,
+    retained: bool,
+) -> StructuredTaskFailure:
+    text = str(error).lower()
+    if "conflicting ths catalog revision" in text or "catalog revision checksum" in text:
+        return StructuredTaskFailure(
+            category=CollectionFailureCategory.CONTRACT,
+            message="THS catalog observation revision conflicts with retained content",
+            retryable=False,
+            retained=retained,
+            stage="catalog-persistence",
+            code="THS_CATALOG_REVISION_COLLISION",
+        )
+    if task.dataset == "industry-ranking":
+        return StructuredTaskFailure(
+            category=CollectionFailureCategory.INSUFFICIENT,
+            message="THS catalog or daily snapshot validation failed",
+            retryable=True,
+            retained=retained,
+            stage="collection-commit",
+            code="THS_DAILY_SNAPSHOT_INSUFFICIENT",
+        )
+    return StructuredTaskFailure(
+        category=CollectionFailureCategory.DEPENDENCY,
+        message="THS dependent dataset could not consume compatible local evidence",
+        retryable=True,
+        retained=retained,
+        stage="dependency-collection",
+        code=(
+            "THS_DEPENDENCY_REVISION_MISMATCH"
+            if "revision" in text or "date" in text
+            else "THS_DEPENDENCY_INSUFFICIENT"
+        ),
+    )
+
+
+def _outcome_failure(
+    outcome: CollectionOutcome,
+    *,
+    retained: bool,
+    fallback_message: str,
+) -> StructuredTaskFailure:
+    if outcome.failure is not None:
+        return StructuredTaskFailure.from_acquisition(
+            outcome.failure,
+            retained=retained,
+        )
+    return StructuredTaskFailure(
+        category=CollectionFailureCategory.INTERNAL,
+        message=fallback_message,
+        retryable=True,
+        retained=retained,
+        stage="collection",
+    )
+
+
 SUCCESSFUL_TASK_STATUSES = frozenset({"success", "partial"})
 TERMINAL_TASK_STATUSES = frozenset(
     {"success", "partial", "failed-retained", "failed-missing", "busy", "blocked"}
@@ -376,19 +443,30 @@ class CollectionCoordinator:
             )
             if cutover_error is not None:
                 task_id = uuid.uuid4().hex
+                retained = self.store.get(dataset, as_of) is not None
+                preflight_failure = StructuredTaskFailure(
+                    category=CollectionFailureCategory.CONFIGURATION,
+                    message=cutover_error,
+                    retryable=False,
+                    retained=retained,
+                    stage="preflight",
+                    code="FUYAO_PREFLIGHT_REJECTED",
+                )
                 task = self.store.create_collection_task(
                     task_id,
                     run_id,
                     dataset,
                     as_of,
                     queued_at=current,
-                    status="failed-missing" if self.store.get(dataset, as_of) is None else "failed-retained",
+                    status="failed-retained" if retained else "failed-missing",
+                    failure=preflight_failure,
                 )
                 task = self.store.transition_collection_task(
                     task.task_id,
                     task.status,
                     expected_statuses=(task.status,),
                     warning=cutover_error,
+                    failure=preflight_failure,
                     completed_at=current,
                 )
                 tasks.append(task)
@@ -402,6 +480,13 @@ class CollectionCoordinator:
             )
             task_id = uuid.uuid4().hex
             if active is not None:
+                busy_failure = StructuredTaskFailure(
+                    category=CollectionFailureCategory.CONCURRENCY,
+                    message="another active task already holds the dataset/date lease",
+                    retryable=True,
+                    retained=False,
+                    stage="lease-acquisition",
+                )
                 task = self.store.create_collection_task(
                     task_id,
                     run_id,
@@ -409,11 +494,13 @@ class CollectionCoordinator:
                     as_of,
                     queued_at=current,
                     status="busy",
+                    failure=busy_failure,
                 )
                 task = self.store.transition_collection_task(
                     task.task_id,
                     "busy",
                     warning=f"active task {active.task_id} already holds the dataset lease",
+                    failure=busy_failure,
                     timings={"leaseWaitMs": self._milliseconds(lease_started)},
                     completed_at=current,
                 )
@@ -440,6 +527,13 @@ class CollectionCoordinator:
                     "busy",
                     expected_statuses=("queued",),
                     warning="another task acquired the dataset lease",
+                    failure=StructuredTaskFailure(
+                        category=CollectionFailureCategory.CONCURRENCY,
+                        message="another task acquired the dataset/date lease",
+                        retryable=True,
+                        retained=False,
+                        stage="lease-acquisition",
+                    ),
                     timings={"leaseWaitMs": self._milliseconds(lease_started)},
                     completed_at=current,
                 )
@@ -460,9 +554,21 @@ class CollectionCoordinator:
         *,
         fetch_previous_limit_details: bool = True,
     ) -> CollectionRunRecord:
+        current = self._market_now()
+        self.store.expire_inactive_collection_tasks(
+            now=current.astimezone(ZoneInfo("UTC"))
+        )
         run = self.store.get_collection_run(run_id)
         if run is None:
             raise KeyError(f"unknown collection run: {run_id}")
+        if run.status in {"success", "partial", "failed"}:
+            return run
+        if run.status == "queued":
+            run = self.store.update_collection_run(
+                run_id,
+                "collecting",
+                started_at=self._market_now(),
+            )
         task_order = {
             dataset: index for index, dataset in enumerate(SUPPORTED_COLLECTION_DATASETS)
         }
@@ -491,6 +597,17 @@ class CollectionCoordinator:
                                 + ", ".join(blocked_by)
                             )
                         ),
+                        failure=StructuredTaskFailure(
+                            category=CollectionFailureCategory.DEPENDENCY,
+                            message=(
+                                "blocked by incompatible dataset prerequisites: "
+                                + ", ".join(blocked_by)
+                            ),
+                            retryable=True,
+                            retained=False,
+                            stage="dependency-coordination",
+                            blocked_by=blocked_by,
+                        ),
                         completed_at=self._market_now(),
                     )
                     if lease is not None:
@@ -501,9 +618,127 @@ class CollectionCoordinator:
                     fetch_previous_limit_details=fetch_previous_limit_details,
                 )
         tasks = self.store.list_collection_tasks(run_id)
+        if any(task.status not in TERMINAL_TASK_STATUSES for task in tasks):
+            current_run = self.store.get_collection_run(run_id)
+            if current_run is None:  # pragma: no cover - defensive store contract
+                raise KeyError(f"unknown collection run: {run_id}")
+            return current_run
         completed = self._market_now()
         status = self._derive_run_status(tasks)
         return self.store.update_collection_run(run_id, status, completed_at=completed)
+
+    def prepare_run_submission(
+        self,
+        run_id: str,
+        *,
+        lease_seconds: float,
+    ) -> tuple[CollectionTaskRecord, ...]:
+        """Reserve leases for a persisted idempotent run before executor submission."""
+
+        if lease_seconds <= 0:
+            raise ValueError("collection lease duration must be positive")
+        if self.store.get_collection_run(run_id) is None:
+            raise KeyError(f"unknown collection run: {run_id}")
+        current = self._market_now()
+        lease_now = current.astimezone(ZoneInfo("UTC"))
+        for task in self.store.list_collection_tasks(run_id):
+            if task.status != "queued":
+                continue
+            cutover_error = (
+                self.fuyao_policy.preflight_error(task.dataset)
+                if self.fuyao_policy is not None
+                else None
+            )
+            if cutover_error is not None:
+                retained = self.store.get(task.dataset, task.as_of) is not None
+                preflight_failure = StructuredTaskFailure(
+                    category=CollectionFailureCategory.CONFIGURATION,
+                    message=cutover_error,
+                    retryable=False,
+                    retained=retained,
+                    stage="preflight",
+                    code="FUYAO_PREFLIGHT_REJECTED",
+                )
+                self.store.transition_collection_task(
+                    task.task_id,
+                    "failed-retained" if retained else "failed-missing",
+                    expected_statuses=("queued",),
+                    warning=cutover_error,
+                    failure=preflight_failure,
+                    completed_at=current,
+                )
+                continue
+            owned = self.store.get_lease_token(
+                task.dataset,
+                task.as_of,
+                owner=task.task_id,
+            )
+            if owned is not None and owned.expires_at > lease_now:
+                continue
+            active = self.store.active_collection_task(
+                task.dataset,
+                task.as_of,
+                now=lease_now,
+            )
+            if active is not None and active.task_id != task.task_id:
+                self.store.transition_collection_task(
+                    task.task_id,
+                    "busy",
+                    expected_statuses=("queued",),
+                    warning=f"active task {active.task_id} already holds the dataset lease",
+                    failure=StructuredTaskFailure(
+                        category=CollectionFailureCategory.CONCURRENCY,
+                        message="another active task already holds the dataset/date lease",
+                        retryable=True,
+                        retained=False,
+                        stage="lease-acquisition",
+                    ),
+                    completed_at=current,
+                )
+                continue
+            acquired = self.store.acquire_lease(
+                task.dataset,
+                task.as_of,
+                task.task_id,
+                lease_seconds=lease_seconds,
+                now=lease_now,
+            )
+            if not acquired:
+                self.store.transition_collection_task(
+                    task.task_id,
+                    "busy",
+                    expected_statuses=("queued",),
+                    warning="another task acquired the dataset lease",
+                    failure=StructuredTaskFailure(
+                        category=CollectionFailureCategory.CONCURRENCY,
+                        message="another task acquired the dataset/date lease",
+                        retryable=True,
+                        retained=False,
+                        stage="lease-acquisition",
+                    ),
+                    completed_at=current,
+                )
+        return self.store.list_collection_tasks(run_id)
+
+    def release_run_submission(self, run_id: str) -> int:
+        """Release queued-task leases after executor admission rejects a run."""
+
+        released = 0
+        for task in self.store.list_collection_tasks(run_id):
+            if task.status != "queued":
+                continue
+            lease = self.store.get_lease_token(
+                task.dataset,
+                task.as_of,
+                owner=task.task_id,
+            )
+            if lease is not None and self.store.release_lease(
+                task.dataset,
+                task.as_of,
+                lease=lease,
+            ):
+                released += 1
+        return released
 
     def collect(
         self,
@@ -712,12 +947,28 @@ class CollectionCoordinator:
             started_at=started_at,
         )
         lease = self.store.get_lease_token(task.dataset, task.as_of, owner=task.task_id)
-        if lease is None:
+        lease_now = self._market_now().astimezone(ZoneInfo("UTC"))
+        if lease is not None and lease.expires_at > lease_now:
+            remaining_seconds = (lease.expires_at - lease_now).total_seconds()
+            lease = self.store.renew_lease(
+                lease,
+                lease_seconds=max(self.lease_seconds, remaining_seconds),
+                now=lease_now,
+            )
+        if lease is None or lease.expires_at <= lease_now:
+            retained = self.store.get(task.dataset, task.as_of) is not None
             return self.store.transition_collection_task(
                 task.task_id,
-                "failed-retained" if self.store.get(task.dataset, task.as_of) is not None else "failed-missing",
+                "failed-retained" if retained else "failed-missing",
                 expected_statuses=("collecting",),
                 warning="collection task lost its dataset lease before provider execution",
+                failure=StructuredTaskFailure(
+                    category=CollectionFailureCategory.CONCURRENCY,
+                    message="collection task lost its dataset/date lease before provider execution",
+                    retryable=True,
+                    retained=retained,
+                    stage="lease-validation",
+                ),
                 completed_at=started_at,
                 duration_ms=self._milliseconds(started),
             )
@@ -740,6 +991,23 @@ class CollectionCoordinator:
                     )
                 else:
                     result = collector.collect_task(task, started, lease)
+            if (
+                result.status
+                in {"failed-retained", "failed-missing", "busy", "blocked"}
+                and result.failure is None
+            ):
+                result = self.store.transition_collection_task(
+                    task.task_id,
+                    result.status,
+                    expected_statuses=(result.status,),
+                    failure=StructuredTaskFailure(
+                        category=CollectionFailureCategory.INTERNAL,
+                        message=result.warning or "collection task failed",
+                        retryable=True,
+                        retained=result.status == "failed-retained",
+                        stage="collection",
+                    ),
+                )
             if result.status in {*SUCCESSFUL_TASK_STATUSES, "failed-retained"} and self.rebuild_aggregate is not None:
                 rebuild_started = time.perf_counter()
                 try:
@@ -802,6 +1070,18 @@ class CollectionCoordinator:
                 "failed-retained" if existing else "failed-missing",
                 expected_statuses=("collecting",),
                 warning=warning,
+                failure=(
+                    _ths_exception_failure(task, exc, retained=existing is not None)
+                    if task.dataset
+                    in {"industry-ranking", "sector-turnover", "sector-breadth"}
+                    else StructuredTaskFailure(
+                        category=CollectionFailureCategory.INTERNAL,
+                        message=str(exc),
+                        retryable=True,
+                        retained=existing is not None,
+                        stage="collection",
+                    )
+                ),
                 completed_at=self._market_now(),
                 duration_ms=self._milliseconds(started),
             )
@@ -834,11 +1114,21 @@ class CollectionCoordinator:
         status = current.status
         if status not in TERMINAL_TASK_STATUSES:
             status = "failed-retained" if self.store.get(task.dataset, task.as_of) else "failed-missing"
+        failure = current.failure
+        if status not in SUCCESSFUL_TASK_STATUSES and failure is None:
+            failure = StructuredTaskFailure(
+                category=CollectionFailureCategory.CONCURRENCY,
+                message="collection lease was lost and the fenced write was rejected",
+                retryable=True,
+                retained=status == "failed-retained",
+                stage="collection-commit",
+            )
         return self.store.transition_collection_task(
             task.task_id,
             status,
             expected_statuses=(current.status,),
             warning=f"lease lost; write rejected: {error}",
+            failure=failure,
             completed_at=self._market_now(),
             duration_ms=self._milliseconds(started),
         )
@@ -894,6 +1184,11 @@ class CollectionCoordinator:
                     "failed-retained" if existing is not None else "failed-missing",
                     expected_statuses=("collecting",),
                     warning=warning,
+                    failure=_outcome_failure(
+                        outcome,
+                        retained=existing is not None,
+                        fallback_message=warning,
+                    ),
                     completed_at=self._market_now(),
                     duration_ms=self._milliseconds(started),
                 )
@@ -948,6 +1243,7 @@ class CollectionCoordinator:
                 source=candidate.source,
                 observations=candidate.observations,
                 warning=committed_outcome.warning,
+                failure=None,
                 timings=phase_timings,
                 completed_at=self._market_now(),
                 duration_ms=self._milliseconds(started),

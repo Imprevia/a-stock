@@ -6,8 +6,13 @@ from datetime import date, datetime
 import pytest
 
 from src.market_environment.application.collection import DatasetCollectorRegistry
-from src.market_environment.domain.models import DATASET_IDS
+from src.market_environment.domain.models import (
+    CollectionFailureCategory,
+    DATASET_IDS,
+    DatasetDate,
+)
 from src.market_environment.application.ths_diagnostics import parse_ths_diagnostic
+from src.market_environment.infrastructure.collection.ths_datasets import _failure
 from src.market_environment.infrastructure.collection.coordinator import CollectionCoordinator
 from src.market_environment.refresh import MARKET_TIME_ZONE
 from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
@@ -240,6 +245,23 @@ def test_revision_mismatch_block_is_typed_and_lists_both_upstreams(tmp_path) -> 
         "industry-ranking",
         "sector-turnover",
     }
+    assert task.failure.category is CollectionFailureCategory.DEPENDENCY
+    assert task.failure.retryable is True
+    assert task.failure.blocked_by == ("sector-turnover",)
+
+
+def test_ths_acquisition_failure_retryability_matches_diagnostic() -> None:
+    outcome = _failure(
+        DatasetDate("industry-ranking", AS_OF),
+        "fixture THS acquisition failure",
+        retryable=True,
+    )
+
+    diagnostic = parse_ths_diagnostic(outcome.warning)
+
+    assert outcome.failure is not None
+    assert diagnostic is not None
+    assert outcome.failure.retryable is diagnostic.retryable is True
 
 
 def test_legacy_sectors_is_rejected_with_migration_targets_before_io(tmp_path) -> None:

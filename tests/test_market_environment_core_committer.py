@@ -13,7 +13,10 @@ from src.market_environment.application.ports.core_committers import (
     CoreTradingSessionEvidence,
 )
 from src.market_environment.domain.models import (
+    AcquisitionFailure,
+    AcquisitionFailureCategory,
     CollectionCandidate,
+    CollectionFailureCategory,
     CollectionOutcome,
     CollectionTaskState,
     DatasetDate,
@@ -70,8 +73,9 @@ def core_engine():
             CREATE TABLE collection_tasks (
                 task_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, dataset TEXT NOT NULL,
                 as_of DATE NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL,
-                observations INTEGER NOT NULL, warning TEXT, timings_json TEXT NOT NULL,
-                queued_at TEXT, started_at TEXT, completed_at TEXT,
+                observations INTEGER NOT NULL, warning TEXT, failure_json TEXT,
+                timings_json TEXT NOT NULL, queued_at TEXT, started_at TEXT,
+                completed_at TEXT,
                 duration_ms REAL, settled INTEGER NOT NULL,
                 UNIQUE(run_id, dataset)
             )
@@ -123,6 +127,7 @@ class RepositoryBundle:
     core_index_results: object
     leases: object
     trading_sessions: object
+    collection_idempotency: object = None
     collection_runs: object = None
     aggregates: object = None
     provider_capabilities: object = None
@@ -451,6 +456,12 @@ def test_core_committer_records_all_failed_retention_without_snapshot_overwrite(
             candidate=attempted_candidate,
             warning="all providers unavailable",
             retained=True,
+            failure=AcquisitionFailure(
+                category=AcquisitionFailureCategory.NETWORK,
+                message="all providers unavailable",
+                retryable=True,
+                source="fixture-provider",
+            ),
         ),
         index_results=(retained_result,),
     )
@@ -465,9 +476,11 @@ def test_core_committer_records_all_failed_retention_without_snapshot_overwrite(
         assert evidence.candidate == stored_before
         assert evidence.outcome_state is CollectionTaskState.FAILED_RETAINED
         assert "snapshot" not in evidence.writes
-        assert PostgresCollectionTaskRepository(connection).get_task(TASK_ID).status == (
-            "failed-retained"
-        )
+        stored_task = PostgresCollectionTaskRepository(connection).get_task(TASK_ID)
+        assert stored_task.status == "failed-retained"
+        assert stored_task.failure.category is CollectionFailureCategory.NETWORK
+        assert stored_task.failure.retained is True
+        assert stored_task.failure.source == "fixture-provider"
         results = PostgresCoreIndexResultRepository(connection).list_results(TASK_ID)
         assert len(results) == 1
         assert results[0].status == "failed-retained"

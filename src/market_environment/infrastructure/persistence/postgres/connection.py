@@ -10,11 +10,12 @@ from sqlalchemy import Engine, text
 from ....database import DatabaseSettings, create_database_engine
 
 
-MINIMUM_SCHEMA_VERSION = 10
+MINIMUM_SCHEMA_VERSION = 11
 REQUIRED_RUNTIME_TABLES = frozenset(
     {
         "collection_runs",
         "collection_tasks",
+        "collection_idempotency_bindings",
         "core_index_results",
         "limit_security_datasets",
         "limit_security_facts",

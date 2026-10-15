@@ -285,6 +285,7 @@ def _failure(
     failure = AcquisitionFailure(
         category=category,
         message=message,
+        retryable=retryable,
         requested_as_of=identity.as_of,
         source=SOURCE,
     )

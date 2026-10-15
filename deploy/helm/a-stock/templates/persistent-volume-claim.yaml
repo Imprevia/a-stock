@@ -1,6 +1,6 @@
 {{- $component := default "all" .Values.component -}}
-{{- if not (has $component (list "all" "database" "service" "schedule")) -}}
-{{- fail (printf "component=%s is not supported; expected one of all, database, service, or schedule" $component) -}}
+{{- if not (has $component (list "all" "database" "service")) -}}
+{{- fail (printf "component=%s is not supported; expected one of all, database, or service" $component) -}}
 {{- end -}}
 {{- if and (not .Values.database.enabled) (has $component (list "all" "database")) -}}
 {{- fail "database.enabled must remain true; SQLite runtime PVCs are not supported" }}
@@ -64,5 +64,5 @@ spec:
 {{- /* reviewed existingClaim path: verify-only; do not render or modify the existing PVC */ -}}
 {{- end }}
 {{- else }}
-{{- /* service / schedule components never modify the PVC contract; the database component owns it */ -}}
+{{- /* The service component never modifies the PVC contract; the database component owns it. */ -}}
 {{- end }}

@@ -5,9 +5,12 @@
 .idea/
 .pytest_cache/
 .venv/
+.runtime/
+.vite/
 .artifacts/
 .codex/
 .opencode/
+test-results/
 **/__pycache__/
 **/*.py[cod]
 **/node_modules/

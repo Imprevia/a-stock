@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import Connection, bindparam, text
 
+from ....domain.models import CollectionFailureCategory, StructuredTaskFailure
 from ....snapshot_store import (
     CollectionRunRecord,
     CollectionTaskRecord,
@@ -196,12 +197,12 @@ class PostgresCollectionTaskRepository:
                 """
                 INSERT INTO collection_tasks(
                     task_id, run_id, dataset, as_of, status, source, observations,
-                    warning, timings_json, queued_at, started_at, completed_at,
-                    duration_ms, settled
+                    warning, failure_json, timings_json, queued_at, started_at,
+                    completed_at, duration_ms, settled
                 ) VALUES (
                     :task_id, :run_id, :dataset, :as_of, :status, :source,
-                    :observations, :warning, :timings_json, :queued_at, :started_at,
-                    :completed_at, :duration_ms, :settled
+                    :observations, :warning, :failure_json, :timings_json,
+                    :queued_at, :started_at, :completed_at, :duration_ms, :settled
                 )
                 """
             ),
@@ -214,6 +215,11 @@ class PostgresCollectionTaskRepository:
                 "source": task.source,
                 "observations": task.observations,
                 "warning": task.warning,
+                "failure_json": (
+                    task.failure.canonical_json()
+                    if task.failure is not None
+                    else None
+                ),
                 "timings_json": _canonical_json(task.timings or {}),
                 "queued_at": task.queued_at,
                 "started_at": task.started_at,
@@ -237,6 +243,7 @@ class PostgresCollectionTaskRepository:
             source=task.source,
             observations=task.observations,
             warning=task.warning,
+            failure=task.failure,
             timings=task.timings,
             started_at=task.started_at,
             completed_at=task.completed_at,
@@ -253,6 +260,7 @@ class PostgresCollectionTaskRepository:
         source: str | None = None,
         observations: int | None = None,
         warning: str | None = None,
+        failure: StructuredTaskFailure | None = None,
         timings: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
@@ -265,6 +273,9 @@ class PostgresCollectionTaskRepository:
             "source": source,
             "observations": observations,
             "warning": warning,
+            "failure_json": (
+                failure.canonical_json() if failure is not None else None
+            ),
             "timings_json": _canonical_json(timings) if timings is not None else None,
             "started_at": started_at,
             "completed_at": completed_at,
@@ -275,6 +286,8 @@ class PostgresCollectionTaskRepository:
             if value is not None:
                 assignments.append(f"{column} = :{column}")
                 parameters[column] = value
+        if failure is None and status in {"queued", "collecting", "success", "partial"}:
+            assignments.append("failure_json = NULL")
         expected = tuple(expected_statuses or ())
         statement = (
             f"UPDATE collection_tasks SET {', '.join(assignments)} "
@@ -304,9 +317,18 @@ class PostgresCollectionTaskRepository:
                 LEFT JOIN refresh_leases AS lease
                   ON lease.dataset = task.dataset AND lease.as_of = task.as_of
                  AND lease.owner = task.task_id AND lease.expires_at > :now
+                LEFT JOIN collection_idempotency_bindings AS binding
+                  ON binding.run_id = task.run_id
                 LEFT JOIN snapshot_entries AS snapshot
                   ON snapshot.dataset = task.dataset AND snapshot.as_of = task.as_of
                 WHERE task.status IN ('queued', 'collecting') AND lease.dataset IS NULL
+                  AND NOT (
+                    task.status = 'queued'
+                    AND binding.run_id IS NOT NULL
+                    AND binding.submission_state IN (
+                      'reserved', 'submitting', 'submitted', 'submission-failed'
+                    )
+                  )
                 """
             ),
             {"now": now.isoformat()},
@@ -316,13 +338,21 @@ class PostgresCollectionTaskRepository:
                 text(
                     """
                     UPDATE collection_tasks
-                    SET status = :status, warning = :warning, completed_at = :completed_at
+                    SET status = :status, warning = :warning,
+                        failure_json = :failure_json, completed_at = :completed_at
                     WHERE task_id = :task_id
                     """
                 ),
                 {
                     "status": "failed-retained" if row["retained"] else "failed-missing",
                     "warning": "collection worker stopped before completion; task is retryable",
+                    "failure_json": StructuredTaskFailure(
+                        category=CollectionFailureCategory.WORKER_INTERRUPTED,
+                        message="collection worker stopped before completion; task is retryable",
+                        retryable=True,
+                        retained=bool(row["retained"]),
+                        stage="execution",
+                    ).canonical_json(),
                     "completed_at": now,
                     "task_id": row["task_id"],
                 },
@@ -340,6 +370,13 @@ class PostgresCollectionTaskRepository:
             source=str(row["source"]),
             observations=int(row["observations"]),
             warning=row["warning"],
+            failure=(
+                StructuredTaskFailure.from_dict(
+                    _json_load(row["failure_json"], {})
+                )
+                if row["failure_json"] is not None
+                else None
+            ),
             timings=dict(_json_load(row["timings_json"], {})),
             queued_at=_as_datetime(row["queued_at"]) if row["queued_at"] is not None else None,
             started_at=_as_datetime(row["started_at"]) if row["started_at"] is not None else None,
