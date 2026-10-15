@@ -6,16 +6,16 @@
 
 ## 范围
 
-包含 OpenSpec `replace-market-collection-scheduling-with-hermes`、后端全量自动化 API 与持久幂等/结构化失败、Hermes caller/prompt、Helm/Kustomize/部署脚本中的 Kubernetes 调度退役、前端兼容、事实文档、离线测试和另行授权的生产迁移。本轮新增授权只覆盖 task 7.3：从 `192.168.1.21` 只读验证 reachability，以受控 same-image/hook-free 入口仅启用 automation gate，并在盘后用唯一 key 执行一次七数据集 canary 和同 key 重放；不授权安装 Hermes 资产、创建 job、选择投递目标或执行 7.4–7.6。
+包含 OpenSpec `replace-market-collection-scheduling-with-hermes`、后端全量自动化 API 与持久幂等/结构化失败、Hermes caller/prompt、Helm/Kustomize/部署脚本中的 Kubernetes 调度退役、前端兼容、事实文档、离线测试和另行授权的生产迁移。task 7.3 已按独立授权完成：从 `192.168.1.21` 启用 automation gate、执行唯一 key 七数据集 canary 并完成同 key 零新增 provider 调用重放；仍不授权安装 Hermes 资产、创建 job、选择投递目标或执行 7.4–7.6。
 
 ## Stage（阶段）
 
-- 当前阶段：**7.3 已获授权并执行中：补齐受控 automation gate 入口后运行 canary/replay**
+- 当前阶段：**7.3 已完成，等待 7.4 独立授权：安装 Hermes 资产并创建定时 job**
 - 阶段序列：事实/计划 → 持久化与 API → Hermes 资产 → Kubernetes 调度退役 → UI/文档/离线验证 → 另行授权的生产迁移与两日观察
 
 ## Status（状态）
 
-`production-7-3-authorized-preflight-complete-controlled-gate-path-in-progress`（30/34） · task 7.3 已获独立授权。2026-10-15 15:45–15:47 Asia/Shanghai 从 `192.168.1.21` 完成只读 preflight：后端 health/OpenAPI 可达，Helm revision 116、schema v11 / Alembic `0008_collection_idempotency`、manual=0、automation=0、活动 run/task/lease=`0|0|0`，exact image/PVC/Secret 未漂移，两个 former CronJob 与全部 Job absent。审计发现普通入口和 `--disable-manual-refresh` 均不能合规表达 automation `0→1`；按 runbook 禁止裸 Helm，先补同等级 same-image、hook-free、only-one-env 受控入口及离线测试，再执行唯一 key canary。tasks 7.4–7.6 仍未授权。
+`production-7-3-complete-awaiting-7-4-authorization`（31/34） · task 7.3 已完成。2026-10-15 16:09 Asia/Shanghai，受控 same-image/hook-free 入口将 Helm revision 116 升至 117，唯一语义变化为 automation=`0→1`，manual=0、schema v11/0008、镜像、PVC/Secret、CronJob/Job absent 与 writer=0 均保持。16:10 从 `192.168.1.21` 用唯一 key `hermes-canary-2026-10-15-t7.3-01` 执行七数据集 canary，run `93dd3c9b633b4cf5bb6d76132e3a5098` 终态 `partial`；三项 success、四项带可用证据的 partial，七项均持久化且没有 terminal failure。terminal same-key replay 返回同 run/七 task，持久状态指纹不变且对外 provider 数据包为 0。tasks 7.4–7.6 仍未授权。
 
 架构、产品规格、仓库指南和 runbook 已在代码前改为 Hermes 持有时钟/投递、后端持有上海日期/结算/七数据集/provider/持久化的合同；full endpoint、持久幂等、structured failure、默认关闭 automation gate、匿名内网边界和两个旧 CronJob identity 的只读负向 guard 已成为实施事实基线。
 
@@ -46,7 +46,7 @@
 - [x] 完成任务 6.4：全量 pytest、规则检查、OpenSpec strict 与 docs-contract full
 - [x] 完成任务 7.1：生产只读基线、不可覆盖 PostgreSQL 备份和隔离恢复演练
 - [x] 完成已授权的任务 7.2：immutable backend/schema 部署与 provider-free 验收
-- [ ] 完成已授权的任务 7.3：受控 automation gate enable、唯一 key canary 与同 key replay
+- [x] 完成已授权的任务 7.3：受控 automation gate enable、唯一 key canary 与同 key replay
 - [ ] 完成尚未授权的任务 7.4–7.6：Hermes job、两日观察与停止演练
 
 ## Completion Evidence（完成证据）
@@ -213,6 +213,26 @@
   且 restart=0。health、`/data-collection`、exact-date data-collection、THS catalog、core、Chapter 01 sectors
   与 OpenAPI 均 HTTP 200；OpenAPI full POST 要求 `Idempotency-Key` header、wait maximum 900，且无 request body、
   `asOf`、dataset selector 或 security。验收未发送任何 POST/provider 请求。
+- task 7.3 的受控入口补丁冻结为 clean detached candidate
+  `5ebe48a15b313969d06be353d9616273730c9113`；automation-on values/render SHA-256 分别为
+  `d744ba6bd5ddfcf8f7f8a1c91900c4ff6c70ece610801db3f5554e5703a58086` /
+  `d8a3f5aa68406ea9340b7ac27bec1cfdf4f8cfceb77dc3177a3bb3ba18b215f3`，chart SHA-256 为
+  `64b95ddee1497f8f23391a414ca3303564b1d66e84fd97cc573514b0dca326fe`。validator/TrueNAS guard
+  联合回归 `99 passed`，Shell syntax、Python compile、Helm lint、OpenSpec strict 与 docs-contract full 通过。
+- 16:09 的受控 `--enable-automation-refresh` 写入使用 exact 7.2 image
+  `localhost/a-stock-market-environment:20261015-150231-6d96224` 与 manifest digest
+  `sha256:a61f6b1b4d8fb392308af00eaf6765527fa2a9706285cd50eeb9ae29a2bd7e78`，唯一 Helm write 为
+  `--no-hooks --atomic --wait`，revision 117 deployed。写前/写后 active run/task/lease=`0|0|0`，manual=0、
+  automation=`0→1`，stored hooks、镜像、两个 PVC/两个 Secret UID 均未漂移，former CronJob/namespace Job absent。
+- 16:10 的 canary POST 返回 HTTP 200，run `93dd3c9b633b4cf5bb6d76132e3a5098`、target/asOf
+  `2026-10-15`、parent `partial`、`1 binding / 1 run / 7 unique canonical tasks`。success 为 core、breadth、limits；
+  partial 为 industry-ranking、sector-turnover、sector-breadth、activeDirection，均保留 warning/diagnostics 和可用结果；
+  本批次没有 failed/blocked/busy，故七项 persisted `failure_json` 均为 null，failure contract 校验为 true。
+- terminal replay 使用同 key 和 `waitTimeoutSeconds=0` 返回相同 runId、七个 taskId/status/failure。
+  binding 的 `submission_attempts=1`、`submitted_at`、`updated_at` 不变；binding/run/tasks/snapshot/materialization
+  组合 JSON 的 replay 前后 SHA-256 均为
+  `b81cf3b39b0a34a9cb1d0f165cd1305c6ba39f9db8e432a53c04c5be8ec1b62f`。应用 Pod 对公网 80/443 的
+  replay 窗口被动抓包排除纯 ACK 后为 `0 packets captured`，证明没有新 SYN 或有效载荷，即零新增 provider 调用。
 - `fix-ths-catalog-revision` 7.5 已改为由本计划 7.5 承接且保持未勾选；7.4 保留为独立盘后验证。
 - `openspec validate fix-ths-catalog-revision --strict` 与
   `openspec validate replace-market-collection-scheduling-with-hermes --strict` 均通过。
@@ -221,8 +241,7 @@
 
 ## Remaining Gaps（剩余缺口）
 
-- task 7.2 已完成并保持 30/34。task 7.3 已获授权且只读 preflight 通过；受控 automation gate enable 入口、
-  canary 和 replay 尚未完成。tasks 7.4–7.6 仍未授权，不得安装 Hermes 资产、创建 Hermes job、选择/修改投递目标、
+- task 7.3 已完成并达到 31/34。tasks 7.4–7.6 仍未授权，不得安装 Hermes 资产、创建 Hermes job、选择/修改投递目标、
   开始两日观察、执行停止演练或额外 THS 重采。
 - 隔离恢复容器 `a-stock-pg-recovery-hermes-7-1-20261015T061531Z` 与本地只读副本
   `/tmp/a-stock-pgdump-20261015T061531Z-helm113-schema10-pvc-6c426fc5-021071c.dump` 保留为恢复证据；清理属于
@@ -232,7 +251,7 @@
 
 ## Next Step（下一步）
 
-先实现并离线验证 `--enable-automation-refresh` 受控入口：绑定 task 7.2 的 clean candidate、完整 values/render
-hash、exact image digest、stored/live release、PVC/Secret、CronJob/Job 和 active writer，唯一允许差异为 automation
-literal `"0" → "1"`，Helm write 必须 `--no-hooks --atomic --wait`。验证通过后才执行 gate write、唯一 key canary、
-provider-free persisted readback 和同 key replay；仍不得安装 Hermes 资产、创建 job、选择投递目标或进入 7.4–7.6。
+等待 task 7.4 独立授权与投递目标选择。获批后才能把 checksum 一致的 caller/prompt 安装到
+`192.168.1.21`、确认 `Asia/Shanghai` 与 timeout、创建 `30 16 * * 1-5` Hermes job 并核验 gateway/
+`next_run_at`；在授权前保持 automation=1、manual=0、Kubernetes CronJob/Job absent，不安装资产、不创建 job，
+也不提前开始 task 7.5 两日观察或 task 7.6 停止演练。

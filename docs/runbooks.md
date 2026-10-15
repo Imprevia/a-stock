@@ -389,8 +389,8 @@ retryability 和 `blockedBy`；不得写 credential、签名 URL、敏感 header
 `0007_ths_catalog_identity`；该 migration 仅删除 `ths_catalog_revisions` 上不含交易日的
 `UNIQUE (provider, capability_revision, checksum, fetched_at)`，不改写历史行。任何发布前先只读核对当前
 release/image、两个历史 CronJob identity、active writer、PVC/Secret、schema、capability、旧 fixed revision、
-排名/bar 和失败/blocked 审计。2026-10-15 revision 113 是本 change 发布前只读基线；task 7.2 完成后当前为
-revision 116 / schema v11/0008，两个 CronJob 和全部 Job absent、manual/automation 关闭且没有活动 writer；
+排名/bar 和失败/blocked 审计。2026-10-15 revision 113 是本 change 发布前只读基线；task 7.3 完成后当前为
+revision 117 / schema v11/0008，两个 CronJob 和全部 Job absent、manual=0、automation=1 且没有活动 writer；
 不得为补证重建 Kubernetes schedule。
 
 后续生产恢复已由 `replace-market-collection-scheduling-with-hermes` 7.x 接管：先完成不可覆盖备份和
@@ -773,8 +773,8 @@ location / {
 ### TrueNAS NodePort 与采集写入口
 
 当前生产事实必须在每次发布前只读复核，历史 revision 不能替代 live evidence。task 7.2 发布前基线为 revision 113；
-2026-10-15 发布后当前为 revision 116 / schema v11/0008、两个旧 CronJob identity 与 namespace Job absent、
-manual=0、automation=0、active writer=0。Dashboard Service 固定为
+2026-10-15 task 7.3 后当前为 revision 117 / schema v11/0008、两个旧 CronJob identity 与 namespace Job absent、
+manual=0、automation=1、active writer=0。Dashboard Service 固定为
 `NodePort:32001`；镜像、单副本、PostgreSQL StatefulSet/Service、数据库 Secret、安全上下文与 CronJob
 absent 均不得被普通写入口变更。
 
@@ -810,6 +810,16 @@ warning/限流、PostgreSQL lock/连接池、任务时长与数据库 PVC 增长
 产生 `SuccessfulCreate`/`Completed` events 后按 `hook-succeeded` 清理；revisions 115/116 分别以 `--no-hooks`
 完成 service/final convergence。最终 v11/0008、manual/automation=0、writer/CronJob/Job=0，provider-free GET
 与 OpenAPI 通过，旧计数、PVC/Secret UID 和备份 hash 未漂移。该证据不授权 task 7.3 的 gate 或 provider 写入。
+
+2026-10-15 task 7.3 使用 clean candidate `5ebe48a15b313969d06be353d9616273730c9113` 的专用
+`--enable-automation-refresh` 入口完成。revision 117 的唯一 release 差异是 automation `0→1`；manual=0、
+同一 image/tag/digest、stored hooks、schema、PVC/Secret identity、former CronJob/Job absent 均不变。随后从
+`192.168.1.21` 以 `hermes-canary-2026-10-15-t7.3-01` 调用 full endpoint：run
+`93dd3c9b633b4cf5bb6d76132e3a5098` 为 `partial`，exact date `2026-10-15`，七个唯一 task 全部终态；三项
+success、四项带可用证据的 partial，没有 terminal failure，因此 persisted failure 均为 null。终态同 key replay
+保持 submission attempts/timestamps 与 binding/run/task/snapshot/materialization 指纹
+`b81cf3b39b0a34a9cb1d0f165cd1305c6ba39f9db8e432a53c04c5be8ec1b62f` 不变；应用 Pod 对公网 80/443 的
+replay 窗口没有新 SYN/有效载荷。该证据只完成 7.3，不授权安装 Hermes caller/prompt、选择投递目标或创建 job。
 
 若出现异常请求、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长，第一步暂停 Hermes job 并设置
 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED=0`；manual 继续为 0。验证两个写入口都拒绝且没有新 run/provider

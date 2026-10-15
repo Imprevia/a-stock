@@ -59,9 +59,9 @@
 
 ## 进行中
 
-- `fix-ths-catalog-revision` 的仓库内离线修复和生产控制门禁 1.1–6.7、生产 7.1–7.3 已完成。7.1 收口 revision 110 安全停写基线，已丢失的原 `Failed=True` Kubernetes Job 继续作为获准的不可恢复缺口；7.2 创建 2,885,212-byte custom dump（SHA-256 `8d459ecc3a8d3dc4cc09428afceef263ffa54d976583738b51db22a596a188c5`）并在全新 loopback-only PostgreSQL 16.4 中证明 `0007`、跨日期共存与 37 表历史不变。7.3 从 clean reviewed HEAD `021071cbb7e3ce87dd59806226642cb916db6d75` 发布镜像 `20261015-100802-021071c`（archive SHA-256 `35d412a2b9e3be1fefad99630a3ae3e653d2b20b4b8eea04ead364dec46900bd`，containerd digest `sha256:ada52cb449d09ed3def9290a732d3d6925e23cbdcbe00893d38525affc8ed4fc`）；revisions 111/112/113 完成 migration/service/full release，生产现为 v10/0007。Deployment→ReplicaSet→Ready Pod、PVC/Secret、4 capability、旧 846 事实、3/11 审计与 THS operation 均未漂移；5 个 provider-free GET 为 200 且调用前后 run/task/operation 总数与哈希一致，manual POST=403、writer=0、CronJob/Job absent。下一步受上海 2026-10-15 15:10 结算边界阻塞，边界后仅运行一次获授权的 THS 三任务。
-- `add-fuyao-ths-sector-datasets` 的 revision 幂等/nullable `changePct` 修复已于 2026-10-14 部署到 TrueNAS k3s。revisions 106/107 的 CronJob 受控激活及其 `30 16 * * 1-5` 配置只保留为历史证据；激活未即时创建 Job，计划中的首次自然触发没有完成验收。后续 `fix-ths-catalog-revision` 7.1–7.3 已将生产收敛到 Helm revision 113、schema v10/0007、manual=0、writer=0、CronJob/Job absent，并保持旧数据与审计不变。不得为补自然触发证据而重建 revision 107 调度；两个交易日观察改由 `replace-market-collection-scheduling-with-hermes` 7.5 承接。
-- `replace-market-collection-scheduling-with-hermes` 当前为 `production-7-2-single-schema-hook-validated-awaiting-refreeze`（29/34）：tasks 1.1–7.1 已完成，task 7.2 已授权。OpenSpec、事实文档、部署脚本与测试已协调并验证 single-hook 合同：调度/provider-backed collection Job 始终 absent；唯一临时例外是 database 阶段精确的 provider-free `a-stock-schema-migration`，service/final all 使用 `--no-hooks`，成功后全部 Job absent，失败则停止并保留证据。聚焦回归 `191 passed`、扩展部署回归 `252 passed`，Shell/Helm/OpenSpec/docs-contract/diff 门禁通过；正在重新冻结 immutable candidate。生产仍为 revision 113、schema v10/0007，manual=0、automation env absent、writer=`0|0|0|0|0`、CronJob/Job absent、关键计数 `103|246|2|846|846|846`、PVC/Secret UID 和 task 7.1 dump SHA-256 均无漂移。旧候选 `291a8de` 已 superseded，不得部署。未授权 gate 修改、full endpoint/provider、Hermes 主机或 job 写入；THS 7.4、额外同日 THS 重采和 tasks 7.3–7.6 仍需另行授权。
+- `fix-ths-catalog-revision` 的仓库内离线修复和生产控制门禁 1.1–6.7、生产 7.1–7.3 已完成。7.1 收口 revision 110 安全停写基线，已丢失的原 `Failed=True` Kubernetes Job 继续作为获准的不可恢复缺口；7.2 创建 2,885,212-byte custom dump（SHA-256 `8d459ecc3a8d3dc4cc09428afceef263ffa54d976583738b51db22a596a188c5`）并在全新 loopback-only PostgreSQL 16.4 中证明 `0007`、跨日期共存与 37 表历史不变。7.3 从 clean reviewed HEAD `021071cbb7e3ce87dd59806226642cb916db6d75` 发布镜像 `20261015-100802-021071c`（archive SHA-256 `35d412a2b9e3be1fefad99630a3ae3e653d2b20b4b8eea04ead364dec46900bd`，containerd digest `sha256:ada52cb449d09ed3def9290a732d3d6925e23cbdcbe00893d38525affc8ed4fc`）；revisions 111/112/113 完成 migration/service/full release，该 change 的发布终点为 v10/0007。Deployment→ReplicaSet→Ready Pod、PVC/Secret、4 capability、旧 846 事实、3/11 审计与 THS operation 均未漂移；5 个 provider-free GET 为 200 且调用前后 run/task/operation 总数与哈希一致，manual POST=403、writer=0、CronJob/Job absent。后续 Hermes 7.2 已将当前生产升级至 revision 116 / v11/0008；THS 7.4 仍须按其独立授权边界执行盘后三任务。
+- `add-fuyao-ths-sector-datasets` 的 revision 幂等/nullable `changePct` 修复已于 2026-10-14 部署到 TrueNAS k3s。revisions 106/107 的 CronJob 受控激活及其 `30 16 * * 1-5` 配置只保留为历史证据；激活未即时创建 Job，计划中的首次自然触发没有完成验收。后续 `fix-ths-catalog-revision` 7.1–7.3 曾将生产收敛到 Helm revision 113、schema v10/0007；Hermes change 7.2/7.3 又将当前生产升级至 revision 117、schema v11/0008，并保持 manual=0、writer=0、CronJob/Job absent；automation=1 且唯一 canary 已完成。不得为补自然触发证据而重建 revision 107 调度；两个交易日观察改由 `replace-market-collection-scheduling-with-hermes` 7.5 承接。
+- `replace-market-collection-scheduling-with-hermes` 当前为 `production-7-3-complete-awaiting-7-4-authorization`（31/34）：受控 clean candidate `5ebe48a15b313969d06be353d9616273730c9113` 以 hook-free same-image write 将 revision 116 升至 117，仅把 automation `0→1`，manual=0、schema v11/0008、PVC/Secret、CronJob/Job absent 均保持。唯一 canary key `hermes-canary-2026-10-15-t7.3-01` 返回 run `93dd3c9b633b4cf5bb6d76132e3a5098`、parent `partial`、七个唯一终态 task（3 success / 4 partial / 0 terminal failure）；same-key replay 的持久指纹不变且公网 80/443 无新 SYN/有效载荷。Hermes 主机尚未安装资产或创建 job；tasks 7.4–7.6 仍需独立授权。
 - **历史审计（2026-10-13）**：`add-fuyao-ths-sector-datasets` 的 10.3 capability apply + 10.9 `pg_dump` + 隔离 PostgreSQL 恢复演练完成；dump `/tmp/a-stock-pgdump-20261013.dump`（sha256 `1723b24c…3ee5`）在隔离 PostgreSQL 恢复 39 表，生产 capability 从 1 行增加到 4 行且旧 `fuyao/sectors/fuyao-market-v2` 未变。revision 98 当时的 THS fail-closed env、镜像/PVC/Secret、CronJob absent、健康与零 provider 写证据继续保留；当时 values 中的旧调度关闭字段仅是历史 release 记录，现已从当前 Chart/values 合同退役，不得作为操作输入。
 - `add-sector-continuity-metrics`（2026-10-12）已完成 Stage 10 离线实现与验证；OpenSpec 为 `56/60`。task 11.1 已获用户授权，但上海时间 `10:57` 尚未到 `15:30` 盘后窗口，且 CLI 未配置 source-specific 真实 probe adapter。四类默认 dry-run 均证明 `networkCalls=0`、`formalWrites=0`，真实 taxonomy/membership/adjusted-price/benchmark probe 未运行，候选源继续为 `unverified`。tasks 11.2–11.4 未授权，经验阈值保持 `needs-backtest`。
 
@@ -91,7 +91,7 @@
 - 真实行情源受网络可用性影响；页面会显示降级来源、过期报价和部分失败 warning。
 - `push2` 与 `push2delay` 同属东方财富，供应商整体不可用时行业和容量方向采集仍会失败；同日期成功快照会保留，不会用其他日期替代。
 - 扶摇行业 fallback 虽已确认 320/320 目录和快照覆盖，但其接口不提供资金流、市场宽度和领涨股；即使正式开关获批，行业结果也只能解释为带 warning 的降级指数排名，不能冒充完整行业事实。
-- 生产已部署 date-and-content-addressed THS catalog observation identity（schema v10/0007），但 7.4 的盘后真实三任务证据和尚未实施的 Hermes 两日观察仍未完成。禁止删除旧证据、改 checksum、补零、裁剪目录、伪造抓取时间或用其他日期替代；同日重采只有在完整 catalog 内容不变时才应复用 revision，跨日必须保留不同 date-addressed revision。
+- 生产已部署由前序 migration v10/`0007_ths_catalog_identity` 引入的 date-and-content-addressed THS catalog observation identity；当前 runtime schema 为 v11/`0008_collection_idempotency`。7.4 的盘后真实三任务证据和尚未实施的 Hermes 两日观察仍未完成。禁止删除旧证据、改 checksum、补零、裁剪目录、伪造抓取时间或用其他日期替代；同日重采只有在完整 catalog 内容不变时才应复用 revision，跨日必须保留不同 date-addressed revision。
 - 东方财富 dataapi 行业补充为 latest-only、同供应商且仅观测到 128 行；扶摇 THS 与东方财富 BK 分类不同，必须保守匹配并显示覆盖缺口，不能将补充结果解释为独立 provider 或历史数据证据。
 - 生产手工采集当前已关闭。已实现但默认关闭的 Hermes automation endpoint 没有应用级认证或 TLS，只能在操作方明确接受的非公网可信路由边界内另行启用；所有能路由到 `192.168.1.20:32001` 的客户端届时都将具备调用能力，idempotency、CORS 和 lease 不是认证。
 - 计划中的 Hermes 工作日调度仍不维护交易所节假日日历；周一至周五节假日必须留下 skipped/failed/partial 的真实结果，精确日期校验禁止跨日期落盘。当前 Kubernetes CronJob/Job absent，Hermes 尚未启用。
@@ -104,8 +104,8 @@
 
 ## 下一步
 
-- `fix-ths-catalog-revision` tasks 1.1–7.3 已完成；生产为 Helm 113、v10/0007、不可变镜像 digest 已冻结，schedule/manual/writer 仍关闭，provider-free 验收与历史零漂移通过。下一步必须等待 2026-10-15 15:10 Asia/Shanghai 后运行 exact THS trio；结算前不得以 `--force`、改时间或手工 POST 绕过。7.4 完成后继续保持 Kubernetes CronJob/Job absent，旧 7.5 不恢复调度，等待 Hermes change 7.5 的 canary、两个完整交易日和 THS lineage 证据。
-- `replace-market-collection-scheduling-with-hermes` task 7.2 已授权，single-hook 实现与离线门禁已通过：下一步用独立 Git index/detached worktree 冻结新 immutable candidate，复核生产无漂移后执行 backend/schema rollout 与 provider-free 验收。当前授权不得沿用到 7.3，也不授权 automation gate、full endpoint/provider、Hermes 主机、job 或投递目标写入。
+- `fix-ths-catalog-revision` tasks 1.1–7.3 已完成，其发布终点为 Helm 113、v10/0007；当前生产已由 Hermes change 7.2/7.3 升级至 Helm 117、v11/0008，manual/writer 仍关闭、automation 已受控开启、CronJob/Job absent，canary 与历史零漂移通过。7.4 仍须按独立授权边界在上海结算后运行 exact THS trio；不得以 `--force`、改时间或手工 POST 绕过。7.4 完成后继续保持 Kubernetes CronJob/Job absent，旧 7.5 不恢复调度，等待 Hermes change 7.5 的两个完整交易日和 THS lineage 证据。
+- `replace-market-collection-scheduling-with-hermes` task 7.3 已完成；等待 task 7.4 独立授权与投递目标选择。当前不得安装 caller/prompt、创建 Hermes job、开始两日观察或执行停止演练。
 - `add-fuyao-ths-sector-datasets` 的 capability、dump 与隔离恢复历史继续保留；旧 revision 98/99 的调度关闭字段只描述当时 release，不是当前配置输入。后续小批 catalog/history/member 操作仍需按原计划分别授权，历史 `sectors` 证据不得改写；清理隔离 PostgreSQL 容器也仍需用户复述。
 - `add-sector-continuity-metrics` 下一步先补齐并审阅 source-specific 真实 probe adapters，再于上海工作日 15:30 后继续已授权的 task 11.1；四类报告未完成前保持 `56/60` 和 `unverified`。非测试数据库 migration/backfill、生产部署和调度激活继续分别授权。
 - `activate-fuyao-sector-fallback` 下一步运行 6.1 全量复测（focused、pytest、`rules validate/coverage`、`docs sync-check`、`openspec validate --strict`、`scripts/check-docs-contract.py --mode=full`）后归档本次 change；自动采集保持 absent，sectors 仍按 enabled 状态提供 fallback/partial 数据。
@@ -113,11 +113,11 @@
 - 归档 `unify-market-data-acquisition-adapters` change；Scrapling 生产 allowlist 继续保持为空。后续若有获批 host 或要执行真实 provider probe/生产 rollout，必须另建受审计划并遵循盘后、安全与回滚边界。
 - 归档已完成的 `restore-sector-data-via-independent-provider` change；后续如需正式生产启用，必须在盘后按 runbook 重新审阅部署 packet、Secret、数据库目标和失败回滚，不得将本次临时 SQLite 证据迁入生产。
 - 评估指数 provider 的连接失败熔断、可复用探测或线程安全并发方案，缩短冷缓存核心响应。
-- 定时采集 revision 26/70/107 均为历史状态；当前 revision 113 已证明 CronJob/Job absent。未完成的自然触发验收不再通过 Kubernetes 补做，转由 Hermes change 的 canary 与两日观察承接。
+- 定时采集 revision 26/70/107 均为历史状态；revision 113 曾证明 task 7.2 部署前 CronJob/Job absent，当前 revision 117 再次证明 absent。7.3 canary 已完成；未完成的自然触发验收不再通过 Kubernetes 补做，转由 Hermes change 7.5 的两日观察承接。
 - 旧 operator override 的首次自然触发检查点已取消；后续只按 Hermes canary 与两个完整上海交易日观察七数据集、通知、THS lineage 和 provider-free 读回，失败或 partial 必须保留真实质量证据。
 - 后续评估交易所节假日日历、认证和多节点 HA；当前版本保持单主 PostgreSQL、ReadWriteOnce PVC 与有界进程内 executor。
 - 另行定义东方财富多层级行业板块筛选口径，并评估独立供应商备胎。
-- 2026-09-30 和 2026-10-14 的 Kubernetes 调度激活均为历史；当前 revision 113 的 CronJob/Job absent 是有效基线。后续自动观察只按 `replace-market-collection-scheduling-with-hermes` 实施和授权；重新引入 Kubernetes scheduling 必须另立 change，禁止直接创建、修改或回滚出 CronJob。
+- 2026-09-30 和 2026-10-14 的 Kubernetes 调度激活均为历史；当前 revision 117 的 CronJob/Job absent 是有效基线。后续自动观察只按 `replace-market-collection-scheduling-with-hermes` 实施和授权；重新引入 Kubernetes scheduling 必须另立 change，禁止直接创建、修改或回滚出 CronJob。
 - 为分层亏钱效应建立稳定样本口径，并补齐文档 04 的真实 provider。
 - 积累 500–750 个交易日快照，回测市场环境阈值与分类稳定性。
 - 后续按覆盖清单逐章实现第 02 至 11 章 evaluator。
@@ -125,8 +125,10 @@
 ## 最后更新
 
 2026-10-15
-  - **Hermes 调度替换离线实施推进至 20/34**：已完成持久幂等与 structured failure、七数据集 sync-first full endpoint、独立 automation gate、Hermes caller/prompt 与 v0.12.0 安装合同、前端结构化失败显示；当前进入 5.x Kubernetes 调度路径退役。TrueNAS 普通部署的当前合同是在任何 build/write 前只读检查 Helm stored manifest、release-derived `a-stock-data-collection` 和 legacy `market-data-collection`，发现遗留或状态不确定即 fail closed；普通脚本不 mutation，处置必须另建计划。生产仍为 revision 113、CronJob/Job absent、manual=0、writer=0，未启用 automation、未写 Hermes 主机且未调用 provider。
-  - **THS 7.5 验收转交 Hermes**：取消旧计划中的 Kubernetes schedule restoration，保持 THS 7.5 未完成；Hermes 7.5 承接 canary、两个完整上海交易日、七数据集 provider-free 读回、THS 同日/跨日 revision 与三任务 lineage 验收。生产继续保持 Helm revision 113、v10/0007、manual=0、writer=0、CronJob/Job absent。本次只修订规划与事实文档，未改代码、生产集群、Hermes 主机、数据库或 provider 状态。
+  - **Hermes 替换 task 7.3 canary 完成**：clean candidate `5ebe48a` 通过受控 hook-free same-image 入口将 revision 116 升至 117，仅启用 automation，manual/writer/CronJob/Job 与 PVC/Secret/image 不变。唯一 key canary run `93dd3c9b633b4cf5bb6d76132e3a5098` 为 3 success + 4 partial，七项齐全且无 terminal failure；same-key replay 复用同 run/task，持久指纹不变，公网 provider egress 无新 SYN/有效载荷。进度 31/34，等待 7.4 独立授权与投递目标。
+  - **历史 checkpoint（已被 task 7.3 取代）— Hermes 替换 task 7.2 backend/schema rollout 完成**：clean detached candidate `6d96224` 经 revisions 114/115/116 完成唯一 schema hook、hook-free service 与 hook-free final all；schema v11/0008、manual/automation=0、writer/CronJob/Job=0，旧数据计数与 PVC/Secret/备份均无漂移。provider-free GET/OpenAPI 全部通过，未调用 full POST/provider/Hermes。当时进度 30/34，随后 task 7.3 已完成。
+  - **历史 checkpoint（已被 31/34 与 revision 117 取代）— Hermes 调度替换离线实施推进至 20/34**：当时已完成持久幂等与 structured failure、七数据集 sync-first full endpoint、独立 automation gate、Hermes caller/prompt 与 v0.12.0 安装合同、前端结构化失败显示，正进入 5.x Kubernetes 调度路径退役。TrueNAS 普通部署的合同是在任何 build/write 前只读检查 Helm stored manifest、release-derived `a-stock-data-collection` 和 legacy `market-data-collection`，发现遗留或状态不确定即 fail closed；普通脚本不 mutation，处置必须另建计划。当时生产仍为 revision 113、CronJob/Job absent、manual=0、writer=0，未启用 automation、未写 Hermes 主机且未调用 provider；当前生产事实见上方 task 7.3 完成记录。
+  - **历史 checkpoint（当前任务归属已澄清）— THS 7.5 验收转交 Hermes**：取消旧计划中的 Kubernetes schedule restoration，保持 THS 7.5 未完成；Hermes change 7.3 承接 canary，7.5 承接两个完整上海交易日、七数据集 provider-free 读回、THS 同日/跨日 revision 与三任务 lineage 验收。当时生产继续保持 Helm revision 113、v10/0007、manual=0、writer=0、CronJob/Job absent，且该次只修订规划与事实文档；后续 task 7.2 已升级到 revision 116 / v11/0008。
 
 ### 历史审计日志（不可执行）
 
