@@ -53,7 +53,7 @@
 | `add-tushare-sector-fallback` | Codex | planned-awaiting-implementation | 2026-10-09 |
 | `add-sector-continuity-metrics` | Codex | in-progress（56/60：11.1 已授权，盘后窗口与真实 adapter 阻塞） | 2026-10-12 |
 | `add-fuyao-ths-sector-datasets` | Codex | stage-10-11-cronjob-activated-observation-pending（30/32；生产 rev 107，CronJob active，首次 16:30 自然触发观察待续） | 2026-10-14 |
-| `fix-ths-catalog-revision` | Codex | in-progress（目录 observation revision / partial 语义离线修复） | 2026-10-14 |
+| `fix-ths-catalog-revision` | Codex | production-rollout-ready-for-revision-110-recheck（26/31） | 2026-10-15 |
 | `optimize-build-disk-capacity-20261014` | Codex | completed | 2026-10-14 |
 
 ## 说明

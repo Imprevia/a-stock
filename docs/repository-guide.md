@@ -107,9 +107,10 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 | `src/market_environment/interfaces/http/`、`src/market_environment/interfaces/cli/`、`src/market_environment/cli.py` | provider-free GET、受门禁保护的显式 POST/CLI、opaque `catalogRevisionId`、optional typed/bounded THS diagnostics 与 legacy warning 兼容；稳定根级 CLI 只做转发 | 产品规格、API 契约、`docs/runbooks.md` |
 | `apps/market-environment-dashboard/` | 数据管理页三任务 coverage/missing/reason/blockedBy 诊断，以及第 05 页 partial 排名、行级 unavailable、板块宽度、量价 K 线、申万持续性四视图 | 产品规格、设计规范、`docs/runbooks.md` |
 
-上述路径由 `add-fuyao-ths-sector-datasets` 建立，`fix-ths-catalog-revision` 仅修复目录观察身份、partial
-语义和诊断兼容，并以 `0007` 删除一个冗余唯一约束；不授权真实 provider、生产 migration、非测试数据库、
-生产部署或调度操作。
+上述路径由 `add-fuyao-ths-sector-datasets` 建立，`fix-ths-catalog-revision` 修复目录观察身份、partial
+语义和诊断兼容，以 `0007` 删除一个冗余唯一约束，并补强生产停写、不可变镜像与 terminal Job 审计保留门禁。
+真实 provider、生产 migration、非测试数据库、生产部署或调度操作仍只能在 active plan 记录的明确授权和
+逐步 fail-closed 验收下执行，不能由代码落地或布尔开关自行授权。
 THS 目录同步和回填不得进入申万 continuity backfill、普通 GET、根级兼容 shim 或默认调度；THS observation
 不得作为申万一级 `QTS-01-05-*` 输入。旧 `sectors` 数据库证据只能由审计查询读取，不得在 migration、repository
 或 materialization 中重命名、覆写或伪装成新数据集。

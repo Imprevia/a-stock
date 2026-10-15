@@ -49,3 +49,18 @@ THS collection results SHALL expose optional machine-readable diagnostics in add
 #### Scenario: Missing-code list exceeds the display limit
 - **WHEN** a diagnostic contains more missing identities than the configured bounded sample size
 - **THEN** the response reports the full missing count and only the bounded deterministic sample without truncating the count or leaking the raw payload
+
+### Requirement: Scheduled collection disable preserves terminal Job audit evidence
+The controlled schedule-disable entry SHALL freeze the complete namespace Job set before its hook-free Helm write and SHALL proceed only when every existing Job is terminal with exactly one `Complete=True` or `Failed=True` condition. That Helm write MUST NOT run schema or other hooks. Before removing a retained exact CronJob it SHALL prove the Job snapshot unchanged, delete the CronJob with orphan propagation, then prove the CronJob absent and the complete Job set unchanged with the same names, UIDs, and terminal conditions. A queued, pending, retrying, active, malformed, newly added, missing, or drifted Job MUST fail closed. The entry MUST NOT recreate a previously lost Job or present database audit evidence as equivalent Kubernetes object evidence.
+
+#### Scenario: Retained CronJob has failed and completed audit Jobs
+- **WHEN** every namespace Job is terminal and the reviewed schedule-disable packet is otherwise valid
+- **THEN** the entry deletes the CronJob with orphan propagation, preserves every Job under the same name and UID with the same terminal condition, and proves the CronJob absent
+
+#### Scenario: Namespace contains a non-terminal Job
+- **WHEN** any namespace Job lacks exactly one `Complete=True` or `Failed=True` condition or reports active work
+- **THEN** the entry performs no Helm write or CronJob deletion and fails closed for operator review
+
+#### Scenario: Terminal Job set changes during deletion
+- **WHEN** a terminal Job is added or missing, has another UID, or has another terminal condition after the orphan deletion
+- **THEN** the entry reports a failed postcondition and MUST NOT claim that schedule disable preserved the audit evidence

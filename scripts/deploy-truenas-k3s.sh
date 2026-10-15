@@ -1081,6 +1081,117 @@ for item in items:
 PYEOF
 }
 
+capture_terminal_namespace_job_evidence() {
+  local phase="$1"
+  local payload
+  payload="$(kubectl get jobs --namespace "$NAMESPACE" -o json)" || return 1
+  JOBS_PAYLOAD="$payload" python3 - "$phase" "$NAMESPACE" <<'PYEOF'
+import json, os, sys
+
+phase, namespace = sys.argv[1:]
+payload = json.loads(os.environ["JOBS_PAYLOAD"])
+items = payload.get("items")
+if not isinstance(items, list):
+    raise SystemExit(f"{phase} Job response must contain an items list")
+
+evidence = []
+names = set()
+uids = set()
+for item in items:
+    if not isinstance(item, dict):
+        raise SystemExit(f"{phase} Job items must be objects")
+    metadata = item.get("metadata")
+    status = item.get("status", {})
+    if not isinstance(metadata, dict) or not isinstance(status, dict):
+        raise SystemExit(f"{phase} Job metadata/status must be objects")
+    name = metadata.get("name")
+    uid = metadata.get("uid")
+    item_namespace = metadata.get("namespace")
+    if not isinstance(name, str) or not name:
+        raise SystemExit(f"{phase} Job name must be non-empty")
+    if not isinstance(uid, str) or not uid:
+        raise SystemExit(f"{phase} Job {name} UID must be non-empty")
+    if item_namespace is not None and item_namespace != namespace:
+        raise SystemExit(f"{phase} Job {name} namespace mismatch")
+    if metadata.get("deletionTimestamp") is not None:
+        raise SystemExit(f"{phase} Job {name} is terminating")
+    if name in names or uid in uids:
+        raise SystemExit(f"{phase} Job name/UID must be unique")
+    names.add(name)
+    uids.add(uid)
+
+    counts = {}
+    for field in ("active", "failed", "succeeded"):
+        value = status.get(field, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SystemExit(
+                f"{phase} Job {name} status.{field} must be a non-negative integer"
+            )
+        counts[field] = value
+    if counts["active"] != 0:
+        raise SystemExit(f"{phase} found active namespace Job {name}")
+
+    conditions = status.get("conditions")
+    if not isinstance(conditions, list) or not conditions:
+        raise SystemExit(f"{phase} Job {name} must have terminal conditions")
+    terminal_conditions = []
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            raise SystemExit(f"{phase} Job {name} conditions must be objects")
+        condition_type = condition.get("type")
+        condition_status = condition.get("status")
+        if not isinstance(condition_type, str) or not condition_type:
+            raise SystemExit(f"{phase} Job {name} condition.type must be non-empty")
+        if not isinstance(condition_status, str) or condition_status not in {
+            "True",
+            "False",
+            "Unknown",
+        }:
+            raise SystemExit(f"{phase} Job {name} condition.status is invalid")
+        if condition_type in {"Complete", "Failed"} and condition_status == "True":
+            terminal_conditions.append(condition)
+    if len(terminal_conditions) != 1:
+        raise SystemExit(
+            f"{phase} Job {name} must have exactly one Complete=True or Failed=True condition"
+        )
+    terminal_type = terminal_conditions[0]["type"]
+    if counts["failed"] > 0 and terminal_type != "Failed":
+        raise SystemExit(f"{phase} Job {name} failed count requires Failed=True")
+    if counts["succeeded"] > 0 and terminal_type != "Complete":
+        raise SystemExit(f"{phase} Job {name} succeeded count requires Complete=True")
+    evidence.append(
+        {
+            "name": name,
+            "uid": uid,
+            "active": counts["active"],
+            "failed": counts["failed"],
+            "succeeded": counts["succeeded"],
+            "terminalCondition": terminal_conditions[0],
+        }
+    )
+
+print(
+    json.dumps(
+        sorted(evidence, key=lambda row: row["name"]),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+PYEOF
+}
+
+require_terminal_namespace_job_evidence_unchanged() {
+  local phase="$1"
+  local expected="$2"
+  local actual
+  actual="$(capture_terminal_namespace_job_evidence "$phase")" || return 1
+  if [[ "$actual" != "$expected" ]]; then
+    warn "$phase: namespace terminal Job evidence changed"
+    return 1
+  fi
+  log "$phase: namespace terminal Job evidence is unchanged"
+}
+
 capture_preserved_resource_identities() {
   local packet="$1"
   local kind name identity packet_file
@@ -1366,6 +1477,7 @@ require_exact_cronjob_absent() {
 delete_exact_cronjob_after_disable() {
   local phase="$1"
   local cronjob_name="$2"
+  local expected_job_evidence="$3"
   local live_cronjob state
   if ! live_cronjob="$(capture_exact_cronjob "$cronjob_name")"; then
     die "$phase: could not read exact CronJob $cronjob_name before deletion"
@@ -1375,11 +1487,15 @@ delete_exact_cronjob_after_disable() {
   fi
   case "$state" in
     absent)
+      require_terminal_namespace_job_evidence_unchanged "$phase pre-delete" "$expected_job_evidence" \
+        || die "$phase: namespace terminal Job evidence drifted before confirming CronJob absence"
       log "$phase: exact CronJob $cronjob_name is already absent"
       ;;
     suspended)
-      log "$phase: deleting retained exact CronJob $cronjob_name"
-      kubectl delete cronjob "$cronjob_name" --namespace "$NAMESPACE" --wait=true \
+      require_terminal_namespace_job_evidence_unchanged "$phase pre-delete" "$expected_job_evidence" \
+        || die "$phase: namespace terminal Job evidence drifted before CronJob deletion"
+      log "$phase: deleting retained exact CronJob $cronjob_name with orphan propagation"
+      kubectl delete cronjob "$cronjob_name" --namespace "$NAMESPACE" --cascade=orphan --wait=true \
         || die "$phase: failed to delete exact CronJob $cronjob_name"
       ;;
     *)
@@ -1388,6 +1504,8 @@ delete_exact_cronjob_after_disable() {
   esac
   require_exact_cronjob_absent "$phase postcondition" "$cronjob_name" \
     || die "$phase: exact CronJob $cronjob_name deletion is unproven"
+  require_terminal_namespace_job_evidence_unchanged "$phase postcondition" "$expected_job_evidence" \
+    || die "$phase: namespace terminal Job evidence changed during CronJob deletion"
 }
 
 if [[ "$OPERATION" == offline-render ]]; then
@@ -2276,6 +2394,7 @@ ACTIVATION_IN_FLIGHT=false
 ACTIVATION_CRONJOB_NAME=''
 DISABLE_IN_FLIGHT=false
 DISABLE_CRONJOB_NAME=''
+DISABLE_JOB_EVIDENCE=''
 GENERIC_DEPLOY_IN_FLIGHT=false
 GENERIC_CRONJOB_NAME=''
 cleanup() {
@@ -3391,6 +3510,7 @@ PYEOF
     die 'frozen scheduling packet changed before release'
   fi
   GENERIC_RENDER_SHA256="$(sha256_text "$PRE_WRITE_RENDER")"
+  SCHEDULING_HELM_HOOK_ARGS=()
 
   if [[ "$OPERATION" == activate-schedule ]]; then
     ACTIVATION_CRONJOB_NAME="$(
@@ -3401,6 +3521,9 @@ PYEOF
     validate_activation_window pre-write
     ACTIVATION_IN_FLIGHT=true
   elif [[ "$OPERATION" == disable-schedule ]]; then
+    DISABLE_JOB_EVIDENCE="$(capture_terminal_namespace_job_evidence 'disable-schedule immediate pre-write')" \
+      || die 'disable-schedule requires every namespace Job to be terminal before Helm write'
+    SCHEDULING_HELM_HOOK_ARGS=(--no-hooks)
     DISABLE_IN_FLIGHT=true
   fi
   log "applying reviewed $OPERATION packet to $RELEASE_NAME/$NAMESPACE without building or importing an image"
@@ -3410,6 +3533,7 @@ PYEOF
     --values "$OPERATION_SCHEDULING_OVERLAY" \
     --set "image.repository=$FROZEN_IMAGE_REPOSITORY" \
     --set "image.tag=$FROZEN_IMAGE_TAG" \
+    "${SCHEDULING_HELM_HOOK_ARGS[@]}" \
     --atomic \
     --wait \
     --timeout "$HELM_TIMEOUT"; then
@@ -3417,7 +3541,8 @@ PYEOF
   fi
 
   if [[ "$OPERATION" == disable-schedule ]]; then
-    delete_exact_cronjob_after_disable 'disable-schedule retained-resource cleanup' "$DISABLE_CRONJOB_NAME"
+    delete_exact_cronjob_after_disable 'disable-schedule retained-resource cleanup' \
+      "$DISABLE_CRONJOB_NAME" "$DISABLE_JOB_EVIDENCE"
   fi
 
   capture_live_release "$LIVE_AFTER_MANIFEST"

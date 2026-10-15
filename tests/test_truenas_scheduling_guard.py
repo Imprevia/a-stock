@@ -2536,6 +2536,396 @@ def _runtime_payloads(rendered: str, release: str, digest: str) -> tuple[dict, d
         {"apiVersion": "v1", "kind": "PodList", "items": [dashboard_pod, retained_collector_pod]},
     )
 
+
+def _run_disable_schedule_with_job_evidence(
+    tmp_path: Path,
+    *,
+    outcome: str = "success",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    repo, baseline, suspended, _, off, _ = _prepare_reviewed_repo(tmp_path)
+    digest = f"sha256:{'d' * 64}"
+    image_repository = "localhost/a-stock-market-environment"
+    image_tag = "20260905-1904b66"
+    suspended_render = _render_reviewed(
+        repo, baseline, suspended, release_name="a-stock", namespace="a-stock"
+    )
+    off_render = _render_reviewed(
+        repo, baseline, off, release_name="a-stock", namespace="a-stock"
+    )
+
+    def live_release(rendered: str) -> str:
+        items = []
+        for document in yaml.safe_load_all(rendered):
+            if not document or document.get("kind") not in {
+                "Deployment",
+                "Service",
+                "CronJob",
+            }:
+                continue
+            document = copy.deepcopy(document)
+            document.setdefault("metadata", {})["namespace"] = "a-stock"
+            items.append(document)
+        return yaml.safe_dump(
+            {"apiVersion": "v1", "kind": "List", "items": items},
+            sort_keys=False,
+        )
+
+    current_manifest = tmp_path / "disable-current.yaml"
+    current_manifest.write_text(suspended_render, encoding="utf-8")
+    live_before = tmp_path / "disable-live-before.yaml"
+    live_before.write_text(live_release(suspended_render), encoding="utf-8")
+    live_after = tmp_path / "disable-live-after.yaml"
+    live_after.write_text(live_release(off_render), encoding="utf-8")
+    retained_cronjob = tmp_path / "disable-retained-cronjob.yaml"
+    retained = next(
+        document
+        for document in yaml.safe_load_all(suspended_render)
+        if document and document.get("kind") == "CronJob"
+    )
+    retained.setdefault("metadata", {})["namespace"] = "a-stock"
+    retained_cronjob.write_text(yaml.safe_dump(retained, sort_keys=False), encoding="utf-8")
+
+    runtime_payloads = _runtime_payloads(suspended_render, "a-stock", digest)
+    runtime_paths = []
+    for name, payload in zip(("deployments", "replicasets", "pods"), runtime_payloads):
+        for item in payload["items"]:
+            item.setdefault("metadata", {})["namespace"] = "a-stock"
+        path = tmp_path / f"disable-{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        runtime_paths.append(path)
+    deployments, replicasets, pods = runtime_paths
+
+    jobs_before = {
+        "apiVersion": "batch/v1",
+        "kind": "JobList",
+        "items": [
+            {
+                "metadata": {
+                    "name": "completed-audit",
+                    "namespace": "a-stock",
+                    "uid": "job-complete-uid",
+                },
+                "status": {
+                    "active": 0,
+                    "failed": 0,
+                    "succeeded": 1,
+                    "conditions": [
+                        {
+                            "type": "Complete",
+                            "status": "True",
+                            "reason": "CompletionsReached",
+                            "message": "Job completed",
+                            "lastTransitionTime": "2026-10-14T08:31:00Z",
+                        }
+                    ],
+                },
+            },
+            {
+                "metadata": {
+                    "name": "failed-audit",
+                    "namespace": "a-stock",
+                    "uid": "job-failed-uid",
+                },
+                "status": {
+                    "active": 0,
+                    "failed": 1,
+                    "succeeded": 0,
+                    "conditions": [
+                        {
+                            "type": "Failed",
+                            "status": "True",
+                            "reason": "BackoffLimitExceeded",
+                            "message": "Job reached the backoff limit",
+                            "lastTransitionTime": "2026-10-14T08:42:00Z",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    if outcome == "empty-jobs":
+        jobs_before["items"] = []
+    if outcome == "prewrite-nonterminal":
+        jobs_before["items"][0]["status"] = {
+            "active": 0,
+            "failed": 0,
+            "succeeded": 0,
+            "conditions": [{"type": "Complete", "status": "False"}],
+        }
+    jobs_after = copy.deepcopy(jobs_before)
+    if outcome == "post-missing":
+        jobs_after["items"].pop()
+    elif outcome == "post-new":
+        jobs_after["items"].append(
+            {
+                "metadata": {
+                    "name": "new-audit",
+                    "namespace": "a-stock",
+                    "uid": "job-new-uid",
+                },
+                "status": {
+                    "active": 0,
+                    "failed": 0,
+                    "succeeded": 1,
+                    "conditions": [{"type": "Complete", "status": "True"}],
+                },
+            }
+        )
+    elif outcome in {"predelete-uid", "post-uid"}:
+        jobs_after["items"][0]["metadata"]["uid"] = "job-replaced-uid"
+    elif outcome == "post-counts":
+        jobs_after["items"][0]["status"]["succeeded"] = 2
+    elif outcome == "post-terminal":
+        jobs_after["items"][1]["status"]["conditions"][0]["reason"] = (
+            "DeadlineExceeded"
+        )
+    elif outcome not in {
+        "success",
+        "empty-jobs",
+        "cronjob-absent-after-helm",
+        "prewrite-nonterminal",
+        "predelete-read-failure",
+        "delete-failure",
+    }:
+        raise AssertionError(f"unsupported disable-schedule outcome: {outcome}")
+
+    jobs_before_path = tmp_path / "disable-jobs-before.json"
+    jobs_before_path.write_text(json.dumps(jobs_before), encoding="utf-8")
+    jobs_after_path = tmp_path / "disable-jobs-after.json"
+    jobs_after_path.write_text(json.dumps(jobs_after), encoding="utf-8")
+
+    fake_bin = tmp_path / "disable-bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "disable-calls.log"
+    cronjob_deleted = tmp_path / "disable-cronjob-deleted"
+    helm_upgraded = tmp_path / "disable-helm-upgraded"
+
+    helm_wrapper = fake_bin / "helm"
+    helm_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'helm %s\\n' \"$*\" >> {calls}\n"
+        "case \"$1\" in\n"
+        "  lint|template) exec \"$REAL_HELM\" \"$@\" ;;\n"
+        f"  get) [[ \"$2\" == manifest ]] || exit 81; cat {current_manifest} ;;\n"
+        "  upgrade)\n"
+        "    [[ \" $* \" == *\" --no-hooks \"* ]] || exit 89\n"
+        f"    touch {helm_upgraded} ;;\n"
+        "  *) exit 82 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helm_wrapper.chmod(0o755)
+
+    kubectl_wrapper = fake_bin / "kubectl"
+    kubectl_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'kubectl %s\\n' \"$*\" >> {calls}\n"
+        "args=\"$*\"\n"
+        "if [[ \"$args\" == *\"get nodes\"* ]]; then printf amd64; exit 0; fi\n"
+        "if [[ \"$args\" == *\"get --raw /version\"* ]]; then printf '{\"gitVersion\":\"v1.26.6+k3s1\"}'; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment,service,cronjob\"* ]]; then if [[ -f {cronjob_deleted} || ( -f {helm_upgraded} && \"$DISABLE_OUTCOME\" == cronjob-absent-after-helm ) ]]; then cat {live_after}; else cat {live_before}; fi; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get deployment --namespace\"* && \"$args\" == *\"-o json\"* ]]; then cat {deployments}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get replicasets --namespace\"* ]]; then cat {replicasets}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get pods --namespace\"* ]]; then cat {pods}; exit 0; fi\n"
+        f"if [[ \"$args\" == *\"get jobs --namespace\"* ]]; then if [[ -f {helm_upgraded} && \"$DISABLE_OUTCOME\" == predelete-read-failure ]]; then exit 90; elif [[ -f {cronjob_deleted} || ( -f {helm_upgraded} && \"$DISABLE_OUTCOME\" == predelete-uid ) ]]; then cat {jobs_after_path}; else cat {jobs_before_path}; fi; exit 0; fi\n"
+        f"if [[ \"$1\" == get && \"$2\" == cronjob && \"$3\" == a-stock-data-collection ]]; then if [[ ! -f {cronjob_deleted} && ! ( -f {helm_upgraded} && \"$DISABLE_OUTCOME\" == cronjob-absent-after-helm ) ]]; then cat {retained_cronjob}; fi; exit 0; fi\n"
+        "if [[ \"$1\" == delete && \"$2\" == cronjob ]]; then\n"
+        "  [[ \"$3\" == a-stock-data-collection ]] || exit 83\n"
+        "  [[ \" $* \" == *\" --namespace a-stock \"* ]] || exit 84\n"
+        "  [[ \" $* \" == *\" --cascade=orphan \"* ]] || exit 85\n"
+        "  [[ \" $* \" == *\" --wait=true \"* ]] || exit 86\n"
+        "  [[ \"$DISABLE_OUTCOME\" != delete-failure ]] || exit 87\n"
+        f"  touch {cronjob_deleted}; exit 0\n"
+        "fi\n"
+        "exit 88\n",
+        encoding="utf-8",
+    )
+    kubectl_wrapper.chmod(0o755)
+
+    ssh_wrapper = fake_bin / "ssh"
+    ssh_wrapper.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf 'ssh %s\\n' \"$*\" >> {calls}\n"
+        "if [[ \"$*\" == *\"images ls\"* ]]; then\n"
+        f"  printf '{{\"Name\":\"{image_repository}:{image_tag}\",\"Target\":{{\"digest\":\"{digest}\"}}}}\\n'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ssh_wrapper.chmod(0o755)
+
+    kubeconfig = tmp_path / "disable-kubeconfig"
+    kubeconfig.write_text("fixture\n", encoding="utf-8")
+    env_file = tmp_path / "disable.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={repo}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                f"KUBECONFIG={kubeconfig}",
+                f"HELM_VALUES_FILE={baseline}",
+                f"SCHEDULING_OVERLAY_FILE={off}",
+                f"FROZEN_IMAGE_REPOSITORY={image_repository}",
+                f"FROZEN_IMAGE_TAG={image_tag}",
+                f"FROZEN_IMAGE_DIGEST={digest}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "bash",
+            str(repo / "scripts" / SCRIPT.name),
+            "--env-file",
+            str(env_file),
+            "--disable-schedule",
+            "--baseline-values",
+            str(baseline),
+            "--scheduling-overlay",
+            str(off),
+            "--kube-version",
+            "1.26.6+k3s1",
+            "--release-name",
+            "a-stock",
+            "--namespace",
+            "a-stock",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_HELM": HELM or "helm",
+            "DISABLE_OUTCOME": outcome,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, calls.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_schedule_orphans_cronjob_and_preserves_namespace_job_evidence(
+    tmp_path: Path,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert calls.count("helm upgrade ") == 1
+    assert "--no-hooks" in next(
+        line for line in calls.splitlines() if line.startswith("helm upgrade ")
+    )
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 3
+    deletes = [line for line in calls.splitlines() if line.startswith("kubectl delete cronjob ")]
+    assert deletes == [
+        "kubectl delete cronjob a-stock-data-collection --namespace a-stock "
+        "--cascade=orphan --wait=true"
+    ]
+    assert completed.stdout.count("namespace terminal Job evidence is unchanged") == 2
+    assert "disable-schedule completed" in completed.stdout
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    ("outcome", "expected_deletes"),
+    [("empty-jobs", 1), ("cronjob-absent-after-helm", 0)],
+    ids=["empty-job-set", "cronjob-already-absent"],
+)
+def test_disable_schedule_accepts_safe_empty_or_already_absent_state(
+    tmp_path: Path,
+    outcome: str,
+    expected_deletes: int,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome=outcome
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert calls.count("helm upgrade ") == 1
+    assert calls.count("kubectl delete cronjob ") == expected_deletes
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 3
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_schedule_rejects_nonterminal_job_before_helm_write(
+    tmp_path: Path,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome="prewrite-nonterminal"
+    )
+
+    assert completed.returncode != 0
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 1
+    assert "helm upgrade " not in calls
+    assert "kubectl delete cronjob " not in calls
+    assert "requires every namespace Job to be terminal before Helm write" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_schedule_fails_closed_when_orphan_delete_fails(tmp_path: Path) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome="delete-failure"
+    )
+
+    assert completed.returncode != 0
+    assert calls.count("helm upgrade ") == 1
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 2
+    assert calls.count("kubectl delete cronjob ") == 1
+    assert "--cascade=orphan --wait=true" in calls
+    assert "failed to delete exact CronJob" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_schedule_rejects_job_drift_before_orphan_delete(
+    tmp_path: Path,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome="predelete-uid"
+    )
+
+    assert completed.returncode != 0
+    assert calls.count("helm upgrade ") == 1
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 2
+    assert "kubectl delete cronjob " not in calls
+    assert "namespace terminal Job evidence drifted before CronJob deletion" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_disable_schedule_fails_closed_when_predelete_job_read_fails(
+    tmp_path: Path,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome="predelete-read-failure"
+    )
+
+    assert completed.returncode != 0
+    assert calls.count("helm upgrade ") == 1
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 2
+    assert "kubectl delete cronjob " not in calls
+    assert "namespace terminal Job evidence drifted before CronJob deletion" in completed.stderr
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
+@pytest.mark.parametrize(
+    "outcome",
+    ["post-missing", "post-new", "post-uid", "post-counts", "post-terminal"],
+    ids=["missing", "new", "uid", "counts", "terminal-condition"],
+)
+def test_disable_schedule_rejects_namespace_job_evidence_drift_after_orphan_delete(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    completed, calls = _run_disable_schedule_with_job_evidence(
+        tmp_path, outcome=outcome
+    )
+
+    assert completed.returncode != 0
+    assert calls.count("helm upgrade ") == 1
+    assert calls.count("kubectl delete cronjob ") == 1
+    assert calls.count("kubectl get jobs --namespace a-stock -o json") == 3
+    assert "namespace terminal Job evidence changed" in completed.stderr
+
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_server_dry_run_submits_only_exact_suspended_cronjob(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
