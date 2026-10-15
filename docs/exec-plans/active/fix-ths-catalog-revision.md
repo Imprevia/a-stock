@@ -18,7 +18,7 @@
 
 ## Status（状态）
 
-`production-rollout-ready-for-revision-110-recheck` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
+`production-7-3-complete-awaiting-settlement` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
 `0007_ths_catalog_revision_identity` 修正为 `0007_ths_catalog_identity`。短 ID 已通过真实 PostgreSQL 16
 完整 Alembic 升级、默认 32 字符版本列和跨日期事务回归；2026-10-15 已完成 7.1 manual-freeze 与 7.3
 不可变镜像发布控制的离线复核，OpenSpec 6.6 已完成。2026-10-15 执行 7.1 时已把 schedule 与 manual
@@ -27,8 +27,12 @@ writes 安全关闭，但 schedule 入口删除 Helm-retained CronJob 时由 Kub
 2026-10-15 用户已批准把该丢失登记为显式审计缺口、接受 PostgreSQL 审计与已捕获 pre-state 作为剩余证据，
 并授权先把 schedule disable 修成 orphan-preserving 后继续 7.2。OpenSpec 6.7 已完成：调度关闭现在使用
 hook-free Helm write，写前冻结完整 namespace terminal Job 证据，以 orphan propagation 删除 retained CronJob，
-并对删除前后集合/UID/计数/完整终态 condition 漂移 fail closed。revision 110 继续保持安全停写；下一次目标访问
-必须从包含本修复的 clean reviewed commit 和新 detached worktree 进行。
+并对删除前后集合/UID/计数/完整终态 condition 漂移 fail closed。2026-10-15 已从包含本修复的 clean reviewed commit
+`021071cbb7e3ce87dd59806226642cb916db6d75` 和新 detached worktree 完成 revision 110 只读复核，7.1 已收口；
+生产继续保持安全停写。2026-10-15 已完成 7.2 不可覆盖备份、全新 loopback-only PostgreSQL 16.4 恢复和
+隔离 `0007` 演练，所有迁移及历史不变门禁通过。7.3 已从该 clean reviewed HEAD 发布单一不可变镜像并完成
+provider-free 验收，生产现为 Helm revision 113、schema v10/0007，schedule/manual 继续关闭；7.4 等待
+2026-10-15 15:10 Asia/Shanghai 结算边界后执行已授权的 THS 三任务。
 集成审查确认原有
 `ths_catalog_revisions` 还包含 `UNIQUE (provider, capability_revision, checksum, fetched_at)`：该约束没有
 交易日维度，无法在固定时钟、离线 replay/import 等合法场景中同时保存两个“日期不同、目录 checksum
@@ -58,7 +62,10 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
 - [x] 完成 OpenSpec strict、docs-contract full 和最终 diff 门禁
 - [x] 补齐并验证同镜像 manual-off 专用入口和普通发布的 clean reviewed HEAD / manifest-digest 门禁
 - [x] 补齐并验证 schedule disable 的 hook-free Helm write、orphan 删除、namespace terminal Job 集合/身份/终态前后保持和漂移 fail-closed 门禁
-- [ ] 在另行授权后执行生产备份、发布、定向重采和至少两个交易日观察
+- [x] 完成授权后的生产只读基线、安全停写、关键身份复核与不可恢复 Kubernetes Job 缺口登记（7.1）
+- [x] 完成不可覆盖 PostgreSQL 备份、隔离 PostgreSQL 16.4 恢复、`0007` 演练和历史不变验证（7.2）
+- [x] 完成 clean-HEAD-bound 不可变镜像发布、生产 `0007` 与 provider-free 零漂移验收（7.3）
+- [ ] 执行盘后定向重采和至少两个交易日观察（7.4–7.5）
 
 ## Completion Evidence（完成证据）
 
@@ -129,25 +136,84 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
 - 7.1 审计缺口：revision 109 删除 CronJob 使用 Kubernetes 默认级联语义，导致其 owner Job
   `a-stock-data-collection-29866110` 与 Pod 被垃圾回收，`kubectl get/logs` 均 NotFound；manual-off 入口没有
   删除 Job。数据库对应 run/task 仍保留（3 runs / 11 tasks），但不能伪造或重建原 Job。用户已批准将其作为
-  不可恢复的显式审计缺口继续；截至本次文档更新仍未执行 7.2 backup/migration、7.3 deployment 或任何 provider 调用。
+  不可恢复的显式审计缺口继续；7.1 收口时尚未执行 7.2 backup/migration、7.3 deployment 或任何 provider 调用。
+- 7.1 clean reviewed 复核（2026-10-15 09:51 Asia/Shanghai）：detached worktree HEAD 为
+  `021071cbb7e3ce87dd59806226642cb916db6d75` 且无改动；Helm revision 110/deployed，CronJob 与 Job 集合均为空，
+  manual env=`0`、collection POST=403、health=200。active lease/run/task/THS operation 与非 idle DB session 全为 0；
+  PostgreSQL 16.4 仍为 schema v9 / `0006_ths_rank_null_pct`。应用镜像仍为
+  `20261014-104800-b0a7c35`，containerd manifest digest 仍为
+  `sha256:ef8b524bf3e143ec68348100ed9384be8bd21048637a03cd1c358fcaaf7a2ae7`；Dashboard/PostgreSQL 均 Ready、
+  0 restart。PVC `a-stock-data`=`c03bc7f8-2935-41d6-ba63-b1e9e26b8ffe`/2Gi 与
+  `a-stock-postgresql-data`=`6c426fc5-10e2-4e88-b534-b258c70869c4`/5Gi，Secret
+  `a-stock-market-provider`=`81b9d039-7d77-44bc-9c4f-41b9ce2e19b2`、`a-stock-postgresql`=
+  `653a79bf-a881-43de-8623-2d9f69e9aa0f` 均未漂移。4 条 capability 与旧
+  `fuyao-ths-catalog-v1` / `b6997cd26d4cb5dc32b7bd69dd5b1fd64d2e24c8324b65c88008deafc32525ce` 保持；
+  relations/rankings/bars 各 846。2026-10-14 仍为 3 runs（failed=2/partial=1）与 11 tasks
+  （blocked=4/failed-missing=3/partial=2/success=2），canonical MD5 分别为
+  `8fdfa695658239b7fabe84c0f8144758` / `590380dd68d8903bb5a6052c8103589c`。复核未调用 provider、未执行 Helm write、
+  未迁移生产数据库，且没有重建已丢失 Job。
+- 7.2 不可覆盖备份（2026-10-15 01:57:31 UTC）：生产持久目录已发布只读文件
+  `/mnt/xiaomi/app-builds/a-stock/a-stock-pgdump-20261015T015731Z-helm110-schema9-pvc-6c426fc5-021071cbb7e3.dump`，
+  2,885,212 bytes，SHA-256
+  `8d459ecc3a8d3dc4cc09428afceef263ffa54d976583738b51db22a596a188c5`，`pg_restore --list` SHA-256
+  `219642ec078f3724c0eb46ffc25b4ce86e6118d2c181e62ea79a6303c855d2b3`；同目录 `.sha256` 与 `.manifest`
+  sidecar 均为 mode 0400。备份前后 Helm=110、CronJob/Job=0、manual=0、writer state=`0|0|0|0|0`、schema
+  v9/0006 与 PostgreSQL PVC UID `6c426fc5-10e2-4e88-b534-b258c70869c4` 完全不变。首次通过远程 stdin 执行
+  `pg_restore --list` 时因 stdin 未关闭而悬挂，final 尚未发布；已精确终止本次创建的两个只读校验进程，保留并
+  三方校验同一个 `.partial` 后才以硬链接无覆盖发布，未重跑或覆盖 dump。
+- 7.2 隔离恢复与迁移：操作机副本、生产持久副本和容器内副本 SHA-256 一致；全新容器
+  `a-stock-pg-recovery-7-2-20261015T020129Z` 使用既有
+  `docker.m.daocloud.io/library/postgres:16.4`（未 pull），仅绑定 `127.0.0.1:40919`，单事务恢复成功。
+  迁移前为 v9/0006，目标冗余约束/`(revision_id, provider)` unique/主键计数=`1|1|1`；从 clean reviewed
+  HEAD `021071cbb7e3ce87dd59806226642cb916db6d75` 以显式 loopback URL 应用 `0007` 后为
+  v10/`0007_ths_catalog_identity`，计数=`0|1|1`，`alembic_version.version_num` 仍为 varchar(32)，
+  `change_pct` 仍 nullable。37 个业务表迁移前后逐表 canonical SHA-256 文件完全一致，汇总 SHA-256 均为
+  `42049c87be10586511c077a15f366e00e646c84e971fb4872f4e194b3739cccb`；旧 846/846/846、4 条 capability、
+  3 runs/11 tasks 及 failed/blocked 状态、2 条 THS operation（failed=1/success=1，MD5
+  `9daf0cb73301d6c3d490868940e8bb4f`）均不变。事务探针证明跨日期相同 checksum/fetched_at 两行可共存，
+  rollback 后为 0。最终生产 post-check 仍为 Helm 110、v9/0006、health=200、POST=403、writer=0；7.2 未对生产
+  运行 Alembic、未执行 Helm write、未调用 provider。
+- 7.3 不可变镜像发布（2026-10-15 10:08–10:19 Asia/Shanghai）：clean detached worktree HEAD
+  `021071cbb7e3ce87dd59806226642cb916db6d75` 构建唯一 tag
+  `localhost/a-stock-market-environment:20261015-100802-021071c`；本地 health/首页 smoke 通过，归档 SHA-256
+  `35d412a2b9e3be1fefad99630a3ae3e653d2b20b4b8eea04ead364dec46900bd`。远端校验并 import 后冻结 containerd
+  manifest digest `sha256:ada52cb449d09ed3def9290a732d3d6925e23cbdcbe00893d38525affc8ed4fc`；database、service、full
+  release 每次 Helm write 前均由受控入口重验 exact digest。Helm revisions 111/112/113 依次完成 migration、service
+  rollout 和完整 release 收敛，schedule phase 因 disabled baseline 跳过；最终 Deployment `a-stock` → ReplicaSet
+  `a-stock-78bd9df566` → Ready Pod `a-stock-78bd9df566-xsq2g` 使用同一 repo/tag，runtime imageID
+  `sha256:d78c7092e94b6349b8a31ec07683c1ca80515a05cfe9030791e3bfacda122915`，restart=0，manual=0，CronJob/Job
+  均 absent。
+- 7.3 数据/接口验收：生产 Alembic=`0007_ths_catalog_identity`、schema=10，目标冗余 unique / 保留
+  `(revision_id, provider)` unique / 主键计数=`0|1|1`，version 列仍 varchar(32)，`change_pct` 仍 nullable。
+  两个 PVC 与两个 Secret UID 均未漂移；4 条 capability 的 provider/dataset/revision/status/sample_count 与旧值一致。
+  旧 revision/checksum 与 relations/rankings/bars=`846|846|846` 不变，三份 canonical MD5 仍为
+  `d101ab8e44276b1b528a76f922355a89` / `0c3cdd23051bd0ec5ee05ca459f42856` /
+  `654a769dcb9ca222feb73991069e8bed`；2026-10-14 的 3 runs/11 tasks 状态与哈希不变，2 条 THS operation hash
+  仍为 `9daf0cb73301d6c3d490868940e8bb4f`。health、data-collection、THS catalog、core、Chapter 01 sectors 五个
+  provider-free GET 均 HTTP 200，调用前后总 run/task/operation 数 `103|246|2` 和全表审计哈希字节等价；无新
+  collection/provider operation，manual POST=403，active writer/lease/session 全为 0。7.3 未启用任何写入口或调用 provider。
 
 ## Remaining Gaps（剩余缺口）
 
 - `0007` 的短 revision ID、fresh schema、Alembic contract、runtime minimum version、真实 PostgreSQL 16
   完整升级和跨日相同 checksum/相同 `fetched_at` 可并存回归均已通过。不得通过扩大 version 表、篡改
   checksum、伪造 `fetched_at` 或复用跨日 revision 规避。
-- 7.1 的同镜像 manual-off 专用入口、6.7 hook-free/orphan Job 保留入口和 7.3 的普通 all/service clean reviewed HEAD、导入后 manifest
-  digest 强制校验均已完成离线门禁；生产已经停写，6.7 reviewed commit 后只需从新 clean detached worktree
-  复核 revision 110、writer=0 与已记录基线，不得为了验证 orphan 行为重建 CronJob/Job。
+- 7.1–7.3 已从 clean reviewed HEAD `021071cbb7e3ce87dd59806226642cb916db6d75` 完成 revision 110 复核、
+  不可覆盖备份、隔离恢复、生产迁移和不可变镜像发布；同镜像 manual-off、hook-free/orphan schedule disable 及
+  all/service manifest-digest 门禁均已实际验收。生产现为 revision 113、v10/0007、writer=0；不得为了验证
+  orphan 行为重建 CronJob/Job。
 - OpenSpec 6.5–6.7 已完成：manual-off 入口只允许 reviewed full packet 的 literal `1 -> 0`、同镜像、
   `--no-hooks`、schedule absent、每个 retained Job 均有 `Complete=True`/`Failed=True` 终态、stored hooks 与
   PVC/Secret identity 不变，并保留 failed/completed 审计 Job、拒绝 terminating managed resources；普通
   all/service 必须在任何目标访问前绑定
   clean worktree + full reviewed HEAD，导入后冻结 manifest digest，Helm 写前重验并在 Ready Pod 上验证。
-- 生产 schema 仍是 v9；`0007` migration/deploy 已授权但尚未执行。
+- 生产 schema 已由 7.3 受控 migration Job 升至 v10/`0007_ths_catalog_identity`；隔离和生产约束、版本列、nullable
+  与历史不变验收均通过。
 - 生产现状仍保留固定 `fuyao-ths-catalog-v1` 目录 revision 与 2026-10-14 的 checksum collision/blocked 审计；不得通过改写历史记录消除。
-- 任务 7.x 的生产备份、部署、provider 写入、调度恢复及跨交易日观察已获授权但尚待逐步执行；至少两个
-  完成交易日的观察存在自然时间边界，未获得足够日期证据前不得勾选 7.5。
+- 任务 7.4 的盘后 provider 写入与 7.5 的调度恢复/跨交易日观察已获授权但仍受自然时间边界约束；至少两个
+  完成交易日证据未齐前不得勾选 7.5。
+- 7.2 隔离容器 `a-stock-pg-recovery-7-2-20261015T020129Z` 与本地恢复目录继续保留为验证证据；删除它们属于
+  独立清理动作，不影响 7.2 验收，也不得为释放空间而擅自销毁。
 - 7.1 的 schedule/manual writer 已安全关闭，但 exact failed Kubernetes Job 被 CronJob 删除的默认级联回收；
   该证据不可原样恢复。用户已批准以保留的 PostgreSQL run/task 审计和已捕获 pre-state 作为显式缺口继续。
   schedule disable 入口已改为 hook-free Helm write + orphan-preserving 删除，冻结完整 namespace terminal Job
@@ -156,6 +222,8 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
 
 ## Next Step（下一步）
 
-保持 CronJob absent、manual=0 和所有 writer=0。从包含 6.7 的 clean reviewed commit 建立新 detached worktree，
-只读复核 revision 110、冻结镜像、PVC/Secret、schema v9、capability、旧 846 事实、3 runs / 11 tasks 与 writer=0；
-确认无漂移后勾选 7.1，再进入 7.2 的不可覆盖备份和隔离 PostgreSQL 16 恢复；不重建已丢失 Job。
+保持 CronJob absent、manual=0 和所有 writer=0。等待 2026-10-15 15:10 Asia/Shanghai 结算边界；边界后只在
+exact Ready Pod 中执行一次 `snapshots scheduled-refresh --dataset industry-ranking --dataset sector-turnover --dataset
+sector-breadth`，由 CLI 自身再次验证结算时间并进入依赖 DAG。完成后核对新 observation revision 与 capability
+revision 分离、完整 relation/ranking、bars 与 declared gaps 对账、无零占位、精确诊断和非 generic blocked 下游；
+若 provider 或对账失败，保留真实 failed/partial/insufficient 审计并停止，不开启 schedule/manual，也不删除证据。
