@@ -9,7 +9,7 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
-| `repair-market-api-errors-20261016` | Codex | authorized-in-progress | 2026-10-16 |
+| `repair-market-api-errors-20261016` | Codex | completed-with-production-repair | 2026-10-17 |
 | `deploy-core-date-integrity-to-k3s-20261016` | Codex | completed-with-production-write | 2026-10-16 |
 | `reject-cross-date-core-materialization` | Codex | complete-deployed-data-repair-pending | 2026-10-16 |
 | `deploy-current-head-to-k3s-20261016` | Codex | completed-with-production-write | 2026-10-16 |

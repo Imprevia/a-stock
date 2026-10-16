@@ -830,8 +830,8 @@ location / {
 ### TrueNAS NodePort 与采集写入口
 
 当前生产事实必须在每次发布前只读复核，历史 revision 不能替代 live evidence。task 7.2 发布前基线为 revision 113；
-2026-10-15 task 7.3 后当前为 revision 117 / schema v11/0008、两个旧 CronJob identity 与 namespace Job absent、
-manual=0、automation=1、active writer=0。Dashboard Service 固定为
+2026-10-17 API/core 修复收口后当前为 revision 144 / schema v11/0008、两个旧 CronJob identity 与 namespace Job absent、
+manual=1、automation=1、active writer=0。Dashboard Service 固定为
 `NodePort:32001`；镜像、单副本、PostgreSQL StatefulSet/Service、数据库 Secret、安全上下文与 CronJob
 absent 均不得被普通写入口变更。
 
@@ -877,6 +877,20 @@ success、四项带可用证据的 partial，没有 terminal failure，因此 pe
 保持 submission attempts/timestamps 与 binding/run/task/snapshot/materialization 指纹
 `b81cf3b39b0a34a9cb1d0f165cd1305c6ba39f9db8e432a53c04c5be8ec1b62f` 不变；应用 Pod 对公网 80/443 的
 replay 窗口没有新 SYN/有效载荷。该证据只完成 7.3，不授权安装 Hermes caller/prompt、选择投递目标或创建 job。
+
+2026-10-17 市场 API/core 前向修复使用 clean reviewed HEAD
+`d12dae330e91c7e58500188acfd45a6d91516ddd` 完成。生产写前暂停 Hermes job `ef7389b87a92`，以专用入口依次关闭
+manual/automation 并证明 writer=`0|0|0`；PostgreSQL custom dump SHA-256 为
+`abf58de8b5e11bde1e30069af8161ad2b3528118b650858bec95985515535bf8`，已在全新 PostgreSQL 16.4 隔离容器中单事务恢复。
+最终镜像 `localhost/a-stock-market-environment:20261017-005702-d12dae3` 的 archive SHA-256 为
+`4a4273de698dfaa1a710999f420cf2152e354835c3685dec84985faa6cfcf219`，containerd manifest digest 为
+`sha256:28644467836cb5048e9be96005cdcb75bbaaf1334521c840655d685e4618d7e0`。受控 core repair 只执行一次真实 provider
+调用，五个指数 history 尾日均为 `2026-10-16`；snapshot/aggregate payload `asOf` 均为 `2026-10-16`，对应 checksum
+分别为 `3bb13c87…a122`、`68dd5ef7…c79`。index-history 可选日期参数修复后重新发布，overview、limit-up pool 和 legacy
+core 均为 HTTP 200；limit-up 的 36 条事实因 `missing-board` 被合同过滤，空 items 不是接口错误。revision 141 以
+同镜像无 hook 恢复 automation，revisions 142/143/144 通过普通 `component=all` 流程恢复 manual 并完成完整 release
+收敛；最终两个 gate=`1|1`、writer=`0|0|0`、Pod Ready/0 restart、CronJob/Job absent，PVC/Secret UID 未漂移。
+Hermes job 随后恢复为 active，下一次自然运行是 `2026-10-19T15:30:00+08:00`；未执行人工 `cron run`。
 
 若出现异常请求、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长，第一步暂停 Hermes job 并设置
 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED=0`；manual 继续为 0。验证两个写入口都拒绝且没有新 run/provider
