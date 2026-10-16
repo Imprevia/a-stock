@@ -34,6 +34,8 @@ core 的精确日期身份从单指数 history 的最后有效 observation 开�
 
 普通读取发现本地行存在但 checksum 或 key/payload/effective date 不一致时，v2 与 legacy 统一返回脱敏 HTTP 503、code=`snapshot_integrity_error`；它不同于无本地事实的 404 或单数据集 missing/insufficient。完整性失败仍为 provider-free、零 collection/background task、零 PostgreSQL 写入；dashboard 不把该错误替换成 legacy 或其他日期成功结果。存量坏行只能由显式只读审计识别，任何备份、停写、前向重采/重建或数据处置都需要独立计划和授权，GET 与正常采集不得自动重标、复制、删除或修复。
 
+core 前向修复仍走正常 collector → typed candidate → fenced committer → aggregate rebuild 链，只允许维护 CLI 同时明示 `--force --repair-integrity --dataset core` 后启用一次性 replacement intent。replacement intent 不进入 HTTP、Hermes 或普通采集，只接受五个指数全部 success 且所有 payload/history/quality 日期均与目标日一致的 candidate；它只跳过对已确认坏 existing 的留存读取，随后由 snapshot repository 重新计算 checksum 并原子 upsert。partial、retained、failed 或错日 candidate 继续 fail closed。worker 在完整性异常中断时必须把 task/run 固化为真实失败状态，不能遗留无 lease 的 `collecting`。
+
 现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留非完整性错误的 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
 
 ## 交易规则平台

@@ -13,6 +13,7 @@ class CollectionRefreshRequest:
     datasets: tuple[str, ...] | None = None
     allow_historical_latest_only: bool = False
     fetch_previous_limit_details: bool = True
+    repair_integrity: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dataset_arguments(refresh)
     refresh.add_argument("--force", action="store_true", help="allow explicit local diagnostic refresh")
     refresh.add_argument(
+        "--repair-integrity",
+        action="store_true",
+        help="replace a corrupt same-date core snapshot; requires --force and --dataset core",
+    )
+    refresh.add_argument(
         "--history-sessions",
         type=_positive_int,
         default=1,
@@ -732,8 +737,20 @@ def _collection_coordinator_scope(
 
 
 def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> int:
+    selected = tuple(dict.fromkeys(args.datasets or ()))
+    if args.repair_integrity and (
+        not args.force
+        or selected != ("core",)
+        or args.history_sessions != 1
+    ):
+        _print_payload(
+            {
+                "status": "rejected",
+                "error": "--repair-integrity requires --force, exactly --dataset core, and --history-sessions 1",
+            }
+        )
+        return 2
     if args.history_sessions > 1:
-        selected = tuple(dict.fromkeys(args.datasets or ()))
         if selected != ("limits",):
             _print_payload(
                 {
@@ -807,6 +824,7 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
                 args.as_of,
                 args.datasets,
                 allow_historical_latest_only=True,
+                repair_integrity=args.repair_integrity,
             )
         else:
             result = active_coordinator.collect(args.as_of, args.datasets)

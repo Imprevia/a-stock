@@ -2655,6 +2655,7 @@ class LegacySnapshotStoreAdapter:
         assert current is not None
         completed_at = current.isoformat()
         with self._connect() as connection:
+            affected_run_ids: set[str] = set()
             idempotency_join = ""
             idempotency_guard = ""
             if self._postgres:
@@ -2673,7 +2674,7 @@ class LegacySnapshotStoreAdapter:
                 """
             rows = connection.execute(
                 f"""
-                SELECT task.task_id, task.dataset, task.as_of
+                SELECT task.task_id, task.run_id, task.dataset, task.as_of
                 FROM collection_tasks AS task
                 LEFT JOIN refresh_leases AS lease
                   ON lease.dataset = task.dataset AND lease.as_of = task.as_of
@@ -2686,6 +2687,7 @@ class LegacySnapshotStoreAdapter:
                 (completed_at,),
             ).fetchall()
             for row in rows:
+                affected_run_ids.add(str(row["run_id"]))
                 retained = connection.execute(
                     "SELECT 1 FROM snapshot_entries WHERE dataset = ? AND as_of = ?",
                     (row["dataset"], row["as_of"]),
@@ -2709,6 +2711,30 @@ class LegacySnapshotStoreAdapter:
                         completed_at,
                         row["task_id"],
                     ),
+                )
+            for run_id in affected_run_ids:
+                statuses = tuple(
+                    str(value["status"])
+                    for value in connection.execute(
+                        "SELECT status FROM collection_tasks WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchall()
+                )
+                if not statuses or any(value in {"queued", "collecting"} for value in statuses):
+                    continue
+                if all(value == "success" for value in statuses):
+                    run_status = "success"
+                elif any(value in {"success", "partial"} for value in statuses):
+                    run_status = "partial"
+                else:
+                    run_status = "failed"
+                connection.execute(
+                    """
+                    UPDATE collection_runs
+                    SET status = ?, completed_at = COALESCE(completed_at, ?)
+                    WHERE run_id = ? AND status IN ('queued', 'collecting')
+                    """,
+                    (run_status, completed_at, run_id),
                 )
         return len(rows)
 

@@ -39,6 +39,7 @@ from src.market_environment.snapshot_store import (
     LeaseFenceError,
     LeaseToken,
     TradingSessionRecord,
+    payload_checksum,
 )
 
 
@@ -549,3 +550,73 @@ def test_core_committer_rejects_retention_not_backed_by_same_date_snapshot(
         stored = PostgresSnapshotRepository(connection, now=lambda: NOW).get(IDENTITY)
         assert stored is not None
         assert stored.payload["indices"] == [retained]
+
+
+def _five_success_replacement_request(lease: LeaseToken) -> CoreCommitRequest:
+    codes = ("sh000001", "sz399001", "sz399006", "sh000688", "bj899050")
+    indices = tuple(index_payload(code, 3000 + offset) for offset, code in enumerate(codes))
+    base = core_request(lease)
+    candidate_value = candidate(indices, status="ok")
+    results = tuple(
+        CoreIndexCommitEvidence(
+            code=code,
+            name=code,
+            state=CollectionTaskState.SUCCESS,
+            source="repair-fixture",
+            observations=2,
+            payload=value,
+        )
+        for code, value in zip(codes, indices)
+    )
+    return replace(
+        base,
+        outcome=CollectionOutcome(
+            identity=IDENTITY,
+            state=CollectionTaskState.SUCCESS,
+            candidate=candidate_value,
+        ),
+        index_results=results,
+        replacement_intent=True,
+    )
+
+
+def test_core_replacement_requires_five_successful_indices() -> None:
+    lease = LeaseToken("core", AS_OF, TASK_ID, 1, TOKEN, NOW + timedelta(minutes=10))
+    with pytest.raises(ValueError, match="five successful index results"):
+        replace(core_request(lease), replacement_intent=True)
+
+
+def test_core_replacement_replaces_corrupt_existing_and_recomputes_checksum(core_engine) -> None:
+    lease = seed_task_and_lease(core_engine)
+    request = _five_success_replacement_request(lease)
+    corrupt_payload = {"asOf": PREVIOUS.isoformat(), "indices": [index_payload("sh000001", 1)]}
+    with core_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO snapshot_entries(
+                    dataset, as_of, payload_json, source, status, observations,
+                    warnings_json, fetched_at, settled, schema_version, checksum,
+                    refresh_warning
+                ) VALUES (
+                    'core', :as_of, :payload_json, 'broken', 'ok', 1,
+                    '[]', :fetched_at, 1, 1, :checksum, NULL
+                )
+                """
+            ),
+            {
+                "as_of": AS_OF,
+                "payload_json": '{"asOf":"2026-09-11","indices":[{"code":"sh000001","name":"sh000001","history":[{"date":"2026-09-11","close":1},{"date":"2026-09-11","close":1}],"dataQuality":{"source":"fixture"}}]}',
+                "fetched_at": NOW,
+                "checksum": payload_checksum(corrupt_payload),
+            },
+        )
+
+    evidence = CoreDatasetCommitter(unit_of_work_factory(core_engine)).commit(request)
+
+    with core_engine.connect() as connection:
+        stored = PostgresSnapshotRepository(connection, now=lambda: NOW).get(IDENTITY)
+        assert stored is not None
+        assert stored.payload == request.candidate.payload
+        assert evidence.snapshot_checksum == payload_checksum(dict(request.candidate.payload))
+        assert PostgresCollectionTaskRepository(connection).get_task(TASK_ID).status == "success"

@@ -388,6 +388,7 @@ def test_expired_active_task_becomes_retryable_and_retains_same_date_success(tmp
     assert store.expire_inactive_collection_tasks(now=NOW + timedelta(seconds=6)) == 1
     assert store.active_collection_task("breadth", AS_OF, now=NOW + timedelta(seconds=6)) is None
     assert store.get_collection_task("task-1").status == "failed-retained"
+    assert store.get_collection_run("run-1").status == "failed"
     assert store.get("breadth", AS_OF) is not None
 
 
@@ -492,6 +493,7 @@ def test_collection_task_failures_round_trip_after_store_restart(tmp_path) -> No
         started_at=NOW,
     )
     assert store.expire_inactive_collection_tasks(now=NOW + timedelta(seconds=1)) == 1
+    assert store.get_collection_run("run-failures").status == "partial"
 
     before_restart = {
         task.dataset: task for task in store.list_collection_tasks("run-failures")

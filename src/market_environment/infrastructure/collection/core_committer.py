@@ -27,6 +27,7 @@ from ..legacy.snapshot_store import (
     CollectionTaskRecord,
     CoreIndexResultRecord,
     TradingSessionRecord,
+    SnapshotIntegrityError,
     payload_checksum,
 )
 
@@ -118,7 +119,12 @@ class CoreDatasetCommitter:
         if task.status != "collecting":
             raise ValueError("core collection task must be collecting before commit")
 
-        existing = unit_of_work.snapshots.get(request.identity)
+        try:
+            existing = unit_of_work.snapshots.get(request.identity)
+        except SnapshotIntegrityError:
+            if not request.replacement_intent:
+                raise
+            existing = None
         retained_by_code = self._retained_payloads(existing)
         for result in request.index_results:
             if result.retained and (

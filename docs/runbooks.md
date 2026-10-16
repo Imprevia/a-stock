@@ -35,6 +35,15 @@ PostgreSQL keyset 首页没有 cursor 时，repository 必须使用不含 cursor
 
 若发现错位，当前 change 只报告，不自动处置。生产前向修复必须另建 active plan并取得明确授权，顺序固定为：冻结 manual/automation writers 并确认无 active run/task → 完成 PostgreSQL 可恢复备份并记录目标 row key/checksum → 审阅目标日期是否已有合法成功证据和冲突 → 发布已通过离线门禁的修复版本 → 仅在 provider 能证明同一目标日期时显式重新采集 core 并通过 fenced commit/aggregate rebuild 前向覆盖 → 验证 v2 overview、legacy core、run/task、checksum/revision 与 writers 状态。禁止自动 relabel、跨日期 copy、直接编辑 payload/checksum、静默删除历史、删除 PVC、未经授权调用 provider 或用 GET 修复。
 
+当坏 existing 本身会使普通 committer 的留存读取失败时，只能在上述门禁全部满足后使用维护 CLI：
+
+```bash
+python -m src.market_environment.cli snapshots refresh \
+  --as-of YYYY-MM-DD --dataset core --force --repair-integrity
+```
+
+`--repair-integrity` 必须与 `--force`、唯一 `--dataset core` 和单日模式同时出现；它不允许 limits history、多数据集、HTTP 或 Hermes 调用。提交前仍完整验证 candidate 日期，并要求 core outcome 及五个 index result 全部 `success`、无 retained payload；否则不覆盖坏 existing。获批 replacement 在 active lease/fence 内写入 snapshot、task/index/session，并由同一任务重建 aggregate。异常路径必须把无 lease 的旧 task 标为 `worker-interrupted` 并结算 parent run，不得直接 UPDATE 目标 snapshot/aggregate 或把失败 run 改成成功。
+
 发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview 与 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发写入均阻断发布。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
 
 ## 环境要求

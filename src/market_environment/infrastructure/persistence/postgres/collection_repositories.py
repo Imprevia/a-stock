@@ -311,7 +311,7 @@ class PostgresCollectionTaskRepository:
         rows = self.connection.execute(
             text(
                 """
-                SELECT task.task_id, task.dataset, task.as_of,
+                SELECT task.task_id, task.run_id, task.dataset, task.as_of,
                        CASE WHEN snapshot.dataset IS NULL THEN 0 ELSE 1 END AS retained
                 FROM collection_tasks AS task
                 LEFT JOIN refresh_leases AS lease
@@ -333,7 +333,9 @@ class PostgresCollectionTaskRepository:
             ),
             {"now": now.isoformat()},
         ).mappings().all()
+        affected_run_ids: set[str] = set()
         for row in rows:
+            affected_run_ids.add(str(row["run_id"]))
             self.connection.execute(
                 text(
                     """
@@ -356,6 +358,32 @@ class PostgresCollectionTaskRepository:
                     "completed_at": now,
                     "task_id": row["task_id"],
                 },
+            )
+        for run_id in affected_run_ids:
+            statuses = tuple(
+                str(value)
+                for value in self.connection.execute(
+                    text("SELECT status FROM collection_tasks WHERE run_id = :run_id"),
+                    {"run_id": run_id},
+                ).scalars()
+            )
+            if not statuses or any(value in {"queued", "collecting"} for value in statuses):
+                continue
+            if all(value == "success" for value in statuses):
+                run_status = "success"
+            elif any(value in {"success", "partial"} for value in statuses):
+                run_status = "partial"
+            else:
+                run_status = "failed"
+            self.connection.execute(
+                text(
+                    """
+                    UPDATE collection_runs
+                    SET status = :status, completed_at = COALESCE(completed_at, :completed_at)
+                    WHERE run_id = :run_id AND status IN ('queued', 'collecting')
+                    """
+                ),
+                {"status": run_status, "completed_at": now, "run_id": run_id},
             )
         return len(rows)
 

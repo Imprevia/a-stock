@@ -25,7 +25,12 @@ from src.market_environment.domain.models import (
 from src.market_environment.fuyao_config import FuyaoCollectionConfig
 from src.market_environment.providers import INDEX_SPECS, MarketDataProvider, ProviderResult
 from src.market_environment.refresh import MARKET_TIME_ZONE, effective_market_date
-from src.market_environment.snapshot_store import SnapshotRecord, SnapshotStore
+from src.market_environment.snapshot_store import (
+    CollectionTaskRecord,
+    SnapshotIntegrityError,
+    SnapshotRecord,
+    SnapshotStore,
+)
 
 
 AS_OF = date(2026, 9, 3)
@@ -46,6 +51,37 @@ def test_collection_rejects_current_calendar_date_before_open_and_accepts_previo
     assert result.run.status == "success"
     assert store.get("breadth", date(2026, 9, 14)) is not None
     assert store.get("breadth", date(2026, 9, 15)) is None
+
+
+def test_integrity_exception_is_persisted_as_terminal_failure(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "integrity-task.sqlite3")
+    store.create_collection_run("run-integrity", AS_OF, ("core",), created_at=AFTER_MARKET)
+    task = store.create_collection_task(
+        "task-integrity",
+        "run-integrity",
+        "core",
+        AS_OF,
+        queued_at=AFTER_MARKET,
+    )
+    task = store.transition_collection_task(
+        task.task_id,
+        "collecting",
+        expected_statuses=("queued",),
+        started_at=AFTER_MARKET,
+    )
+    coordinator = CollectionCoordinator(CollectionProvider(), store, now=lambda: AFTER_MARKET)
+
+    result = coordinator._integrity_task_result(
+        task,
+        SnapshotIntegrityError("snapshot exact-date mismatch: core/2026-09-03"),
+        0.0,
+    )
+
+    assert result.status == "failed-retained"
+    assert result.failure is not None
+    assert result.failure.code == "SNAPSHOT_INTEGRITY_ERROR"
+    assert store.get_collection_task(task.task_id).status == "failed-retained"
+    assert store.get_collection_run("run-integrity").status == "failed"
 
 
 def quality(dataset: str, as_of: date, status: str = "ok") -> dict:
@@ -813,6 +849,40 @@ def test_forced_cli_refresh_allows_historical_latest_only_exact_date(tmp_path, c
     assert payload["status"] == "success"
     assert provider.calls == ["breadth"]
     assert coordinator.store.get("breadth", AS_OF - timedelta(days=1)) is not None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--repair-integrity"],
+        ["--force", "--repair-integrity", "--dataset", "breadth"],
+        ["--force", "--repair-integrity", "--dataset", "core", "--history-sessions", "2"],
+    ],
+)
+def test_integrity_repair_cli_is_fail_closed(tmp_path, capsys, extra) -> None:
+    provider = CollectionProvider()
+    coordinator = CollectionCoordinator(
+        provider,
+        SnapshotStore(tmp_path / "integrity-repair.sqlite3"),
+        now=lambda: AFTER_MARKET,
+    )
+
+    exit_code = cli_main(
+        [
+            "snapshots",
+            "refresh",
+            "--as-of",
+            AS_OF.isoformat(),
+            *extra,
+        ],
+        coordinator=coordinator,
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["status"] == "rejected"
+    assert "--repair-integrity requires" in payload["error"]
+    assert provider.calls == []
 
 
 def test_snapshot_refresh_output_remains_backward_compatible(tmp_path, capsys) -> None:

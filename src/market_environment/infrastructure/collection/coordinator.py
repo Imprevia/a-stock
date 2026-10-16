@@ -7,7 +7,7 @@ import time
 import uuid
 from contextlib import nullcontext
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,6 +19,7 @@ from ...application.collection import (
 )
 from ...application.ports import (
     CollectionRefreshRequest,
+    CoreCommitRequest,
     DatasetCommitRequest,
     LimitHistoryPreparationRequest,
     LimitHistoryPreparer,
@@ -55,6 +56,7 @@ from ...snapshot_store import (
     CollectionTaskRecord,
     LeaseFenceError,
     LeaseToken,
+    SnapshotIntegrityError,
 )
 
 SUPPORTED_COLLECTION_DATASETS = (
@@ -553,6 +555,7 @@ class CollectionCoordinator:
         run_id: str,
         *,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ) -> CollectionRunRecord:
         current = self._market_now()
         self.store.expire_inactive_collection_tasks(
@@ -616,6 +619,7 @@ class CollectionCoordinator:
                 self._execute_task(
                     task,
                     fetch_previous_limit_details=fetch_previous_limit_details,
+                    repair_integrity=repair_integrity,
                 )
         tasks = self.store.list_collection_tasks(run_id)
         if any(task.status not in TERMINAL_TASK_STATUSES for task in tasks):
@@ -747,15 +751,20 @@ class CollectionCoordinator:
         *,
         fetch_previous_limit_details: bool = True,
         allow_historical_latest_only: bool = False,
+        repair_integrity: bool = False,
     ) -> CollectionStartResult:
+        selected = tuple(dict.fromkeys(datasets or SUPPORTED_COLLECTION_DATASETS))
+        if repair_integrity and selected != ("core",):
+            raise ValueError("integrity repair requires exactly --dataset core")
         started = self.start_run(
             as_of,
-            datasets,
+            selected,
             allow_historical_latest_only=allow_historical_latest_only,
         )
         run = self.execute_run(
             started.run.run_id,
             fetch_previous_limit_details=fetch_previous_limit_details,
+            repair_integrity=repair_integrity,
         )
         return CollectionStartResult(run=run, tasks=self.store.list_collection_tasks(run.run_id))
 
@@ -765,6 +774,7 @@ class CollectionCoordinator:
             request.datasets,
             fetch_previous_limit_details=request.fetch_previous_limit_details,
             allow_historical_latest_only=request.allow_historical_latest_only,
+            repair_integrity=request.repair_integrity,
         )
 
     def prepare_limit_history_sessions(self, as_of: date, count: int) -> tuple[date, ...]:
@@ -937,6 +947,7 @@ class CollectionCoordinator:
         task: CollectionTaskRecord,
         *,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ) -> CollectionTaskRecord:
         started_at = self._market_now()
         started = time.perf_counter()
@@ -979,6 +990,7 @@ class CollectionCoordinator:
                     lease,
                     started,
                     fetch_previous_limit_details=fetch_previous_limit_details,
+                    repair_integrity=repair_integrity,
                 )
             else:
                 collector = self.collector_registry.get(task.dataset)
@@ -1038,6 +1050,8 @@ class CollectionCoordinator:
             return result
         except LeaseFenceError as exc:
             return self._fenced_task_result(task, exc, started)
+        except SnapshotIntegrityError as exc:
+            return self._integrity_task_result(task, exc, started)
         except Exception as exc:
             existing = self.store.get(task.dataset, task.as_of)
             if existing is not None:
@@ -1133,6 +1147,45 @@ class CollectionCoordinator:
             duration_ms=self._milliseconds(started),
         )
 
+    def _integrity_task_result(
+        self,
+        task: CollectionTaskRecord,
+        error: SnapshotIntegrityError,
+        started: float,
+    ) -> CollectionTaskRecord:
+        """Persist a redacted terminal failure without re-reading a corrupt snapshot."""
+        failure = StructuredTaskFailure(
+            category=CollectionFailureCategory.CONTRACT,
+            message="stored snapshot failed integrity validation; collection was not committed",
+            retryable=True,
+            retained=True,
+            stage="collection-commit",
+            code="SNAPSHOT_INTEGRITY_ERROR",
+        )
+        result = self.store.transition_collection_task(
+            task.task_id,
+            "failed-retained",
+            expected_statuses=("collecting",),
+            warning="stored snapshot failed integrity validation; collection was not committed",
+            failure=failure,
+            completed_at=self._market_now(),
+            duration_ms=self._milliseconds(started),
+        )
+        self._settle_parent_run(task.run_id)
+        return result
+
+    def _settle_parent_run(self, run_id: str) -> None:
+        run = self.store.get_collection_run(run_id)
+        if run is None or run.status not in {"queued", "collecting"}:
+            return
+        tasks = tuple(self.store.list_collection_tasks(run_id))
+        if tasks and all(task.status in TERMINAL_TASK_STATUSES for task in tasks):
+            self.store.update_collection_run(
+                run_id,
+                self._derive_run_status(tasks),
+                completed_at=self._market_now(),
+            )
+
     def _collect_and_commit(
         self,
         task: CollectionTaskRecord,
@@ -1140,6 +1193,7 @@ class CollectionCoordinator:
         started: float,
         *,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ) -> CollectionTaskRecord:
         identity = DatasetDate(task.dataset, task.as_of)
         preparer = self._commit_preparers.get(task.dataset)
@@ -1222,6 +1276,10 @@ class CollectionCoordinator:
                 if factory is not None
                 else DatasetCommitRequest(identity=identity, outcome=outcome, lease=lease)
             )
+            if repair_integrity:
+                if not isinstance(request, CoreCommitRequest):
+                    raise ValueError("integrity repair requires the typed core committer")
+                request = replace(request, replacement_intent=True)
             committed_outcome = request.outcome
             evidence = self.committer_registry.commit(request)
             candidate = evidence.candidate

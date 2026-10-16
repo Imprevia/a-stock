@@ -82,6 +82,7 @@ class CoreCommitRequest(DatasetCommitRequest):
     session_warning: str | None = None
     task_timings: Mapping[str, Any] = field(default_factory=dict)
     duration_ms: float | None = None
+    replacement_intent: bool = False
 
     def __post_init__(self) -> None:
         DatasetCommitRequest.__post_init__(self)
@@ -144,6 +145,16 @@ class CoreCommitRequest(DatasetCommitRequest):
         )
         if self.outcome.state is CollectionTaskState.SUCCESS and failed:
             raise ValueError("successful core outcome cannot contain failed sub-results")
+        if self.replacement_intent:
+            if self.outcome.state is not CollectionTaskState.SUCCESS:
+                raise ValueError("core replacement requires a successful outcome")
+            if len(self.index_results) != 5 or any(
+                result.state is not CollectionTaskState.SUCCESS
+                or result.retained
+                or result.payload is None
+                for result in self.index_results
+            ):
+                raise ValueError("core replacement requires five successful index results")
 
 
 @dataclass(frozen=True, slots=True)
