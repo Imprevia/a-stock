@@ -30,6 +30,7 @@
 - [x] 建立独立 active plan、登记索引并记录用户对代码发布和生产数据前向修复的明确授权。
 - [x] 文档先行同步 architecture/runbook 的无 cursor PostgreSQL 查询合同与生产修复顺序。
 - [x] 修复 pool 首页 SQL 并补无 cursor/有 cursor 回归。
+- [x] 补齐并验证同镜像、无 hook、只允许 automation `1→0` 的受控停写入口。
 - [x] 完成 focused/full 离线验证、docs-contract full 和 diff 检查。
 - [ ] 提交并推送 clean reviewed commit。
 - [ ] 暂停 Hermes job并关闭 backend manual/automation gate，确认 writer=0。
@@ -47,6 +48,8 @@
 - 2026-10-16：在本机既有 PostgreSQL 16.4 镜像启动一次性 loopback-only 临时实例，真实 psycopg 执行首页与 `next_sort_key` 后续页均通过；第一页返回前两条 SSE 事实，第二页仅返回剩余 SZSE 事实，无 `AmbiguousParameter`、重复或遗漏，测试容器随后自动停止并删除。
 - 2026-10-16：首次全量 pytest 为 `1516 passed, 6 skipped, 1 failed`，唯一失败是无关 legacy SQLite 缓存耗时断言 `0.686s < 0.5s`；该用例立即单独复跑通过。随后完整重跑结果 `1517 passed, 6 skipped, 1 warning`，warning 为既有 Starlette `BlockingPortal` 弃用提示。
 - 2026-10-16：`.venv/bin/python scripts/check_market_environment_architecture.py`、rules validate、rules coverage、docs sync-check、docs-contract full（代码 2 / 文档 4 / plan 1）和 `git diff --check` 全部通过。
+- 2026-10-16：生产只读 preflight 为 k3s `v1.26.6`、Helm 126 deployed、Dashboard/PostgreSQL 1/1、CronJob/Job absent、PVC/Secret UID 稳定、manual/automation=`1|1`、active run/task/lease=`0|0|0`；Hermes a-stock job 当日 16:05 自然运行成功后已按授权暂停，另外两个无关股票任务保持 active。
+- 2026-10-16：新增对称 `--disable-automation-refresh` 受控入口，只允许完整 reviewed packet 中 automation `1→0`，要求 manual=0、writer=0、同一 frozen image、无 hook、stored/live 零漂移及 PVC/Secret identity 不变。部署/packet/guard 回归 `251 passed`，Helm strict lint、`bash -n`、docs-contract full 和 `git diff --check` 通过。
 
 ## Remaining Gaps（剩余缺口）
 

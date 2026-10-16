@@ -112,6 +112,9 @@ Controlled manual collection freeze (same image, full reviewed packet):
 Controlled automation collection enable (same image, full reviewed packet):
   --enable-automation-refresh --baseline-values PATH --kube-version VERSION
 
+Controlled automation collection freeze (same image, full reviewed packet):
+  --disable-automation-refresh --baseline-values PATH --kube-version VERSION
+
 Controlled Fuyao sectors modes:
   --stage-sectors-off --off-values PATH --enabled-values PATH --kube-version VERSION
   --promote-sectors-capability --off-values PATH --enabled-values PATH --report PATH [--apply]
@@ -188,6 +191,10 @@ while (($#)); do
       ;;
     --enable-automation-refresh)
       set_operation enable-automation-refresh
+      shift
+      ;;
+    --disable-automation-refresh)
+      set_operation disable-automation-refresh
       shift
       ;;
     --stage-sectors-off)
@@ -1374,6 +1381,8 @@ COMPONENT_BASELINE_IMAGE_PULL_POLICY="${COMPONENT_BASELINE_FIELDS[14]}"
 CONTROLLED_SECTORS_OPERATION=""
 CONTROLLED_MANUAL_REFRESH_OPERATION=false
 CONTROLLED_AUTOMATION_REFRESH_OPERATION=false
+AUTOMATION_REFRESH_FROM_VALUE=''
+AUTOMATION_REFRESH_TARGET_VALUE=''
 case "$OPERATION" in
   stage-sectors-off|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
@@ -1390,6 +1399,16 @@ case "$OPERATION" in
   enable-automation-refresh)
     [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
     CONTROLLED_AUTOMATION_REFRESH_OPERATION=true
+    AUTOMATION_REFRESH_FROM_VALUE=0
+    AUTOMATION_REFRESH_TARGET_VALUE=1
+    COMPONENT_NAME=all
+    COMPONENT_SELECTED=true
+    ;;
+  disable-automation-refresh)
+    [[ "$COMPONENT_SELECTED" == false ]] || die "$OPERATION does not accept --component"
+    CONTROLLED_AUTOMATION_REFRESH_OPERATION=true
+    AUTOMATION_REFRESH_FROM_VALUE=1
+    AUTOMATION_REFRESH_TARGET_VALUE=0
     COMPONENT_NAME=all
     COMPONENT_SELECTED=true
     ;;
@@ -1446,6 +1465,15 @@ REVIEWED_MANUAL_OFF_VALUES_SHA256="${REVIEWED_MANUAL_OFF_VALUES_SHA256:-}"
 REVIEWED_MANUAL_OFF_RENDER_SHA256="${REVIEWED_MANUAL_OFF_RENDER_SHA256:-}"
 REVIEWED_AUTOMATION_ON_VALUES_SHA256="${REVIEWED_AUTOMATION_ON_VALUES_SHA256:-}"
 REVIEWED_AUTOMATION_ON_RENDER_SHA256="${REVIEWED_AUTOMATION_ON_RENDER_SHA256:-}"
+REVIEWED_AUTOMATION_OFF_VALUES_SHA256="${REVIEWED_AUTOMATION_OFF_VALUES_SHA256:-}"
+REVIEWED_AUTOMATION_OFF_RENDER_SHA256="${REVIEWED_AUTOMATION_OFF_RENDER_SHA256:-}"
+if [[ "$AUTOMATION_REFRESH_TARGET_VALUE" == 1 ]]; then
+  REVIEWED_AUTOMATION_VALUES_SHA256="$REVIEWED_AUTOMATION_ON_VALUES_SHA256"
+  REVIEWED_AUTOMATION_RENDER_SHA256="$REVIEWED_AUTOMATION_ON_RENDER_SHA256"
+else
+  REVIEWED_AUTOMATION_VALUES_SHA256="$REVIEWED_AUTOMATION_OFF_VALUES_SHA256"
+  REVIEWED_AUTOMATION_RENDER_SHA256="$REVIEWED_AUTOMATION_OFF_RENDER_SHA256"
+fi
 INGRESS_CLASS="${INGRESS_CLASS:-traefik}"
 INGRESS_HOST="${INGRESS_HOST:-a-stock.k3s.lan}"
 POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-a-stock-postgresql}"
@@ -1493,7 +1521,7 @@ if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
   [[ -n "$HELM_VALUES_FILE" ]] || die '--disable-manual-refresh requires --baseline-values'
 fi
 if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
-  [[ -n "$HELM_VALUES_FILE" ]] || die '--enable-automation-refresh requires --baseline-values'
+  [[ -n "$HELM_VALUES_FILE" ]] || die "$OPERATION requires --baseline-values"
 fi
 [[ "$GIT_UPDATE" =~ ^(true|false)$ ]] || die 'GIT_UPDATE must be true or false'
 [[ "$GIT_UPDATE" == false ]] || die 'GIT_UPDATE=true is unsupported; update and review the checkout before launching deployment'
@@ -1582,7 +1610,7 @@ if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
   for command_name in ssh kubectl nc; do
     command -v "$command_name" >/dev/null 2>&1 || die "required command not found: $command_name"
   done
-  [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die '--enable-automation-refresh requires --kube-version'
+  [[ -n "$TARGET_KUBERNETES_VERSION" ]] || die "$OPERATION requires --kube-version"
 fi
 
 if [[ -n "$TARGET_KUBERNETES_VERSION" ]]; then
@@ -1727,7 +1755,7 @@ if [[ "$OPERATION" == deploy || -n "$CONTROLLED_SECTORS_OPERATION" \
         GENERIC_RENDER_SHA256="$(sha256_text "$RENDERED_PACKET")"
       fi
       ;;
-    promote-sectors-capability|enable-sectors-config|disable-sectors-config|disable-manual-refresh|enable-automation-refresh)
+    promote-sectors-capability|enable-sectors-config|disable-sectors-config|disable-manual-refresh|enable-automation-refresh|disable-automation-refresh)
       if ! RENDERED_PACKET="$(render_release_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")"; then
         die "$OPERATION reviewed packet failed to render"
       fi
@@ -1743,8 +1771,8 @@ if [[ "$OPERATION" == deploy || -n "$CONTROLLED_SECTORS_OPERATION" \
       if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
         printf '%s\n' "$RENDERED_PACKET" | python3 "$PACKET_VALIDATOR" validate-automation-refresh-packet \
           --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
-          --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" --require-value 1 >/dev/null \
-          || die 'reviewed automation-on packet violates the enabled runtime contract'
+          --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" --require-value "$AUTOMATION_REFRESH_TARGET_VALUE" >/dev/null \
+          || die "reviewed automation packet violates the target=$AUTOMATION_REFRESH_TARGET_VALUE runtime contract"
       fi
       ;;
   esac
@@ -1838,9 +1866,9 @@ verify_controlled_automation_refresh_packet() {
   [[ "$(git rev-parse HEAD)" == "$REVIEWED_GIT_HEAD" ]] \
     || die 'reviewed Git HEAD does not match the checked-out source'
   verify_hash 'reviewed chart' "$REVIEWED_CHART_SHA256" "$(chart_sha256)"
-  verify_hash 'reviewed automation-on values' "$REVIEWED_AUTOMATION_ON_VALUES_SHA256" \
+  verify_hash 'reviewed automation values' "$REVIEWED_AUTOMATION_VALUES_SHA256" \
     "$(sha256sum "$HELM_VALUES_FILE" | awk '{print $1}')"
-  verify_hash 'reviewed automation-on render' "$REVIEWED_AUTOMATION_ON_RENDER_SHA256" \
+  verify_hash 'reviewed automation render' "$REVIEWED_AUTOMATION_RENDER_SHA256" \
     "$(sha256_text "$RENDERED_PACKET")"
 }
 
@@ -1863,7 +1891,7 @@ fi
 if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
   assert_clean_worktree
   verify_controlled_automation_refresh_packet
-  REVIEWED_AUTOMATION_ON_RENDER="$RENDERED_PACKET"
+  REVIEWED_AUTOMATION_RENDER="$RENDERED_PACKET"
 fi
 
 if [[ "$OPERATION" == deploy ]]; then
@@ -1935,7 +1963,7 @@ SOURCE_CHART_DIR="$REPO_DIR/deploy/helm/a-stock"
 OPERATION_CHART_DIR="$SOURCE_CHART_DIR"
 OPERATION_BASELINE_VALUES="$HELM_VALUES_FILE"
 case "$OPERATION" in
-  deploy|disable-manual-refresh|enable-automation-refresh|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|disable-manual-refresh|enable-automation-refresh|disable-automation-refresh|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     command -v flock >/dev/null 2>&1 || die 'required command not found: flock'
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
     if [[ "$COMMON_GIT_DIR" != /* ]]; then
@@ -1946,7 +1974,7 @@ case "$OPERATION" in
     ;;
 esac
 case "$OPERATION" in
-  deploy|disable-manual-refresh|enable-automation-refresh|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
+  deploy|disable-manual-refresh|enable-automation-refresh|disable-automation-refresh|promote-sectors-capability|enable-sectors-config|disable-sectors-config)
     SNAPSHOT_DIR="$TMP_DIR/release-packet"
     mkdir -p "$SNAPSHOT_DIR"
     cp -R "$SOURCE_CHART_DIR" "$SNAPSHOT_DIR/chart"
@@ -1997,9 +2025,9 @@ case "$OPERATION" in
       REVIEWED_MANUAL_OFF_RENDER="$SNAPSHOT_RENDER"
     fi
     if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
-      [[ "$(sha256_text "$SNAPSHOT_RENDER")" == "$REVIEWED_AUTOMATION_ON_RENDER_SHA256" ]] \
-        || die 'frozen reviewed automation-on packet hash drifted'
-      REVIEWED_AUTOMATION_ON_RENDER="$SNAPSHOT_RENDER"
+      [[ "$(sha256_text "$SNAPSHOT_RENDER")" == "$REVIEWED_AUTOMATION_RENDER_SHA256" ]] \
+        || die 'frozen reviewed automation packet hash drifted'
+      REVIEWED_AUTOMATION_RENDER="$SNAPSHOT_RENDER"
     fi
     chmod -R a-w "$SNAPSHOT_DIR"
     RENDERED_PACKET="$SNAPSHOT_RENDER"
@@ -2061,6 +2089,7 @@ fi
 
 if [[ "$OPERATION" == deploy || "$OPERATION" == disable-manual-refresh \
       || "$OPERATION" == enable-automation-refresh \
+      || "$OPERATION" == disable-automation-refresh \
       || "$OPERATION" == promote-sectors-capability \
       || "$OPERATION" == enable-sectors-config || "$OPERATION" == disable-sectors-config ]]; then
   if ! GENERIC_CRONJOB_NAME="$(former_release_cronjob_name "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES")"; then
@@ -2083,7 +2112,7 @@ if [[ "$CONTROLLED_MANUAL_REFRESH_OPERATION" == true ]]; then
 fi
 if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
   [[ "$(helm_release_presence)" == present ]] \
-    || die '--enable-automation-refresh requires an existing Helm release'
+    || die "$OPERATION requires an existing Helm release"
 fi
 
 if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
@@ -2104,27 +2133,27 @@ if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
   AUTOMATION_LIVE_BEFORE_MANIFEST="$TMP_DIR/automation-refresh-live-before.yaml"
   AUTOMATION_LIVE_AFTER_MANIFEST="$TMP_DIR/automation-refresh-live-after.yaml"
   AUTOMATION_POST_MANIFEST="$TMP_DIR/automation-refresh-post-manifest.yaml"
-  printf '%s\n' "$REVIEWED_AUTOMATION_ON_RENDER" \
+  printf '%s\n' "$REVIEWED_AUTOMATION_RENDER" \
     | python3 "$PACKET_VALIDATOR" extract-helm-documents --part release \
       > "$AUTOMATION_DESIRED_MANIFEST" \
-    || die '--enable-automation-refresh could not extract the reviewed release manifest'
-  printf '%s\n' "$REVIEWED_AUTOMATION_ON_RENDER" \
+    || die "$OPERATION could not extract the reviewed release manifest"
+  printf '%s\n' "$REVIEWED_AUTOMATION_RENDER" \
     | python3 "$PACKET_VALIDATOR" extract-helm-documents --part hooks \
       > "$AUTOMATION_DESIRED_HOOKS" \
-    || die '--enable-automation-refresh could not extract the reviewed Helm hooks'
+    || die "$OPERATION could not extract the reviewed Helm hooks"
 
   verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
-    || die '--enable-automation-refresh could not prove the exact Ready frozen runtime image'
-  require_all_application_cronjobs_absent '--enable-automation-refresh precondition' \
-    || die '--enable-automation-refresh could not prove both application CronJobs absent'
-  require_namespace_jobs_absent '--enable-automation-refresh precondition' \
-    || die '--enable-automation-refresh requires namespace Jobs absent'
+    || die "$OPERATION could not prove the exact Ready frozen runtime image"
+  require_all_application_cronjobs_absent "$OPERATION precondition" \
+    || die "$OPERATION could not prove both application CronJobs absent"
+  require_namespace_jobs_absent "$OPERATION precondition" \
+    || die "$OPERATION requires namespace Jobs absent"
   verify_live_database_contract \
-    || die '--enable-automation-refresh requires a healthy reviewed PostgreSQL runtime'
+    || die "$OPERATION requires a healthy reviewed PostgreSQL runtime"
   require_no_active_collection_writers \
-    || die '--enable-automation-refresh requires active collection run/task/lease counts all zero'
-  PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_ON_RENDER")" \
-    || die '--enable-automation-refresh could not capture Secret/PVC metadata before execution'
+    || die "$OPERATION requires active collection run/task/lease counts all zero"
+  PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_RENDER")" \
+    || die "$OPERATION could not capture Secret/PVC metadata before execution"
 
   helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_CURRENT_MANIFEST"
   helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_CURRENT_HOOKS"
@@ -2132,59 +2161,61 @@ if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
     --current "$AUTOMATION_CURRENT_HOOKS" --desired "$AUTOMATION_DESIRED_HOOKS"
   python3 "$PACKET_VALIDATOR" compare-automation-refresh-only \
     --current "$AUTOMATION_CURRENT_MANIFEST" --desired "$AUTOMATION_DESIRED_MANIFEST" \
-    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE"
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE" \
+    --from-value "$AUTOMATION_REFRESH_FROM_VALUE" --to-value "$AUTOMATION_REFRESH_TARGET_VALUE"
   kubectl get deployment,service,cronjob,statefulset,pvc --namespace "$NAMESPACE" \
     -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$AUTOMATION_LIVE_BEFORE_MANIFEST"
   python3 "$PACKET_VALIDATOR" compare-automation-refresh-live-desired \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$AUTOMATION_CURRENT_MANIFEST" < "$AUTOMATION_LIVE_BEFORE_MANIFEST"
-  verify_automation_refresh_runtime "$(cat "$AUTOMATION_CURRENT_MANIFEST")" 0 \
-    || die '--enable-automation-refresh requires one exact Ready Pod with automation disabled and manual refresh disabled'
+  verify_automation_refresh_runtime "$(cat "$AUTOMATION_CURRENT_MANIFEST")" "$AUTOMATION_REFRESH_FROM_VALUE" \
+    || die "$OPERATION requires one exact Ready Pod with automation=$AUTOMATION_REFRESH_FROM_VALUE and manual refresh disabled"
 
   assert_clean_worktree
   verify_controlled_automation_refresh_packet
   AUTOMATION_PRE_WRITE_RENDER="$(render_release_packet "$OPERATION_CHART_DIR" "$OPERATION_BASELINE_VALUES" "" \
     "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
-    || die '--enable-automation-refresh reviewed packet failed immediately before Helm write'
-  [[ "$(sha256_text "$AUTOMATION_PRE_WRITE_RENDER")" == "$REVIEWED_AUTOMATION_ON_RENDER_SHA256" ]] \
-    || die '--enable-automation-refresh reviewed packet hash drifted immediately before Helm write'
+    || die "$OPERATION reviewed packet failed immediately before Helm write"
+  [[ "$(sha256_text "$AUTOMATION_PRE_WRITE_RENDER")" == "$REVIEWED_AUTOMATION_RENDER_SHA256" ]] \
+    || die "$OPERATION reviewed packet hash drifted immediately before Helm write"
   printf '%s\n' "$AUTOMATION_PRE_WRITE_RENDER" | python3 "$PACKET_VALIDATOR" validate-automation-refresh-packet \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
-    --image "$FROZEN_IMAGE" --require-value 1 >/dev/null \
-    || die '--enable-automation-refresh immediate packet violates the enabled runtime contract'
+    --image "$FROZEN_IMAGE" --require-value "$AUTOMATION_REFRESH_TARGET_VALUE" >/dev/null \
+    || die "$OPERATION immediate packet violates automation=$AUTOMATION_REFRESH_TARGET_VALUE runtime contract"
   verify_generic_deploy_precondition
   [[ "$(helm_release_presence)" == present ]] \
-    || die '--enable-automation-refresh release disappeared before Helm write'
+    || die "$OPERATION release disappeared before Helm write"
   helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_CURRENT_MANIFEST"
   helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_CURRENT_HOOKS"
   python3 "$PACKET_VALIDATOR" compare-hooks-exact \
     --current "$AUTOMATION_CURRENT_HOOKS" --desired "$AUTOMATION_DESIRED_HOOKS"
   python3 "$PACKET_VALIDATOR" compare-automation-refresh-only \
     --current "$AUTOMATION_CURRENT_MANIFEST" --desired "$AUTOMATION_DESIRED_MANIFEST" \
-    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE"
+    --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --image "$FROZEN_IMAGE" \
+    --from-value "$AUTOMATION_REFRESH_FROM_VALUE" --to-value "$AUTOMATION_REFRESH_TARGET_VALUE"
   kubectl get deployment,service,cronjob,statefulset,pvc --namespace "$NAMESPACE" \
     -l "app.kubernetes.io/instance=$RELEASE_NAME" -o yaml > "$AUTOMATION_LIVE_BEFORE_MANIFEST"
   python3 "$PACKET_VALIDATOR" compare-automation-refresh-live-desired \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$AUTOMATION_CURRENT_MANIFEST" < "$AUTOMATION_LIVE_BEFORE_MANIFEST"
   verify_live_database_contract \
-    || die '--enable-automation-refresh PostgreSQL runtime drifted before Helm write'
+    || die "$OPERATION PostgreSQL runtime drifted before Helm write"
   verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
-    || die '--enable-automation-refresh frozen runtime image drifted before Helm write'
-  verify_automation_refresh_runtime "$(cat "$AUTOMATION_CURRENT_MANIFEST")" 0 \
-    || die '--enable-automation-refresh runtime gate state drifted before Helm write'
-  require_all_application_cronjobs_absent '--enable-automation-refresh immediate pre-write' \
-    || die '--enable-automation-refresh scheduling drifted before Helm write'
-  require_namespace_jobs_absent '--enable-automation-refresh immediate pre-write' \
-    || die '--enable-automation-refresh found a namespace Job before Helm write'
+    || die "$OPERATION frozen runtime image drifted before Helm write"
+  verify_automation_refresh_runtime "$(cat "$AUTOMATION_CURRENT_MANIFEST")" "$AUTOMATION_REFRESH_FROM_VALUE" \
+    || die "$OPERATION runtime gate state drifted before Helm write"
+  require_all_application_cronjobs_absent "$OPERATION immediate pre-write" \
+    || die "$OPERATION scheduling drifted before Helm write"
+  require_namespace_jobs_absent "$OPERATION immediate pre-write" \
+    || die "$OPERATION found a namespace Job before Helm write"
   require_no_active_collection_writers \
-    || die '--enable-automation-refresh found an active collection writer before Helm write'
-  PRESERVED_IDENTITIES_PRE_WRITE="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_ON_RENDER")" \
-    || die '--enable-automation-refresh could not recapture Secret/PVC metadata before Helm write'
+    || die "$OPERATION found an active collection writer before Helm write"
+  PRESERVED_IDENTITIES_PRE_WRITE="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_RENDER")" \
+    || die "$OPERATION could not recapture Secret/PVC metadata before Helm write"
   [[ "$PRESERVED_IDENTITIES_PRE_WRITE" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
-    || die '--enable-automation-refresh Secret/PVC metadata drifted before Helm write'
+    || die "$OPERATION Secret/PVC metadata drifted before Helm write"
 
-  log "enabling automation refresh with hook-free same-image packet image=$FROZEN_IMAGE"
+  log "setting automation refresh to $AUTOMATION_REFRESH_TARGET_VALUE with hook-free same-image packet image=$FROZEN_IMAGE"
   helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
     --namespace "$NAMESPACE" \
     --values "$OPERATION_BASELINE_VALUES" \
@@ -2198,7 +2229,7 @@ if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
   DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
     -l "app.kubernetes.io/instance=$RELEASE_NAME" \
     -o jsonpath='{.items[0].metadata.name}')"
-  [[ -n "$DEPLOYMENT_NAME" ]] || die '--enable-automation-refresh postcondition found no Dashboard Deployment'
+  [[ -n "$DEPLOYMENT_NAME" ]] || die "$OPERATION postcondition found no Dashboard Deployment"
   kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s
   helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_POST_MANIFEST"
   helm get hooks "$RELEASE_NAME" --namespace "$NAMESPACE" > "$AUTOMATION_CURRENT_HOOKS"
@@ -2212,22 +2243,22 @@ if [[ "$CONTROLLED_AUTOMATION_REFRESH_OPERATION" == true ]]; then
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$AUTOMATION_DESIRED_MANIFEST" < "$AUTOMATION_LIVE_AFTER_MANIFEST"
   verify_live_database_contract \
-    || die '--enable-automation-refresh postcondition requires a healthy reviewed PostgreSQL runtime'
+    || die "$OPERATION postcondition requires a healthy reviewed PostgreSQL runtime"
   verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
-    || die '--enable-automation-refresh postcondition could not prove the frozen runtime image'
-  verify_automation_refresh_runtime "$REVIEWED_AUTOMATION_ON_RENDER" 1 \
-    || die '--enable-automation-refresh postcondition requires automation enabled and manual refresh disabled'
-  require_all_application_cronjobs_absent '--enable-automation-refresh postcondition' \
-    || die '--enable-automation-refresh postcondition could not prove both application CronJobs absent'
-  require_namespace_jobs_absent '--enable-automation-refresh postcondition' \
-    || die '--enable-automation-refresh postcondition requires namespace Jobs absent'
+    || die "$OPERATION postcondition could not prove the frozen runtime image"
+  verify_automation_refresh_runtime "$REVIEWED_AUTOMATION_RENDER" "$AUTOMATION_REFRESH_TARGET_VALUE" \
+    || die "$OPERATION postcondition requires automation=$AUTOMATION_REFRESH_TARGET_VALUE and manual refresh disabled"
+  require_all_application_cronjobs_absent "$OPERATION postcondition" \
+    || die "$OPERATION postcondition could not prove both application CronJobs absent"
+  require_namespace_jobs_absent "$OPERATION postcondition" \
+    || die "$OPERATION postcondition requires namespace Jobs absent"
   require_no_active_collection_writers \
-    || die '--enable-automation-refresh postcondition found an unexpected active collection writer'
-  PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_ON_RENDER")" \
-    || die '--enable-automation-refresh postcondition could not capture Secret/PVC metadata'
+    || die "$OPERATION postcondition found an unexpected active collection writer"
+  PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_AUTOMATION_RENDER")" \
+    || die "$OPERATION postcondition could not capture Secret/PVC metadata"
   [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
-    || die '--enable-automation-refresh changed preserved Secret/PVC metadata'
-  log "automation refresh enabled with same frozen image=$FROZEN_IMAGE"
+    || die "$OPERATION changed preserved Secret/PVC metadata"
+  log "automation refresh set to $AUTOMATION_REFRESH_TARGET_VALUE with same frozen image=$FROZEN_IMAGE"
   exit 0
 fi
 

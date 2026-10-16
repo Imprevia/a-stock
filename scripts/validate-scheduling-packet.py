@@ -554,12 +554,14 @@ def compare_automation_refresh_only(
     release_name: str,
     namespace: str,
     expected_image: str,
+    from_value: str = "0",
+    to_value: str = "1",
 ) -> None:
     validate_automation_refresh_packet(
-        current, release_name, namespace, expected_image, "0"
+        current, release_name, namespace, expected_image, from_value
     )
     validate_automation_refresh_packet(
-        desired, release_name, namespace, expected_image, "1"
+        desired, release_name, namespace, expected_image, to_value
     )
     _compare_refresh_gate_only(
         current,
@@ -1709,6 +1711,12 @@ def main() -> None:
     automation_config.add_argument("--release-name", required=True)
     automation_config.add_argument("--namespace", required=True)
     automation_config.add_argument("--image", required=True)
+    automation_config.add_argument(
+        "--from-value", choices=("0", "1"), default="0"
+    )
+    automation_config.add_argument(
+        "--to-value", choices=("0", "1"), default="1"
+    )
 
     automation_runtime = subparsers.add_parser("verify-automation-refresh-runtime")
     automation_runtime.add_argument("--deployments", type=Path, required=True)
@@ -1858,6 +1866,8 @@ def main() -> None:
             args.release_name,
             args.namespace,
             args.image,
+            args.from_value,
+            args.to_value,
         )
     elif args.command == "verify-automation-refresh-runtime":
         print(

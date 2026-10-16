@@ -791,6 +791,9 @@ def _run_automation_compare(
     tmp_path: Path,
     current: list[dict[str, Any]],
     desired: list[dict[str, Any]],
+    *,
+    from_value: str = "0",
+    to_value: str = "1",
 ) -> subprocess.CompletedProcess[str]:
     current_path = tmp_path / "automation-current.yaml"
     desired_path = tmp_path / "automation-desired.yaml"
@@ -809,12 +812,28 @@ def _run_automation_compare(
         "a-stock",
         "--image",
         IMAGE,
+        "--from-value",
+        from_value,
+        "--to-value",
+        to_value,
     )
 
 
 def test_automation_refresh_compare_accepts_only_zero_to_one(tmp_path: Path) -> None:
     completed = _run_automation_compare(
         tmp_path, _automation_release("0"), _automation_release("1")
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_automation_refresh_compare_accepts_only_one_to_zero(tmp_path: Path) -> None:
+    completed = _run_automation_compare(
+        tmp_path,
+        _automation_release("1"),
+        _automation_release("0"),
+        from_value="1",
+        to_value="0",
     )
 
     assert completed.returncode == 0, completed.stderr

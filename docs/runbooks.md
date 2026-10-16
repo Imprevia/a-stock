@@ -681,6 +681,14 @@ build/import 镜像、执行 migration、创建 Job 或调用 provider；写后 
 盘后步骤使用唯一 `Idempotency-Key` 执行。任一 packet/live/identity/writer 漂移都在 Helm write 前停止，失败不
 自动执行 provider 或进入 Hermes job 安装。
 
+关闭 backend automation gate 必须先暂停对应 Hermes job，再使用对称的 `--disable-automation-refresh` 入口和只把 automation literal `"1"` 改为 `"0"` 的完整 reviewed values packet。该入口同样要求 manual=`0`、活动 run/task/lease 全为零、同一 frozen image、stored/live release 与 hooks 零漂移、CronJob/Job absent、PVC/Secret identity 不变，并使用 `--no-hooks --atomic --wait`。设置 `REVIEWED_AUTOMATION_OFF_VALUES_SHA256` 与 `REVIEWED_AUTOMATION_OFF_RENDER_SHA256` 后执行；失败保持 gate 的现场状态，不自动恢复 Hermes 或触发 provider。启停两种入口都不得构建/导入镜像、运行 migration 或发送 collection POST。
+
+```bash
+bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-automation-refresh \
+  --baseline-values <REVIEWED_CURRENT_FULL_AUTOMATION_OFF_VALUES> \
+  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
+```
+
 如果只读发现显示任一历史 CronJob，普通应用发布和回退必须停止。仓库不再提供 schedule mutation 或清理
 模式；处置必须新建 exact-resource 计划，冻结 stored/live/Job 证据并另获授权。证明两个 identity 都 absent 后，
 才可生成并审阅当前完整 manual-off values packet，设置
