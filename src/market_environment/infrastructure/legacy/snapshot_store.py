@@ -25,6 +25,11 @@ from ...domain.policies.limit_facts import (
     limit_dataset_checksum,
 )
 from ...domain.models import CollectionFailureCategory, StructuredTaskFailure
+from ...domain.policies.core_date_evidence import (
+    CoreDateEvidenceError,
+    validate_core_payload_dates,
+    validate_materialized_aggregate_dates,
+)
 from ..providers.capability import ProviderCapabilityReport
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -49,6 +54,28 @@ CollectionTaskStatus = Literal[
 
 class SnapshotIntegrityError(RuntimeError):
     """Raised when a stored payload no longer matches its checksum."""
+
+
+def _validate_snapshot_exact_date(
+    dataset: str,
+    as_of: date,
+    payload: dict[str, Any],
+) -> None:
+    expected = as_of.isoformat()
+    payload_as_of = payload.get("asOf")
+    quality = payload.get("quality")
+    quality_as_of = quality.get("asOf") if isinstance(quality, dict) else None
+    if payload_as_of not in (None, expected) or quality_as_of not in (None, expected):
+        raise SnapshotIntegrityError(
+            f"snapshot exact-date mismatch: {dataset}/{expected}"
+        )
+    if dataset == "core":
+        try:
+            validate_core_payload_dates(payload, as_of)
+        except CoreDateEvidenceError as exc:
+            raise SnapshotIntegrityError(
+                f"snapshot exact-date mismatch: {dataset}/{expected}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -1033,6 +1060,7 @@ class LegacySnapshotStoreAdapter:
         value = record.normalized()
         if value.schema_version != SNAPSHOT_SCHEMA_VERSION:
             raise ValueError(f"unsupported snapshot schema version: {value.schema_version}")
+        _validate_snapshot_exact_date(value.dataset, value.as_of, value.payload)
         lease = self._resolve_lease_argument(lease, lease_token)
         try:
             with self._connect() as connection:
@@ -1098,6 +1126,11 @@ class LegacySnapshotStoreAdapter:
             raise SnapshotIntegrityError(
                 f"snapshot checksum mismatch: {row['dataset']}/{row['as_of']}"
             )
+        _validate_snapshot_exact_date(
+            str(row["dataset"]),
+            _as_date(row["as_of"]),
+            payload,
+        )
         return SnapshotRecord(
             dataset=row["dataset"],
             as_of=_as_date(row["as_of"]),
@@ -2785,6 +2818,12 @@ class LegacySnapshotStoreAdapter:
         now: datetime | Callable[[], datetime] | None = None,
     ) -> MaterializedAggregateRecord:
         value = record.normalized()
+        try:
+            validate_materialized_aggregate_dates(value.payload, value.as_of)
+        except CoreDateEvidenceError as exc:
+            raise SnapshotIntegrityError(
+                f"materialized aggregate exact-date mismatch: {value.as_of.isoformat()}"
+            ) from exc
         lease = self._resolve_lease_argument(lease, lease_token)
         # Legacy callers may write a standalone aggregate without fencing. The
         # collection/refresh paths always provide both lease and revision.
@@ -2866,8 +2905,15 @@ class LegacySnapshotStoreAdapter:
             raise SnapshotIntegrityError(
                 f"materialized aggregate checksum mismatch: {row['as_of']}"
             )
+        as_of = _as_date(row["as_of"])
+        try:
+            validate_materialized_aggregate_dates(payload, as_of)
+        except CoreDateEvidenceError as exc:
+            raise SnapshotIntegrityError(
+                f"materialized aggregate exact-date mismatch: {as_of.isoformat()}"
+            ) from exc
         return MaterializedAggregateRecord(
-            as_of=_as_date(row["as_of"]),
+            as_of=as_of,
             payload=payload,
             generated_at=_as_datetime(row["generated_at"]),
             checksum=row["checksum"],

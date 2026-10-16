@@ -7,9 +7,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+
+from ..snapshot_store import SnapshotIntegrityError
 from fastapi.staticfiles import StaticFiles
 
 from .container import (
@@ -60,6 +62,21 @@ def create_app(
     )
     app.state.container_factory = factory
     app.state.lifespan_started = False
+
+    @app.exception_handler(SnapshotIntegrityError)
+    async def snapshot_integrity_error_handler(
+        _request: Request,
+        _error: SnapshotIntegrityError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "code": "snapshot_integrity_error",
+                    "message": "本地市场数据完整性校验失败，请联系运维审计对应日期的数据。",
+                }
+            },
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

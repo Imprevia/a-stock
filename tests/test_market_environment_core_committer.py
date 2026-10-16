@@ -352,7 +352,7 @@ def test_core_committer_atomically_preserves_partial_retention_session_and_check
         assert sessions.get_session(PREVIOUS).actual_as_of == PREVIOUS
 
 
-def test_core_committer_preserves_exact_identity_for_legacy_stale_payload(
+def test_core_committer_rejects_legacy_stale_payload_before_any_write(
     core_engine,
 ) -> None:
     lease = seed_task_and_lease(core_engine)
@@ -387,16 +387,15 @@ def test_core_committer_preserves_exact_identity_for_legacy_stale_payload(
         session_warning="core index history could not prove the requested session",
     )
 
-    evidence = CoreDatasetCommitter(unit_of_work_factory(core_engine)).commit(
-        stale_request
-    )
+    with pytest.raises(ValueError, match="exact-date mismatch"):
+        CoreDatasetCommitter(unit_of_work_factory(core_engine)).commit(stale_request)
 
     with core_engine.connect() as connection:
         stored = PostgresSnapshotRepository(connection, now=lambda: NOW).get(IDENTITY)
-        assert stored is not None
-        assert stored.identity == IDENTITY
-        assert stored.payload["asOf"] == PREVIOUS.isoformat()
-        assert evidence.candidate == stored
+        assert stored is None
+        assert PostgresCoreIndexResultRepository(connection).list_results(TASK_ID) == ()
+        assert PostgresTradingSessionRepository(connection).get_session(AS_OF) is None
+        assert PostgresCollectionTaskRepository(connection).get_task(TASK_ID).status == "collecting"
 
 
 def test_core_committer_does_not_overwrite_existing_previous_session(

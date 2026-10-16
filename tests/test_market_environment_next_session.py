@@ -18,6 +18,7 @@ def _core_payload(as_of: date, change: float) -> dict:
         "asOf": as_of.isoformat(),
         "indices": [
             {
+                "code": "sh000001",
                 "name": "上证指数",
                 "changePct": change,
                 "close": 101 + change,
@@ -26,6 +27,7 @@ def _core_payload(as_of: date, change: float) -> dict:
                 "volumePriceState": "上涨放量" if change > 0 else "放量下跌",
                 "dataGaps": [],
                 "dataQuality": {"warning": None},
+                "history": [{"date": as_of.isoformat(), "close": 101 + change}],
             },
         ],
         "summary": {"syncPattern": {"code": "synchronized_rally", "label": "同步上涨"}},

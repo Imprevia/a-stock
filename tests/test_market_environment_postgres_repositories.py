@@ -86,7 +86,15 @@ def test_snapshot_repository_exact_date_list_read_write_and_checksum(
     )
     candidate = CollectionCandidate(
         identity=DatasetDate("core", AS_OF),
-        payload={"asOf": AS_OF.isoformat(), "indices": [{"code": "sh000001"}]},
+        payload={
+            "asOf": AS_OF.isoformat(),
+            "indices": [
+                {
+                    "code": "sh000001",
+                    "history": [{"date": AS_OF.isoformat(), "close": 3200}],
+                }
+            ],
+        },
         source="fixture",
         status="ok",
         observations=1,

@@ -34,7 +34,7 @@
 
 客户端以 overview 的 `snapshotRevision` 固定一次多资源读取；响应同时给出 ETag，`If-None-Match` 命中返回 304，revision 前置条件不匹配返回带当前 revision 的稳定 409。opaque cursor 绑定资源、日期或 run id、filters、稳定排序键与 revision，不能跨资源、改筛选或跨 revision 重用。初始列表边界为：limits pool、sector rows、active direction 默认 20/最大 100；index/breadth/limits history 默认 60/最大 250；operation checkpoints 默认 50/最大 200。固定数量的指数摘要可以不分页；所有生产 PostgreSQL 列表必须先过滤、稳定排序和 limit，再物化结果。
 
-所有 v2 GET 只读本地 exact-date repository/materialized evidence，不构造 provider、不开始或加入采集、不建后台任务、不写 PostgreSQL。无任何本地日期证据返回稳定 404；日期格式、未来日期、未知 closed selector 或越界 limit 返回 422；日期存在但目标数据集缺失时以 200 envelope 保留 `missing` / `insufficient` 和 `null` 或有界空数据，不用 0、旧日期或 latest-only provider 补齐。`failed-retained` 等刷新状态、真实来源、provider、observations、warning、checksum/revision evidence 继续透明表达。
+所有 v2 GET 只读本地 exact-date repository/materialized evidence，不构造 provider、不开始或加入采集、不建后台任务、不写 PostgreSQL。无任何本地日期证据返回稳定 404；日期格式、未来日期、未知 closed selector 或越界 limit 返回 422；日期存在但目标数据集缺失时以 200 envelope 保留 `missing` / `insufficient` 和 `null` 或有界空数据，不用 0、旧日期或 latest-only provider 补齐。`failed-retained` 等刷新状态、真实来源、provider、observations、warning、checksum/revision evidence 继续透明表达。本地行存在但 checksum 或 key、payload、actual/effective date 不一致时返回脱敏 HTTP 503 `snapshot_integrity_error`，不得降格为 404、触发 provider、写数据库或回退其他日期；dashboard 必须明确展示该完整性错误，不能用 legacy 成功响应覆盖它。
 
 根级 `/llms.txt` 与 `/llms-full.txt` 是 UTF-8 `text/plain` 发现文档，分别提供紧凑索引和完整集成语义，并链接 `/openapi.json`。它们由 tagged OpenAPI 与受控产品/runbook 语义纯内存渲染，不写生成文件、不查询行情或数据库，也不嵌入实时市场行、凭据、provider header、presigned URL 或私有 runtime metadata。dashboard 按页面渐进迁移并保留 legacy fallback；THS bars 请求不得超过既有 `page_size=1000` 上限，超过一页时必须续取且每行只渲染一次。
 
@@ -61,7 +61,7 @@
 - 日期化涨停、跌停、炸板与最高连板生态。
 - THS 行业、概念、区域和特色指数的完整目录、当日排名、板块量价与当日内部宽度；这些内容仅属于 provider observation，不以名称相似性映射为申万一级身份，也不进入 `QTS-01-05-*` 输入。
 - 历史 Eastmoney-first/Fuyao-fallback `sectors` 契约从公共 API、调度、前端和新采集任务中退役。既有快照、任务、warning、checksum 和 capability report 原样保留为审计证据，不删除、不改名，也不投影成任一新数据集。
-- `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。
+- `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。每个指数的 history 尾日必须等于请求日才算本次成功；较早尾日是 date mismatch，只能由请求日既有合法同日指数证据留存，不能重标。所有可用指数均无法证明请求日时，不写新 core snapshot/aggregate，并按是否存在请求日合法快照返回 `failed-retained` 或 `failed-missing`。
 - `breadth` 的 Fuyao v2 主源只允许当前上海交易日的 `/api/a-share/prices/snapshot` 完整分页；所有页的 `total`、`timestamp` 和规范证券身份必须稳定，涨跌家数、平盘和中位数由 `price_change_ratio_pct` 派生。Fuyao 失败后才按显式开关使用 TDX 精确日期包，最终回退东方财富；历史日期只能读取本地精确快照，不能用 latest-only 响应回填。
 - `activeDirection` 本阶段不由 Fuyao 替换，继续使用现有东方财富/TDX 语义；Fuyao capability 仅记录为 `unverified`，不得把旧 `fuyao-market-v1` 报告当成切换批准。limits 继续使用扶摇主源与东方财富交叉核对/降级。
 - 01 至 09 文档导航、桌面与移动布局、数据加载和错误状态。

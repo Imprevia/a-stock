@@ -30,7 +30,11 @@ revision authority 是 exact-date materialization component revision vector；�
 
 普通 v2 GET 与 `/llms.txt`、`/llms-full.txt` 必须 provider-free/read-only：只读本地精确日期证据，不构造 provider client，不 start/join collection，不创建 background task，不写 PostgreSQL，不下载 dump，也不搜索替代日期。未知日期 404；无效/未来日期、closed selector 或 limit 422；已知日期的单数据集缺失仍返回显式 missing/insufficient envelope。discovery renderer 在内存中组合 tagged OpenAPI operations 与受控产品/runbook 语义，以 `/openapi.json` 为结构事实源，不读写生成文件、不查询数据库或行情。
 
-现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
+core 的精确日期身份从单指数 history 的最后有效 observation 开始证明：只有 history 尾日等于请求日的结果才是本次成功；更早日期必须成为带 requested/actual date 的 date-mismatch failure，不能通过 candidate `actual_as_of`、quality `asOf` 或 payload 重标。四个同日指数与一个错日指数可形成同日 partial；五项均错日时只有请求日既有合法快照可成为 `failed-retained`，否则为 `failed-missing`。snapshot 与 materialized aggregate 的兼容 facade、typed PostgreSQL repository/CAS 都在 fenced/atomic 写入前复核 key、payload/quality 日期、effective date 与已包含指数 history 尾日；失败不推进 checksum/revision、不覆盖同日合法证据。
+
+普通读取发现本地行存在但 checksum 或 key/payload/effective date 不一致时，v2 与 legacy 统一返回脱敏 HTTP 503、code=`snapshot_integrity_error`；它不同于无本地事实的 404 或单数据集 missing/insufficient。完整性失败仍为 provider-free、零 collection/background task、零 PostgreSQL 写入；dashboard 不把该错误替换成 legacy 或其他日期成功结果。存量坏行只能由显式只读审计识别，任何备份、停写、前向重采/重建或数据处置都需要独立计划和授权，GET 与正常采集不得自动重标、复制、删除或修复。
+
+现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留非完整性错误的 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
 
 ## 交易规则平台
 

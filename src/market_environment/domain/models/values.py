@@ -133,6 +133,7 @@ class AcquisitionFailure:
     source: str | None = None
     source_revision: str | None = None
     requested_as_of: date | None = None
+    actual_as_of: date | None = None
     fetched_at: datetime | None = None
     timings: AcquisitionTimings = field(default_factory=AcquisitionTimings)
     provenance: RedactedProvenance = field(default_factory=RedactedProvenance)

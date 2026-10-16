@@ -14,7 +14,12 @@ from ...application.ports import (
     CoreTradingSessionEvidence,
 )
 from ...domain.models import CollectionOutcome, CollectionTaskState, DatasetDate
-from ..legacy.snapshot_store import CollectionTaskRecord, LeaseToken
+from ...domain.policies.core_date_evidence import (
+    CoreDateEvidenceError,
+    validate_core_index_date,
+    validate_core_payload_dates,
+)
+from ..legacy.snapshot_store import CollectionTaskRecord, LeaseToken, SnapshotIntegrityError
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,11 +31,18 @@ class CoreRetainedIndexReader:
     def __call__(self, identity: DatasetDate) -> Mapping[str, Mapping[str, Any]]:
         if identity.dataset != "core":
             raise ValueError("core retained-index reader requires the core dataset")
-        snapshot = self.repository.get(identity.dataset, identity.as_of)
+        try:
+            snapshot = self.repository.get(identity.dataset, identity.as_of)
+        except SnapshotIntegrityError:
+            return {}
         if snapshot is None:
             return {}
         if snapshot.as_of != identity.as_of:
             raise ValueError("core retained-index snapshot date mismatch")
+        try:
+            validate_core_payload_dates(snapshot.payload, identity.as_of)
+        except CoreDateEvidenceError:
+            return {}
         indices = snapshot.payload.get("indices")
         if not isinstance(indices, Sequence) or isinstance(indices, (str, bytes)):
             return {}
@@ -40,6 +52,10 @@ class CoreRetainedIndexReader:
                 continue
             code = str(value.get("code") or "").strip()
             if not code:
+                continue
+            try:
+                validate_core_index_date(value, identity.as_of)
+            except CoreDateEvidenceError:
                 continue
             retained[code] = copy.deepcopy(dict(value))
         return retained

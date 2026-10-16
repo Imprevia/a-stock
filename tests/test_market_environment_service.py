@@ -539,7 +539,7 @@ def test_service_adds_null_safe_chapter01_contract_when_extended_provider_is_mis
 
 
 def test_materialized_local_read_is_provider_free_fast_and_non_blocking(tmp_path) -> None:
-    selected = market_today()
+    selected = make_bars()[-1].date
     market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
     provider = SectionProvider()
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
@@ -776,7 +776,7 @@ def test_materialization_support_composes_without_legacy_service(tmp_path) -> No
 
 
 def test_failed_refresh_rebuilds_aggregate_with_retained_warning(tmp_path) -> None:
-    selected = market_today()
+    selected = make_bars()[-1].date
     market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
     provider = SectionProvider()
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
@@ -940,7 +940,7 @@ def test_chapter_response_returns_updated_synchronization_summary() -> None:
 
 
 def test_local_chapter_response_refreshes_missing_materialized_synchronization_without_provider_calls(tmp_path) -> None:
-    selected = market_today()
+    selected = make_bars()[-1].date
     market_now = datetime.combine(selected, datetime.min.time(), tzinfo=MARKET_TIME_ZONE).replace(hour=16)
     provider = SectionProvider()
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")

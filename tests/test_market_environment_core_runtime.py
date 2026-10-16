@@ -258,6 +258,26 @@ def test_core_retained_index_reader_uses_only_exact_date_snapshot(tmp_path) -> N
     assert reader(DatasetDate("core", PREVIOUS)) == {}
 
 
+def test_core_retained_index_reader_excludes_malformed_cross_date_snapshot() -> None:
+    retained = _index("sh000001", "prior-date")
+    retained["history"][-1]["date"] = PREVIOUS.isoformat()
+
+    class Repository:
+        def get(self, dataset, as_of):
+            return SnapshotRecord(
+                dataset=dataset,
+                as_of=as_of,
+                payload={"asOf": as_of.isoformat(), "indices": [retained]},
+                source="fixture",
+                status="ok",
+                observations=1,
+                warnings=(),
+                fetched_at=NOW,
+            )
+
+    assert CoreRetainedIndexReader(Repository())(IDENTITY) == {}
+
+
 def _bars(count: int = 280) -> list[Bar]:
     return [
         Bar(

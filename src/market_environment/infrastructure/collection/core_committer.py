@@ -19,6 +19,10 @@ from ...domain.models import (
     CollectionTaskState,
     StructuredTaskFailure,
 )
+from ...domain.policies.core_date_evidence import (
+    validate_core_index_date,
+    validate_core_payload_dates,
+)
 from ..legacy.snapshot_store import (
     CollectionTaskRecord,
     CoreIndexResultRecord,
@@ -41,6 +45,19 @@ class CoreDatasetCommitter:
     def commit(self, request: DatasetCommitRequest) -> CoreCommitEvidence:
         if not isinstance(request, CoreCommitRequest):
             raise TypeError("core committer requires CoreCommitRequest")
+        quality = request.candidate.quality
+        validate_core_payload_dates(
+            request.candidate.payload,
+            request.identity.as_of,
+            actual_as_of=request.candidate.actual_as_of,
+            quality_as_of=quality.as_of if quality is not None else None,
+            effective_as_of=(
+                quality.extra.get("effectiveAsOf") if quality is not None else None
+            ),
+        )
+        for result in request.index_results:
+            if result.payload is not None:
+                validate_core_index_date(result.payload, request.identity.as_of)
 
         with self._unit_of_work_factory() as unit_of_work:
             stored, task, index_results, session, previous_session = (

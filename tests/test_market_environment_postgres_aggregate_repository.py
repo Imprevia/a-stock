@@ -145,3 +145,34 @@ def test_aggregate_payload_revision_must_match_cas_token(aggregate_connection) -
     revision = repository.revision(AS_OF)
     with pytest.raises(ValueError, match="revision does not match"):
         repository.compare_and_swap(AS_OF, revision, _payload("wrong-revision"))
+
+
+def test_aggregate_compare_and_swap_rejects_cross_date_core_and_keeps_prior(
+    aggregate_connection,
+) -> None:
+    repository = PostgresMaterializedAggregateRepository(aggregate_connection)
+    revision = repository.revision(AS_OF)
+    valid = {
+        **_payload(revision.value),
+        "indices": [
+            {
+                "code": "sh000001",
+                "history": [{"date": AS_OF.isoformat(), "close": 3200}],
+            }
+        ],
+    }
+    repository.compare_and_swap(AS_OF, revision, valid)
+    invalid = {
+        **valid,
+        "indices": [
+            {
+                "code": "sh000001",
+                "history": [{"date": "2026-09-11", "close": 3190}],
+            }
+        ],
+    }
+
+    with pytest.raises(SnapshotIntegrityError, match="exact-date mismatch"):
+        repository.compare_and_swap(AS_OF, revision, invalid)
+
+    assert repository.get_aggregate(AS_OF) == valid

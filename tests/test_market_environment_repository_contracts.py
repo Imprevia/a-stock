@@ -65,7 +65,13 @@ def _candidate(as_of: date, *, settled: bool) -> CollectionCandidate:
         identity=DatasetDate("core", as_of),
         payload={
             "asOf": as_of.isoformat(),
-            "indices": [{"code": "sh000001", "close": 3210.5}],
+            "indices": [
+                {
+                    "code": "sh000001",
+                    "close": 3210.5,
+                    "history": [{"date": as_of.isoformat(), "close": 3210.5}],
+                }
+            ],
             "quality": quality_to_api(quality),
         },
         source="fixture-primary",

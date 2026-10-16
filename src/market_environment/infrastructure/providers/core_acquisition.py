@@ -14,6 +14,10 @@ from zoneinfo import ZoneInfo
 from ...application.collection import SourceAdapterRegistry
 from ...application.ports import AcquisitionPlanStep, SourceCapability, SourceRequest
 from ...domain.analysis import analyze_index, build_collected_core_summary
+from ...domain.policies.core_date_evidence import (
+    CoreDateEvidenceError,
+    validate_core_index_date,
+)
 from ...domain.models import (
     AcquisitionFailure,
     AcquisitionFailureCategory,
@@ -127,6 +131,7 @@ def _failure(
     message: str,
     *,
     retryable: bool = False,
+    actual_as_of: date | None = None,
     fetched_at: datetime | None = None,
     timings: AcquisitionTimings | None = None,
     provenance: RedactedProvenance | None = None,
@@ -138,6 +143,7 @@ def _failure(
         source=capability.source_id,
         source_revision=capability.revision,
         requested_as_of=request.identity.as_of,
+        actual_as_of=actual_as_of,
         fetched_at=fetched_at,
         timings=timings or AcquisitionTimings(),
         provenance=redact_provenance(provenance or RedactedProvenance()),
@@ -246,31 +252,6 @@ def _history_candidate(
             timings=timings,
             provenance=provenance,
         )
-    if guarded_price and spec.code in _PRICE_GUARDED_CODES and expected_price in (
-        None,
-        0,
-        "",
-    ):
-        return _failure(
-            request,
-            capability,
-            AcquisitionFailureCategory.INSUFFICIENT,
-            f"{source} requires an independent Tencent quote for {spec.code}",
-            fetched_at=fetched_at,
-            timings=timings,
-            provenance=provenance,
-        )
-    if not _price_matches(bars, expected_price):
-        return _failure(
-            request,
-            capability,
-            AcquisitionFailureCategory.CONTRACT,
-            f"{source} history does not match the independent Tencent quote",
-            fetched_at=fetched_at,
-            timings=timings,
-            provenance=provenance,
-        )
-
     try:
         filtered = sorted(
             (bar for bar in bars if getattr(bar, "date") <= request.identity.as_of),
@@ -297,6 +278,69 @@ def _history_candidate(
             provenance=provenance,
         )
 
+    effective_as_of = getattr(filtered[-1], "date")
+    if not isinstance(effective_as_of, date) or isinstance(effective_as_of, datetime):
+        return _failure(
+            request,
+            capability,
+            AcquisitionFailureCategory.CONTRACT,
+            f"{source} returned malformed index history tail date",
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=provenance,
+        )
+    if effective_as_of != request.identity.as_of:
+        mismatch_provenance = redact_provenance(
+            replace(
+                provenance,
+                attributes={
+                    **dict(provenance.attributes),
+                    "dateEvidenceKind": "history-bar",
+                    "indexCode": spec.code,
+                    "requestedAsOf": request.identity.as_of.isoformat(),
+                    "actualAsOf": effective_as_of.isoformat(),
+                },
+            )
+        )
+        return _failure(
+            request,
+            capability,
+            AcquisitionFailureCategory.DATE_MISMATCH,
+            (
+                f"{source} history date mismatch for {spec.code}: requested "
+                f"{request.identity.as_of.isoformat()}, actual {effective_as_of.isoformat()}"
+            ),
+            actual_as_of=effective_as_of,
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=mismatch_provenance,
+        )
+
+    if guarded_price and spec.code in _PRICE_GUARDED_CODES and expected_price in (
+        None,
+        0,
+        "",
+    ):
+        return _failure(
+            request,
+            capability,
+            AcquisitionFailureCategory.INSUFFICIENT,
+            f"{source} requires an independent Tencent quote for {spec.code}",
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=provenance,
+        )
+    if not _price_matches(filtered, expected_price):
+        return _failure(
+            request,
+            capability,
+            AcquisitionFailureCategory.CONTRACT,
+            f"{source} history does not match the independent Tencent quote",
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=provenance,
+        )
+
     result = SimpleNamespace(bars=filtered, source=source, warning=warning)
     try:
         analysis = analyze_index(spec, filtered, result, quote)
@@ -312,7 +356,19 @@ def _history_candidate(
         )
     selected_warning = warning or analysis["dataQuality"].get("warning")
     warnings = (str(selected_warning),) if selected_warning else ()
-    effective_as_of = getattr(filtered[-1], "date")
+    try:
+        validate_core_index_date(analysis, request.identity.as_of)
+    except CoreDateEvidenceError as exc:
+        return _failure(
+            request,
+            capability,
+            AcquisitionFailureCategory.DATE_MISMATCH,
+            str(exc),
+            actual_as_of=exc.actual_as_of,
+            fetched_at=fetched_at,
+            timings=timings,
+            provenance=provenance,
+        )
     normalized_provenance = redact_provenance(
         replace(
             provenance,
@@ -367,7 +423,7 @@ def _history_candidate(
         observations=len(filtered),
         warnings=warnings,
         settled=request.settled is True,
-        actual_as_of=request.identity.as_of,
+        actual_as_of=effective_as_of,
         quality=quality,
         source_revision=revision,
         fetched_at=fetched_at,
@@ -1146,6 +1202,20 @@ class CoreAcquisitionPlan:
             failures.append(failure)
             retained = retained_by_code.get(spec.code)
             if retained is not None:
+                try:
+                    validate_core_index_date(retained, identity.as_of)
+                except CoreDateEvidenceError as error:
+                    retained = None
+                    actual = (
+                        error.actual_as_of.isoformat()
+                        if error.actual_as_of is not None
+                        else "unknown"
+                    )
+                    warnings.append(
+                        f"{spec.name}：排除错日期留存数据（requested="
+                        f"{identity.as_of.isoformat()}, actual={actual}）"
+                    )
+            if retained is not None:
                 analyses.append(retained)
                 effective_date = _analysis_effective_date(retained)
                 if effective_date is not None:
@@ -1188,7 +1258,7 @@ class CoreAcquisitionPlan:
                 attempts=tuple(attempts),
             )
 
-        effective_date = min(effective_dates) if effective_dates else identity.as_of
+        effective_date = identity.as_of
         core_payload = {
             "asOf": effective_date.isoformat(),
             "generatedAt": self.now().isoformat(),
@@ -1375,6 +1445,7 @@ def _attempt_source(
                 source_revision=adapter.capability.revision,
                 engine=result.provenance.engine,
                 requested_as_of=identity.as_of,
+                actual_as_of=result.actual_as_of,
                 category=result.category,
                 warning=result.message,
                 timings=result.timings,

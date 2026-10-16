@@ -11,6 +11,7 @@ from src.market_environment.bootstrap.app import create_app
 from src.market_environment.infrastructure.v2_market_data_compat import (
     CompatibilityV2MarketDataReadAdapter,
 )
+from src.market_environment.snapshot_store import SnapshotIntegrityError
 from tests.market_environment_api_support import build_test_app
 
 
@@ -136,6 +137,32 @@ def test_v2_missing_future_and_closed_selectors_have_stable_statuses() -> None:
     assert client.get("/api/v2/market-environment/1900-01-01/overview").status_code == 404
     assert client.get(f"{ROOT}/indices/not-a-code").status_code in {404, 422}
     assert client.get(f"{ROOT}/limits/pools/not-a-pool").status_code == 422
+
+
+def test_v2_integrity_failure_is_a_safe_stable_503() -> None:
+    class BrokenQueries:
+        def overview(self, _as_of):
+            raise SnapshotIntegrityError(
+                "checksum=/secret/path sql=SELECT provider_payload=must-not-leak"
+            )
+
+    client = TestClient(
+        build_test_app(
+            v2_queries=BrokenQueries(),
+            effective_date=date(2026, 10, 16),
+        )
+    )
+
+    response = client.get(f"{ROOT}/overview")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "snapshot_integrity_error",
+            "message": "本地市场数据完整性校验失败，请联系运维审计对应日期的数据。",
+        }
+    }
+    assert "must-not-leak" not in response.text
 
 
 def test_v2_variable_collections_reject_limits_above_their_maximum() -> None:

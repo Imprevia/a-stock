@@ -141,6 +141,91 @@ def test_store_rejects_unsupported_schema_and_detects_tampering(tmp_path) -> Non
         store.get_materialized_aggregate(aggregate.as_of)
 
 
+def test_store_rejects_cross_date_core_snapshot_without_replacing_valid_row(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "strict-core.sqlite3")
+    valid_payload = {
+        "asOf": AS_OF.isoformat(),
+        "indices": [
+            {
+                "code": "sh000001",
+                "history": [{"date": AS_OF.isoformat(), "close": 3200}],
+            }
+        ],
+    }
+    valid = store.put(
+        SnapshotRecord(
+            dataset="core",
+            as_of=AS_OF,
+            payload=valid_payload,
+            source="fixture",
+            status="partial",
+            observations=1,
+            warnings=(),
+            fetched_at=NOW,
+        )
+    )
+    invalid = SnapshotRecord(
+        **{
+            **valid.__dict__,
+            "payload": {
+                "asOf": "2026-09-01",
+                "indices": [
+                    {
+                        "code": "sh000001",
+                        "history": [{"date": "2026-09-01", "close": 3190}],
+                    }
+                ],
+            },
+            "checksum": "",
+        }
+    )
+
+    with pytest.raises(SnapshotIntegrityError, match="exact-date mismatch"):
+        store.put(invalid)
+
+    assert store.get("core", AS_OF) == valid
+
+
+def test_store_rejects_cross_date_aggregate_without_replacing_valid_row(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "strict-aggregate.sqlite3")
+    valid = store.put_materialized_aggregate(
+        MaterializedAggregateRecord(
+            as_of=AS_OF,
+            payload={
+                "asOf": AS_OF.isoformat(),
+                "indices": [
+                    {
+                        "code": "sh000001",
+                        "history": [{"date": AS_OF.isoformat(), "close": 3200}],
+                    }
+                ],
+                "chapter01": {},
+            },
+            generated_at=NOW,
+        )
+    )
+
+    with pytest.raises(SnapshotIntegrityError, match="exact-date mismatch"):
+        store.put_materialized_aggregate(
+            MaterializedAggregateRecord(
+                as_of=AS_OF,
+                payload={
+                    "asOf": AS_OF.isoformat(),
+                    "indices": [
+                        {
+                            "code": "sh000001",
+                            "history": [{"date": "2026-09-01", "close": 3190}],
+                        }
+                    ],
+                    "chapter01": {},
+                },
+                generated_at=NOW,
+            )
+        )
+
+    assert store.get_materialized_aggregate(AS_OF) == valid
+
+
 def test_leases_are_shared_across_store_instances_and_expire(tmp_path) -> None:
     path = tmp_path / "snapshots.sqlite3"
     first = SnapshotStore(path)

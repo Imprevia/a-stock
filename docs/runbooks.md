@@ -18,11 +18,22 @@ AI 或自动化客户端先读取 `GET /api/v2/market-environment/YYYY-MM-DD/ove
 - `404`：该 exact date 没有任何受支持本地证据；先检查本地 snapshot/aggregate 状态，不运行 provider 来修复 GET。
 - `409`：revision precondition 或 cursor 已过期；重新取 overview，并整组重启本次多资源读取。
 - `422`：日期格式/未来日期、未知 index/pool/selector、limit 越界或 cursor 格式不合法；按 `/openapi.json` 修正请求。
+- `503` 且 `error.code=snapshot_integrity_error`：本地行存在但 checksum 或 key、payload、actual/effective date 不一致；保存请求路径、日期、应用 image、精确 row key 与脱敏 revision/checksum 引用，停止把该行作为证据。GET 不会也不得触发 provider、采集、重标、删除或数据库修复；不要将其当成 404，也不要回退 legacy 或其他日期成功数据。
 - `200` 且 `quality.status=missing|insufficient|degraded|failed-retained|failed-missing`：这是证据状态，不用 0、空成功、旧日期或最新 provider 结果替换；保留 source/provider/observation/warning/freshness。
 
 `GET /llms.txt` 用于紧凑发现，`GET /llms-full.txt` 用于完整接入说明，两者均为 UTF-8 `text/plain` 并链接 `/openapi.json`。它们不承载实时行情。若 discovery 与 OpenAPI 路径、参数、operation id、响应 model 或 limit 不一致，先视为发布阻断并运行确定性 drift tests；不得手改运行时生成文件或把生产响应复制进文档。
 
 验证 v2 时只使用本地 fixture/测试数据库和离线测试：断言 provider 构造/调用、collection start/join、background task 与 write count 均为零；不得用真实 provider smoke、生产 NodePort、生产 PostgreSQL 或部署写来证明 GET 正常。回滚为移除 v2/discovery route 注册并让 dashboard 切回 legacy caller；不删除 PostgreSQL、snapshot、aggregate、run/task/checkpoint，不改 provider gate，不执行 migration，也不改 Hermes/部署配置。legacy 未版本化路径在整个迁移期必须保持可读。
+
+### Core 跨日期完整性审计与受控前向修复
+
+只读审计先在隔离 fixture/恢复库验证，再由单独获批的生产计划执行。审计只选择 `snapshot_entries(dataset='core')` 与 `materialized_market_environment` 的 key、payload `asOf`、quality `asOf/effectiveAsOf`、各指数 history 最后一日、checksum/revision 引用；不得打印数据库 URL、完整 payload、provider header 或凭据。审计必须使用只读事务并证明 write count 为零。
+
+仓库内的 `audit_core_date_integrity(connection)` 只执行两条有界 `SELECT`，返回 snapshot/aggregate row identity、日期证据、checksum/component revision 和指数尾日，不返回完整行情 payload。先在隔离恢复库调用并保存脱敏结果；测试 `tests/test_market_environment_integrity_audit.py` 固定 SQL 全为 `SELECT` 且审计前后表行数不变。生产调用仍属于单独获批计划，不是本 change 自动执行的命令。
+
+若发现错位，当前 change 只报告，不自动处置。生产前向修复必须另建 active plan并取得明确授权，顺序固定为：冻结 manual/automation writers 并确认无 active run/task → 完成 PostgreSQL 可恢复备份并记录目标 row key/checksum → 审阅目标日期是否已有合法成功证据和冲突 → 发布已通过离线门禁的修复版本 → 仅在 provider 能证明同一目标日期时显式重新采集 core 并通过 fenced commit/aggregate rebuild 前向覆盖 → 验证 v2 overview、legacy core、run/task、checksum/revision 与 writers 状态。禁止自动 relabel、跨日期 copy、直接编辑 payload/checksum、静默删除历史、删除 PVC、未经授权调用 provider 或用 GET 修复。
+
+发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview 与 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发写入均阻断发布。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
 
 ## 环境要求
 

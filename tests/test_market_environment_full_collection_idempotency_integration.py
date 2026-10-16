@@ -146,21 +146,31 @@ class _CountingProviderCollector:
 
     def collect(self, identity: DatasetDate) -> CollectionOutcome:
         self.provider_calls.record(identity)
+        payload = {
+            "asOf": identity.as_of.isoformat(),
+            "quality": {
+                "dataset": identity.dataset,
+                "source": "idempotency-fixture-provider",
+                "provider": "idempotency-fixture-provider",
+                "status": "ok",
+                "observations": 1,
+                "asOf": identity.as_of.isoformat(),
+                "warning": None,
+                "warnings": [],
+            },
+        }
+        if identity.dataset == "core":
+            payload["indices"] = [
+                {
+                    "code": "sh000001",
+                    "history": [
+                        {"date": identity.as_of.isoformat(), "close": 3200}
+                    ],
+                }
+            ]
         candidate = CollectionCandidate(
             identity=identity,
-            payload={
-                "asOf": identity.as_of.isoformat(),
-                "quality": {
-                    "dataset": identity.dataset,
-                    "source": "idempotency-fixture-provider",
-                    "provider": "idempotency-fixture-provider",
-                    "status": "ok",
-                    "observations": 1,
-                    "asOf": identity.as_of.isoformat(),
-                    "warning": None,
-                    "warnings": [],
-                },
-            },
+            payload=payload,
             source="idempotency-fixture-provider",
             status="ok",
             observations=1,

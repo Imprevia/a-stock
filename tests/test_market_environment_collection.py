@@ -211,12 +211,22 @@ class FixtureDatasetCollector:
                     source="fixture-provider",
                 ),
             )
+        payload = {
+            "asOf": identity.as_of.isoformat(),
+            "quality": quality(identity.dataset, identity.as_of),
+        }
+        if identity.dataset == "core":
+            payload["indices"] = [
+                {
+                    "code": "sh000001",
+                    "history": [
+                        {"date": identity.as_of.isoformat(), "close": 3200}
+                    ],
+                }
+            ]
         candidate = CollectionCandidate(
             identity=identity,
-            payload={
-                "asOf": identity.as_of.isoformat(),
-                "quality": quality(identity.dataset, identity.as_of),
-            },
+            payload=payload,
             source="fixture",
             status="ok",
             observations=1,

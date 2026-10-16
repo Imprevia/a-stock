@@ -11,6 +11,8 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 
+from src.market_environment.snapshot_store import SnapshotIntegrityError
+
 from src.market_environment.service import MarketEnvironmentService
 from tests.market_environment_api_support import build_test_app
 
@@ -180,6 +182,28 @@ def test_legacy_aggregate_and_core_paths_keep_their_existing_shapes() -> None:
     assert core.json()["summary"]["synchronization"] == "core fixture"
     assert core.json()["chapter01"] is None
     assert queries.calls == [("aggregate", None), ("core", None)]
+
+
+def test_legacy_integrity_failure_is_a_safe_stable_503() -> None:
+    class BrokenQueries(_LegacyMarketQueries):
+        def get_core(self, as_of):
+            raise SnapshotIntegrityError(
+                "checksum=/secret/path sql=SELECT provider_payload=must-not-leak"
+            )
+
+    response = TestClient(
+        build_test_app(market_queries=BrokenQueries(), effective_date=AS_OF)
+    ).get(
+        "/api/market-environment/core",
+        params={"as_of": AS_OF.isoformat()},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "snapshot_integrity_error",
+        "message": "本地市场数据完整性校验失败，请联系运维审计对应日期的数据。",
+    }
+    assert "must-not-leak" not in response.text
 
 
 def test_legacy_chapter_section_still_returns_all_cumulative_siblings() -> None:

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.market_environment.application.collection import SourceAdapterRegistry
+from src.market_environment.application.ports import SourceRequest
 from src.market_environment.domain.analysis import Bar
 from src.market_environment.domain.models import (
+    AcquisitionFailure,
     CollectionTaskState,
     DatasetDate,
 )
@@ -61,6 +63,7 @@ class FakeLegacyProvider:
     calls: list[tuple[str, str]] = field(default_factory=list)
     failing: set[tuple[str, str]] = field(default_factory=set)
     quote_calls: int = 0
+    history_date: date = AS_OF
 
     def fetch_quotes(self, specs):
         self.quote_calls += 1
@@ -81,7 +84,7 @@ class FakeLegacyProvider:
         self.calls.append(key)
         if key in self.failing:
             raise RuntimeError(f"{source} unavailable for {spec.code}")
-        return _bars(offset=offset)
+        return _bars(self.history_date, offset=offset)
 
     def _fetch_mootdx(self, spec, limit):
         return self._result("mootdx", spec)
@@ -184,6 +187,83 @@ def test_core_plan_declares_order_and_keeps_mootdx_non_http() -> None:
     assert tuple(step.adapter_id for step in plan.steps[1:]) == CORE_HISTORY_SOURCE_ORDER
     assert plan.adapters.get(MOOTDX_CORE_HISTORY_SOURCE_ID).capability.provider == "mootdx"
     assert plan.adapters.get(MOOTDX_CORE_HISTORY_SOURCE_ID).capability.methods == ("TCP",)
+
+
+def test_each_legacy_history_adapter_reports_exact_tail_or_structured_mismatch() -> None:
+    adapter_types = (
+        MootdxCoreHistorySourceAdapter,
+        BaiduCoreHistorySourceAdapter,
+        SinaCoreHistorySourceAdapter,
+        TencentCoreHistorySourceAdapter,
+        EastmoneyCoreHistorySourceAdapter,
+    )
+    spec = INDEX_SPECS[1]
+    for adapter_type in adapter_types:
+        exact = adapter_type(FakeLegacyProvider(history_date=AS_OF), now=lambda: NOW)
+        request = SourceRequest(
+            identity=DatasetDate("core", AS_OF),
+            source_id=exact.source_id,
+            role="formal",
+            params={"spec": spec, "quote": {"price": 3279.0}},
+            capability_revision=exact.capability.revision,
+            current_market_date=AS_OF,
+            settled=True,
+        )
+        candidate = exact.acquire(request)
+        assert not isinstance(candidate, AcquisitionFailure)
+        assert candidate.actual_as_of == AS_OF
+
+        prior = adapter_type(FakeLegacyProvider(history_date=HISTORICAL), now=lambda: NOW)
+        mismatch = prior.acquire(replace(request, source_id=prior.source_id, capability_revision=prior.capability.revision))
+        assert isinstance(mismatch, AcquisitionFailure)
+        assert mismatch.category.value == "date-mismatch"
+        assert mismatch.actual_as_of == HISTORICAL
+
+
+def test_one_cross_date_index_produces_selected_date_partial() -> None:
+    provider = FakeLegacyProvider()
+    stale_code = INDEX_SPECS[0].code
+
+    def values(spec):
+        return _bars(HISTORICAL if spec.code == stale_code else AS_OF)
+
+    provider._fetch_mootdx = lambda spec, limit: values(spec)
+    provider._fetch_baidu_kline = lambda spec, limit: values(spec)
+    provider._fetch_sina_kline = lambda spec, limit, quote: values(spec)
+    provider._fetch_tencent_kline = lambda spec, limit: values(spec)
+    provider._fetch_eastmoney_kline = lambda spec, limit: values(spec)
+
+    outcome = _plan(provider).collect(DatasetDate("core", AS_OF))
+
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert outcome.candidate is not None
+    assert outcome.candidate.payload["asOf"] == AS_OF.isoformat()
+    assert {item["code"] for item in outcome.candidate.payload["indices"]} == {
+        spec.code for spec in INDEX_SPECS if spec.code != stale_code
+    }
+
+
+def test_all_cross_date_indices_are_missing_or_same_date_retained() -> None:
+    seed = _plan(FakeLegacyProvider()).collect(DatasetDate("core", AS_OF))
+    assert seed.candidate is not None
+    stale = FakeLegacyProvider(history_date=HISTORICAL)
+
+    missing = _plan(stale).collect(DatasetDate("core", AS_OF))
+    retained = _plan(
+        FakeLegacyProvider(history_date=HISTORICAL),
+        retained=lambda _identity: {
+            item["code"]: item for item in seed.candidate.payload["indices"]
+        },
+    ).collect(DatasetDate("core", AS_OF))
+
+    assert missing.state is CollectionTaskState.FAILED_MISSING
+    assert missing.candidate is None
+    assert retained.state is CollectionTaskState.FAILED_RETAINED
+    assert retained.candidate is not None
+    assert all(
+        item["history"][-1]["date"] == AS_OF.isoformat()
+        for item in retained.candidate.payload["indices"]
+    )
 
 
 def test_current_date_quote_cross_check_is_one_shared_quote_attempt() -> None:
@@ -364,7 +444,7 @@ def test_fuyao_failure_fallback_is_partial_and_keeps_ordered_attempt_evidence() 
     assert any("扶摇失败并回退" in warning for warning in outcome.candidate.warnings)
 
 
-def test_stale_history_keeps_subresults_but_marks_missing_session_evidence() -> None:
+def test_stale_history_is_rejected_and_exact_date_fallback_is_used() -> None:
     provider = FakeLegacyProvider()
     old_date = AS_OF - timedelta(days=1)
     original = _bars(old_date)
@@ -372,9 +452,18 @@ def test_stale_history_keeps_subresults_but_marks_missing_session_evidence() -> 
     outcome = _plan(provider).collect(DatasetDate("core", AS_OF))
 
     assert outcome.candidate is not None
-    assert outcome.candidate.payload["asOf"] == old_date.isoformat()
-    assert outcome.candidate.quality.extra["tradingSession"] is None
-    assert "could not prove" in (outcome.candidate.quality.extra["sessionWarning"] or "")
+    assert outcome.candidate.payload["asOf"] == AS_OF.isoformat()
+    assert all(
+        item["history"][-1]["date"] == AS_OF.isoformat()
+        for item in outcome.candidate.payload["indices"]
+    )
+    mismatch = next(
+        attempt
+        for attempt in outcome.attempts
+        if attempt.source == MOOTDX_CORE_HISTORY_SOURCE_ID
+    )
+    assert mismatch.category.value == "date-mismatch"
+    assert mismatch.actual_as_of == old_date
 
 
 def test_stale_current_quotes_are_preserved_as_quality_evidence() -> None:

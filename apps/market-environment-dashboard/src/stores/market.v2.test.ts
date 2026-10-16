@@ -96,6 +96,26 @@ describe('market store v2 dashboard resources', () => {
     expect(requests.some((url) => url.includes('/chapter-01'))).toBe(false)
   })
 
+  it('surfaces snapshot integrity failure without falling back to legacy data', async () => {
+    const fetchMock = vi.fn(async () => response({
+      error: {
+        code: 'snapshot_integrity_error',
+        message: '本地市场数据完整性校验失败，请联系运维审计对应日期的数据。',
+      },
+    }, 503))
+    vi.stubGlobal('fetch', fetchMock)
+    const market = useMarketStore()
+    market.selectedDate = AS_OF
+
+    await market.loadDashboardShell()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe(`${ROOT}/overview`)
+    expect(market.v2Enabled).toBe(true)
+    expect(market.data).toBeNull()
+    expect(market.error).toContain('完整性校验失败')
+  })
+
   it('loads breadth and limits from isolated summary/history/evidence resources', async () => {
     const requests: string[] = []
     vi.stubGlobal('fetch', fixtureFetch(requests))

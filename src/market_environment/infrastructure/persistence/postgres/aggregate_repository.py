@@ -9,6 +9,10 @@ from typing import Any
 from sqlalchemy import Connection, text
 
 from ....domain.models import MaterializationRevision
+from ....domain.policies.core_date_evidence import (
+    CoreDateEvidenceError,
+    validate_materialized_aggregate_dates,
+)
 from ....snapshot_store import (
     MATERIALIZED_COMPONENT_REVISION_KEY,
     MaterializedAggregateConflict,
@@ -44,10 +48,12 @@ class PostgresMaterializedAggregateRepository:
             raise SnapshotIntegrityError(
                 f"materialized aggregate checksum mismatch: {as_of.isoformat()}"
             )
-        if payload.get("asOf") not in (None, as_of.isoformat()):
+        try:
+            validate_materialized_aggregate_dates(payload, as_of)
+        except CoreDateEvidenceError as exc:
             raise SnapshotIntegrityError(
                 f"materialized aggregate exact-date mismatch: {as_of.isoformat()}"
-            )
+            ) from exc
         return payload
 
     def revision(self, as_of: date) -> MaterializationRevision:
@@ -177,8 +183,12 @@ class PostgresMaterializedAggregateRepository:
                     "materialized aggregate inputs changed before commit"
                 )
             value = dict(payload)
-            if value.get("asOf") not in (None, as_of.isoformat()):
-                raise ValueError("materialized aggregate payload date does not match key")
+            try:
+                validate_materialized_aggregate_dates(value, as_of)
+            except CoreDateEvidenceError as exc:
+                raise SnapshotIntegrityError(
+                    f"materialized aggregate exact-date mismatch: {as_of.isoformat()}"
+                ) from exc
             if value.get(MATERIALIZED_COMPONENT_REVISION_KEY) != expected.value:
                 raise ValueError(
                     "materialized aggregate payload revision does not match its inputs"

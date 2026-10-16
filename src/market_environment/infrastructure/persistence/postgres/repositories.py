@@ -11,6 +11,10 @@ from sqlalchemy import Connection, text
 
 from ....application.mappers import candidate_to_snapshot_fields, snapshot_to_candidate
 from ....domain.models import CollectionCandidate, DatasetDate
+from ....domain.policies.core_date_evidence import (
+    CoreDateEvidenceError,
+    validate_core_payload_dates,
+)
 from ...providers.capability import ProviderCapabilityReport
 from ....snapshot_store import (
     SNAPSHOT_SCHEMA_VERSION,
@@ -49,49 +53,6 @@ def _as_datetime(value: datetime | str) -> datetime:
     return result.astimezone(timezone.utc)
 
 
-def _allows_legacy_core_effective_date(
-    identity: DatasetDate,
-    payload: Mapping[str, Any],
-) -> bool:
-    """Accept legacy core effective dates without relabeling snapshot identity."""
-
-    if identity.dataset != "core":
-        return False
-    try:
-        effective_as_of = date.fromisoformat(str(payload.get("asOf") or ""))
-    except ValueError:
-        return False
-    if effective_as_of >= identity.as_of:
-        return False
-    quality = payload.get("quality")
-    if isinstance(quality, Mapping) and quality.get("asOf") not in (
-        None,
-        identity.as_of.isoformat(),
-    ):
-        return False
-    indices = payload.get("indices")
-    if not isinstance(indices, Sequence) or isinstance(indices, (str, bytes)) or not indices:
-        return False
-    latest_dates: list[date] = []
-    for value in indices:
-        if not isinstance(value, Mapping):
-            return False
-        history = value.get("history")
-        if not isinstance(history, Sequence) or isinstance(history, (str, bytes)) or not history:
-            return False
-        latest = history[-1]
-        if not isinstance(latest, Mapping):
-            return False
-        try:
-            latest_date = date.fromisoformat(str(latest.get("date") or ""))
-        except ValueError:
-            return False
-        if latest_date > identity.as_of:
-            return False
-        latest_dates.append(latest_date)
-    return min(latest_dates) == effective_as_of
-
-
 def _snapshot_dates_are_compatible(
     identity: DatasetDate,
     payload: Mapping[str, Any],
@@ -102,12 +63,28 @@ def _snapshot_dates_are_compatible(
     expected_as_of = identity.as_of.isoformat()
     quality = payload.get("quality")
     quality_as_of = quality.get("asOf") if isinstance(quality, Mapping) else None
-    if payload.get("asOf") in (None, expected_as_of) and quality_as_of in (
+    compatible = payload.get("asOf") in (None, expected_as_of) and quality_as_of in (
         None,
         expected_as_of,
-    ):
-        return True
-    return _allows_legacy_core_effective_date(identity, payload)
+    )
+    if not compatible:
+        return False
+    if identity.dataset == "core":
+        try:
+            validate_core_payload_dates(
+                payload,
+                identity.as_of,
+                actual_as_of=actual_as_of,
+                quality_as_of=quality_as_of,
+                effective_as_of=(
+                    quality.get("effectiveAsOf")
+                    if isinstance(quality, Mapping)
+                    else None
+                ),
+            )
+        except CoreDateEvidenceError:
+            return False
+    return True
 
 
 class PostgresSnapshotRepository:

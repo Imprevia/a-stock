@@ -2,6 +2,7 @@
 
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
@@ -9,6 +10,8 @@ import App from '../../App.vue'
 import { registerRouterGuards } from '../../router/guards'
 import { routes } from '../../router/routes'
 import { useMarketStore } from '../../stores/market'
+
+const styles = readFileSync('src/styles.css', 'utf8')
 
 vi.mock('echarts', () => ({
   init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
@@ -119,5 +122,40 @@ describe('DashboardLayout section refresh', () => {
 
     expect(requests).toContain('/api/market-environment/core?as_of=2026-09-10')
     expect(requests).toContain('/api/market-environment/chapter-01?as_of=2026-09-10&section=limits')
+  })
+
+  it('在 390px 明确展示完整性错误且不请求 legacy core', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
+      const url = String(request)
+      requests.push(url)
+      if (url === '/api/preferences/timezone') {
+        return new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({
+        error: {
+          code: 'snapshot_integrity_error',
+          message: '本地市场数据完整性校验失败，请联系运维审计对应日期的数据。',
+        },
+      }), { status: 503, headers: { 'Content-Type': 'application/json' } })
+    }))
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const market = useMarketStore()
+    market.selectedDate = '2026-09-10'
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    await router.push('/dashboard/01')
+    await router.isReady()
+    wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    await flushPromises()
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text()).toContain('完整性校验失败')
+    expect(styles).toMatch(/\.state-panel\s*\{[^}]*font-size:\s*14px/s)
+    expect(styles).toMatch(/\.error-panel p\s*\{[^}]*font-size:\s*14px/s)
+    expect((wrapper.element as HTMLElement).scrollWidth).toBeLessThanOrEqual(390)
+    expect(requests.some((url) => url.startsWith('/api/market-environment/core'))).toBe(false)
   })
 })

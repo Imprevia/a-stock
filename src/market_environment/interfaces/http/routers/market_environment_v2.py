@@ -31,6 +31,7 @@ from ..v2_conditional import (
     require_snapshot_revision,
     snapshot_revision_conflict_response,
 )
+from ..errors import is_snapshot_integrity_error, snapshot_integrity_response
 
 
 router = APIRouter(prefix="/api/v2/market-environment", tags=["AI market data v2"])
@@ -338,6 +339,10 @@ def _exact_resource(
         return invalid
     try:
         value = loader()
+    except RuntimeError as error:
+        if is_snapshot_integrity_error(error):
+            return snapshot_integrity_response()
+        raise
     except ValueError as error:
         return _error(422, "invalid_selector", str(error))
     return _resource_response(

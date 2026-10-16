@@ -29,6 +29,7 @@ import {
   fetchV2CollectionWithOverviewRestart,
   fetchV2Overview,
   requestV2,
+  V2ApiError,
   V2RevisionConflictError,
   type V2Envelope,
   type V2PaginatedEnvelope,
@@ -290,7 +291,15 @@ export const useMarketStore = defineStore('market', () => {
       coreRequestedDate = result.envelope.asOf
       if (result.envelope.asOf !== selectedDate.value) selectedDate.value = result.envelope.asOf
       void loadNextSession(result.envelope.asOf)
-    } catch {
+    } catch (cause) {
+      if (cause instanceof V2ApiError && cause.code === 'snapshot_integrity_error') {
+        v2Enabled.value = true
+        v2Overview.value = null
+        snapshotRevision.value = ''
+        data.value = null
+        error.value = cause.message || '本地市场数据完整性校验失败，请联系运维处理'
+        return
+      }
       v2Enabled.value = false
       await loadCore()
     } finally {
