@@ -26,6 +26,8 @@ _EXPORTS = {
     "PostgresTimezonePreferenceRepository": ".timezone_repository",
     "PostgresSectorContinuityRepository": ".sector_continuity_repository",
     "PostgresThsSectorRepository": ".ths_sector_repository",
+    "PostgresV2MarketDataReadAdapter": ".v2_market_data",
+    "PostgresV2MarketDataReadService": ".v2_market_data",
 }
 
 

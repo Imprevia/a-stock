@@ -2,7 +2,7 @@
 
 ## Status
 
-`active` · 版本 `0.16`
+`active` · 版本 `0.17`
 
 后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
 
@@ -13,6 +13,30 @@
 把 `搭建交易系统/01-如何判断市场环境/` 与量化版对应文档中的盘后判断拆成可重复读取、带数据质量说明且可追溯到规则范围的网页证据，避免把主观描述或缺失数据包装成确定结论。
 
 页面布局、组件、字体、颜色、图表、状态和响应式实现统一遵循 [`market-environment-dashboard-design-guidelines.md`](market-environment-dashboard-design-guidelines.md)。
+
+## 面向 AI 的资源级只读 API（2026-10-16）
+
+`/api/v2/market-environment` 是 additive、exact-date、provider-free 的 AI 读取面；现有未版本化 aggregate、core、`chapter-01?section=`、next-session、collection 和 THS 接口继续保持路径、字段与行为兼容。AI 默认流程是先取 `/{as_of}/overview`，再根据 `links` 读取单一资源，不把约 `174–185 KB` 的 legacy 完整聚合作为发现入口。当前实测体量基线为 `indices` 约 `64 KB`、`limits` 约 `78–85 KB`；legacy section 当前仍返回完整累计 Chapter 01，该行为只能由 characterization tests 固定，不能复制到 v2 DTO。
+
+资源树固定为：
+
+| 资源 | v2 路径 |
+|------|---------|
+| 紧凑概览 | `/{as_of}/overview` |
+| 指数摘要 / 单指数 / 单指数历史 | `/{as_of}/indices`、`/{as_of}/indices/{code}`、`/{as_of}/indices/{code}/history` |
+| 广度摘要 / 历史 | `/{as_of}/breadth`、`/{as_of}/breadth/history` |
+| 涨跌停摘要 / 单证券池 / 历史 / 规则风险证据 | `/{as_of}/limits`、`/{as_of}/limits/pools/{pool_type}`、`/{as_of}/limits/history`、`/{as_of}/limits/evidence` |
+| 板块排名 / 量价 / 宽度 / 持续性分析 | `/{as_of}/sectors/rankings`、`/{as_of}/sectors/turnover`、`/{as_of}/sectors/breadth`、`/{as_of}/sectors/analysis` |
+| 容量方向 / 事件 / 综合评估 | `/{as_of}/active-direction`、`/{as_of}/events`、`/{as_of}/assessment` |
+| operation 摘要 / checkpoints | `/operations/{run_id}`、`/operations/{run_id}/checkpoints` |
+
+每个 endpoint 使用专用 `data` DTO；共同 envelope 为 `asOf`、`generatedAt`、opaque `snapshotRevision`、`quality`、`data`、`links`，集合才增加 `pagination`。overview 只提供紧凑结论、各资源 availability/quality 和链接，禁止内嵌指数历史、证券池行、板块排名、checkpoint 或完整 Chapter 01。指数摘要不含 history，limits 摘要不含证券行/历史点，operation 摘要不含 checkpoints；THS catalog 与单 code bars 保留现有契约，由板块响应链接而不复制。
+
+客户端以 overview 的 `snapshotRevision` 固定一次多资源读取；响应同时给出 ETag，`If-None-Match` 命中返回 304，revision 前置条件不匹配返回带当前 revision 的稳定 409。opaque cursor 绑定资源、日期或 run id、filters、稳定排序键与 revision，不能跨资源、改筛选或跨 revision 重用。初始列表边界为：limits pool、sector rows、active direction 默认 20/最大 100；index/breadth/limits history 默认 60/最大 250；operation checkpoints 默认 50/最大 200。固定数量的指数摘要可以不分页；所有生产 PostgreSQL 列表必须先过滤、稳定排序和 limit，再物化结果。
+
+所有 v2 GET 只读本地 exact-date repository/materialized evidence，不构造 provider、不开始或加入采集、不建后台任务、不写 PostgreSQL。无任何本地日期证据返回稳定 404；日期格式、未来日期、未知 closed selector 或越界 limit 返回 422；日期存在但目标数据集缺失时以 200 envelope 保留 `missing` / `insufficient` 和 `null` 或有界空数据，不用 0、旧日期或 latest-only provider 补齐。`failed-retained` 等刷新状态、真实来源、provider、observations、warning、checksum/revision evidence 继续透明表达。
+
+根级 `/llms.txt` 与 `/llms-full.txt` 是 UTF-8 `text/plain` 发现文档，分别提供紧凑索引和完整集成语义，并链接 `/openapi.json`。它们由 tagged OpenAPI 与受控产品/runbook 语义纯内存渲染，不写生成文件、不查询行情或数据库，也不嵌入实时市场行、凭据、provider header、presigned URL 或私有 runtime metadata。dashboard 按页面渐进迁移并保留 legacy fallback；THS bars 请求不得超过既有 `page_size=1000` 上限，超过一页时必须续取且每行只渲染一次。
 
 ## 用户与流程
 

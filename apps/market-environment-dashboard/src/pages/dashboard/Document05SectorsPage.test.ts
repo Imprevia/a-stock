@@ -257,7 +257,7 @@ describe('Document05SectorsPage', () => {
         { tradingDate: '2026-09-02', open: 100, high: 103, low: 99, close: 102, volume: 120000, turnover: 880000000, quality: 'ok', source: 'fuyao', sourceRevision: 'history-r1', warnings: [] },
         { tradingDate: '2026-09-03', open: 102, high: 104, low: 101, close: 103, volume: 130000, turnover: 920000000, quality: 'ok', source: 'fuyao', sourceRevision: 'history-r1', warnings: [] },
       ],
-      page: 1, pageSize: 1500, total: 2,
+      page: 1, pageSize: 1000, total: 2,
     }
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes('/ths/sectors/885001.TI/bars')) return { ok: true, json: async () => bars }
@@ -278,7 +278,7 @@ describe('Document05SectorsPage', () => {
     await flushPromises()
 
     const getCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('/ths/sectors/885001.TI/bars'))
-    expect(getCall?.[0]).toBe('/api/market-environment/ths/sectors/885001.TI/bars?start_date=2025-09-03&end_date=2026-09-03&page=1&page_size=1500')
+    expect(getCall?.[0]).toBe('/api/market-environment/ths/sectors/885001.TI/bars?start_date=2025-09-03&end_date=2026-09-03&page=1&page_size=1000')
     expect(fetchMock.mock.calls.some((call) => call[0] === '/api/market-environment/ths/turnover/backfills')).toBe(false)
     expect(wrapper.text()).toContain('实际覆盖2026-09-01 至 2026-09-03')
     expect(wrapper.text()).toContain('显式回填缺口')

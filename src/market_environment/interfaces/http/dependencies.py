@@ -20,6 +20,46 @@ class MarketEnvironmentQueries(Protocol):
     def get_next_session_comparison(self, as_of: date) -> dict: ...
 
 
+class V2MarketEnvironmentQueries(Protocol):
+    def overview(self, as_of: date): ...
+
+    def indices(self, as_of: date): ...
+
+    def index(self, as_of: date, code: str): ...
+
+    def index_history(self, as_of: date, code: str, **kwargs): ...
+
+    def breadth(self, as_of: date): ...
+
+    def breadth_history(self, as_of: date, **kwargs): ...
+
+    def limits(self, as_of: date): ...
+
+    def limits_pool(self, as_of: date, pool_type: str, **kwargs): ...
+
+    def limits_history(self, as_of: date, **kwargs): ...
+
+    def limits_evidence(self, as_of: date): ...
+
+    def sector_rankings(self, as_of: date, **kwargs): ...
+
+    def sector_turnover(self, as_of: date, **kwargs): ...
+
+    def sector_breadth(self, as_of: date, **kwargs): ...
+
+    def sector_analysis(self, as_of: date): ...
+
+    def active_direction(self, as_of: date, **kwargs): ...
+
+    def events(self, as_of: date): ...
+
+    def assessment(self, as_of: date): ...
+
+    def operation_summary(self, run_id: str): ...
+
+    def operation_checkpoints(self, run_id: str, **kwargs): ...
+
+
 class CollectionQueries(Protocol):
     def collection_status(self, as_of: date) -> dict[str, Any]: ...
 
@@ -58,6 +98,10 @@ class TimezonePreferenceCommands(Protocol):
 
 def get_market_queries(request: Request) -> MarketEnvironmentQueries:
     return _request_container(request).reads.market_environment
+
+
+def get_v2_market_queries(request: Request) -> V2MarketEnvironmentQueries:
+    return _request_container(request).reads.v2_market_environment
 
 
 def get_collection_queries(request: Request) -> CollectionQueries:
@@ -111,6 +155,7 @@ __all__ = [
     "CollectionCommands",
     "CollectionQueries",
     "MarketEnvironmentQueries",
+    "V2MarketEnvironmentQueries",
     "TimezonePreferenceCommands",
     "TimezonePreferenceQueries",
     "ThsSectorCommands",
@@ -119,6 +164,7 @@ __all__ = [
     "get_collection_queries",
     "get_effective_market_date",
     "get_market_queries",
+    "get_v2_market_queries",
     "get_manual_write_enabled",
     "get_ths_sector_commands",
     "get_ths_sector_queries",

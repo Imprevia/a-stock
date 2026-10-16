@@ -9,6 +9,7 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
+| `add-ai-market-data-api` | Codex | complete（34/34；OpenSpec 已归档） | 2026-10-16 |
 | `restore-truenas-nodeport-direct-access` | 资深后端工程师 | in-progress | 2026-09-05 |
 | `deploy-to-truenas-k3s-192-168-1-20` | 资深运维专家 | completed | 2026-09-05 |
 | `one-click-truenas-k3s-deployment` | Codex | completed | 2026-09-06 |

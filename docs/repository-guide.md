@@ -75,6 +75,19 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 
 ## 安全修改区
 
+### AI 市场数据 v2 的代码—文档映射
+
+| 代码区 | 预期职责 | 必须同步的事实文档 |
+|---|---|---|
+| `src/market_environment/interfaces/http/routers/`、`interfaces/http/schemas/`、`interfaces/http/errors.py` | additive v2/discovery routes、专用 envelope/resource DTO、ETag/304/404/409/422 与 stable error mapping；不得复用完整 Chapter 01 DTO | `docs/architecture.md`、`docs/product-specs/market-environment-dashboard.md`、`docs/runbooks.md`、active plan |
+| `src/market_environment/application/queries/`、`application/ports/` | provider-free resource facade、exact-date typed read ports、opaque revision/cursor validation；不得导入 provider、HTTP 或 infrastructure implementation | `docs/architecture.md`、产品规格、active plan |
+| `src/market_environment/infrastructure/persistence/postgres/` 与 compatibility/test read adapters | bounded seek/filter/order/limit 查询、component revision 读取；生产不得 unbounded fetch-then-slice，不新增 schema/migration | `docs/architecture.md`、`docs/runbooks.md`、active plan |
+| `src/market_environment/bootstrap/`、`src/market_environment/api.py` | composition root additive 注册 v2 与 discovery，无 mutable module singleton，legacy routes 始终保留 | `docs/architecture.md`、`docs/runbooks.md`、active plan |
+| `apps/market-environment-dashboard/src/stores/market.ts`、`types.ts`、各 `pages/dashboard/` 与对应 tests | v2 envelope/revision/cursor/error client、逐页迁移、legacy fallback、THS bars 最大 1000 与续页 | 产品规格、设计规范、`docs/runbooks.md`、active plan |
+| `tests/test_market_environment_*` 与前端 `*.test.ts` | legacy characterization、v2 resource isolation/bounds/revision/provider-free、OpenAPI/discovery drift 与渐进迁移回归 | OpenSpec `add-ai-market-data-api` spec/tasks、active plan |
+
+上述映射不授权 provider、生产数据库、部署或调度写操作。`src/trading_knowledge/` 不在本 change 范围；发现文档只描述受支持的 read surface，不把 MCP 扩展为行情服务。若实现证明需要 migration、新 provider 或新写路径，必须先回到 OpenSpec 和本映射修订范围，不能静默吸收。
+
 ### 第 05 页持续性分析的代码—文档映射（规划归属）
 
 | 代码区 | 预期职责 | 必须同步的事实文档 |

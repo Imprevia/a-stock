@@ -8,7 +8,7 @@
  * mounted independently. Writes (section refresh) go through emit.
  */
 import { AlertTriangle, CircleAlert, Database as DatabaseIcon, LineChart as LineChartIcon, RefreshCw, Rows3, Scale, ShieldAlert } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import LimitSecurityDetailsPanel from '../../components/limits/LimitSecurityDetailsPanel.vue'
 import { formatDateTime as fmtDateTime } from '../../composables/useFormatDateTime'
@@ -56,6 +56,26 @@ const metricNullList = computed(() => [
   limits.value?.failedLimitUpRatio,
   limits.value?.maxStreak,
 ].some((value) => value == null))
+
+type LimitPoolType = 'limit_up' | 'limit_down' | 'failed_limit_up' | 'promoted'
+
+function onLimitPoolChange(poolType: LimitPoolType): void {
+  void market.loadV2LimitPool(poolType, 'reset')
+}
+
+function onLimitPoolPageChange(direction: 'next' | 'previous'): void {
+  void market.loadV2LimitPool(market.v2LimitPool.poolType, direction)
+}
+
+watch(
+  () => market.data?.asOf,
+  (asOf, previousAsOf) => {
+    if (market.v2Enabled && asOf && asOf !== previousAsOf) {
+      void market.loadV2LimitPool(market.v2LimitPool.poolType, 'reset')
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -106,7 +126,19 @@ const metricNullList = computed(() => [
     <span>“--”表示数据不可用或分母不可计算，不代表 0。</span>
   </div>
 
-  <LimitSecurityDetailsPanel :details="limits?.securityDetails" />
+  <LimitSecurityDetailsPanel
+    v-if="market.v2Enabled"
+    :pool-type="market.v2LimitPool.poolType"
+    :rows="market.v2LimitPool.rows"
+    :quality="market.v2LimitPool.quality"
+    :has-more="market.v2LimitPool.hasMore"
+    :page="market.v2LimitPool.page"
+    :loading="market.v2LimitPool.loading"
+    :error="market.v2LimitPool.error"
+    @pool-change="onLimitPoolChange"
+    @page-change="onLimitPoolPageChange"
+  />
+  <LimitSecurityDetailsPanel v-else :details="limits?.securityDetails" />
 
   <section class="limits-promotion-grid">
     <article class="panel limit-promotion-panel">

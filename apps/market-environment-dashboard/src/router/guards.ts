@@ -11,7 +11,7 @@
 import type { Router } from 'vue-router'
 
 import type { Chapter01Section } from '../types'
-import { useMarketStore } from '../stores/market'
+import { useMarketStore, type DashboardV2Resource } from '../stores/market'
 import { applyLegacyHashRedirect } from './legacy-redirect'
 
 export function registerRouterGuards(router: Router): void {
@@ -19,10 +19,13 @@ export function registerRouterGuards(router: Router): void {
     await applyLegacyHashRedirect(router)
     const market = useMarketStore()
     if (to.path.startsWith('/dashboard') && !market.data) {
-      await market.loadCore()
+      await market.loadDashboardShell()
     }
     const section = to.meta.section as Chapter01Section | null | undefined
-    if (section && !market.loadedSections.includes(section)) {
+    const resources = (to.meta.resources ?? []) as DashboardV2Resource[]
+    if (market.v2Enabled === true) {
+      await Promise.all(resources.map((resource) => market.loadV2Resource(resource)))
+    } else if (section && !market.loadedSections.includes(section)) {
       void market.loadSection(section)
     }
     return true

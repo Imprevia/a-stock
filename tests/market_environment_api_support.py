@@ -12,6 +12,7 @@ from src.market_environment.interfaces.http.dependencies import (
     get_collection_queries,
     get_effective_market_date,
     get_market_queries,
+    get_v2_market_queries,
     get_ths_sector_commands,
     get_ths_sector_queries,
 )
@@ -32,6 +33,7 @@ class FakeCollectionCommands:
 def build_test_app(
     *,
     market_queries=None,
+    v2_queries=None,
     collection_queries=None,
     collection_commands=None,
     ths_queries=None,
@@ -41,6 +43,8 @@ def build_test_app(
     app = create_app()
     if market_queries is not None:
         app.dependency_overrides[get_market_queries] = lambda: market_queries
+    if v2_queries is not None:
+        app.dependency_overrides[get_v2_market_queries] = lambda: v2_queries
     if collection_queries is not None:
         app.dependency_overrides[get_collection_queries] = lambda: collection_queries
     if collection_commands is not None:

@@ -16,6 +16,7 @@ from .ths_sector import (
     GetThsSectorBarsQuery,
     ListThsCatalogQuery,
 )
+from .v2_market_data import V2MarketDataQueries
 
 __all__ = [
     "BreadthHistoryReader",
@@ -31,4 +32,5 @@ __all__ = [
     "GetThsSectorBarsQuery",
     "LimitEcosystemComposer",
     "ListThsCatalogQuery",
+    "V2MarketDataQueries",
 ]

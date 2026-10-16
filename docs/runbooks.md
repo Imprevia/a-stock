@@ -6,6 +6,24 @@
 
 复盘句式为临时展示与复制内容，不写入 PostgreSQL；不要添加保存按钮、复盘记录表或 20 日训练进度状态。03、04、07 的未接入证据继续显示真实 `unverified`/`insufficient`。
 
+## AI 市场数据 v2 读取、排错与回滚（2026-10-16）
+
+AI 或自动化客户端先读取 `GET /api/v2/market-environment/YYYY-MM-DD/overview`，保存 body 的 `snapshotRevision` 与响应 ETag，再按 `links` 请求一个细粒度资源。后续调用用 revision 前置条件固定同次研究会话；缓存探测使用 `If-None-Match`。分页只跟随响应 `pagination.nextCursor`，并保持原资源、日期、筛选和排序不变；收到 409 时丢弃旧 cursor，以响应中的当前 revision 从 overview 重启，不能把新旧页拼接。
+
+列表限制：limits pool、sector observation/ranking、active-direction 默认 20/最大 100；index/breadth/limits history 默认 60/最大 250；operation checkpoints 默认 50/最大 200。THS catalog/bars 仍使用既有 `page`/`page_size` 合同，bars 单页不得超过 1000。不得通过并发猜 cursor、`fields`/`include`、SQL-like filter 或嵌套 expansion 绕过 closed OpenAPI contract。
+
+排错按状态码和 quality 分流：
+
+- `304`：revision 对应资源未变化，无 body；继续使用本地已缓存值。
+- `404`：该 exact date 没有任何受支持本地证据；先检查本地 snapshot/aggregate 状态，不运行 provider 来修复 GET。
+- `409`：revision precondition 或 cursor 已过期；重新取 overview，并整组重启本次多资源读取。
+- `422`：日期格式/未来日期、未知 index/pool/selector、limit 越界或 cursor 格式不合法；按 `/openapi.json` 修正请求。
+- `200` 且 `quality.status=missing|insufficient|degraded|failed-retained|failed-missing`：这是证据状态，不用 0、空成功、旧日期或最新 provider 结果替换；保留 source/provider/observation/warning/freshness。
+
+`GET /llms.txt` 用于紧凑发现，`GET /llms-full.txt` 用于完整接入说明，两者均为 UTF-8 `text/plain` 并链接 `/openapi.json`。它们不承载实时行情。若 discovery 与 OpenAPI 路径、参数、operation id、响应 model 或 limit 不一致，先视为发布阻断并运行确定性 drift tests；不得手改运行时生成文件或把生产响应复制进文档。
+
+验证 v2 时只使用本地 fixture/测试数据库和离线测试：断言 provider 构造/调用、collection start/join、background task 与 write count 均为零；不得用真实 provider smoke、生产 NodePort、生产 PostgreSQL 或部署写来证明 GET 正常。回滚为移除 v2/discovery route 注册并让 dashboard 切回 legacy caller；不删除 PostgreSQL、snapshot、aggregate、run/task/checkpoint，不改 provider gate，不执行 migration，也不改 Hermes/部署配置。legacy 未版本化路径在整个迁移期必须保持可读。
+
 ## 环境要求
 
 - Python 3.11+（建议使用仓库 `.venv`）

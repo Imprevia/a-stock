@@ -11,27 +11,45 @@ import type {
 
 const props = defineProps<{
   details?: LimitSecurityDetails | null
+  poolType?: LimitPoolType | null
+  rows?: LimitSecurityDetailRow[] | null
+  quality?: MetricQuality | null
+  hasMore?: boolean
+  page?: number
+  loading?: boolean
+  error?: string | null
+}>()
+
+const emit = defineEmits<{
+  poolChange: [poolType: LimitPoolType]
+  pageChange: [direction: 'next' | 'previous']
 }>()
 
 type DetailGroupKey = keyof LimitSecurityDetails
+type LimitPoolType = 'limit_up' | 'limit_down' | 'failed_limit_up' | 'promoted'
 
 const PAGE_SIZE = 20
-const groups: Array<{ key: DetailGroupKey; label: string }> = [
-  { key: 'limitUp', label: '涨停' },
-  { key: 'limitDown', label: '跌停' },
-  { key: 'failedLimitUp', label: '炸板' },
-  { key: 'promoted', label: '晋级' },
+const groups: Array<{ key: DetailGroupKey; poolType: LimitPoolType; label: string }> = [
+  { key: 'limitUp', poolType: 'limit_up', label: '涨停' },
+  { key: 'limitDown', poolType: 'limit_down', label: '跌停' },
+  { key: 'failedLimitUp', poolType: 'failed_limit_up', label: '炸板' },
+  { key: 'promoted', poolType: 'promoted', label: '晋级' },
 ]
 
 const activeGroup = ref<DetailGroupKey>('limitUp')
 const query = ref('')
-const page = ref(1)
+const legacyPage = ref(1)
 
 const emptyQuality: MetricQuality = { status: 'insufficient', reason: '未提供该组明细' }
+const controlled = computed(() => props.poolType != null)
+const selectedGroup = computed<DetailGroupKey>(() => {
+  if (!controlled.value) return activeGroup.value
+  return groups.find((group) => group.poolType === props.poolType)?.key ?? 'limitUp'
+})
 const currentGroup = computed<LimitSecurityDetailGroup>(() => props.details?.[activeGroup.value] ?? {
-  total: null,
-  rows: [],
-  quality: emptyQuality,
+  total: controlled.value ? props.quality?.observations ?? null : null,
+  rows: controlled.value ? props.rows ?? [] : [],
+  quality: controlled.value ? props.quality ?? emptyQuality : emptyQuality,
 })
 const filteredRows = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase()
@@ -41,16 +59,31 @@ const filteredRows = computed(() => {
 })
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / PAGE_SIZE)))
 const visibleRows = computed(() => {
-  const start = (page.value - 1) * PAGE_SIZE
+  if (controlled.value) return filteredRows.value
+  const start = (legacyPage.value - 1) * PAGE_SIZE
   return filteredRows.value.slice(start, start + PAGE_SIZE)
 })
+const displayedPage = computed(() => controlled.value ? Math.max(1, props.page ?? 1) : legacyPage.value)
 
 watch([activeGroup, query, () => props.details], () => {
-  page.value = 1
+  if (!controlled.value) legacyPage.value = 1
 })
 
-function selectGroup(key: DetailGroupKey): void {
+function selectGroup(key: DetailGroupKey, poolType: LimitPoolType): void {
+  query.value = ''
+  if (controlled.value) {
+    if (poolType !== props.poolType) emit('poolChange', poolType)
+    return
+  }
   activeGroup.value = key
+}
+
+function changePage(direction: 'next' | 'previous'): void {
+  if (controlled.value) {
+    emit('pageChange', direction)
+    return
+  }
+  legacyPage.value += direction === 'next' ? 1 : -1
 }
 
 function formatValue(value: string | number | null | undefined): string {
@@ -110,12 +143,13 @@ function rowAttributes(row: LimitSecurityDetailRow): string {
             :key="group.key"
             type="button"
             role="tab"
-            :aria-selected="activeGroup === group.key"
-            :class="{ active: activeGroup === group.key }"
-            @click="selectGroup(group.key)"
+            :aria-selected="selectedGroup === group.key"
+            :class="{ active: selectedGroup === group.key }"
+            :disabled="loading"
+            @click="selectGroup(group.key, group.poolType)"
           >
             {{ group.label }}
-            <span>{{ formatValue(details?.[group.key]?.total) }}</span>
+            <span>{{ formatValue(controlled && selectedGroup === group.key ? currentGroup.total : details?.[group.key]?.total) }}</span>
           </button>
         </div>
         <label class="limit-security-search">
@@ -137,6 +171,7 @@ function rowAttributes(row: LimitSecurityDetailRow): string {
       <ul v-if="currentGroup.quality.warnings?.length" class="limit-security-group-warnings">
         <li v-for="warning in currentGroup.quality.warnings" :key="warning">{{ warning }}</li>
       </ul>
+      <p v-if="error" class="limit-security-group-warning" role="alert">{{ error }}</p>
 
       <div v-if="visibleRows.length" class="table-scroll limit-security-table-scroll">
         <table class="limits-table limit-security-table">
@@ -171,15 +206,16 @@ function rowAttributes(row: LimitSecurityDetailRow): string {
       </div>
       <div v-else class="empty-evidence compact limit-security-empty">
         <Search :size="22" />
-        <strong>{{ query.trim() ? '没有匹配的证券' : '该组明细不足' }}</strong>
-        <p>{{ query.trim() ? '请调整证券代码或名称关键词。' : '缺失值不会用其他集合或日期的数据补齐。' }}</p>
+        <strong>{{ loading ? '正在加载当前集合' : query.trim() ? '没有匹配的证券' : '该组明细不足' }}</strong>
+        <p>{{ loading ? '仅请求当前选中的证券池。' : query.trim() ? '搜索仅过滤当前页，请调整证券代码或名称关键词。' : '缺失值不会用其他集合或日期的数据补齐。' }}</p>
       </div>
 
       <div class="limit-security-pagination" aria-label="证券明细分页">
-        <span>第 {{ page }} / {{ pageCount }} 页 · 每页 {{ PAGE_SIZE }} 行</span>
+        <span v-if="controlled">第 {{ displayedPage }} 页 · 当前页 {{ filteredRows.length }} 行</span>
+        <span v-else>第 {{ displayedPage }} / {{ pageCount }} 页 · 每页 {{ PAGE_SIZE }} 行</span>
         <div>
-          <button type="button" :disabled="page <= 1" aria-label="上一页" title="上一页" @click="page -= 1"><ChevronLeft :size="17" /></button>
-          <button type="button" :disabled="page >= pageCount" aria-label="下一页" title="下一页" @click="page += 1"><ChevronRight :size="17" /></button>
+          <button type="button" :disabled="loading || displayedPage <= 1" aria-label="上一页" title="上一页" @click="changePage('previous')"><ChevronLeft :size="17" /></button>
+          <button type="button" :disabled="loading || (controlled ? !hasMore : displayedPage >= pageCount)" aria-label="下一页" title="下一页" @click="changePage('next')"><ChevronRight :size="17" /></button>
         </div>
       </div>
     </div>

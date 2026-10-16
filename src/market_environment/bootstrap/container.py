@@ -26,6 +26,7 @@ from ..application.ports import (
     CollectionQueryPort,
     MarketEnvironmentQueryPort,
 )
+from ..application.queries import V2MarketDataQueries
 from ..domain.models import DATASET_IDS
 from ..infrastructure.collection import (
     AcquisitionPlanCollector,
@@ -68,6 +69,8 @@ from ..infrastructure.compatibility import (
 )
 from ..infrastructure.execution import BoundedTaskExecutor
 from ..infrastructure.persistence.postgres.runtime_store import PostgresRuntimeStore
+from ..infrastructure.persistence.postgres import PostgresV2MarketDataReadService
+from ..infrastructure.v2_market_data_compat import CompatibilityV2MarketDataReadAdapter
 from ..infrastructure.providers import (
     ActiveDirectionCollector,
     BreadthCollector,
@@ -89,6 +92,7 @@ from .settings import MarketEnvironmentSettings, SettingsConfigurationError
 @dataclass(frozen=True, slots=True)
 class ReadDependencies:
     market_environment: MarketEnvironmentQueryPort
+    v2_market_environment: Any
     collection: CollectionQueryPort
     timezone_preferences: TimezoneQueryAdapter
     ths_sectors: Any
@@ -129,6 +133,7 @@ class ContainerAdapters:
     typed_cutover_datasets: tuple[str, ...] | None = None
     ths_queries: Any | None = None
     ths_commands: Any | None = None
+    v2_queries: Any | None = None
 
 
 @dataclass(slots=True)
@@ -407,8 +412,19 @@ def build_container(
         effective_date=lambda: effective_market_date(_market_now(clock)),
     )
 
+    v2_queries = adapters.v2_queries
+    if v2_queries is None:
+        engine = getattr(repository, "engine", None)
+        connect = getattr(engine, "connect", None)
+        v2_reads = (
+            PostgresV2MarketDataReadService(connect)
+            if callable(connect)
+            else CompatibilityV2MarketDataReadAdapter(repository)
+        )
+        v2_queries = V2MarketDataQueries(v2_reads)
     reads = ReadDependencies(
         market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
+        v2_market_environment=v2_queries,
         collection=CoordinatorCollectionQueryAdapter(coordinator),
         timezone_preferences=TimezoneQueryAdapter(timezone_repository),
         ths_sectors=ths_queries,

@@ -18,6 +18,7 @@ import { useDocumentContext } from '../../composables/useDocumentContext'
 import { useMarketStore } from '../../stores/market'
 import { usePreferencesStore } from '../../stores/preferences'
 import type { Chapter01Section } from '../../types'
+import type { DashboardV2Resource } from '../../stores/market'
 
 const route = useRoute()
 const market = useMarketStore()
@@ -55,6 +56,7 @@ const pageListeners = computed(() => ({
 }))
 
 const section = computed(() => (route.meta.section ?? null) as Chapter01Section | null)
+const resources = computed(() => (route.meta.resources ?? []) as DashboardV2Resource[])
 const sectionState = computed(() => (section.value ? market.sectionStates[section.value] : null))
 const sectionLoading = computed(() =>
   section.value != null && !market.loadedSections.includes(section.value)
@@ -99,16 +101,26 @@ function onSelectIndex(code: unknown): void {
 }
 
 function onRefreshSection(): void {
+  if (market.v2Enabled === true) {
+    for (const resource of resources.value) void market.loadV2Resource(resource, true)
+    return
+  }
   const current = section.value
   if (current) void market.loadSection(current, true)
 }
 
 function reloadCore(): void {
-  void market.loadCore()
+  if (market.v2Enabled === true) {
+    void market.loadDashboardShell(true)
+  } else void market.loadCore()
 }
 
 watch(() => market.loading, (isLoading, wasLoading) => {
   if (!wasLoading || isLoading || market.error) return
+  if (market.v2Enabled === true) {
+    for (const resource of resources.value) void market.loadV2Resource(resource, true)
+    return
+  }
   const current = section.value
   if (current && market.data?.asOf === market.selectedDate) {
     void market.loadSection(current, true)
@@ -119,7 +131,7 @@ watch(() => market.loading, (isLoading, wasLoading) => {
 // is the fallback for mounts that bypass the guard (e.g. direct component
 // tests). Both paths are idempotent via the `!market.data` check.
 onMounted(() => {
-  if (!market.data) void market.loadCore()
+  if (!market.data) void market.loadDashboardShell()
 })
 </script>
 

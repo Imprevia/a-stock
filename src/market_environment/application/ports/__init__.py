@@ -60,6 +60,12 @@ from .services import (
     MarketEnvironmentQueryPort,
 )
 from .unit_of_work import MarketEnvironmentUnitOfWork
+from .v2_market_data import (
+    SortKey,
+    V2MarketDataReadPort,
+    V2Page,
+    V2Resource,
+)
 
 __all__ = [
     "AggregateCommandPort",
@@ -109,4 +115,8 @@ __all__ = [
     "ThsSectorRepository",
     "TradingSessionReader",
     "TradingSessionRepository",
+    "SortKey",
+    "V2MarketDataReadPort",
+    "V2Page",
+    "V2Resource",
 ]

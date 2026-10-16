@@ -4,7 +4,6 @@ import { computed, ref, watch } from 'vue'
 
 import {
   fetchThsOperation,
-  fetchThsSectorBars,
   pollCollectionRun,
   pollThsOperation,
   startCollectionRun,
@@ -18,6 +17,7 @@ import type {
 import SectorTurnoverChartPanel from '../../components/charts/SectorTurnoverChartPanel.vue'
 import { useDocumentContext } from '../../composables/useDocumentContext'
 import { useMarketStore } from '../../stores/market'
+import { fetchAllThsSectorBars } from '../../ths-sector-bars-pagination'
 import type {
   SectorCandidate,
   SectorCandidateStage,
@@ -267,11 +267,9 @@ async function loadBars(): Promise<void> {
   barsError.value = ''
   barsResponse.value = null
   try {
-    barsResponse.value = await fetchThsSectorBars(selectedThscode.value, {
+    barsResponse.value = await fetchAllThsSectorBars(selectedThscode.value, {
       startDate: klineStartDate.value,
       endDate: klineEndDate.value,
-      page: 1,
-      pageSize: 1500,
     })
   } catch (cause) {
     barsError.value = cause instanceof Error ? cause.message : '本地 K 线读取失败'
@@ -360,6 +358,10 @@ watch(
   [activeView, selectedThscode, klineStartDate, klineEndDate],
   ([view]) => {
     if (view === 'turnover') void loadBars()
+    if (market.v2Enabled !== true) return
+    if (view === 'breadth') void market.loadV2Resource('sector-breadth')
+    if (view === 'turnover') void market.loadV2Resource('sector-turnover')
+    if (view === 'continuity') void market.loadV2Resource('sector-analysis')
   },
 )
 </script>

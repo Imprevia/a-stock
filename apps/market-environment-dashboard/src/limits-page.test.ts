@@ -119,6 +119,38 @@ async function mountLimits(limits: Record<string, unknown>, refreshFails = false
   return wrapper
 }
 
+async function mountV2Limits() {
+  const limits = completeLimits()
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (!url.includes('chapter-01')) return { ok: true, json: async () => coreResponse() }
+    return { ok: true, json: async () => ({ asOf: '2026-09-10', generatedAt: '2026-09-10T16:12:00+08:00', chapter01: { ...baseChapter, limits } }) }
+  }))
+  setActivePinia(createPinia())
+  const market = useMarketStore()
+  await market.loadCore()
+  await flushPromises()
+  await market.loadSection('limits')
+  await flushPromises()
+  market.v2Enabled = true
+  market.snapshotRevision = 'revision-limits-v2'
+  market.v2LimitPool = {
+    poolType: 'limit_up',
+    rows: limits.securityDetails.limitUp.rows.slice(0, 2),
+    quality: { ...quality, actualDate: quality.asOf, warnings: [] },
+    hasMore: true,
+    page: 1,
+    loading: false,
+    error: '',
+  }
+  const loadPool = vi.spyOn(market, 'loadV2LimitPool').mockResolvedValue()
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push('/dashboard/03')
+  await router.isReady()
+  wrapper = mount(Document03LimitsPage, { global: { plugins: [router] } })
+  await flushPromises()
+  return { view: wrapper, market, loadPool }
+}
+
 describe('第 03 页涨跌停证据', () => {
   beforeEach(() => { vi.clearAllMocks() })
   afterEach(() => { wrapper?.unmount(); wrapper = null; vi.unstubAllGlobals() })
@@ -190,6 +222,38 @@ describe('第 03 页涨跌停证据', () => {
     expect(rows[0].text()).toContain('--')
     expect(rows[0].text()).toContain('降级')
     expect(rows[0].text()).toContain('字段不完整，保留集合成员')
+  })
+
+  it('v2 初始只加载当前涨停池，翻页与切组按需请求且搜索只过滤当前页', async () => {
+    const { view, loadPool } = await mountV2Limits()
+
+    expect(loadPool).toHaveBeenCalledTimes(1)
+    expect(loadPool).toHaveBeenNthCalledWith(1, 'limit_up', 'reset')
+    expect(view.findAll('.limit-security-table tbody tr')).toHaveLength(2)
+
+    await view.get('.limit-security-search input').setValue('证券1')
+    expect(view.findAll('.limit-security-table tbody tr')).toHaveLength(1)
+    expect(loadPool).toHaveBeenCalledTimes(1)
+
+    await view.get('button[aria-label="下一页"]').trigger('click')
+    expect(loadPool).toHaveBeenNthCalledWith(2, 'limit_up', 'next')
+
+    await view.findAll('.limit-security-tabs [role="tab"]')[1].trigger('click')
+    expect(loadPool).toHaveBeenNthCalledWith(3, 'limit_down', 'reset')
+    expect(loadPool).toHaveBeenCalledTimes(3)
+  })
+
+  it('v2 日期切换后只重置当前选中的证券池', async () => {
+    const { market, loadPool } = await mountV2Limits()
+    await market.loadV2LimitPool('limit_down', 'reset')
+    market.v2LimitPool.poolType = 'limit_down'
+    loadPool.mockClear()
+
+    market.data = { ...market.data!, asOf: '2026-09-11' }
+    await flushPromises()
+
+    expect(loadPool).toHaveBeenCalledTimes(1)
+    expect(loadPool).toHaveBeenCalledWith('limit_down', 'reset')
   })
 
   it('在 390px 视口只允许明细表容器局部横向滚动', async () => {

@@ -20,6 +20,18 @@
 
 交易规则平台面向盘后研究、规则维护和审计。YAML 注册表是机器执行事实源，量化版 Markdown 是人读解释层；执行器只读取规范化快照，不直接依赖网络 provider。
 
+## AI 市场数据读取边界（2026-10-16）
+
+新增 HTTP namespace `/api/v2/market-environment`，但不新增事实源：HTTP 专用 DTO/mapper → resource query facade → typed local read ports → PostgreSQL repositories/materialized evidence 是唯一读取方向。query facade 不依赖 FastAPI、provider 或具体 persistence；HTTP 层不直接构造 repository；生产列表 adapter 在 SQL 中完成 filter、稳定 order、cursor seek 与 `limit + 1` 后才物化。仅兼容/测试 adapter 可从有界 fixture 投影，生产不得加载完整 JSON/行集后切片。
+
+精确日期资源包括 overview；indices summary/detail/history；breadth summary/history；limits summary/pool/history/evidence；sector rankings/turnover/breadth/analysis；active-direction、events、assessment；以及按 run id 分离的 operation summary/checkpoints。每项有独立 DTO，共享 envelope 只含 `asOf`、`generatedAt`、opaque `snapshotRevision`、`quality`、`data`、`links` 和集合专用 `pagination`。不得用 `response_model_exclude` 包装完整 `MarketEnvironmentResponse` / `Chapter01Response`，否则 OpenAPI 仍会公开错误结构并可能泄漏兄弟字段。
+
+revision authority 是 exact-date materialization component revision vector；公开值是该 vector 的稳定 opaque digest，不暴露私有 component metadata。overview 返回当前 revision 与同值 ETag；后续资源用 HTTP revision precondition 固定同一版本，冲突返回 409 与当前 revision，`If-None-Match` 命中返回 304。cursor 同样 opaque，签入资源、日期/run id、filters、最后稳定排序键和 revision；解析与一致性校验发生在 repository access 之前，malformed、跨资源、改筛选或 stale revision 均 fail closed。历史按日期，pool 按域顺序再证券 identity，ranking 按 rank/change 再 `thscode`，checkpoint 按 code/window 稳定排序。
+
+普通 v2 GET 与 `/llms.txt`、`/llms-full.txt` 必须 provider-free/read-only：只读本地精确日期证据，不构造 provider client，不 start/join collection，不创建 background task，不写 PostgreSQL，不下载 dump，也不搜索替代日期。未知日期 404；无效/未来日期、closed selector 或 limit 422；已知日期的单数据集缺失仍返回显式 missing/insufficient envelope。discovery renderer 在内存中组合 tagged OpenAPI operations 与受控产品/runbook 语义，以 `/openapi.json` 为结构事实源，不读写生成文件、不查询数据库或行情。
+
+现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
+
 ## 交易规则平台
 
 ```text
