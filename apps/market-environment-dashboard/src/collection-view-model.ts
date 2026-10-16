@@ -36,6 +36,13 @@ export function attemptLabel(item: DatasetCollectionStatus) {
   return item.latestAttempt ? STATUS_LABELS[item.latestAttempt.status] : '尚未采集'
 }
 
+export function collectionWarning(item: DatasetCollectionStatus) {
+  const attemptMessage = item.latestAttempt?.failure?.message
+    || item.latestAttempt?.warning
+  const warnings = [attemptMessage, item.refreshWarning, item.restriction]
+  return [...new Set(warnings.filter((warning): warning is string => Boolean(warning)))].join('；')
+}
+
 function qualityDiagnostic(item: DatasetCollectionStatus): ThsDiagnostic | null {
   const value = item.quality?.diagnostics
   if (!value || typeof value !== 'object') return null

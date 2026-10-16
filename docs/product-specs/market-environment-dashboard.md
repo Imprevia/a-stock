@@ -4,7 +4,7 @@
 
 `active` · 版本 `0.17`
 
-后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。定时采集仍保持 fail-closed 默认 `enabled=false`、`suspend=true`，任何激活必须走独立受审调度入口。
+后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。项目内 Kubernetes 定时采集正在退役，仓库不得再创建或激活 application-owned CronJob；盘后时钟与结果投递由 `192.168.1.21` 上的 Hermes Agent 持有，后端自动化写入口保持独立且默认关闭。
 
 采集适配器统一已完成；本版本将公共采集集合由五项迁移为 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth`、`activeDirection` 七项。各数据集统一消费 typed `CollectionOutcome`，provider 差异由 dataset acquisition plan 与 source adapter 隔离，task/lease/同日留存/提交/聚合由 coordinator 和 typed committer 统一处理。`requests` 保持默认 HTTP engine；可选 Scrapling static engine 默认不安装、不启用且 host/source allowlist 为空，不构成生产数据源批准。
 
@@ -48,7 +48,7 @@
 - 开发阶段通过独立的 `/data-collection` 数据管理页查看精确日期的七类数据状态，可单项重新采集或一键采集全部数据；`industry-ranking`、`sector-turnover`、`sector-breadth` 使用三个独立任务卡，历史回填和成员事实导入另列 operation 进度，不伪装成普通每日重试。普通研究页面不承担自动采集职责；第 05 页仅可通过明确操作发起板块历史回填。
 - 数据采集页首次打开时由后端按上海时区解析有效市场日：开市前（09:30 前）选择上一工作日对应的真实交易日并跳过周末；节假日或实际日期无证据时返回 `insufficient`/拒绝，provider 返回的实际日期必须与目标日期一致；开市后才选择上海当天。这样不会把尚未开始的当日误标为已完成，也不会把上一交易日行情伪装成当天；用户手工选择历史日期后仍严格展示 provider 日期限制。
 - 已确认的盘前误标必须显式选择后端：生产运行时只允许在受控停写窗口对目标 PostgreSQL 使用 `snapshots relabel-date --database-url ...`，先 dry-run 再显式 `--apply`；隔离 SQLite 副本仅用于迁移/回归演练。流程同步快照、任务、涨跌停事实与聚合，校验 checksum/目标冲突并留下可回滚审计，不允许普通采集路径自动跨日期改名、静默回退 SQLite 或覆盖目标日期已有成功值。
-- k3s/Helm 部署的业务触发目标为上海时区工作日 16:30；Kubernetes 1.27+ 的 `native` 策略使用 `spec.timeZone: Asia/Shanghai`，k3s 1.26 的 `controller` 策略省略该字段并只接受经证据验证的 UTC/上海 controller 映射。定时任务与手工采集共享同一任务、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采。
+- Hermes 在明确配置的 `Asia/Shanghai` 时区于工作日 15:30 调用 `POST /api/market-environment/collection-runs/full`，并把摘要投递到已批准的飞书当前会话；后端不接受客户端指定日期或数据集，固定执行七项 canonical collection。自动化与手工采集共享同一 task、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采；16:00 后不为遗漏时隙补跑。
 
 ## 范围
 
@@ -74,7 +74,7 @@
 - 每个数据集独立保存成功结果，一键采集中的单项失败不得停止或回滚其他数据集；失败时保留同日期最后一次成功快照并标记刷新错误。
 - 七个数据集对 application 暴露同一个 `collect(DatasetDate) -> CollectionOutcome` 产品契约；业务流程只消费 normalized candidate/failure/evidence，不根据 Eastmoney、Fuyao、TDX、requests 或 Scrapling 类型分支。数据源优先级、日期能力、fallback、shadow 和 enrichment 由可审计 acquisition plan 决定，不能由 UI、coordinator 或 transport engine 临时改序。
 - source attempt 必须展示真实来源、revision、requested/actual date、fetch time、field availability、timings、分类失败和脱敏 provenance。shadow 不改变正式结果；同供应商 enrichment 不得显示为独立确认；成功缺少 candidate 或身份时必须 fail closed。
-- 手工采集写操作默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；历史日期必须遵守 provider 日期能力，禁止将最新快照写成历史数据。无应用认证时，启用写入口的网络暴露必须由负责人显式接受。TrueNAS 单节点部署已接受固定 `NodePort:32001` 的匿名写入口：所有能路由到该端口的客户端均可触发 provider 调用和 PostgreSQL 写入；NodePort 不提供身份认证、客户端授权或子网限制，且不得对公网转发。
+- 手工采集写操作在本地开发默认开启，可通过 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED=0` 显式关闭；无应用认证且 NodePort 可路由的生产部署必须保持该开关关闭。新的全量自动化端点由默认关闭的 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED` 独立控制；生产可以只开启 automation 而保持 manual=0。负责人已接受固定 `NodePort:32001` 上该 automation 端点的内网匿名边界：所有能路由到 `192.168.1.20:32001` 的客户端均可触发七数据集 provider 调用和 PostgreSQL 写入；NodePort、CORS、幂等 key、前端按钮和 lease 都不提供身份认证或客户端授权，且不得对公网转发。
 - 东方财富采集在单进程内全局串行执行；瞬态连接/读取错误、429 和 5xx 有界重试，403 不盲目重试。行业、涨跌停池与容量方向主域失败或返回无效载荷后允许降级到兼容延迟域，并保留实际来源、每个子请求的错误和降级 warning；容量方向的两个来源必须执行相同的必需字段、最小样本和成交额排序校验。两条 Eastmoney 路径均失败后，只有 `MARKET_ENVIRONMENT_TDX_DERIVED_ACTIVE_DIRECTION_ENABLED=1` 才允许使用精确日期 TDX 包本地派生容量方向，质量显示为 `fallback-derived`，记录本地成交额排序、TDX revision、行业映射覆盖率和前序 warning；该开关独立于 breadth 的 `MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED`，默认关闭。涨跌停池的日期证据优先使用响应中的实际日期；`push2ex` 省略顶层日期但请求包含明确 `date` 时，可记录 `dateEvidence=request-parameter` 绑定该请求日期，并继续校验所有显式行日期，出现冲突仍拒绝 V1 完整事实。
 - 所有 HTTP source adapter 共用一个进程内 transport policy gateway；gateway 统一 host 限速、预算、重试、single-flight、缓存和熔断，engine 只执行一个已授权 attempt。请求身份必须隔离 engine、精确日期、完整参数和认证/tenant scope，且诊断不得泄露 credential、Cookie、proxy 或 challenge body。
 - 可选 Scrapling 仅提供静态 HTTP engine：默认关闭、空 allowlist、独立依赖/镜像，不启用 Spider、浏览器、Chromium、代理轮换、内部重试、blocked-request escalation 或 challenge solving；401/403/CAPTCHA 不得触发 requests 到 Scrapling 的自动升级。是否为某个真实 host 启用必须由后续证据和独立 rollout 批准。
@@ -82,10 +82,11 @@
 - capability report 从隔离 probe 进入正式运行时只能通过通用 `capabilities promote` 边界：显式选择 provider/dataset/revision，校验原始 checksum、`eligible`、脱敏一致性和数据集证据策略，默认 dry-run；只有显式 `--apply` 才在运行时 PostgreSQL 的单个事务中写入一条报告。同 checksum 重复操作幂等，同 revision 不同 checksum 冲突拒绝；该命令不得调用 provider、触发采集、写快照/聚合、修改 Secret、调度或任何 provider 开关。
 - 新能力的隔离 probe、capability promotion、生产迁移、首次目录同步、历史回填、dump 导入和部署均不属于默认实现写操作，必须在上海盘后取得再次明确授权。回滚只关闭新 provider 开关和写入口，保留新旧 evidence、additive 表、任务、Secret 与 PVC，不恢复旧 `sectors` 公共采集器。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
-- 盘后定时采集使用与 Dashboard 相同镜像并通过同一 PostgreSQL Service/Secret 访问运行时状态，不通过无认证 HTTP 写接口，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
-- 定时任务支持部署级关闭、暂停和受限的单一工作日 schedule 覆盖；Helm 默认值必须保持 `enabled=false`、`suspend=true`。通用 Dashboard install/upgrade/application rollback 只使用 fail-closed 部署入口与完整 baseline values，不带 scheduling overlay，不继承历史 release values、直接执行 Helm write、执行原始 uninstall 或恢复含未知调度状态的历史 revision。入口按 render 得到的 release-derived exact name 读取 live CronJob，不依赖 instance label selector；它在 build/write 前与 Helm write 前证明 stored/live application CronJob 均 absent，并从同一只读 chart/values packet 重渲染和绑定 disabled hash，active/suspended 必须先经受审 `--disable-schedule`。成功后必须证明 exact live CronJob absent，任何失败都返回非零并把意外 active CronJob 补偿、验证为 absent/suspended，否则保持 uncertain/NO-GO。所有调度布尔值必须是 typed boolean，业务时区固定为 `Asia/Shanghai`。controller 策略必须先完成只读 preflight，并通过 no-provider canary 实际观察预测触发（配置断言不能替代 canary 证据）。canary 通过后，允许继续非覆盖备份、suspended release 和一次命名 provider-backed Job；本次操作责任人书面确认 release/namespace/镜像 digest 与明确 catch-up 行为、且 live diff 仅含 `suspend` 后，才可解除暂停。默认禁止任务重叠，`partial` 不自动重跑全部七项。
-- 通用部署必须在首个 render、build、image、环境或目标访问前校验最终合并值是 typed `enabled=false,suspend=true`。`--disable-schedule` 必须使用 rollback-only canonical-digest authorization ref，且 active-to-off 的失败补偿按 release-derived exact API name 工作：label/shape drift 不能阻止紧急暂停，读回无法证明 absent/typed suspended 时保持 uncertain/NO-GO。删除 Helm-retained CronJob 必须使用 orphan propagation，并在删除前后证明 namespace terminal Job 集合及每项 name、UID 与唯一 `Complete=True`/`Failed=True` 终态未变；非终态、Job 新增/丢失或漂移一律 fail closed。
-- 周末调度命令应无 provider 调用并返回 skipped；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
+- 盘后自动采集由 Hermes 经内网 HTTP 调用 Dashboard service，使用与 Dashboard 相同的后端进程、PostgreSQL Service/Secret、task、lease 和 snapshot；Hermes 不获得数据库凭据、PVC、provider 凭据、CLI 或部署权限，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
+- full endpoint 要求 `Idempotency-Key`。同 key 与同语义（服务端日期、operation version、固定七数据集 fingerprint）跨超时、断线、202 和进程重启复用同一 persisted run；wait timeout 不属于语义，相同 key 的语义冲突返回 409。900 秒内 terminal 返回 HTTP 200；仍运行返回 202、`Location`、`Retry-After` 与 provider-free `statusUrl`，断开客户端不取消任务。
+- 每项结果持久化 nullable `failure {category,message,retryable,retained}`。`failed-retained` 只能表示本次失败且保留同日旧成功数据，不得计入本次成功；`failed-missing`、`blocked/dependency`、`busy/concurrency` 和 worker interruption 保持独立分类。单项失败不停止无关数据集，terminal 全失败仍以 HTTP 200 返回完整业务结果。
+- Helm/Kustomize/TrueNAS render 不再包含 application CronJob，也不暴露 schedule component、suspend/activate/disable 模式或 `scheduledCollection` values。普通部署在首个目标写入前后都以 `a-stock-data-collection` 和 `market-data-collection` 两个旧 identity 检查 stored/live 状态；任一 active 或 suspended 遗留资源存在即 fail closed，处置需要独立审核，不能通过普通部署恢复或修改。调度/provider-backed collection Job 始终 absent；经单独授权的 backend/schema rollout 仅允许精确的 provider-free `a-stock-schema-migration` hook 在 database 阶段执行一次，命令只能是 `alembic upgrade head`，legacy SQLite migration 必须关闭。service 与最终完整 release 收敛都使用 `--no-hooks`；成功后全部 namespace Job 再次 absent，失败则停止 service/full 收敛并保留 failed Job 与脱敏诊断证据，不得删除 Job 制造 absent。
+- 周末 full endpoint 应无 run/provider 写并返回 `skipped`；第一版不维护交易所节假日日历，工作日节假日仍可触发，但不得把上一交易日数据写成当天快照。
 
 ### Fuyao THS 三数据集产品边界
 
@@ -198,23 +199,23 @@
 - 研究页首次自动加载沿用 15:00 截止规则；若候选日期不是交易日，顶部日期同步为核心响应确认的实际交易日，用户手动选择日期后不被自动覆盖。
 - 同步性研判在桌面和 390px 移动视口均完整显示模式、三项确认、结论和风险；移动端确认项纵向排列，不出现文字重叠或小于 14px 的可见文字。
 - 数据采集页在桌面和 390px 移动视口中保持日期、状态、进度和操作可读，不出现控件重叠；采集期间保留旧数据而不是全屏阻塞。
-- TrueNAS 直连候选启用手工采集时，完整 values render 为固定 `NodePort:32001`，且文档与验收不得将可路由网络误述为经过认证、授权或仅限特定客户端。
+- TrueNAS 固定 `NodePort:32001` 的生产部署保持 manual refresh 关闭；若负责人显式开启独立 automation gate，文档与验收必须说明所有可路由客户端都能调用 full endpoint，不得将该网络误述为经过认证、授权或仅限 Hermes。
 - 开市前（09:30 前）首次打开数据采集页时，默认日期为后端解析的上一工作日对应的真实交易日（周末跳过）；节假日或 provider 日期证据不足时保持 `insufficient`/`failed` 并拒绝写入，不得将前一日数据写入当日键。`industry-ranking`、`sector-turnover`、`sector-breadth` 仅接受当前已完成上海交易日，结算前拒绝 provider I/O；研究页仍保持 15:00 前默认上一日期的规则。
 - 四类目录或完整快照的瞬态失败按共享 transport policy 在请求预算内有界恢复；覆盖、日期或身份仍不完整时只允许保留同日期成功快照，并区分 `failed-retained`、`failed-missing` 与依赖 `blocked`。
 - 新板块契约不提供或推断单一 `leader` 角色；Top 成交和 Top 涨幅名单只展示经过验证的证券身份、原始值、排序与 lineage。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。
 - 容量方向延迟域不足 30 个有效样本、缺少代码/名称/成交额或未按成交额非递增排列时必须拒绝保存；两个端点均失败时只保留同日期成功快照，不得跨日期替代。
-- 合法的 native CronJob 在 `Asia/Shanghai` 工作日 16:30 调用 scheduled-refresh，并覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection`；三项板块任务保持依赖顺序。1.26 controller 兼容路径的 no-provider canary 只能证明触发映射，不能单独使周期调度可用。只有非覆盖备份、suspended release、一个 provider-backed Job、本次操作责任人书面确认（明确 catch-up 行为）与 suspend-only live diff 全部通过后才可激活。
-- scheduled-refresh 在结算时间前拒绝运行，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态和每项 warning 可在 `/data-collection` 查看。
-- CronJob 与手工触发同日期同数据集时不产生重复 provider 调用；异常退出后的 task 按现有 lease 过期规则恢复。
-- 禁用或暂停定时采集不影响 Dashboard、本地快照读取、手工 CLI 或开发期开关控制的 HTTP 采集。
-- 无 scheduling overlay 的默认 Helm render 不包含 CronJob；所有文档化通用生产写操作均调用 `scripts/deploy-truenas-k3s.sh`，不得出现原始 Helm write 或绕过专用调度入口恢复 active schedule。
+- Hermes 在 `Asia/Shanghai` 工作日 15:30 使用一个稳定 schedule-slot key 调用 full endpoint，并覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection`；三项板块任务保持依赖顺序。漏跑只允许在 16:00 前以同一 slot key 补偿，之后必须跳过并通知到已批准的飞书当前会话。
+- full endpoint 在结算时间前以 422 且零 run/task/provider I/O 拒绝，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态、结构化 failure 和兼容 warning 可在 `/data-collection` 与 status GET 查看。
+- Hermes 重放依靠持久 idempotency 复用同一 run；不同 key 的手工触发与自动化触发同日期同数据集时由 lease 返回 busy 且不重复调用 provider；异常退出后的同 key replay 恢复原 run。
+- 暂停 Hermes 或关闭 automation gate 不影响 Dashboard、本地快照读取、显式维护 CLI 或开发期开关控制的手工 HTTP 采集，也不删除 run/task/idempotency/snapshot 历史。
+- 所有 Helm/Kustomize render 均不包含 CronJob；所有文档化通用生产写操作调用受审部署入口并对两个旧 CronJob identity 做只读 fail-closed 检测，不得恢复、创建或激活 application-owned schedule。schema rollout 只在 database 阶段运行一次 provider-free hook，最终全量收敛不得重复执行 hook。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
 - 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；三个 THS 板块数据集分别使用 catalog/snapshot、history 和 dump exact capability revision，默认 `unverified`/关闭；activeDirection 继续既有 Eastmoney/TDX。旧 `sectors` 不再参与 fallback 或新响应投影。
 - shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
 - collector/committer/coordinator 边界验收：coordinator 不反射 collector 方法、不解释 vendor payload；每个 dataset/date 只有一个 lease 和 task sequence；core/limits 的 typed commit 在 PostgreSQL fence/UoW 内保持子结果和 detail/fact/manifest 原子；status/detail 查询 provider 调用数为 0。
-- transport engine 验收：requests 与 Scrapling 对同一离线 fixture 产生除 engine/timing 外等价的 normalized payload 或 failure category；401/403/challenge 快速失败，engine 无内部 retry，默认配置不会启动 enhanced runtime，base 镜像和 Helm 默认调度契约不变。
+- transport engine 验收：requests 与 Scrapling 对同一离线 fixture 产生除 engine/timing 外等价的 normalized payload 或 failure category；401/403/challenge 快速失败，engine 无内部 retry，默认配置不会启动 enhanced runtime，base 镜像不变且所有 Helm profile 仍不含 CronJob。
 
 ### Fuyao THS 行业与板块三数据集（2026-10-12）
 
@@ -230,11 +231,11 @@
 - Chapter 01 新物化结果只暴露 `industryRanking`、`sectorTurnover`、`sectorBreadth`、`sectorAnalysis`，不把旧 `sectors` payload 伪装成新字段；任一新板块任务单独成功后都能创建或重建聚合，失败任务不移除同日成功兄弟 evidence。
 - 数据管理页显示三个独立任务卡、coverage、有界 missing code、稳定 reason code、依赖 `blockedBy`、最近 attempt、保留结果和 operation progress；第 05 页四个 tab 分别承载排名、板块宽度、量价 K 线和申万持续性，并保留不可排名行但不把它们用于 Top-N。THS 视图与申万视图在名称、身份、质量和 lineage 上明确隔离，THS 数据不进入 `QTS-01-05-*` 输入。
 - 量价 K 线视图同时渲染非空蜡烛、成交量和成交额；本地历史不足时仅展示实际覆盖并提供显式回填操作，不因打开或切换视图自动访问 provider。桌面和 390px 视口无页面级横向溢出、重叠或截断，所有可见文字、图例、坐标和 tooltip 不小于 14px。
-- 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行，调度默认继续为 `enabled=false`、`suspend=true`。
+- 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行。仓库所有部署 profile 均不含 Kubernetes CronJob 或调度启用值；生产自动化由独立 backend gate 与已授权的 Hermes job 控制。
 
 ## Provider 请求可靠性边界（2026-10-08）
 
 - composition root 为全部 HTTP source adapter 提供同一个进程内 policy gateway 和 engine registry。gateway 统一请求门、最小间隔、抖动、预算、网络/408/429/5xx 重试、`Retry-After`、single-flight、缓存和 cooldown/half-open，engine 只执行一个 attempt；不能在 adapter/engine 内形成第二套 transport 重试或限流。Fuyao 的 HTTP 200 业务 envelope 重试仍由 adapter 有界处理，不与 transport retry 叠加。
 - 连接/读取错误、408、429、5xx 才允许 gateway 在预算内有界重试；401/403、其他权限拒绝、CAPTCHA/interstitial challenge、日期或响应契约错误快速失败。请求身份隔离 engine、完整参数、目标日期和 authentication/tenant digest；诊断不保存 credential、Cookie、proxy、secret query 或 challenge body。
-- 该共享状态只保证单进程一致性，不宣称 Dashboard/CronJob/多 Pod 全局限流。传输层不得改变 Eastmoney/Fuyao 的既有降级顺序、错误类型或 feature flag 默认值；失败仍保留 `failed`、`degraded`、`insufficient` 或同日期失败留存质量，不得用零值、其他日期或自动切换 enhanced engine 补齐。
+- 该共享状态只保证单进程一致性，不宣称 Dashboard/自动化 HTTP/维护 CLI/多 Pod 全局限流。传输层不得改变 Eastmoney/Fuyao 的既有降级顺序、错误类型或 feature flag 默认值；失败仍保留 `failed`、`degraded`、`insufficient` 或同日期失败留存质量，不得用零值、其他日期或自动切换 enhanced engine 补齐。
 - Scrapling 仅用于经授权 host 的静态 HTTP/TLS 客户端兼容验证，不定义为“绕过反爬”。它默认未安装/未启用且 allowlist 为空；Spider、JavaScript/browser、代理轮换、stealth/challenge solving 和 permission bypass 不属于本产品范围。

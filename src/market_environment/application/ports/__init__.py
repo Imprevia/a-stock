@@ -34,6 +34,7 @@ from .acquisition import (
 from .execution import SubmittedTask, TaskExecutor
 from .projectors import DatasetDetailProjector
 from .repositories import (
+    CollectionIdempotencyRepository,
     CollectionRunRepository,
     CollectionStatusReader,
     CollectionTaskRepository,
@@ -72,6 +73,7 @@ __all__ = [
     "AcquisitionPlan",
     "AcquisitionPlanStep",
     "CollectionRunRepository",
+    "CollectionIdempotencyRepository",
     "CollectionRefreshRequest",
     "CollectionStatusReader",
     "CollectionTaskRepository",

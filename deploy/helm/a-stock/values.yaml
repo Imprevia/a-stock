@@ -13,8 +13,6 @@ fullnameOverride: ""
 #   all       - render every supported resource (legacy default)
 #   database  - render only the reviewed RWO PVC contract
 #   service   - render the Dashboard Deployment, Service, and configured Ingress
-#   schedule  - render only the scheduled-collection resource when the
-#               reviewed suspended/disabled profile allows it
 component: all
 
 # PostgreSQL is the runtime store. Credentials must be supplied through a
@@ -109,6 +107,7 @@ persistence:
 
 marketEnvironment:
   timezone: Asia/Shanghai
+  automationRefreshEnabled: false
   persistentCache: true
   # Optional static HTTP runtime. The default workload keeps the base image;
   # enabling this profile only selects the separately built enhanced image.
@@ -187,32 +186,6 @@ marketEnvironment:
     hosts:
       - sina
       - xueqiu
-  scheduledCollection:
-    enabled: false
-    suspend: true
-    schedule: "30 16 * * 1-5"
-    timezoneStrategy: native
-    timeZone: Asia/Shanghai
-    controllerTimeZone: ""
-    controllerTimeZoneVerified: false
-    controllerCanaryVerified: false
-    startingDeadlineSeconds: 1800
-    activeDeadlineSeconds: 3600
-    successfulJobsHistoryLimit: 3
-    failedJobsHistoryLimit: 3
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: "1"
-        memory: 1Gi
-    extraEnv: []
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    priorityClassName: ""
-
 startupProbe:
   enabled: true
   periodSeconds: 2

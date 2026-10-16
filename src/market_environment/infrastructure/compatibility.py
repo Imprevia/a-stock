@@ -225,6 +225,15 @@ class CoordinatorCollectionCommandAdapter:
     def execute_run(self, run_id: str):
         return ExecuteCollectionRunCommand(self._commands).execute(run_id)
 
+    def prepare_run_submission(self, run_id: str, *, lease_seconds: float):
+        return self.coordinator.prepare_run_submission(
+            run_id,
+            lease_seconds=lease_seconds,
+        )
+
+    def release_run_submission(self, run_id: str) -> int:
+        return self.coordinator.release_run_submission(run_id)
+
     def refresh(
         self,
         as_of: date,

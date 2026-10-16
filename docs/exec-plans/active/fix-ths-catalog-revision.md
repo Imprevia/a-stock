@@ -9,16 +9,16 @@
 包含：OpenSpec `fix-ths-catalog-revision`、事实文档、领域模型、Fuyao THS adapter、PostgreSQL repository、三任务 collector/committer/DAG、Chapter 01/API、数据采集页、第 05 页和离线测试。目录观察 revision 使用 `provider + capability revision + 上海交易日 + 完整目录 checksum`；本阶段新增一个窄范围 Alembic `0007_ths_catalog_identity`，将 PostgreSQL runtime/fresh schema 从 version 9 提升到 10，仅删除不含交易日的冗余唯一约束。该 revision ID 保持不超过 Alembic 默认 `version_num VARCHAR(32)` 的边界，不扩大版本表字段。
 
 生产阶段 7.1–7.5 已于 2026-10-14 获用户整体授权，但仍必须逐步满足 runbook 的只读基线、停写、不可覆盖
-备份、隔离恢复、不可变镜像、盘后窗口、写后验收和回滚门禁；任一步失败即停止，不把整体授权当作跳过前置条件。
+备份、隔离恢复、不可变镜像、盘后窗口、写后验收和回滚门禁；任一步失败即停止，不把整体授权当作跳过前置条件。后续调度所有权决定已取代该授权中的旧 7.5 Kubernetes schedule restoration：旧任务保持未完成，由 `replace-market-collection-scheduling-with-hermes` 7.5 承接；该旧授权不自动扩大为 Hermes 主机、automation gate 或额外 provider 重采授权。
 
 ## Stage（阶段）
 
-- 当前阶段：**7.1–7.5 已授权的生产恢复**
+- 当前阶段：**7.4 盘后定向验证待执行；7.5 两日验收已转交 Hermes change**
 - 阶段序列：事实文档 → 领域/provider → 持久化/采集 → API/前端 → 离线验证 → 另行授权的生产恢复
 
 ## Status（状态）
 
-`production-7-3-complete-awaiting-settlement` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
+`production-7-3-complete-7-4-pending-7-5-transferred` · 2026-10-14 用户已明确授权 7.1–7.5，并批准将过长的 Alembic revision
 `0007_ths_catalog_revision_identity` 修正为 `0007_ths_catalog_identity`。短 ID 已通过真实 PostgreSQL 16
 完整 Alembic 升级、默认 32 字符版本列和跨日期事务回归；2026-10-15 已完成 7.1 manual-freeze 与 7.3
 不可变镜像发布控制的离线复核，OpenSpec 6.6 已完成。2026-10-15 执行 7.1 时已把 schedule 与 manual
@@ -31,8 +31,9 @@ hook-free Helm write，写前冻结完整 namespace terminal Job 证据，以 or
 `021071cbb7e3ce87dd59806226642cb916db6d75` 和新 detached worktree 完成 revision 110 只读复核，7.1 已收口；
 生产继续保持安全停写。2026-10-15 已完成 7.2 不可覆盖备份、全新 loopback-only PostgreSQL 16.4 恢复和
 隔离 `0007` 演练，所有迁移及历史不变门禁通过。7.3 已从该 clean reviewed HEAD 发布单一不可变镜像并完成
-provider-free 验收，生产现为 Helm revision 113、schema v10/0007，schedule/manual 继续关闭；7.4 等待
-2026-10-15 15:10 Asia/Shanghai 结算边界后执行已授权的 THS 三任务。
+provider-free 验收，当时生产收敛为 Helm revision 113、schema v10/0007；后续 Hermes change 7.2 已在不调用
+provider 的前提下升级至 revision 116 / schema v11/0008，schedule/manual/automation 继续关闭；7.4 等待
+2026-10-15 15:10 Asia/Shanghai 结算边界后执行已授权的 THS 三任务。旧 7.5 不再恢复 Kubernetes schedule，保持未完成并由 `replace-market-collection-scheduling-with-hermes` 7.3 的 canary、7.5 的两个完整交易日和 THS lineage 证据承接。
 集成审查确认原有
 `ths_catalog_revisions` 还包含 `UNIQUE (provider, capability_revision, checksum, fetched_at)`：该约束没有
 交易日维度，无法在固定时钟、离线 replay/import 等合法场景中同时保存两个“日期不同、目录 checksum
@@ -65,7 +66,8 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
 - [x] 完成授权后的生产只读基线、安全停写、关键身份复核与不可恢复 Kubernetes Job 缺口登记（7.1）
 - [x] 完成不可覆盖 PostgreSQL 备份、隔离 PostgreSQL 16.4 恢复、`0007` 演练和历史不变验证（7.2）
 - [x] 完成 clean-HEAD-bound 不可变镜像发布、生产 `0007` 与 provider-free 零漂移验收（7.3）
-- [ ] 执行盘后定向重采和至少两个交易日观察（7.4–7.5）
+- [ ] 执行盘后定向 THS 三任务验证（7.4）
+- [ ] 由 `replace-market-collection-scheduling-with-hermes` 7.5 承接两个完整交易日验收；不恢复 Kubernetes schedule，旧 7.5 在证据链接前保持未完成
 
 ## Completion Evidence（完成证据）
 
@@ -192,6 +194,11 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
   仍为 `9daf0cb73301d6c3d490868940e8bb4f`。health、data-collection、THS catalog、core、Chapter 01 sectors 五个
   provider-free GET 均 HTTP 200，调用前后总 run/task/operation 数 `103|246|2` 和全表审计哈希字节等价；无新
   collection/provider operation，manual POST=403，active writer/lease/session 全为 0。7.3 未启用任何写入口或调用 provider。
+- 7.5 验收转移（2026-10-15）：不恢复 Kubernetes schedule；旧任务保持未勾选，由
+  `replace-market-collection-scheduling-with-hermes` 7.3 承接 canary、7.5 承接两个完整上海交易日。same-key replay 只证明
+  HTTP/run 幂等；如需证明真实同日 THS 重采复用 observation revision，必须在 Hermes change 下另获
+  provider-write 授权，且仅在完整 catalog 内容不变时要求复用。跨日必须使用不同 date-addressed revision，三项
+  THS 数据集必须保持 exact-date/same-revision lineage，两个旧 CronJob identity 与所有 Job 全程保持 absent。
 
 ## Remaining Gaps（剩余缺口）
 
@@ -200,7 +207,8 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
   checksum、伪造 `fetched_at` 或复用跨日 revision 规避。
 - 7.1–7.3 已从 clean reviewed HEAD `021071cbb7e3ce87dd59806226642cb916db6d75` 完成 revision 110 复核、
   不可覆盖备份、隔离恢复、生产迁移和不可变镜像发布；同镜像 manual-off、hook-free/orphan schedule disable 及
-  all/service manifest-digest 门禁均已实际验收。生产现为 revision 113、v10/0007、writer=0；不得为了验证
+  all/service manifest-digest 门禁均已实际验收。该 change 的发布终点为 revision 113/v10；当前生产已由 Hermes
+  change 7.2 additive 升级到 revision 116/v11，writer=0，旧 THS 事实不变；不得为了验证
   orphan 行为重建 CronJob/Job。
 - OpenSpec 6.5–6.7 已完成：manual-off 入口只允许 reviewed full packet 的 literal `1 -> 0`、同镜像、
   `--no-hooks`、schedule absent、每个 retained Job 均有 `Complete=True`/`Failed=True` 终态、stored hooks 与
@@ -210,8 +218,9 @@ provider，也不执行新的生产备份、迁移、部署或调度变更；先
 - 生产 schema 已由 7.3 受控 migration Job 升至 v10/`0007_ths_catalog_identity`；隔离和生产约束、版本列、nullable
   与历史不变验收均通过。
 - 生产现状仍保留固定 `fuyao-ths-catalog-v1` 目录 revision 与 2026-10-14 的 checksum collision/blocked 审计；不得通过改写历史记录消除。
-- 任务 7.4 的盘后 provider 写入与 7.5 的调度恢复/跨交易日观察已获授权但仍受自然时间边界约束；至少两个
-  完成交易日证据未齐前不得勾选 7.5。
+- 任务 7.4 的盘后 provider 写入仍按原授权和结算边界独立执行。旧 7.5 的 Kubernetes schedule restoration 已取消，
+  两个完成交易日、THS 同日/跨日 revision 和三任务 lineage 验收转交 Hermes 7.5；相关 Hermes 外部写和额外同日
+  provider 重采仍需另行授权，证据未齐前旧 7.5 与 Hermes 7.5 均不得勾选。
 - 7.2 隔离容器 `a-stock-pg-recovery-7-2-20261015T020129Z` 与本地恢复目录继续保留为验证证据；删除它们属于
   独立清理动作，不影响 7.2 验收，也不得为释放空间而擅自销毁。
 - 7.1 的 schedule/manual writer 已安全关闭，但 exact failed Kubernetes Job 被 CronJob 删除的默认级联回收；
@@ -227,3 +236,5 @@ exact Ready Pod 中执行一次 `snapshots scheduled-refresh --dataset industry-
 sector-breadth`，由 CLI 自身再次验证结算时间并进入依赖 DAG。完成后核对新 observation revision 与 capability
 revision 分离、完整 relation/ranking、bars 与 declared gaps 对账、无零占位、精确诊断和非 generic blocked 下游；
 若 provider 或对账失败，保留真实 failed/partial/insufficient 审计并停止，不开启 schedule/manual，也不删除证据。
+7.4 收口后继续保持 Kubernetes CronJob/Job absent；两日验收只等待 `replace-market-collection-scheduling-with-hermes`
+实施和另行授权，不以恢复旧 schedule 补证。

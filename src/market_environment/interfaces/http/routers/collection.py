@@ -6,21 +6,28 @@ from collections.abc import Iterable
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from ....collection import manual_refresh_enabled
+from ....application.commands import FullCollectionSkippedResult
 from ....application.ths_diagnostics import ths_warning_response
+from ....domain.models import IdempotencyKey
 from ..schemas.models import (
     CollectionRunRequest,
     CollectionRunResponse,
     CollectionStatusResponse,
+    FullCollectionResponse,
+    FullCollectionRunResponse,
 )
 from ..dependencies import (
     CollectionCommands,
     CollectionQueries,
+    FullCollectionCommands,
+    get_automation_write_enabled,
     get_collection_commands,
     get_collection_queries,
     get_effective_market_date,
+    get_full_collection_commands,
 )
 from ..errors import (
     raise_application_error,
@@ -28,7 +35,13 @@ from ..errors import (
     raise_not_found,
     raise_unprocessable,
 )
-from ..schemas import map_collection_run, map_collection_status
+from ..schemas import (
+    map_collection_failure,
+    map_collection_run,
+    map_collection_status,
+    map_full_collection_run,
+    map_full_collection_skipped,
+)
 
 
 router = APIRouter()
@@ -130,6 +143,7 @@ def _attempt_payload(record) -> dict | None:
         "source": record.source,
         "observations": record.observations,
         "warning": warning,
+        "failure": map_collection_failure(getattr(record, "failure", None)),
         "diagnostics": diagnostics,
         "catalogRevisionId": revision,
         "queuedAt": record.queued_at,
@@ -298,6 +312,70 @@ def start_market_environment_collection(
         extras = _build_task_extras(raw_status=raw_status, result=result)
         commands.submit_run(result.run.run_id)
         return map_collection_run(_run_payload(result, extras=extras))
+    except Exception as error:
+        raise_application_error(error)
+
+
+@router.post(
+    "/api/market-environment/collection-runs/full",
+    response_model=FullCollectionResponse,
+    responses={
+        status.HTTP_202_ACCEPTED: {
+            "model": FullCollectionRunResponse,
+            "description": "采集批次仍在后台执行",
+        }
+    },
+)
+def start_full_market_environment_collection(
+    response: Response,
+    commands: Annotated[
+        FullCollectionCommands,
+        Depends(get_full_collection_commands),
+    ],
+    queries: Annotated[CollectionQueries, Depends(get_collection_queries)],
+    automation_enabled: Annotated[bool, Depends(get_automation_write_enabled)],
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=200,
+            description="同一语义重放必须复用的可靠性键；不是身份凭据",
+        ),
+    ],
+    wait_timeout_seconds: Annotated[
+        float,
+        Query(alias="waitTimeoutSeconds", ge=0, le=900),
+    ] = 900,
+) -> dict:
+    if not automation_enabled:
+        raise_forbidden("自动化全量数据采集未启用")
+    try:
+        triggered = commands.execute(IdempotencyKey(idempotency_key))
+        if isinstance(triggered, FullCollectionSkippedResult):
+            return map_full_collection_skipped(
+                target_date=triggered.resolved_as_of,
+                reason=triggered.reason,
+            )
+
+        result = commands.wait(triggered.run_id, wait_timeout_seconds)
+        if result is None:
+            raise RuntimeError("claimed full-collection run cannot be read")
+        status_url = (
+            "/api/market-environment/collection-runs/"
+            f"{triggered.run_id}"
+        )
+        raw_status = queries.collection_status(result.run.as_of)
+        extras = _build_task_extras(raw_status=raw_status, result=result)
+        payload = map_full_collection_run(
+            _run_payload(result, extras=extras),
+            status_url=status_url,
+        )
+        if result.run.status not in {"success", "partial", "failed"}:
+            response.status_code = status.HTTP_202_ACCEPTED
+            response.headers["Location"] = status_url
+            response.headers["Retry-After"] = "15"
+        return payload
     except Exception as error:
         raise_application_error(error)
 

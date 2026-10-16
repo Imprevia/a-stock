@@ -40,7 +40,7 @@ npm run dev --prefix apps/market-environment-dashboard
 
 ## TrueNAS k3s 部署
 
-生产写操作只使用仓库的 fail-closed 入口。先从示例创建私有环境文件，至少核对目标、镜像、完整 baseline values、`SCHEDULED_COLLECTION_ENABLED=false` 和 `SCHEDULED_COLLECTION_SUSPEND=true`：
+生产写操作只使用仓库的 fail-closed 入口。先从示例创建私有环境文件，至少核对目标、镜像、完整 baseline values、release 和 namespace；不要把凭据提交到仓库：
 
 ```bash
 cp deploy/truenas/deploy.env.example deploy/truenas/deploy.env
@@ -48,50 +48,54 @@ editor deploy/truenas/deploy.env
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env
 ```
 
-同一入口支持按组件执行，依赖和写入顺序固定为 `postgresql -> schema migration -> service -> schedule`：
+同一入口支持按组件执行，依赖和写入顺序固定为 `postgresql -> schema migration -> service`：
 
 ```bash
-# 一键按 database -> service -> schedule 部署；无 frozen image 时 schedule 保持 disabled/absent
+# 一键按 database -> service 部署
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component all
 # 只部署/校验 PostgreSQL StatefulSet、Service 和数据库 PVC；不构建或传输镜像
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component database
 # 部署 Dashboard Deployment、Service 和 Ingress
 bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component service
-# 复用已验证的 frozen image，部署 suspended CronJob
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --component schedule
 ```
 
 `database` 部署单主 PostgreSQL StatefulSet、内部 ClusterIP 和独立 Retain RWO PVC；必须提前创建
 `database.existingSecret`，Secret 至少提供 `DATABASE_URL`、`POSTGRES_USER`、`POSTGRES_PASSWORD` 和
-`POSTGRES_DB`。Dashboard 与 CronJob 不挂载 SQLite 或 PostgreSQL PVC，运行时只通过
+`POSTGRES_DB`。Dashboard 不挂载 SQLite 或 PostgreSQL PVC，运行时只通过
 `MARKET_ENVIRONMENT_DATABASE_URL` 访问 PostgreSQL。旧 SQLite PVC 仅由一次性迁移 Job 只读挂载。
-`service` 依赖 PostgreSQL StatefulSet/Service ready、数据库 PVC `Bound` 和可用镜像，`schedule` 还依赖已验证的 service 与
-`FROZEN_IMAGE_REPOSITORY/TAG/DIGEST`；`all` 未提供 frozen image 时会记录 skipped 并保持
-schedule disabled/absent。service 默认不启动 schedule Job；专用调度入口 `--release-suspended` / `--activate-schedule` / `--disable-schedule` 才会切换到 suspended/active overlay。失败时按输出的组件重试目标
-重跑，绝不删除 PVC。
+`service` 依赖 PostgreSQL StatefulSet/Service ready、数据库 PVC `Bound` 和可用镜像。仓库不再提供
+`schedule` component、scheduling overlay、CronJob template 或 release/activate/disable 模式；失败时按输出的
+组件重试目标重跑，绝不删除 PVC。
 
 首次部署前先创建 `database.existingSecret`，再等待 PostgreSQL StatefulSet/ClusterIP ready；Helm 的
-schema migration Job 成功执行 `alembic upgrade head` 后，才 rollout Dashboard 和 suspended CronJob。
-迁移旧环境时先暂停 CronJob、关闭手工写入，用迁移工具生成不可覆盖的 SQLite before-image 并校验
+schema migration Job 成功执行 `alembic upgrade head` 后，才 rollout Dashboard。
+迁移旧环境时先确认 Hermes job 已暂停、automation/manual 写入口都关闭，再用迁移工具生成不可覆盖的 SQLite before-image并校验
 `quick_check`、行数、checksum 和日期覆盖；导入校验通过后切换同一 Secret。PostgreSQL 首次写入后不回切
 过期 SQLite，恢复只能使用 PostgreSQL 备份或前向修复；旧 SQLite PVC 与备份继续保留作归档。
 
 后续发布在审阅后的 clean commit 上设置新的不可变 `IMAGE_TAG`，再执行同一入口；不得直接调用 Helm write、继承 release values 或恢复历史 revision。入口必须在构建、导入或发布前确认 Helm stored manifest 与 live state 均无 application CronJob，并在成功写入后再次证明 live CronJob 仍不存在。
 
-若只读发现显示 release 已有 active 或 suspended application CronJob，普通发布和应用回退都必须停止。先冻结并审核 exact off packet，在授权后通过受控调度入口删除 exact CronJob；只有 `--disable-schedule` 的 server-observed postcondition 成功后，才能重新执行普通发布：
+若只读发现显示 stored manifest 或 live cluster 中存在 release-derived `a-stock-data-collection` 或 legacy
+`market-data-collection`，不论 active 或 suspended，普通发布和应用回退都必须停止：
 
 ```bash
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --read-only-discovery \
-  --release-name a-stock --namespace a-stock
-bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --disable-schedule \
-  --baseline-values deploy/truenas/values-secure-manual-collection.yaml \
-  --scheduling-overlay deploy/truenas/values-scheduled-off.yaml \
-  --kube-version <ACTUAL_KUBERNETES_VERSION> --release-name a-stock --namespace a-stock
+helm get manifest a-stock --namespace a-stock
+kubectl get cronjob a-stock-data-collection --namespace a-stock --ignore-not-found -o yaml
+kubectl get cronjob market-data-collection --namespace a-stock --ignore-not-found -o yaml
 ```
 
-应用回退不恢复历史 Helm revision。检出已审阅的回退 commit，使用新的不可变 rollback image tag 和同一普通入口重建 disabled 状态。写入、rollout 或写后读取失败时，入口必须返回非零，并将意外 active CronJob 精确补偿为 suspended 后验证 absent/suspended；无法验证时状态为 uncertain/NO-GO。失败后仍须返回审核后的 `--disable-schedule` 流程，不能直接重试普通发布。
+入口只读取并拒绝遗留资源，不 patch、删除、接管或激活 CronJob。处置遗留资源必须另建计划、冻结 stored/live
+证据并取得明确授权；处置并证明两个 identity 都 absent 后，才能重跑普通发布。应用回退不恢复历史 Helm revision，
+而是用已审阅 commit、新的不可变 rollback image tag 和同一普通入口前向部署；PostgreSQL 历史、快照、幂等记录和
+PVC 保持不变。
 
-Chart 的 Dashboard 支持 Kubernetes 1.26+，定时采集默认 `enabled=false`、`suspend=true`，无 scheduling overlay 的 render 不包含 CronJob。定时采集显式选择 `timezoneStrategy`：`native` 仅用于 Kubernetes 1.27+，会输出 `spec.timeZone: Asia/Shanghai`；k3s 1.26 使用经过 controller 时区证据验证的 `controller` 策略，省略该字段，并在当前 TrueNAS controller `Asia/Shanghai` 下把上海 16:30 固定为 `30 16 * * 1-5`。CronJob 与 Dashboard 使用同一镜像和 PostgreSQL Service/Secret，均不挂载数据库 PVC，采集五类市场环境数据；所有 CronJob 均由 Helm release 统一管理，只有受控专用入口（`--release-suspended` / `--activate-schedule` / `--disable-schedule`）可使用 `scheduled-suspended` 或 `scheduled-active` overlay。TrueNAS 的普通发布使用完整 baseline 且不带 scheduling overlay；`deploy/k3s/` 是不含 CronJob 的 Dashboard base，原生 `spec.timeZone` CronJob 位于 `deploy/k3s-native-scheduled/`，仅可通过 `python scripts/render-k3s.py --kube-version <1.27+>` 检查渲染。无 Ingress Controller 时可改用显式 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL 静态 PV/PVC 并通过数据库 values 引用。
+Chart 支持 Kubernetes 1.26+；所有 Helm/Kustomize profile 都只部署 PostgreSQL、migration 和 Dashboard service，
+不包含 application-owned market-data CronJob，也没有 `scheduledCollection` values。盘后时钟与通知由
+`192.168.1.21` 上的 Hermes Agent 持有，工作日上海时间 15:30 调用后端默认关闭的
+`POST http://192.168.1.20:32001/api/market-environment/collection-runs/full`。该接口固定七数据集且要求
+`Idempotency-Key`；开启后所有可路由内网客户端均可调用，幂等不是鉴权。安装、启用、停止和回滚步骤见
+`docs/runbooks.md`；无 Ingress Controller 时可显式使用 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL
+静态 PV/PVC 并通过数据库 values 引用。
 
 ## 交易规则平台
 

@@ -100,6 +100,10 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
             "202",
             "CollectionRunResponse",
         ),
+        ("/api/market-environment/collection-runs/full", "post"): (
+            "200",
+            None,
+        ),
         ("/api/market-environment/collection-runs/{run_id}", "get"): (
             "200",
             "CollectionRunResponse",

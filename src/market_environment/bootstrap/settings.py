@@ -80,6 +80,7 @@ class MarketEnvironmentSettings:
     settlement_time: time = time(15, 10)
     open_time: time = time(9, 30)
     manual_refresh_enabled: bool = True
+    automation_refresh_enabled: bool = False
     persistent_cache_enabled: bool = True
     limits_v1_enabled: bool = False
     sector_enrichment_enabled: bool = False
@@ -122,6 +123,11 @@ class MarketEnvironmentSettings:
                 env,
                 "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED",
                 True,
+            ),
+            automation_refresh_enabled=_boolean(
+                env,
+                "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED",
+                False,
             ),
             persistent_cache_enabled=_boolean(
                 env,

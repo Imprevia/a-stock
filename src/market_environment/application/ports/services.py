@@ -35,6 +35,10 @@ class CollectionCommandPort(Protocol):
 
     def execute_run(self, run_id: str): ...
 
+    def prepare_run_submission(self, run_id: str, *, lease_seconds: float): ...
+
+    def release_run_submission(self, run_id: str) -> int: ...
+
     def refresh(
         self,
         as_of: date,

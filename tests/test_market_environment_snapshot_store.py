@@ -5,6 +5,10 @@ import sqlite3
 
 import pytest
 
+from src.market_environment.domain.models import (
+    CollectionFailureCategory,
+    StructuredTaskFailure,
+)
 from src.market_environment.snapshot_store import (
     SNAPSHOT_SCHEMA_VERSION,
     CoreIndexResultRecord,
@@ -300,6 +304,144 @@ def test_expired_active_task_becomes_retryable_and_retains_same_date_success(tmp
     assert store.active_collection_task("breadth", AS_OF, now=NOW + timedelta(seconds=6)) is None
     assert store.get_collection_task("task-1").status == "failed-retained"
     assert store.get("breadth", AS_OF) is not None
+
+
+def test_collection_task_failures_round_trip_after_store_restart(tmp_path) -> None:
+    path = tmp_path / "collection-failures.sqlite3"
+    store = SnapshotStore(path)
+    datasets = (
+        "core",
+        "breadth",
+        "limits",
+        "industry-ranking",
+        "sector-turnover",
+        "sector-breadth",
+        "activeDirection",
+    )
+    store.create_collection_run("run-failures", AS_OF, datasets, created_at=NOW)
+    for dataset in datasets:
+        store.create_collection_task(
+            f"task-{dataset}",
+            "run-failures",
+            dataset,
+            AS_OF,
+            queued_at=NOW,
+        )
+
+    store.transition_collection_task(
+        "task-core",
+        "success",
+        source="fixture-core",
+        observations=3,
+        warning="successful compatibility warning",
+        timings={"providerCollectionMs": 1.5},
+        completed_at=NOW,
+    )
+    store.transition_collection_task(
+        "task-breadth",
+        "partial",
+        source="fixture-breadth",
+        observations=2,
+        warning="partial candidate warning",
+        timings={"providerCollectionMs": 2.5},
+        completed_at=NOW,
+    )
+    store.put(record(dataset="limits", settled=True))
+    store.transition_collection_task(
+        "task-limits",
+        "failed-retained",
+        warning="rate limited; same-date snapshot retained",
+        failure=StructuredTaskFailure(
+            category=CollectionFailureCategory.RATE_LIMIT,
+            message="provider rate limited the request",
+            retryable=True,
+            retained=True,
+            source="fixture-provider",
+            stage="acquisition",
+        ),
+        completed_at=NOW,
+    )
+    store.transition_collection_task(
+        "task-industry-ranking",
+        "failed-missing",
+        warning="provider response was insufficient",
+        failure=StructuredTaskFailure(
+            category=CollectionFailureCategory.INSUFFICIENT,
+            message="provider response was insufficient",
+            retryable=True,
+            retained=False,
+            stage="acquisition",
+        ),
+        completed_at=NOW,
+    )
+    store.transition_collection_task(
+        "task-sector-turnover",
+        "blocked",
+        warning='{"reasonCode":"THS_DEPENDENCY_INSUFFICIENT"}',
+        failure=StructuredTaskFailure(
+            category=CollectionFailureCategory.DEPENDENCY,
+            message="blocked by industry-ranking",
+            retryable=True,
+            retained=False,
+            stage="dependency-coordination",
+            blocked_by=("industry-ranking",),
+        ),
+        completed_at=NOW,
+    )
+    store.transition_collection_task(
+        "task-sector-breadth",
+        "busy",
+        warning="another task owns the lease",
+        failure=StructuredTaskFailure(
+            category=CollectionFailureCategory.CONCURRENCY,
+            message="another task owns the dataset/date lease",
+            retryable=True,
+            retained=False,
+            stage="lease-acquisition",
+        ),
+        completed_at=NOW,
+    )
+    store.transition_collection_task(
+        "task-activeDirection",
+        "collecting",
+        started_at=NOW,
+    )
+    assert store.expire_inactive_collection_tasks(now=NOW + timedelta(seconds=1)) == 1
+
+    before_restart = {
+        task.dataset: task for task in store.list_collection_tasks("run-failures")
+    }
+    reopened = SnapshotStore(path)
+    after_restart = {
+        task.dataset: task for task in reopened.list_collection_tasks("run-failures")
+    }
+
+    assert set(after_restart) == set(datasets)
+    for dataset in datasets:
+        before = before_restart[dataset]
+        after = after_restart[dataset]
+        assert after.status == before.status
+        assert after.source == before.source
+        assert after.observations == before.observations
+        assert after.warning == before.warning
+        assert after.timings == before.timings
+        assert (
+            after.failure.to_dict() if after.failure is not None else None
+        ) == (
+            before.failure.to_dict() if before.failure is not None else None
+        )
+
+    assert after_restart["core"].failure is None
+    assert after_restart["breadth"].failure is None
+    assert after_restart["limits"].failure.retained is True
+    assert after_restart["industry-ranking"].failure.retained is False
+    assert after_restart["sector-turnover"].failure.blocked_by == (
+        "industry-ranking",
+    )
+    assert (
+        after_restart["activeDirection"].failure.category
+        is CollectionFailureCategory.WORKER_INTERRUPTED
+    )
 
 
 def test_core_index_results_and_materialized_aggregate_replace_atomically(tmp_path) -> None:

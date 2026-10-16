@@ -24,6 +24,7 @@ from ...domain.policies.limit_facts import (
     fact_row_checksum,
     limit_dataset_checksum,
 )
+from ...domain.models import CollectionFailureCategory, StructuredTaskFailure
 from ..providers.capability import ProviderCapabilityReport
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -229,6 +230,7 @@ class CollectionTaskRecord:
     source: str = "none"
     observations: int = 0
     warning: str | None = None
+    failure: StructuredTaskFailure | None = None
     timings: dict[str, Any] | None = None
     queued_at: datetime | None = None
     started_at: datetime | None = None
@@ -418,6 +420,7 @@ class LegacySnapshotStoreAdapter:
                     source TEXT NOT NULL DEFAULT 'none',
                     observations INTEGER NOT NULL DEFAULT 0,
                     warning TEXT,
+                    failure_json TEXT,
                     timings_json TEXT NOT NULL DEFAULT '{}',
                     queued_at TEXT,
                     started_at TEXT,
@@ -676,6 +679,14 @@ class LegacySnapshotStoreAdapter:
             if "token" not in lease_columns:
                 connection.execute(
                     "ALTER TABLE refresh_leases ADD COLUMN token TEXT NOT NULL DEFAULT ''"
+                )
+            task_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(collection_tasks)").fetchall()
+            }
+            if "failure_json" not in task_columns:
+                connection.execute(
+                    "ALTER TABLE collection_tasks ADD COLUMN failure_json TEXT"
                 )
             dataset_columns = {
                 row[1]
@@ -2413,6 +2424,7 @@ class LegacySnapshotStoreAdapter:
         *,
         queued_at: datetime | None = None,
         status: CollectionTaskStatus = "queued",
+        failure: StructuredTaskFailure | None = None,
     ) -> CollectionTaskRecord:
         timestamp = self._normalized_datetime(queued_at or utc_now())
         assert timestamp is not None
@@ -2420,10 +2432,18 @@ class LegacySnapshotStoreAdapter:
             connection.execute(
                 """
                 INSERT INTO collection_tasks (
-                    task_id, run_id, dataset, as_of, status, queued_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    task_id, run_id, dataset, as_of, status, failure_json, queued_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (task_id, run_id, dataset, as_of.isoformat(), status, timestamp.isoformat()),
+                (
+                    task_id,
+                    run_id,
+                    dataset,
+                    as_of.isoformat(),
+                    status,
+                    failure.canonical_json() if failure is not None else None,
+                    timestamp.isoformat(),
+                ),
             )
         return CollectionTaskRecord(
             task_id=task_id,
@@ -2431,6 +2451,7 @@ class LegacySnapshotStoreAdapter:
             dataset=dataset,
             as_of=as_of,
             status=status,
+            failure=failure,
             queued_at=timestamp,
         )
 
@@ -2475,6 +2496,7 @@ class LegacySnapshotStoreAdapter:
         source: str | None = None,
         observations: int | None = None,
         warning: str | None = None,
+        failure: StructuredTaskFailure | None = None,
         timings: dict[str, Any] | None = None,
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
@@ -2489,6 +2511,10 @@ class LegacySnapshotStoreAdapter:
             ("source", source),
             ("observations", observations),
             ("warning", warning),
+            (
+                "failure_json",
+                failure.canonical_json() if failure is not None else None,
+            ),
             ("timings_json", canonical_json(timings) if timings is not None else None),
             ("started_at", started.isoformat() if started else None),
             ("completed_at", completed.isoformat() if completed else None),
@@ -2499,6 +2525,8 @@ class LegacySnapshotStoreAdapter:
             if value is not None:
                 assignments.append(f"{column} = ?")
                 values.append(value)
+        if failure is None and status in {"queued", "collecting", "success", "partial"}:
+            assignments.append("failure_json = NULL")
         where = "task_id = ?"
         values.append(task_id)
         if expected_statuses:
@@ -2594,15 +2622,33 @@ class LegacySnapshotStoreAdapter:
         assert current is not None
         completed_at = current.isoformat()
         with self._connect() as connection:
-            rows = connection.execute(
+            idempotency_join = ""
+            idempotency_guard = ""
+            if self._postgres:
+                idempotency_join = """
+                LEFT JOIN collection_idempotency_bindings AS binding
+                  ON binding.run_id = task.run_id
                 """
+                idempotency_guard = """
+                  AND NOT (
+                    task.status = 'queued'
+                    AND binding.run_id IS NOT NULL
+                    AND binding.submission_state IN (
+                      'reserved', 'submitting', 'submitted', 'submission-failed'
+                    )
+                  )
+                """
+            rows = connection.execute(
+                f"""
                 SELECT task.task_id, task.dataset, task.as_of
                 FROM collection_tasks AS task
                 LEFT JOIN refresh_leases AS lease
                   ON lease.dataset = task.dataset AND lease.as_of = task.as_of
                  AND lease.owner = task.task_id
                  AND lease.expires_at > ?
+                {idempotency_join}
                 WHERE task.status IN ('queued', 'collecting') AND lease.dataset IS NULL
+                {idempotency_guard}
                 """,
                 (completed_at,),
             ).fetchall()
@@ -2614,12 +2660,19 @@ class LegacySnapshotStoreAdapter:
                 connection.execute(
                     """
                     UPDATE collection_tasks
-                    SET status = ?, warning = ?, completed_at = ?
+                    SET status = ?, warning = ?, failure_json = ?, completed_at = ?
                     WHERE task_id = ?
                     """,
                     (
                         "failed-retained" if retained else "failed-missing",
                         "collection worker stopped before completion; task is retryable",
+                        StructuredTaskFailure(
+                            category=CollectionFailureCategory.WORKER_INTERRUPTED,
+                            message="collection worker stopped before completion; task is retryable",
+                            retryable=True,
+                            retained=bool(retained),
+                            stage="execution",
+                        ).canonical_json(),
                         completed_at,
                         row["task_id"],
                     ),
@@ -2637,6 +2690,11 @@ class LegacySnapshotStoreAdapter:
             source=row["source"],
             observations=int(row["observations"]),
             warning=row["warning"],
+            failure=(
+                StructuredTaskFailure.from_dict(_json_value(row["failure_json"], {}))
+                if row["failure_json"] is not None
+                else None
+            ),
             timings=_json_value(row["timings_json"], {}),
             queued_at=LegacySnapshotStoreAdapter._parse_datetime(row["queued_at"]),
             started_at=LegacySnapshotStoreAdapter._parse_datetime(row["started_at"]),

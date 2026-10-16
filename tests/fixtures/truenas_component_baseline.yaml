@@ -1,5 +1,5 @@
 # TrueNAS k3s reviewed baseline for the componentized deployment workflow.
-# This fixture describes the supported release/namespace/PVC/image/topology/scheduling
+# This fixture describes the supported release/namespace/PVC/image/topology
 # invariants that operators must respect. Tests must reject any drift away from
 # these assumptions before a target write.
 schema: truenas-k3s-component-baseline/v1
@@ -26,16 +26,14 @@ persistence:
   snapshotPath: /data/snapshots.sqlite3
   keep: true
 
-# The frozen, immutable image that the release and the after-market CronJob
-# must share. Schedule-only operations must reuse this exact reference and
-# reject a digest mismatch.
+# The frozen, immutable image used by reviewed deployments.
 image:
   pullPolicy: IfNotPresent
   repository: localhost/a-stock-market-environment
   tagPattern: "%Y%m%d-%H%M%S-%h"
   digestPrefix: "sha256:"
 
-# Topology: SQLite RWO with one Dashboard replica and no shared volume for Jobs.
+# Topology: one Dashboard replica and a PostgreSQL-backed runtime.
 topology:
   replicaCount: 1
   strategy: Recreate
@@ -46,23 +44,3 @@ topology:
     allowPrivilegeEscalation: false
   capabilitiesDrop:
     - ALL
-
-# Scheduling: production schedules are always fail-closed. The component
-# workflow keeps the production schedule fail-closed by default; the reviewed
-# --release-suspended / --activate-schedule / --disable-schedule paths are the
-# only way to transition to suspended/active.
-scheduling:
-  supportedStates:
-    - disabled
-    - suspended
-  defaultState: disabled
-  defaultSuspend: true
-  concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 1800
-  activeDeadlineSeconds: 3600
-  timezoneStrategy:
-    - native
-    - controller
-  businessTimezone: Asia/Shanghai
-  settlementTime: "15:10"
-  schedulePattern: "^[0-9]{1,2} [0-9]{1,2} \\* \\* 1-5$"

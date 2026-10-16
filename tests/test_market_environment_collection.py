@@ -13,7 +13,10 @@ from src.market_environment.calculations import Bar
 from src.market_environment.cli import main as cli_main
 from src.market_environment.collection import CollectionCoordinator
 from src.market_environment.domain.models import (
+    AcquisitionFailure,
+    AcquisitionFailureCategory,
     CollectionCandidate,
+    CollectionFailureCategory,
     CollectionOutcome,
     CollectionTaskState,
     DATASET_IDS,
@@ -165,6 +168,30 @@ class ForbiddenActiveDirectionAdapter:
 
 
 @dataclass
+class ClaimedRunStore:
+    """Model the PostgreSQL idempotency guard for queued claimed tasks."""
+
+    delegate: SnapshotStore
+
+    def expire_inactive_collection_tasks(self, *, now=None) -> int:
+        del now
+        return 0
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+
+@dataclass(frozen=True)
+class RejectingFuyaoPolicy:
+    rejected: frozenset[str]
+
+    def preflight_error(self, dataset: str) -> str | None:
+        if dataset in self.rejected:
+            return f"{dataset} Fuyao configuration is unavailable"
+        return None
+
+
+@dataclass
 class FixtureDatasetCollector:
     dataset_id: str
     failing_datasets: frozenset[str] = frozenset()
@@ -177,6 +204,12 @@ class FixtureDatasetCollector:
                 identity,
                 CollectionTaskState.FAILED_MISSING,
                 warning=f"{identity.dataset} unavailable",
+                failure=AcquisitionFailure(
+                    category=AcquisitionFailureCategory.NETWORK,
+                    message=f"{identity.dataset} unavailable",
+                    retryable=True,
+                    source="fixture-provider",
+                ),
             )
         candidate = CollectionCandidate(
             identity=identity,
@@ -253,6 +286,187 @@ def fixture_dataset_coordinator(
     )
 
 
+def claimed_run_coordinator(
+    store: SnapshotStore,
+    *,
+    fuyao_policy=None,
+) -> CollectionCoordinator:
+    collectors = tuple(FixtureDatasetCollector(dataset) for dataset in DATASET_IDS)
+    return CollectionCoordinator(
+        None,
+        ClaimedRunStore(store),
+        now=lambda: AFTER_MARKET,
+        collector_registry=DatasetCollectorRegistry.complete(collectors),
+        fuyao_policy=fuyao_policy,
+    )
+
+
+def seed_claimed_run(
+    store: SnapshotStore,
+    run_id: str,
+    datasets: tuple[str, ...],
+) -> dict[str, str]:
+    store.create_collection_run(run_id, AS_OF, datasets, created_at=AFTER_MARKET)
+    task_ids = {dataset: f"{run_id}-{dataset}" for dataset in datasets}
+    for dataset, task_id in task_ids.items():
+        store.create_collection_task(
+            task_id,
+            run_id,
+            dataset,
+            AS_OF,
+            queued_at=AFTER_MARKET,
+        )
+    return task_ids
+
+
+def test_prepare_run_submission_reacquires_expired_owned_lease_with_new_generation(
+    tmp_path,
+) -> None:
+    store = SnapshotStore(tmp_path / "prepare-expired-lease.sqlite3")
+    task_id = seed_claimed_run(store, "claimed-expired", ("breadth",))["breadth"]
+    expired = store.acquire_lease(
+        "breadth",
+        AS_OF,
+        task_id,
+        lease_seconds=30,
+        now=AFTER_MARKET - timedelta(minutes=5),
+    )
+    assert expired is not None and expired.expires_at < AFTER_MARKET
+    coordinator = claimed_run_coordinator(store)
+
+    tasks = coordinator.prepare_run_submission(
+        "claimed-expired",
+        lease_seconds=600,
+    )
+
+    renewed = store.get_lease_token("breadth", AS_OF, owner=task_id)
+    assert tasks[0].status == "queued"
+    assert renewed is not None
+    assert renewed.owner == task_id
+    assert renewed.generation > expired.generation
+    assert renewed.token != expired.token
+    assert renewed.expires_at > AFTER_MARKET
+
+
+def test_prepare_run_submission_persists_fuyao_preflight_failures_without_leases(
+    tmp_path,
+) -> None:
+    store = SnapshotStore(tmp_path / "prepare-preflight.sqlite3")
+    store.put(
+        SnapshotRecord(
+            dataset="breadth",
+            as_of=AS_OF,
+            payload=chapter_payload("breadth", AS_OF),
+            source="retained",
+            status="ok",
+            observations=3,
+            warnings=(),
+            fetched_at=AFTER_MARKET - timedelta(minutes=5),
+            settled=True,
+        )
+    )
+    task_ids = seed_claimed_run(
+        store,
+        "claimed-preflight",
+        ("core", "breadth"),
+    )
+    coordinator = claimed_run_coordinator(
+        store,
+        fuyao_policy=RejectingFuyaoPolicy(frozenset({"core", "breadth"})),
+    )
+
+    tasks = {
+        task.dataset: task
+        for task in coordinator.prepare_run_submission(
+            "claimed-preflight",
+            lease_seconds=600,
+        )
+    }
+
+    assert tasks["core"].status == "failed-missing"
+    assert tasks["breadth"].status == "failed-retained"
+    for dataset, retained in (("core", False), ("breadth", True)):
+        failure = tasks[dataset].failure
+        assert failure is not None
+        assert failure.category is CollectionFailureCategory.CONFIGURATION
+        assert failure.retryable is False
+        assert failure.retained is retained
+        assert failure.stage == "preflight"
+        assert failure.code == "FUYAO_PREFLIGHT_REJECTED"
+        assert store.get_lease_token(
+            dataset,
+            AS_OF,
+            owner=task_ids[dataset],
+        ) is None
+
+
+def test_execute_run_recovers_interrupted_task_and_waits_for_all_tasks_to_finish(
+    tmp_path,
+) -> None:
+    store = SnapshotStore(tmp_path / "execute-recovery.sqlite3")
+    run_id = "recover-run"
+    store.create_collection_run(
+        run_id,
+        AS_OF,
+        ("core", "breadth"),
+        created_at=AFTER_MARKET - timedelta(minutes=10),
+    )
+    store.update_collection_run(
+        run_id,
+        "collecting",
+        started_at=AFTER_MARKET - timedelta(minutes=10),
+    )
+    for dataset in ("core", "breadth"):
+        store.create_collection_task(
+            f"recover-{dataset}",
+            run_id,
+            dataset,
+            AS_OF,
+            queued_at=AFTER_MARKET - timedelta(minutes=10),
+        )
+        store.transition_collection_task(
+            f"recover-{dataset}",
+            "collecting",
+            expected_statuses=("queued",),
+            started_at=AFTER_MARKET - timedelta(minutes=10),
+        )
+    active_lease = store.acquire_lease(
+        "breadth",
+        AS_OF,
+        "recover-breadth",
+        lease_seconds=600,
+        now=AFTER_MARKET,
+    )
+    assert active_lease is not None
+    coordinator, _ = fixture_dataset_coordinator(store)
+
+    still_collecting = coordinator.execute_run(run_id)
+    recovered = store.get_collection_task("recover-core")
+
+    assert recovered is not None
+    assert recovered.status == "failed-missing"
+    assert recovered.failure is not None
+    assert (
+        recovered.failure.category
+        is CollectionFailureCategory.WORKER_INTERRUPTED
+    )
+    assert still_collecting.status == "collecting"
+    assert still_collecting.completed_at is None
+
+    store.transition_collection_task(
+        "recover-breadth",
+        "success",
+        expected_statuses=("collecting",),
+        source="fixture",
+        observations=1,
+        completed_at=AFTER_MARKET,
+    )
+    terminal = coordinator.execute_run(run_id)
+
+    assert terminal.status == "partial"
+    assert terminal.completed_at == AFTER_MARKET
+
+
 def test_full_collection_continues_after_dataset_failure(tmp_path) -> None:
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")
     rebuilt: list[date] = []
@@ -267,8 +481,22 @@ def test_full_collection_continues_after_dataset_failure(tmp_path) -> None:
     assert result.run.status == "partial"
     assert tasks["sector-turnover"].status == "failed-missing"
     assert tasks["sector-breadth"].status == "blocked"
+    assert (
+        tasks["sector-turnover"].failure.category
+        is CollectionFailureCategory.NETWORK
+    )
+    assert tasks["sector-turnover"].failure.source == "fixture-provider"
+    assert (
+        tasks["sector-breadth"].failure.category
+        is CollectionFailureCategory.DEPENDENCY
+    )
+    assert tasks["sector-breadth"].failure.blocked_by == ("sector-turnover",)
     assert all(
         tasks[name].status == "success"
+        for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
+    )
+    assert all(
+        tasks[name].failure is None
         for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
     )
     assert store.get("sector-turnover", AS_OF) is None
@@ -436,6 +664,7 @@ def test_failed_active_direction_fallback_retains_same_date_success(tmp_path, mo
     assert calls == [provider._STOCK_SNAPSHOT_URL, provider._ACTIVE_DIRECTION_FALLBACK_URL]
     assert result.run.status == "failed"
     assert result.tasks[0].status == "failed-retained"
+    assert result.tasks[0].failure.retained is True
     assert retained.source == "old"
     assert "主域失败：primary disconnected" in retained.refresh_warning
     assert "延迟域失败：delayed unavailable" in retained.refresh_warning
@@ -468,6 +697,7 @@ def test_failed_active_direction_fallback_does_not_retain_another_date(tmp_path,
     result = CollectionCoordinator(provider, store, now=lambda: AFTER_MARKET).collect(AS_OF, ["activeDirection"])
 
     assert result.tasks[0].status == "failed-missing"
+    assert result.tasks[0].failure.retained is False
     assert "主域失败：primary disconnected" in result.tasks[0].warning
     assert "延迟域失败：delayed unavailable" in result.tasks[0].warning
     assert store.get("activeDirection", AS_OF) is None
@@ -483,6 +713,10 @@ def test_duplicate_task_reuses_active_lease_without_provider_call(tmp_path) -> N
 
     assert first.tasks[0].status == "queued"
     assert second.tasks[0].status == "busy"
+    assert (
+        second.tasks[0].failure.category
+        is CollectionFailureCategory.CONCURRENCY
+    )
     coordinator.execute_run(second.run.run_id)
     assert provider.calls == []
     coordinator.execute_run(first.run.run_id)
@@ -523,6 +757,7 @@ def test_all_core_failures_do_not_overwrite_retained_success(tmp_path) -> None:
 
     assert result.run.status == "failed"
     assert result.tasks[0].status == "failed-retained"
+    assert result.tasks[0].failure.retained is True
     assert after_failure.payload == retained.payload
     assert after_failure.fetched_at == retained.fetched_at
     assert "unavailable" in after_failure.refresh_warning
@@ -568,248 +803,6 @@ def test_forced_cli_refresh_allows_historical_latest_only_exact_date(tmp_path, c
     assert payload["status"] == "success"
     assert provider.calls == ["breadth"]
     assert coordinator.store.get("breadth", AS_OF - timedelta(days=1)) is not None
-
-
-def test_scheduled_refresh_collects_all_datasets_and_emits_structured_success(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    coordinator, _collectors = fixture_dataset_coordinator(
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: AFTER_MARKET,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 0
-    assert payload["trigger"] == "scheduled"
-    assert payload["asOf"] == AS_OF.isoformat()
-    assert payload["status"] == "success"
-    assert {item["dataset"] for item in payload["datasets"]} == set(DATASET_IDS)
-    assert all(
-        {"taskId", "source", "observations", "durationMs", "status", "warning"} <= item.keys()
-        for item in payload["datasets"]
-    )
-
-
-def test_scheduled_refresh_supports_explicit_dataset_selection(tmp_path, capsys, monkeypatch) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        now=lambda: AFTER_MARKET,
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh", "--dataset", "breadth"],
-        coordinator=coordinator,
-        now=lambda: AFTER_MARKET,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 0
-    assert [item["dataset"] for item in payload["datasets"]] == ["breadth"]
-    assert provider.calls == ["breadth"]
-
-
-def test_scheduled_refresh_skips_weekend_without_provider_calls(tmp_path, capsys) -> None:
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-    saturday = datetime(2026, 9, 5, 16, 30, tzinfo=MARKET_TIME_ZONE)
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: saturday,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 0
-    assert payload == {
-        "asOf": "2026-09-05",
-        "datasets": [],
-        "reason": "weekend",
-        "status": "skipped",
-        "trigger": "scheduled",
-    }
-    assert provider.calls == []
-
-
-def test_scheduled_refresh_rejects_pre_settlement_without_provider_calls(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-    before_settlement = AFTER_MARKET.replace(hour=15, minute=9)
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: before_settlement,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 2
-    assert payload["status"] == "rejected"
-    assert "settlement" in payload["error"]
-    assert payload["datasets"] == []
-    assert provider.calls == []
-
-
-def test_scheduled_refresh_pre_open_reports_previous_market_date_without_provider_calls(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-    pre_open = datetime(2026, 9, 15, 9, 0, tzinfo=MARKET_TIME_ZONE)
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: pre_open,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 2
-    assert payload["asOf"] == "2026-09-14"
-    assert payload["status"] == "rejected"
-    assert "settlement" in payload["error"]
-    assert provider.calls == []
-
-
-def test_scheduled_refresh_partial_persists_successes_and_status_is_provider_free(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
-    coordinator, collectors = fixture_dataset_coordinator(
-        store,
-        failing_datasets=frozenset({"sector-turnover"}),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: AFTER_MARKET,
-    )
-    payload = json.loads(capsys.readouterr().out)
-    calls_after_collection = {
-        collector.dataset_id: tuple(collector.calls) for collector in collectors
-    }
-    status = coordinator.collection_status(AS_OF)
-
-    tasks = {item["dataset"]: item for item in payload["datasets"]}
-    rows = {item["dataset"]: item for item in status["datasets"]}
-    assert exit_code == 2
-    assert payload["status"] == "partial"
-    assert tasks["sector-turnover"]["status"] == "failed-missing"
-    assert tasks["sector-breadth"]["status"] == "blocked"
-    assert all(
-        store.get(name, AS_OF) is not None
-        for name in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
-    )
-    assert rows["sector-turnover"]["available"] is False
-    assert rows["sector-turnover"]["latestAttempt"].status == "failed-missing"
-    assert rows["sector-breadth"]["available"] is False
-    assert rows["sector-breadth"]["latestAttempt"].status == "blocked"
-    assert {
-        collector.dataset_id: tuple(collector.calls) for collector in collectors
-    } == calls_after_collection
-
-
-def test_scheduled_refresh_all_failures_return_nonzero_without_snapshots(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    store = SnapshotStore(tmp_path / "snapshots.sqlite3")
-    coordinator, collectors = fixture_dataset_coordinator(
-        store,
-        failing_datasets=frozenset(DATASET_IDS),
-        rebuild_aggregate=lambda _as_of: None,
-    )
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh"],
-        coordinator=coordinator,
-        now=lambda: AFTER_MARKET,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 2
-    assert payload["status"] == "failed"
-    tasks = {item["dataset"]: item for item in payload["datasets"]}
-    assert all(
-        tasks[dataset]["status"] == "failed-missing"
-        for dataset in ("core", "breadth", "limits", "industry-ranking", "activeDirection")
-    )
-    assert tasks["sector-turnover"]["status"] == "blocked"
-    assert tasks["sector-breadth"]["status"] == "blocked"
-    assert all(store.get(dataset, AS_OF) is None for dataset in DATASET_IDS)
-    calls = {collector.dataset_id: collector.calls for collector in collectors}
-    assert calls["sector-turnover"] == []
-    assert calls["sector-breadth"] == []
-
-
-def test_scheduled_refresh_reuses_manual_active_lease_without_duplicate_provider_call(
-    tmp_path,
-    capsys,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_SETTLEMENT_TIME", "15:10")
-    provider = CollectionProvider()
-    coordinator = CollectionCoordinator(
-        provider,
-        SnapshotStore(tmp_path / "snapshots.sqlite3"),
-        now=lambda: AFTER_MARKET,
-        rebuild_aggregate=lambda _as_of: None,
-    )
-    manual = coordinator.start_run(AS_OF, ["breadth"])
-
-    exit_code = cli_main(
-        ["snapshots", "scheduled-refresh", "--dataset", "breadth"],
-        coordinator=coordinator,
-        now=lambda: AFTER_MARKET,
-    )
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 2
-    assert payload["status"] == "failed"
-    assert payload["datasets"][0]["status"] == "busy"
-    assert provider.calls == []
-    coordinator.execute_run(manual.run.run_id)
-    assert provider.calls == ["breadth"]
 
 
 def test_snapshot_refresh_output_remains_backward_compatible(tmp_path, capsys) -> None:

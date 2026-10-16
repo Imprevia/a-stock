@@ -72,6 +72,12 @@ class CollectionCommands(Protocol):
     def submit_run(self, run_id: str): ...
 
 
+class FullCollectionCommands(Protocol):
+    def execute(self, key): ...
+
+    def wait(self, run_id: str, timeout_seconds: float): ...
+
+
 class ThsSectorQueries(Protocol):
     def list_catalog(self, **kwargs) -> dict[str, Any]: ...
 
@@ -110,6 +116,14 @@ def get_collection_queries(request: Request) -> CollectionQueries:
 
 def get_collection_commands(request: Request) -> CollectionCommands:
     return _request_container(request).commands.collection
+
+
+def get_full_collection_commands(request: Request) -> FullCollectionCommands:
+    return _request_container(request).commands.full_collection
+
+
+def get_automation_write_enabled(request: Request) -> bool:
+    return bool(_request_container(request).settings.automation_refresh_enabled)
 
 
 def get_ths_sector_queries(request: Request) -> ThsSectorQueries:
@@ -154,6 +168,7 @@ def _request_container(request: Request):
 __all__ = [
     "CollectionCommands",
     "CollectionQueries",
+    "FullCollectionCommands",
     "MarketEnvironmentQueries",
     "V2MarketEnvironmentQueries",
     "TimezonePreferenceCommands",
@@ -162,6 +177,8 @@ __all__ = [
     "ThsSectorQueries",
     "get_collection_commands",
     "get_collection_queries",
+    "get_full_collection_commands",
+    "get_automation_write_enabled",
     "get_effective_market_date",
     "get_market_queries",
     "get_v2_market_queries",

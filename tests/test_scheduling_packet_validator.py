@@ -32,90 +32,6 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def test_generic_deploy_values_require_disabled_and_suspended_after_merge(
-    tmp_path: Path,
-) -> None:
-    defaults = tmp_path / "defaults.yaml"
-    safe = tmp_path / "safe.yaml"
-    unsafe = tmp_path / "unsafe.yaml"
-    defaults.write_text(
-        "marketEnvironment:\n"
-        "  scheduledCollection:\n"
-        "    enabled: false\n"
-        "    suspend: true\n"
-        "    schedule: '30 16 * * 1-5'\n",
-        encoding="utf-8",
-    )
-    safe.write_text("marketEnvironment:\n  timezone: Asia/Shanghai\n", encoding="utf-8")
-    unsafe.write_text(
-        "marketEnvironment:\n  scheduledCollection:\n    suspend: false\n",
-        encoding="utf-8",
-    )
-
-    accepted = _run(
-        "validate-generic-deploy-values",
-        "",
-        "--values",
-        str(defaults),
-        "--values",
-        str(safe),
-    )
-    rejected = _run(
-        "validate-generic-deploy-values",
-        "",
-        "--values",
-        str(defaults),
-        "--values",
-        str(unsafe),
-    )
-
-    assert accepted.returncode == 0, accepted.stderr
-    assert rejected.returncode != 0
-    assert "enabled=false and scheduledCollection.suspend=true" in rejected.stderr
-
-
-@pytest.mark.parametrize("unsafe_value", ["false", "null", "'false'", "0"])
-def test_generic_deploy_values_reject_non_true_suspend(
-    tmp_path: Path, unsafe_value: str
-) -> None:
-    values = tmp_path / "values.yaml"
-    values.write_text(
-        "marketEnvironment:\n"
-        "  scheduledCollection:\n"
-        "    enabled: false\n"
-        f"    suspend: {unsafe_value}\n",
-        encoding="utf-8",
-    )
-
-    completed = _run(
-        "validate-generic-deploy-values", "", "--values", str(values)
-    )
-
-    assert completed.returncode != 0
-    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
-
-
-@pytest.mark.parametrize("unsafe_value", ["true", "null", "'false'", "0"])
-def test_generic_deploy_values_reject_non_false_enabled(
-    tmp_path: Path, unsafe_value: str
-) -> None:
-    values = tmp_path / "values.yaml"
-    values.write_text(
-        "marketEnvironment:\n"
-        "  scheduledCollection:\n"
-        f"    enabled: {unsafe_value}\n"
-        "    suspend: true\n",
-        encoding="utf-8",
-    )
-
-    completed = _run(
-        "validate-generic-deploy-values", "", "--values", str(values)
-    )
-
-    assert completed.returncode != 0
-    assert "enabled=false and scheduledCollection.suspend=true" in completed.stderr
-
-
 @pytest.mark.parametrize(
     ("version", "normalized"),
     [
@@ -165,275 +81,23 @@ def test_normalize_version_rejects_invalid_semver() -> None:
     assert "invalid Kubernetes version" in completed.stderr
 
 
-def _native_cronjob(*, suspend: bool = False) -> dict[str, Any]:
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "CronJob",
-        "metadata": {
-            "name": "a-stock-data-collection",
-            "namespace": "a-stock",
-            "labels": {"app.kubernetes.io/instance": "a-stock"},
-        },
-        "spec": {
-            "schedule": "30 16 * * 1-5",
-            "timeZone": "Asia/Shanghai",
-            "suspend": suspend,
-            "startingDeadlineSeconds": 1800,
-        },
-    }
-
-
-def _run_native_inspect(version: str) -> subprocess.CompletedProcess[str]:
-    return _run(
-        "inspect",
-        yaml.safe_dump(_native_cronjob()),
-        "--release-name",
-        "a-stock",
-        "--namespace",
-        "a-stock",
-        "--kube-version",
-        version,
-    )
-
-
 @pytest.mark.parametrize(
-    "version",
-    ["1.27.0", "v1.27.0+build.7", "1.27.1", "1.27.1-rc.1"],
-)
-def test_native_inspect_accepts_stable_127_or_later_by_semver_precedence(
-    version: str,
-) -> None:
-    completed = _run_native_inspect(version)
-
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout)["strategy"] == "native"
-
-
-@pytest.mark.parametrize(
-    ("version", "message"),
+    "command",
     [
-        ("1.27.0-rc.1", "requires Kubernetes 1.27.0 stable or later"),
-        ("1.27.0-rc.01", "invalid Kubernetes version"),
-        ("01.27.0", "invalid Kubernetes version"),
-    ],
-)
-def test_native_inspect_rejects_prerelease_boundary_and_malformed_semver(
-    version: str, message: str
-) -> None:
-    completed = _run_native_inspect(version)
-
-    assert completed.returncode != 0
-    assert message in completed.stderr
-
-
-def test_extract_suspended_accepts_optional_stable_kube_version() -> None:
-    completed = _run(
-        "extract-suspended",
-        yaml.safe_dump(_native_cronjob(suspend=True)),
-        "--release-name",
-        "a-stock",
-        "--namespace",
-        "a-stock",
-        "--kube-version",
-        "1.27.0",
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert yaml.safe_load(completed.stdout)["spec"]["suspend"] is True
-
-
-def _activation_inspection(
-    *,
-    strategy: str = "native",
-    schedule: str = "30 16 * * 1-5",
-    controller_timezone: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "enabled": True,
-        "suspend": False,
-        "state": "active",
-        "releaseName": "a-stock",
-        "namespace": "a-stock",
-        "name": "a-stock-data-collection",
-        "strategy": strategy,
-        "controllerTimeZone": controller_timezone,
-        "schedule": schedule,
-        "timeZone": "Asia/Shanghai" if strategy == "native" else None,
-        "startingDeadlineSeconds": 1800,
-    }
-
-
-def _run_activation(
-    inspection: dict[str, Any], mode: str, now: str
-) -> subprocess.CompletedProcess[str]:
-    return _run(
         "validate-activation-window",
-        json.dumps(inspection),
-        "--mode",
-        mode,
-        "--now",
-        now,
-    )
-
-
-@pytest.mark.parametrize(
-    ("inspection", "now"),
-    [
-        (_activation_inspection(), "2026-09-07T08:40:00Z"),
-        (
-            _activation_inspection(
-                strategy="controller",
-                schedule="30 8 * * 1-5",
-                controller_timezone="Etc/UTC",
-            ),
-            "2026-09-07T08:40:00Z",
-        ),
-        (
-            _activation_inspection(
-                strategy="controller",
-                controller_timezone="Asia/Shanghai",
-            ),
-            "2026-09-07T16:40:00+08:00",
-        ),
-    ],
-    ids=["native-shanghai", "controller-utc", "controller-shanghai"],
-)
-def test_immediate_catch_up_accepts_current_deadline_window_and_reports_timezones(
-    inspection: dict[str, Any], now: str
-) -> None:
-    completed = _run_activation(inspection, "immediate-catch-up", now)
-
-    assert completed.returncode == 0, completed.stderr
-    audit = json.loads(completed.stdout)
-    assert audit["allowed"] is True
-    assert audit["decision"] == "allowed"
-    assert audit["previousTriggerUtc"] == "2026-09-07T08:30:00Z"
-    assert audit["previousTriggerShanghai"] == "2026-09-07T16:30:00+08:00"
-    assert audit["nextTriggerUtc"] == "2026-09-08T08:30:00Z"
-    assert audit["safetyBufferSeconds"] == 300
-
-
-@pytest.mark.parametrize(
-    ("now", "expected_previous", "expected_next"),
-    [
-        ("2026-09-07T09:00:01Z", "2026-09-07T08:30:00Z", "2026-09-08T08:30:00Z"),
-        ("2026-09-13T00:00:00Z", "2026-09-11T08:30:00Z", "2026-09-14T08:30:00Z"),
-    ],
-    ids=["weekday", "weekend"],
-)
-def test_next_schedule_accepts_after_deadline_with_safety_buffer(
-    now: str, expected_previous: str, expected_next: str
-) -> None:
-    completed = _run_activation(_activation_inspection(), "next-schedule", now)
-
-    assert completed.returncode == 0, completed.stderr
-    audit = json.loads(completed.stdout)
-    assert audit["previousTriggerUtc"] == expected_previous
-    assert audit["nextTriggerUtc"] == expected_next
-    assert audit["secondsUntilNextTrigger"] >= 300
-
-
-@pytest.mark.parametrize(
-    "now",
-    ["2026-09-07T09:00:01Z", "2026-09-13T00:00:00Z"],
-    ids=["weekday", "weekend"],
-)
-def test_immediate_catch_up_rejects_missed_deadline(now: str) -> None:
-    completed = _run_activation(
-        _activation_inspection(), "immediate-catch-up", now
-    )
-
-    assert completed.returncode != 0
-    assert "outside the previous trigger deadline" in completed.stderr
-
-
-def test_next_schedule_rejects_before_previous_deadline_passes() -> None:
-    completed = _run_activation(
-        _activation_inspection(), "next-schedule", "2026-09-07T09:00:00Z"
-    )
-
-    assert completed.returncode != 0
-    assert "deadline to have passed" in completed.stderr
-
-
-@pytest.mark.parametrize(
-    ("now", "expected_success"),
-    [
-        ("2026-09-07T08:25:00Z", True),
-        ("2026-09-07T08:25:01Z", False),
-    ],
-)
-def test_next_schedule_enforces_five_minute_safety_buffer(
-    now: str, expected_success: bool
-) -> None:
-    completed = _run_activation(_activation_inspection(), "next-schedule", now)
-
-    assert (completed.returncode == 0) is expected_success
-    if not expected_success:
-        assert "next-trigger safety buffer" in completed.stderr
-
-
-def test_inspect_reports_positive_starting_deadline() -> None:
-    cronjob = {
-        "apiVersion": "batch/v1",
-        "kind": "CronJob",
-        "metadata": {
-            "name": "a-stock-data-collection",
-            "namespace": "a-stock",
-            "labels": {"app.kubernetes.io/instance": "a-stock"},
-        },
-        "spec": {
-            "schedule": "30 16 * * 1-5",
-            "timeZone": "Asia/Shanghai",
-            "suspend": False,
-            "startingDeadlineSeconds": 1800,
-        },
-    }
-
-    completed = _run(
+        "validate-generic-deploy-values",
         "inspect",
-        yaml.safe_dump(cronjob),
-        "--release-name",
-        "a-stock",
-        "--namespace",
-        "a-stock",
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout)["startingDeadlineSeconds"] == 1800
-
-
-@pytest.mark.parametrize("starting_deadline", [0, -1, True, "1800", None])
-def test_inspect_rejects_non_positive_or_non_integer_starting_deadline(
-    starting_deadline: Any,
-) -> None:
-    cronjob = {
-        "apiVersion": "batch/v1",
-        "kind": "CronJob",
-        "metadata": {
-            "name": "a-stock-data-collection",
-            "namespace": "a-stock",
-            "labels": {"app.kubernetes.io/instance": "a-stock"},
-        },
-        "spec": {
-            "schedule": "30 16 * * 1-5",
-            "timeZone": "Asia/Shanghai",
-            "suspend": False,
-            "startingDeadlineSeconds": starting_deadline,
-        },
-    }
-
-    completed = _run(
-        "inspect",
-        yaml.safe_dump(cronjob),
-        "--release-name",
-        "a-stock",
-        "--namespace",
-        "a-stock",
-    )
+        "extract-suspended",
+        "compare-add-suspended",
+        "compare-suspend-only",
+        "compare-remove-cronjob",
+    ],
+)
+def test_positive_scheduling_commands_are_retired(command: str) -> None:
+    completed = _run(command)
 
     assert completed.returncode != 0
-    assert "positive integer" in completed.stderr
+    assert "invalid choice" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -942,29 +606,7 @@ def _desired_resources() -> list[dict[str, Any]]:
             "template": {"metadata": {"labels": LABELS}, "spec": pod_spec},
         },
     }
-    collector_spec = copy.deepcopy(pod_spec)
-    collector_spec["restartPolicy"] = "Never"
-    collector_spec["containers"][0]["name"] = "collector"
-    cronjob = {
-        "apiVersion": "batch/v1",
-        "kind": "CronJob",
-        "metadata": {"name": "a-stock-data-collection", "namespace": "a-stock", "labels": LABELS},
-        "spec": {
-            "schedule": "30 8 * * 1-5",
-            "suspend": True,
-            "concurrencyPolicy": "Forbid",
-            "jobTemplate": {
-                "spec": {
-                    "backoffLimit": 0,
-                    "template": {
-                        "metadata": {"labels": LABELS},
-                        "spec": collector_spec,
-                    },
-                }
-            },
-        },
-    }
-    return [service, deployment, cronjob]
+    return [service, deployment]
 
 
 def _live_resources(desired: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -986,7 +628,7 @@ def _live_resources(desired: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         item["status"] = {"observed": True}
 
-    service, deployment, cronjob = live
+    service, deployment = live
     service["spec"].update(
         {
             "clusterIP": "10.43.0.10",
@@ -1014,27 +656,6 @@ def _live_resources(desired: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {"terminationMessagePath": "/dev/termination-log", "terminationMessagePolicy": "File"}
     )
 
-    job_spec = cronjob["spec"]["jobTemplate"]["spec"]
-    job_spec.update(
-        {
-            "completionMode": "NonIndexed",
-            "completions": 1,
-            "parallelism": 1,
-            "suspend": False,
-        }
-    )
-    cron_template = job_spec["template"]
-    cron_template["metadata"]["creationTimestamp"] = None
-    cron_template["spec"].update(
-        {
-            "dnsPolicy": "ClusterFirst",
-            "enableServiceLinks": True,
-            "schedulerName": "default-scheduler",
-        }
-    )
-    cron_template["spec"]["containers"][0].update(
-        {"terminationMessagePath": "/dev/termination-log", "terminationMessagePolicy": "File"}
-    )
     return live
 
 
@@ -1111,7 +732,7 @@ def _drift_image(items: list[dict[str, Any]]) -> None:
 
 
 def _drift_pvc(items: list[dict[str, Any]]) -> None:
-    items[2]["spec"]["jobTemplate"]["spec"]["template"]["spec"]["volumes"][0][
+    items[1]["spec"]["template"]["spec"]["volumes"][0][
         "persistentVolumeClaim"
     ]["claimName"] = "other-data"
 
@@ -1153,3 +774,78 @@ def test_live_compare_rejects_resource_set_change(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "resource set differs" in completed.stderr
+
+
+def _automation_release(value: str, *, manual: str = "0") -> list[dict[str, Any]]:
+    resources = _desired_resources()
+    dashboard = resources[1]["spec"]["template"]["spec"]["containers"][0]
+    dashboard["env"] = [
+        {"name": "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED", "value": value},
+        {"name": "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED", "value": manual},
+        {"name": "UNCHANGED", "value": "reviewed"},
+    ]
+    return resources
+
+
+def _run_automation_compare(
+    tmp_path: Path,
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+) -> subprocess.CompletedProcess[str]:
+    current_path = tmp_path / "automation-current.yaml"
+    desired_path = tmp_path / "automation-desired.yaml"
+    current_path.write_text(yaml.safe_dump_all(current, sort_keys=False), encoding="utf-8")
+    desired_path.write_text(yaml.safe_dump_all(desired, sort_keys=False), encoding="utf-8")
+    return _run(
+        "compare-automation-refresh-only",
+        "",
+        "--current",
+        str(current_path),
+        "--desired",
+        str(desired_path),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        IMAGE,
+    )
+
+
+def test_automation_refresh_compare_accepts_only_zero_to_one(tmp_path: Path) -> None:
+    completed = _run_automation_compare(
+        tmp_path, _automation_release("0"), _automation_release("1")
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_automation_refresh_compare_rejects_unrelated_drift(tmp_path: Path) -> None:
+    current = _automation_release("0")
+    desired = _automation_release("1")
+    desired[1]["spec"]["template"]["spec"]["containers"][0]["env"][2][
+        "value"
+    ] = "drifted"
+
+    completed = _run_automation_compare(tmp_path, current, desired)
+
+    assert completed.returncode != 0
+    assert "unrelated environment drift" in completed.stderr
+
+
+def test_automation_refresh_packet_requires_manual_refresh_off() -> None:
+    completed = _run(
+        "validate-automation-refresh-packet",
+        yaml.safe_dump_all(_automation_release("1", manual="1"), sort_keys=False),
+        "--release-name",
+        "a-stock",
+        "--namespace",
+        "a-stock",
+        "--image",
+        IMAGE,
+        "--require-value",
+        "1",
+    )
+
+    assert completed.returncode != 0
+    assert "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED must remain literal 0" in completed.stderr
