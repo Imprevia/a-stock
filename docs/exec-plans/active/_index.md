@@ -9,7 +9,8 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
-| `reject-cross-date-core-materialization` | Codex | in-progress | 2026-10-16 |
+| `deploy-core-date-integrity-to-k3s-20261016` | Codex | completed-with-production-write | 2026-10-16 |
+| `reject-cross-date-core-materialization` | Codex | complete-deployed-data-repair-pending | 2026-10-16 |
 | `deploy-current-head-to-k3s-20261016` | Codex | completed-with-production-write | 2026-10-16 |
 | `add-ai-market-data-api` | Codex | complete（34/34；OpenSpec 已归档） | 2026-10-16 |
 | `restore-truenas-nodeport-direct-access` | 资深后端工程师 | in-progress | 2026-09-05 |

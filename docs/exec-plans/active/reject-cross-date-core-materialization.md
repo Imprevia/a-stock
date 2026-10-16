@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-离线实现与验证完成（OpenSpec `reject-cross-date-core-materialization`）。
+离线实现、OpenSpec 归档与独立生产发布完成；既有错位数据未修复。
 
 ## Status（状态）
 
-complete-offline
+complete-deployed-data-repair-pending
 
 ## Scope（范围）
 
@@ -14,7 +14,7 @@ complete-offline
 - 将存量 snapshot/materialized 完整性冲突映射为稳定、脱敏、provider-free 的 HTTP 503 `snapshot_integrity_error`。
 - 前端不得把该完整性错误隐藏为 legacy 或跨日期成功结果；普通兼容 fallback 继续保留。
 - 补充只读审计、受控前向修复和发布后业务 GET smoke 文档。
-- 不执行真实 provider、生产 PostgreSQL 写入、部署、Secret/PVC、Hermes 或 Kubernetes 调度操作。
+- 本 implementation change 本身不执行真实 provider、生产 PostgreSQL 修复写入、Secret/PVC、Hermes 或 Kubernetes 调度操作；镜像部署由独立计划 `deploy-core-date-integrity-to-k3s-20261016` 执行并留证。
 
 ## Acceptance（验收）
 
@@ -35,12 +35,13 @@ complete-offline
 - 2026-10-16：`.venv/bin/python -m pytest tests -q` 结果 `1515 passed, 6 skipped`；skip 为既有环境条件跳过，无相关失败。`npm run test` 结果 `163 passed`；`npm run build` 成功，只有既有大 chunk warning。
 - 2026-10-16：`.venv/bin/python -m src.trading_system.cli rules validate`、`rules coverage`、`docs sync-check`、`openspec validate reject-cross-date-core-materialization --strict`、`.venv/bin/python scripts/check-docs-contract.py --mode=full` 与 `git diff --check` 全部通过；docs-contract 报告 `代码 30 / 文档 6 / plan 1`。
 - 2026-10-16：本 change 未执行真实 provider、生产 PostgreSQL 写入/修复、部署、Secret/PVC、Hermes、CronJob 或任何调度操作。
+- 2026-10-16：独立发布计划将 commit `31a8f90` 部署至 TrueNAS k3s Helm revision 126；问题日期 v2 overview 从 500 收敛为稳定 503 `snapshot_integrity_error`，legacy core 同为稳定 503，业务 GET 前后生产表指纹一致，未触发 provider、collection 或数据修复。
 
 ## Remaining Gaps（剩余缺口）
 
 - 离线实现与门禁无剩余缺口。
-- 生产现存错位记录不会由本 change 自动修复；部署、只读生产审计与数据前向修复仍需要独立 active plan、备份/停写证据和明确授权。
+- 生产部署和只读发布验证已由独立计划完成。生产现存错位记录不会由本 change 自动修复；数据前向修复仍需要新的独立 active plan、备份/停写证据和明确授权。
 
 ## Next Step（下一步）
 
-归档本 OpenSpec change；如需上线，另建发布计划执行受审镜像部署和只读业务 GET smoke。如审计确认存量错位，再单独申请备份、writer freeze 与同日前向重采/重建授权。
+维持稳定 503 fail-closed 行为；如需修复存量错位，单独申请备份、writer freeze 与同日前向重采/重建授权。
