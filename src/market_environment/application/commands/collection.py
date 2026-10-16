@@ -268,12 +268,14 @@ class RefreshDatasetsCommand:
         *,
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ):
         return self.commands.refresh(
             as_of,
             datasets,
             allow_historical_latest_only=allow_historical_latest_only,
             fetch_previous_limit_details=fetch_previous_limit_details,
+            repair_integrity=repair_integrity,
         )
 
     def execute_request(self, request: CollectionRefreshRequest):

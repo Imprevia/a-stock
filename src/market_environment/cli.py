@@ -827,7 +827,11 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
                 repair_integrity=args.repair_integrity,
             )
         else:
-            result = active_coordinator.collect(args.as_of, args.datasets)
+            result = active_coordinator.collect(
+                args.as_of,
+                args.datasets,
+                repair_integrity=args.repair_integrity,
+            )
     except ValueError as exc:
         _print_payload({"status": "rejected", "error": str(exc)})
         return 2

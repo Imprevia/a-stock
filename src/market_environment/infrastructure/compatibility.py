@@ -189,12 +189,14 @@ class _LegacyCoordinatorCommands:
         *,
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ):
         return self.coordinator.collect(
             as_of,
             datasets,
             allow_historical_latest_only=allow_historical_latest_only,
             fetch_previous_limit_details=fetch_previous_limit_details,
+            repair_integrity=repair_integrity,
         )
 
     def refresh_request(self, request: CollectionRefreshRequest):
@@ -241,12 +243,14 @@ class CoordinatorCollectionCommandAdapter:
         *,
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ):
         return RefreshDatasetsCommand(self._commands).execute(
             as_of,
             datasets,
             allow_historical_latest_only=allow_historical_latest_only,
             fetch_previous_limit_details=fetch_previous_limit_details,
+            repair_integrity=repair_integrity,
         )
 
     def refresh_request(self, request: CollectionRefreshRequest):
@@ -259,12 +263,14 @@ class CoordinatorCollectionCommandAdapter:
         *,
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ):
         return self.refresh(
             as_of,
             datasets,
             allow_historical_latest_only=allow_historical_latest_only,
             fetch_previous_limit_details=fetch_previous_limit_details,
+            repair_integrity=repair_integrity,
         )
 
     def prepare_limit_history_sessions(self, as_of: date, count: int):

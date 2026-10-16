@@ -46,6 +46,7 @@ class CollectionCommandPort(Protocol):
         *,
         allow_historical_latest_only: bool = False,
         fetch_previous_limit_details: bool = True,
+        repair_integrity: bool = False,
     ): ...
 
     def refresh_request(self, request: CollectionRefreshRequest): ...
