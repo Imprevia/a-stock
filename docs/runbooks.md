@@ -12,6 +12,8 @@ AI 或自动化客户端先读取 `GET /api/v2/market-environment/YYYY-MM-DD/ove
 
 列表限制：limits pool、sector observation/ranking、active-direction 默认 20/最大 100；index/breadth/limits history 默认 60/最大 250；operation checkpoints 默认 50/最大 200。THS catalog/bars 仍使用既有 `page`/`page_size` 合同，bars 单页不得超过 1000。不得通过并发猜 cursor、`fields`/`include`、SQL-like filter 或嵌套 expansion 绕过 closed OpenAPI contract。
 
+PostgreSQL keyset 首页没有 cursor 时，repository 必须使用不含 cursor predicate、也不绑定 `after_*` 的独立 SQL；不得用 `:after_exchange IS NULL OR (...)` 携带无类型 `NULL`，否则 psycopg/PostgreSQL 会在执行前以 `AmbiguousParameter` 拒绝查询。后续页才绑定三个非空文本 cursor 分量，并继续按 `(exchange, code, security_id)` 严格大于比较。排查 pool 首页 500/网关 503 时，先直连 Ready Pod 核对 traceback，再分别请求首页和 `nextCursor` 后续页；这两类 GET 必须保持 provider-free、write-free。
+
 排错按状态码和 quality 分流：
 
 - `304`：revision 对应资源未变化，无 body；继续使用本地已缓存值。

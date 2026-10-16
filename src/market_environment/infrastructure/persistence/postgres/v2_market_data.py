@@ -473,25 +473,33 @@ class PostgresV2MarketDataReadAdapter:
         if metadata is None:
             return None
         predicate = _LIMIT_POOL_FILTERS[pool_type]
+        cursor_predicate = ""
+        params: dict[str, Any] = {
+            "as_of": as_of,
+            "limit": limit + 1,
+        }
+        if after is not None:
+            cursor_predicate = """AND
+                       (current.exchange,current.code,current.security_id)>
+                       (:after_exchange,:after_code,:after_security_id)"""
+            params.update(
+                {
+                    "after_exchange": after[0],
+                    "after_code": after[1],
+                    "after_security_id": after[2],
+                }
+            )
         rows = self.connection.execute(
             text(
                 f"""SELECT current.* FROM limit_security_facts current
                 WHERE current.as_of=:as_of AND {predicate}
                   AND current.actual_as_of=current.as_of
                   AND current.invalid_reason IS NULL
-                  AND (:after_exchange IS NULL OR
-                       (current.exchange,current.code,current.security_id)>
-                       (:after_exchange,:after_code,:after_security_id))
+                  {cursor_predicate}
                 ORDER BY current.exchange,current.code,current.security_id
                 LIMIT :limit"""
             ),
-            {
-                "as_of": as_of,
-                "after_exchange": after[0] if after else None,
-                "after_code": after[1] if after else None,
-                "after_security_id": after[2] if after else None,
-                "limit": limit + 1,
-            },
+            params,
         ).mappings()
         values = [self._limit_row(row) for row in rows]
         return _page(

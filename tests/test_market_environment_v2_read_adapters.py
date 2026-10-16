@@ -124,6 +124,38 @@ def test_postgres_variable_lists_bind_filter_order_and_limit_before_materializin
     assert "RUN_ID=:RUN_ID" in " ".join(connection.calls[2][0].split()).upper()
 
 
+def test_postgres_limits_pool_omits_cursor_sql_and_null_binds_on_first_page() -> None:
+    connection = RecordingConnection()
+    adapter = BoundedAdapter(connection)
+
+    page = adapter.limits_pool(AS_OF, "limit_up", after=None, limit=2)
+
+    sql, params = connection.calls[0]
+    normalized = " ".join(sql.split()).upper()
+    assert len(page.resource.data) == 2 and page.next_sort_key is not None
+    assert "AFTER_EXCHANGE" not in normalized
+    assert "AFTER_CODE" not in normalized
+    assert "AFTER_SECURITY_ID" not in normalized
+    assert params == {"as_of": AS_OF, "limit": 3}
+
+
+def test_postgres_limits_pool_binds_non_null_cursor_only_on_later_pages() -> None:
+    connection = RecordingConnection()
+    adapter = BoundedAdapter(connection)
+    cursor = ("SSE", "600001", "SSE:600001")
+
+    page = adapter.limits_pool(AS_OF, "limit_up", after=cursor, limit=2)
+
+    sql, params = connection.calls[0]
+    normalized = " ".join(sql.split()).upper()
+    assert len(page.resource.data) == 2 and page.next_sort_key is not None
+    assert "(CURRENT.EXCHANGE,CURRENT.CODE,CURRENT.SECURITY_ID)>" in normalized
+    assert params["after_exchange"] == cursor[0]
+    assert params["after_code"] == cursor[1]
+    assert params["after_security_id"] == cursor[2]
+    assert all(value is not None for key, value in params.items() if key.startswith("after_"))
+
+
 def test_all_postgres_variable_list_paths_are_bounded_before_materialization() -> None:
     direct_sql_methods = (
         "index_history",

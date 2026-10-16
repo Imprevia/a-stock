@@ -22,7 +22,7 @@
 
 ## AI 市场数据读取边界（2026-10-16）
 
-新增 HTTP namespace `/api/v2/market-environment`，但不新增事实源：HTTP 专用 DTO/mapper → resource query facade → typed local read ports → PostgreSQL repositories/materialized evidence 是唯一读取方向。query facade 不依赖 FastAPI、provider 或具体 persistence；HTTP 层不直接构造 repository；生产列表 adapter 在 SQL 中完成 filter、稳定 order、cursor seek 与 `limit + 1` 后才物化。仅兼容/测试 adapter 可从有界 fixture 投影，生产不得加载完整 JSON/行集后切片。
+新增 HTTP namespace `/api/v2/market-environment`，但不新增事实源：HTTP 专用 DTO/mapper → resource query facade → typed local read ports → PostgreSQL repositories/materialized evidence 是唯一读取方向。query facade 不依赖 FastAPI、provider 或具体 persistence；HTTP 层不直接构造 repository；生产列表 adapter 在 SQL 中完成 filter、稳定 order、cursor seek 与 `limit + 1` 后才物化。keyset 首页不包含 cursor predicate、也不绑定无类型 `NULL`，只有后续页才绑定完整非空排序键并执行严格大于 seek，避免 PostgreSQL 参数类型推断失败。仅兼容/测试 adapter 可从有界 fixture 投影，生产不得加载完整 JSON/行集后切片。
 
 精确日期资源包括 overview；indices summary/detail/history；breadth summary/history；limits summary/pool/history/evidence；sector rankings/turnover/breadth/analysis；active-direction、events、assessment；以及按 run id 分离的 operation summary/checkpoints。每项有独立 DTO，共享 envelope 只含 `asOf`、`generatedAt`、opaque `snapshotRevision`、`quality`、`data`、`links` 和集合专用 `pagination`。不得用 `response_model_exclude` 包装完整 `MarketEnvironmentResponse` / `Chapter01Response`，否则 OpenAPI 仍会公开错误结构并可能泄漏兄弟字段。
 
