@@ -44,7 +44,7 @@ python -m src.market_environment.cli snapshots refresh \
 
 `--repair-integrity` 必须与 `--force`、唯一 `--dataset core` 和单日模式同时出现；它不允许 limits history、多数据集、HTTP 或 Hermes 调用。提交前仍完整验证 candidate 日期，并要求 core outcome 及五个 index result 全部 `success`、无 retained payload；否则不覆盖坏 existing。获批 replacement 在 active lease/fence 内写入 snapshot、task/index/session，并由同一任务重建 aggregate。异常路径必须把无 lease 的旧 task 标为 `worker-interrupted` 并结算 parent run，不得直接 UPDATE 目标 snapshot/aggregate 或把失败 run 改成成功。
 
-发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview 与 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发写入均阻断发布。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
+发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview、indices/history 和 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发写入均阻断发布。PostgreSQL 可选日期/cursor 参数必须显式 cast，真实 PostgreSQL smoke 需覆盖无 cursor 首页。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
 
 ## 环境要求
 

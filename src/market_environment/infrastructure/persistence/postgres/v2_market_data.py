@@ -348,9 +348,9 @@ class PostgresV2MarketDataReadAdapter:
                 SELECT point.value AS payload
                 FROM selected_index
                 CROSS JOIN LATERAL jsonb_array_elements(index_value->'history') point(value)
-                WHERE (:start_date IS NULL OR (point.value->>'date')::date>=:start_date)
-                  AND (:end_date IS NULL OR (point.value->>'date')::date<=:end_date)
-                  AND (:after_date IS NULL OR point.value->>'date'>:after_date)
+                WHERE (CAST(:start_date AS DATE) IS NULL OR (point.value->>'date')::date>=CAST(:start_date AS DATE))
+                  AND (CAST(:end_date AS DATE) IS NULL OR (point.value->>'date')::date<=CAST(:end_date AS DATE))
+                  AND (CAST(:after_date AS DATE) IS NULL OR (point.value->>'date')::date>CAST(:after_date AS DATE))
                 ORDER BY point.value->>'date'
                 LIMIT :limit"""
             ),

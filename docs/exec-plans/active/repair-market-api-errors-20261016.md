@@ -38,6 +38,7 @@
 - [ ] 用普通受控入口发布不可变镜像并验证 limit-up pool。
 - [ ] 在 Ready Pod 中显式执行 `2026-10-16` core 同日重采/重建；若 provider 日期不符则 fail closed。
 - [x] 补齐只允许 CLI `--force --repair-integrity --dataset core` 的 fenced 前向替换，并修复完整性异常遗留 collecting run/task。
+- [x] 修复 v2 index history 无日期/cursor 时 PostgreSQL 可选参数类型推断错误，并补首页 SQL 回归。
 - [ ] 验证 API、目标行日期证据、run/task、revision/checksum 与数据指纹，恢复授权前写入开关与 Hermes job 状态。
 - [ ] 回写 Completion Evidence、Remaining Gaps 和 Next Step，提交并推送生产证据。
 
@@ -52,6 +53,7 @@
 - 2026-10-16：生产只读 preflight 为 k3s `v1.26.6`、Helm 126 deployed、Dashboard/PostgreSQL 1/1、CronJob/Job absent、PVC/Secret UID 稳定、manual/automation=`1|1`、active run/task/lease=`0|0|0`；Hermes a-stock job 当日 16:05 自然运行成功后已按授权暂停，另外两个无关股票任务保持 active。
 - 2026-10-16：新增对称 `--disable-automation-refresh` 受控入口，只允许完整 reviewed packet 中 automation `1→0`，要求 manual=0、writer=0、同一 frozen image、无 hook、stored/live 零漂移及 PVC/Secret identity 不变。部署/packet/guard 回归 `251 passed`，Helm strict lint、`bash -n`、docs-contract full 和 `git diff --check` 通过。
 - 2026-10-17：新增 `--repair-integrity` 维护入口，仅接受 `--force --dataset core --history-sessions 1`；`CoreCommitRequest` replacement intent 只接受五个指数全部 success 的同日 candidate，坏 existing 仅在显式 intent 下跳过留存读取并经正常 repository upsert 重算 checksum。完整性异常现在落为 `failed-retained`、`SNAPSHOT_INTEGRITY_ERROR`，并结算 parent run；PostgreSQL/SQLite inactive-task expiry 同步结算 run。CLI application adapter 透传 repair intent。专属回归 `74 passed`，全量 pytest `1524 passed, 6 skipped, 1 warning`。
+- 2026-10-17：发布后只读 smoke 发现 v2 index history 的三个可选日期参数在 PostgreSQL 首页面临 `AmbiguousParameter`；查询已对 `start/end/after` 显式 `CAST(... AS DATE)`，新增无 filter/cursor 回归，focused `17 passed`。
 
 ## Remaining Gaps（剩余缺口）
 

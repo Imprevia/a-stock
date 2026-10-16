@@ -88,6 +88,13 @@ class RecordingConnection:
         raise AssertionError(f"unexpected SQL: {sql}")
 
 
+class EmptyHistoryConnection(RecordingConnection):
+    def execute(self, statement, params):
+        sql = str(statement)
+        self.calls.append((sql, params))
+        return _Mappings([])
+
+
 class BoundedAdapter(PostgresV2MarketDataReadAdapter):
     def __init__(self, connection):
         self.connection = connection
@@ -154,6 +161,30 @@ def test_postgres_limits_pool_binds_non_null_cursor_only_on_later_pages() -> Non
     assert params["after_code"] == cursor[1]
     assert params["after_security_id"] == cursor[2]
     assert all(value is not None for key, value in params.items() if key.startswith("after_"))
+
+
+def test_postgres_index_history_casts_optional_dates_before_null_checks() -> None:
+    connection = EmptyHistoryConnection()
+    adapter = BoundedAdapter(connection)
+
+    page = adapter.index_history(
+        AS_OF,
+        "sh000001",
+        start_date=None,
+        end_date=None,
+        after=None,
+        limit=20,
+    )
+
+    sql, params = connection.calls[0]
+    normalized = " ".join(sql.split()).upper()
+    assert page is not None
+    assert "CAST(:START_DATE AS DATE) IS NULL" in normalized
+    assert "CAST(:END_DATE AS DATE) IS NULL" in normalized
+    assert "CAST(:AFTER_DATE AS DATE) IS NULL" in normalized
+    assert params["start_date"] is None
+    assert params["end_date"] is None
+    assert params["after_date"] is None
 
 
 def test_all_postgres_variable_list_paths_are_bounded_before_materialization() -> None:
