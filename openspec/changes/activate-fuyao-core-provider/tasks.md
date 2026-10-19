@@ -41,9 +41,10 @@
 - [x] 6.4 After separate explicit authorization, stream the reviewed core report to the exact disabled Ready Pod, run capability promotion dry-run then apply, and verify exactly one matching runtime row with no snapshot, task, aggregate, configuration or deployment mutation
 - [x] 6.5 After separate explicit authorization, apply the same-image core-enabled profile with hooks disabled; verify the only off/on semantic difference is formal core enabled, shadow remains off, unrelated datasets/resources remain unchanged and health/provider-free reads remain available
 - [x] 6.6 After settlement and separate explicit authorization, run exactly one core-only collection; verify all five index dates, sources, revisions, observation counts, direct-turnover evidence and fallback warnings, and mark acceptance partial rather than repeating automatically if any index falls back
-- [ ] 6.7 If rollout or collection acceptance fails, after explicit authorization apply the reviewed same-image core-off rollback; verify formal Fuyao attempts stop while the capability report, snapshots, task history, Secret and PVC remain intact
+- [x] 6.7 If rollout or collection acceptance fails, after explicit authorization apply the reviewed same-image core-off rollback; verify formal Fuyao attempts stop while the capability report, snapshots, task history, Secret and PVC remain intact
+  - Not triggered: the config-only rollout and the single core-only collection both passed, with full all-Fuyao acceptance. No rollback was authorized or executed.
 
 ## 7. Completion and Handoff
 
-- [ ] 7.1 Update the active plan and task evidence with final offline/production results, clearly distinguish full all-Fuyao success from mixed fallback or rollback, and preserve the explicit no-shadow decision
-- [ ] 7.2 Re-run OpenSpec strict and docs-contract full after final evidence updates, then leave any further provider normalization, repeated observation or comparison as a separately proposed change
+- [x] 7.1 Update the active plan and task evidence with final offline/production results, clearly distinguish full all-Fuyao success from mixed fallback or rollback, and preserve the explicit no-shadow decision
+- [x] 7.2 Re-run OpenSpec strict and docs-contract full after final evidence updates, then leave any further provider normalization, repeated observation or comparison as a separately proposed change
