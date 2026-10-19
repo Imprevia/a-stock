@@ -546,6 +546,23 @@ shadow=0、approved revision v2、core capability 0 行，probe 窗口新增 run
 `0/0/0/0`。本步未 promotion、未写生产库、未发布配置、未启用 core、未采集；第 4 步
 capability promotion 仍需独立授权。
 
+2026-10-19 23:00–23:01 Asia/Shanghai，task 6.4 已按第 4 步完成 reviewed capability
+promotion。受控入口绑定 clean commit `4427fe1`、exact k3s `1.26.6+k3s-6a894050-dirty`、
+冻结镜像 `localhost/a-stock-market-environment:20261019-223139-4427fe1`及 manifest digest
+`sha256:0cfc94c5bb313d1091e7060811991100556713784a2885d626e20adaf4d5dce3`，并重新校验
+chart/values/render/report SHA-256。同一报告经 stdin 直接流式传入 exact disabled Ready Pod；
+dry-run 返回 `validated / conflictState=absent`，apply 返回 `applied / conflictState=absent`，两者
+均为 `fuyao/core/fuyao-market-v2`、`eligible`、checksum
+`2f05d46e585a8ef703dd35270f68b2a7f0b6056765e41c4e172759fbe54045c5`，数据库目标仅以脱敏 URL
+显示。生产 capability 总数 `4 -> 5`，目标恰好 1 行，其他 capability 指纹不变；
+snapshot/run/task/aggregate 分别为 `134/112/273/32` 行，count 和全行指纹前后完全不变，
+active run/task/lease=`0/0/0`。Helm 仍为 revision 145，Pod UID、镜像/imageID、restart=0、
+formal core=0、shadow=0、approved revision v2 均不变；Secret/PVC/Service UID 保持，CronJob/Job 为
+`0/0`。日志保存在权限受限目录
+`/home/gyt/.local/share/a-stock/fuyao-core-promotions/20261019-core.uhHBAy`。本步未落 Pod 文件、
+未调用 provider、未修改 deployment/configuration、未启用 core、未触发 collection；第 6 步
+same-image formal enable 仍需独立授权。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
