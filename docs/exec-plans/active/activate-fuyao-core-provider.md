@@ -2,11 +2,11 @@
 
 ## Stage（阶段）
 
-Stage 3 — task 6.4 capability promotion 已完成；等待 task 6.5 same-image core-enabled 发布的独立授权。
+Stage 3 — task 6.5 same-image core-enabled 发布已完成；等待 task 6.6 单次盘后 core-only 采集的独立授权。
 
 ## Status（状态）
 
-`core-capability-promoted-awaiting-enable-authorization`（2026-10-19：已将精确受审的 Fuyao core report 晋升为生产唯一 `eligible` capability row；生产仍精确保持 formal core=0、shadow=0，未执行 core enable、provider 调用或采集）
+`formal-core-enabled-awaiting-single-collection-authorization`（2026-10-19：生产已以同镜像、无 hooks 配置发布启用 formal Fuyao core，shadow 仍关闭；尚未调用 provider 或执行 core-only 采集）
 
 ## Scope（范围）
 
@@ -100,6 +100,15 @@ Stage 3 — task 6.4 capability promotion 已完成；等待 task 6.5 same-image
   - Helm 仍为 revision `145`，Pod UID `413e74b2-d255-4c0e-a6fa-101c4c1a18b0`、Ready、restart `0`、镜像和 imageID 前后不变；formal core=`0`、shadow=`0`、approved revision=`fuyao-market-v2`。Secret/PVC/Service UID 与 task 6.2 记录一致，CronJob/Job=`0/0`，未修改 configuration 或 deployment，未调用 provider、未启用 core、未触发 collection。
   - 隔离操作日志保存于 `/home/gyt/.local/share/a-stock/fuyao-core-promotions/20261019-core.uhHBAy`（目录 mode `700`、文件 mode `600`）；dry-run/apply log SHA-256 分别为 `3553da8069183e5ce072965ab382534610d8f56484d517f7bf6d27f85bb54bae` / `ffa9e094e349cf1887380503b654111319b5776fb6d17cbd3060aadbf8f74f86`。
   - task 6.4 证据更新后 `openspec validate activate-fuyao-core-provider --strict`、`python3 scripts/check-docs-contract.py --mode=full`（代码 0 / 文档 2 / plan 1）和 `git diff --check` 均通过。
+- task 6.5 same-image formal core enable（2026-10-19 23:22–23:23 Asia/Shanghai，用户仅授权本步骤）：
+  - 受控 `--enable-core-config` 入口从 clean detached commit `4427fe1e62f2468a256a045d2ce238fc290cb7eb` 执行，绑定 exact k3s `1.26.6+k3s-6a894050-dirty`、镜像 `localhost/a-stock-market-environment:20261019-223139-4427fe1`、manifest digest `sha256:0cfc94c5bb313d1091e7060811991100556713784a2885d626e20adaf4d5dce3` 以及 task 6.4 已记录的 chart/values/render SHA-256。
+  - 写前再次读回唯一 `fuyao/core/fuyao-market-v2` eligible row：sample count `2420`、checksum `2f05d46e585a8ef703dd35270f68b2a7f0b6056765e41c4e172759fbe54045c5`；formal core/shadow=`0/0`，active run/task/lease=`0/0/0`，CronJob/Job=`0/0`。
+  - 唯一 Helm write 使用完整 reviewed core-enabled profile 与 `--no-hooks --atomic --wait`，release revision `145 -> 146`；写前 validator、写后 exact release/live validator 及独立 `compare-core-config-only` 均通过。raw Helm manifest diff 只有 `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED: "0" -> "1"`，diff SHA-256 `d36b28cfc6ae02f2efb9409ffae40417cf876a7fc65348f995e2bcc942a863cd`。
+  - 新 Pod `a-stock-d5b456854-d7xmj` Ready、restart `0`，仍为同一 imageID `sha256:32c37893deae0682a924920757b92148d2f6052d8d5ca69ea0f7ee19e3e8807c`；formal core=`1`、approved revision=`fuyao-market-v2`、shadow=`0`。PostgreSQL StatefulSet 仍 `1/1 Ready`并保持同一 digest。
+  - capability `5 / 894924f6027af4d0a542add6ac6c45f7`、snapshot `134 / a5d01390afd3ca608c6bb64c2586aa7a`、collection run `112 / 90d952866a16fce6f1f3078c20e143f7`、task `273 / 673e65906f6d78d3a17b408be7e3ed0b`、aggregate `32 / 793a277e7b9ddc700a2fedbe9a4b0310`、refresh run `0 / d41d8cd98f00b204e9800998ecf8427e` 的 count/全行指纹前后逐字一致；active run/task/lease 仍为 `0/0/0`。
+  - provider Secret、PostgreSQL Secret、两个 PVC 和两个 Service 的 UID/resourceVersion/存储或网络 identity 文件前后完全一致，CronJob/Job 仍为 `0/0`。`/api/health` 与 provider-free `/api/market-environment/core` 均 HTTP 200，响应 SHA-256 前后分别稳定为 `a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288` / `55d55e008c54156143427a875ca53d9a3e20fb37c8ede284f000a3a04d58a21a`。
+  - 隔离操作证据保存于 `/home/gyt/.local/share/a-stock/fuyao-core-enables/20261019-core.hGUb9q`（目录 mode `700`、文件 mode `600`）；enable log SHA-256 `8dbdfc766918cbeedcb0d13d9f3ad92f3557ad3b74de0e603da178afbe1d787b`。本步未调用 provider、未触发 collection、未修改 capability/snapshot/task/aggregate，也未执行 task 6.6。
+  - task 6.5 证据更新后 `openspec validate activate-fuyao-core-provider --strict`、`python3 scripts/check-docs-contract.py --mode=full`（代码 0 / 文档 2 / plan 1）和 `git diff --check` 均通过。
 - 仓库内实现与离线验证阶段未调用真实 Fuyao、未读取/修改 Secret、未连接生产数据库、未执行 SSH/kubectl/Helm 生产操作、未触发采集或回滚；随后 task 6.1 只进行了明确授权的只读 SSH/Kubernetes/Helm/PostgreSQL `SELECT` preflight。
 - 最终离线门禁（2026-10-19）：
   - `.venv/bin/python scripts/check_market_environment_architecture.py`：`market-environment architecture: OK`。
@@ -121,12 +130,12 @@ Stage 3 — task 6.4 capability promotion 已完成；等待 task 6.5 same-image
 
 ## Remaining Gaps（剩余缺口）
 
-- OpenSpec 生产任务 6.5–6.7 和最终生产 handoff 7.1–7.2 尚未完成；不得 archive。
+- OpenSpec 生产任务 6.6–6.7 和最终生产 handoff 7.1–7.2 尚未完成；不得 archive。
 - 全量 backend suite 仍有上述 2 个与本 change 无关的既有 `repair_integrity` test-double 失败；本 change 的 270 项 focused suite 全部通过。若要求全仓零失败，需由对应 repair plan 同步它的测试替身签名后重跑。
-- task 6.1 只读生产 preflight、task 6.2 core-off 收敛、task 6.3 fresh real probe 和 task 6.4 capability promotion 均已完成。core-enabled 部署、采集和条件回滚仍未授权。
-- fresh core capability report 已精确写入生产 `provider_capability_reports`，但 formal core 仍为 `0`，尚未进行单次 core-only 生产验收。
+- task 6.1–6.5 已完成；formal core 已为 `1`且 shadow 仍为 `0`。单次 core-only 采集和条件回滚仍未授权。
+- fresh core capability report 已精确写入生产 `provider_capability_reports`并通过启用前门禁，但尚未进行单次 core-only 生产验收，因此尚不能声明五指数 full all-Fuyao 成功。
 - 用户已明确接受不做跨 provider 对账可能无法发现“字段完整但成交额语义不同”的风险；不得在本 change 中擅自恢复 shadow 或对账。
 
 ## Next Step（下一步）
 
-暂停并等待 task 6.5 的独立授权：使用同一冻结镜像和 reviewed core-enabled 完整 profile，经受控 `--enable-core-config` 入口、`--no-hooks --atomic --wait` 发布；写前必须再次证明 live/off/enabled 唯一语义差异为 formal core `0 -> 1`，写后证明 shadow 仍为 `0`、capability 与其他资源不变、health/provider-free reads 可用；不得调用 provider 或触发采集。
+暂停并等待 task 6.6 的独立授权：仅在上海当日结算后运行恰好一次 core-only 采集，核对五个指数的 exact date、source、revision、observations、`direct-turnover` 和 warning。五项全来自 Fuyao 才标记 full；任一 fallback 则标记 partial 并保留真实来源/Fuyao failure，不自动重试、不对账。

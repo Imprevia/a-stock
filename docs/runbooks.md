@@ -563,6 +563,20 @@ formal core=0、shadow=0、approved revision v2 均不变；Secret/PVC/Service U
 未调用 provider、未修改 deployment/configuration、未启用 core、未触发 collection；第 6 步
 same-image formal enable 仍需独立授权。
 
+2026-10-19 23:22–23:23 Asia/Shanghai，task 6.5 已按第 6 步完成 same-image formal enable。
+受控入口绑定 clean commit `4427fe1`、exact k3s `1.26.6+k3s-6a894050-dirty`、冻结镜像
+`localhost/a-stock-market-environment:20261019-223139-4427fe1` 与受审 chart/values/render hash；
+写前再次读回精确 eligible core capability，并证明 active run/task/lease=`0/0/0`。唯一
+Helm write 使用 `--no-hooks --atomic --wait`，revision `145 -> 146`；raw manifest diff 只有
+`MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED: "0" -> "1"`，shadow 仍为 `0`、approved revision 仍为
+`fuyao-market-v2`。新 Pod `a-stock-d5b456854-d7xmj` Ready、restart 0，imageID 与发布前一致；
+PostgreSQL 仍 1/1 Ready。capability/snapshot/run/task/aggregate/refresh-run 的 count 和全行指纹前后
+完全一致，active run/task/lease 仍为 `0/0/0`；Secret/PVC/Service identity 文件完全一致，
+CronJob/Job=`0/0`。`/api/health` 与 provider-free `/api/market-environment/core` 均 HTTP 200 且响应
+hash 前后不变。隔离证据保存于
+`/home/gyt/.local/share/a-stock/fuyao-core-enables/20261019-core.hGUb9q`。本步未调用 provider、
+未执行 collection；第 7 步单次 core-only 采集仍需独立授权。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
