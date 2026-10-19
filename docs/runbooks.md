@@ -577,6 +577,19 @@ hash 前后不变。隔离证据保存于
 `/home/gyt/.local/share/a-stock/fuyao-core-enables/20261019-core.hGUb9q`。本步未调用 provider、
 未执行 collection；第 7 步单次 core-only 采集仍需独立授权。
 
+2026-10-19 23:31–23:32 Asia/Shanghai，task 6.6 已按第 7 步完成唯一一次 core-only 生产采集。
+写前确认 Helm revision `146`、唯一 dashboard Pod Ready/restart 0、冻结镜像和 imageID 未漂移，formal core/shadow=`1/0`、
+approved revision=`fuyao-market-v2`、精确 eligible capability checksum 未变，CronJob/Job 与 active run/task/lease 均为
+`0/0` 和 `0/0/0`。只执行一次 `snapshots refresh --as-of 2026-10-19 --dataset core`，未使用 force 或 integrity
+repair；run `312378aafa7c4bc589ca42cf6a1b2582` 与 task `b13afb28f61746e3bf5852f2ad1a7ac6` 均成功。
+五个指数全部来自 Fuyao，revision 均为 `fuyao-market-v2`，每项 484 observations、history tail 精确为
+`2026-10-19`、`amountEvidence=direct-turnover`、warning 为空，因此验收为 full 而非 partial。run/task/core-index-result
+分别仅增加 `1/1/5`，没有其他 dataset task；active run/task/lease 最终回到 `0/0/0`，capability 未变，refresh run
+仍为 0。写后 formal core 保持 1、shadow 保持 0，payload 无 shadow/comparison metadata，健康与 provider-free exact-date
+GET 均为 HTTP 200。证据保存在权限受限目录
+`/home/gyt/.local/share/a-stock/fuyao-core-collections/20261019-core.xTURSr`。本步未自动重试、未跨 provider 对账、
+未执行第二次采集或 task 6.7 回滚。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
