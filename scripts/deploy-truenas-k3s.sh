@@ -121,6 +121,12 @@ Controlled Fuyao sectors modes:
   --enable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
   --disable-sectors-config --off-values PATH --enabled-values PATH --kube-version VERSION
 
+Controlled Fuyao core modes (formal source only; shadow remains disabled):
+  --stage-core-off --off-values PATH --enabled-values PATH --kube-version VERSION
+  --promote-core-capability --off-values PATH --enabled-values PATH --report PATH [--apply]
+  --enable-core-config --off-values PATH --enabled-values PATH --kube-version VERSION
+  --disable-core-config --off-values PATH --enabled-values PATH --kube-version VERSION
+
 All renders accept --release-name NAME and --namespace NAME. Target modes bind
 these values and --kube-version to live discovery before any write.
 
@@ -168,6 +174,7 @@ CLI_SECTORS_OFF_VALUES_FILE=''
 CLI_SECTORS_ENABLED_VALUES_FILE=''
 CLI_CAPABILITY_REPORT_FILE=''
 PROMOTION_APPLY=false
+CONTROLLED_FUYAO_DATASET_REQUESTED=sectors
 
 set_operation() {
   local requested="$1"
@@ -211,6 +218,26 @@ while (($#)); do
       ;;
     --disable-sectors-config)
       set_operation disable-sectors-config
+      shift
+      ;;
+    --stage-core-off)
+      set_operation stage-sectors-off
+      CONTROLLED_FUYAO_DATASET_REQUESTED=core
+      shift
+      ;;
+    --promote-core-capability)
+      set_operation promote-sectors-capability
+      CONTROLLED_FUYAO_DATASET_REQUESTED=core
+      shift
+      ;;
+    --enable-core-config)
+      set_operation enable-sectors-config
+      CONTROLLED_FUYAO_DATASET_REQUESTED=core
+      shift
+      ;;
+    --disable-core-config)
+      set_operation disable-sectors-config
+      CONTROLLED_FUYAO_DATASET_REQUESTED=core
       shift
       ;;
     --baseline-values)
@@ -1164,6 +1191,7 @@ select_runtime_sectors_pod() {
   kubectl get pods --namespace "$NAMESPACE" -l "app.kubernetes.io/instance=$RELEASE_NAME" -o json > "$pods_file" \
     || return 1
   python3 "$PACKET_VALIDATOR" select-disabled-promotion-pod \
+    --dataset "$CONTROLLED_FUYAO_DATASET" \
     --release-name "$RELEASE_NAME" \
     --namespace "$NAMESPACE" \
     --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" \
@@ -1233,7 +1261,12 @@ deploy_helm_upgrade_with_component() {
   local -a helm_hook_args=()
   case "$component" in
     database)
-      log 'component Helm write: component=database hookMode=enabled expectedSchemaHook=reviewed-release-schema-migration execution=single'
+      if [[ "${CONTROLLED_SECTORS_OPERATION:-}" == stage-sectors-off ]]; then
+        helm_hook_args=(--no-hooks)
+        log 'component Helm write: component=database hookMode=disabled reason=reviewed-off-convergence'
+      else
+        log 'component Helm write: component=database hookMode=enabled expectedSchemaHook=reviewed-release-schema-migration execution=single'
+      fi
       ;;
     service)
       helm_hook_args=(--no-hooks)
@@ -1379,6 +1412,7 @@ COMPONENT_BASELINE_IMAGE_TAG_PATTERN="${COMPONENT_BASELINE_FIELDS[13]}"
 COMPONENT_BASELINE_IMAGE_PULL_POLICY="${COMPONENT_BASELINE_FIELDS[14]}"
 
 CONTROLLED_SECTORS_OPERATION=""
+CONTROLLED_FUYAO_DATASET="$CONTROLLED_FUYAO_DATASET_REQUESTED"
 CONTROLLED_MANUAL_REFRESH_OPERATION=false
 CONTROLLED_AUTOMATION_REFRESH_OPERATION=false
 AUTOMATION_REFRESH_FROM_VALUE=''
@@ -1414,7 +1448,7 @@ case "$OPERATION" in
     ;;
 esac
 if [[ "$PROMOTION_APPLY" == true && "$CONTROLLED_SECTORS_OPERATION" != promote-sectors-capability ]]; then
-  die '--apply is only valid with --promote-sectors-capability'
+  die '--apply is only valid with a Fuyao capability promotion mode'
 fi
 # The off-first operation uses the existing complete ordinary deployment
 # implementation after adding the stricter reviewed-packet gates below.
@@ -1572,7 +1606,7 @@ if [[ -n "$CAPABILITY_REPORT_FILE" ]] && ! is_absolute_path "$CAPABILITY_REPORT_
   CAPABILITY_REPORT_FILE="$REPO_DIR/$CAPABILITY_REPORT_FILE"
 fi
 if [[ "$CONTROLLED_SECTORS_OPERATION" == promote-sectors-capability ]]; then
-  [[ -n "$CAPABILITY_REPORT_FILE" ]] || die '--promote-sectors-capability requires --report'
+  [[ -n "$CAPABILITY_REPORT_FILE" ]] || die "--promote-${CONTROLLED_FUYAO_DATASET}-capability requires --report"
   [[ -f "$CAPABILITY_REPORT_FILE" ]] || die "capability report does not exist: $CAPABILITY_REPORT_FILE"
 fi
 validate_scalar() {
@@ -1713,37 +1747,43 @@ if [[ "$OPERATION" == deploy || -n "$CONTROLLED_SECTORS_OPERATION" \
             log "component=service: preflight verified; target write will run after live prerequisites"
             ;;
           all)
-            log "all components: order=database->service preflight start release=$RELEASE_NAME"
-            COMPLETED_COMPONENTS=""
-            FAILED_COMPONENT=""
-            FAILED_REASON=""
-            for step in database service; do
-              case "$step" in
-                database|service)
-                  step_repo="$IMAGE_REPOSITORY"
-                  step_tag="$IMAGE_TAG"
-                  ;;
-              esac
-              step_packet="$(render_release_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
-                --set "image.repository=$step_repo" --set "image.tag=$step_tag" --set "component=$step")" \
-                || { FAILED_COMPONENT="$step"; FAILED_REASON="component_packet_render_failed"; log "component step: name=$step phase=failed reason=component_packet_render_failed"; break; }
-              step_digest="$(printf '%s\n' "$step_packet" | sha256sum | awk '{print $1}')"
-              case "$step" in
-                database) verify_database_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="database_invariant_violated"; break; } ;;
-                service) verify_service_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="service_invariant_violated"; break; } ;;
-              esac
-              require_render_has_no_cronjob "component=$step packet" "$step_packet" \
-                || { FAILED_COMPONENT="$step"; FAILED_REASON="retired_cronjob_rendered"; break; }
-              verify_rendered_component_contract "$step_packet" "$step_repo" "$step_tag" \
-                || { FAILED_COMPONENT="$step"; FAILED_REASON="${step}_baseline_contract_violated"; break; }
-              log "component step: name=$step phase=verified packetDigest=$step_digest image=$step_repo:$step_tag"
-              COMPLETED_COMPONENTS+=" $step"
-            done
-            if [[ -n "$FAILED_COMPONENT" ]]; then
-              log "all components: status=partial order=database->service completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON retryTarget=rerun with the failed component alone"
-              exit 1
+            if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+              verify_rendered_component_contract "$RENDERED_PACKET" "$PREFLIGHT_IMAGE_REPOSITORY" "$PREFLIGHT_IMAGE_TAG" \
+                || die 'reviewed off convergence packet does not match the complete release contract'
+              log "reviewed off convergence: phase=verified hookMode=disabled packetDigest=$GENERIC_RENDER_SHA256 release=$RELEASE_NAME namespace=$NAMESPACE"
+            else
+              log "all components: order=database->service preflight start release=$RELEASE_NAME"
+              COMPLETED_COMPONENTS=""
+              FAILED_COMPONENT=""
+              FAILED_REASON=""
+              for step in database service; do
+                case "$step" in
+                  database|service)
+                    step_repo="$IMAGE_REPOSITORY"
+                    step_tag="$IMAGE_TAG"
+                    ;;
+                esac
+                step_packet="$(render_release_packet "$REPO_DIR/deploy/helm/a-stock" "$HELM_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
+                  --set "image.repository=$step_repo" --set "image.tag=$step_tag" --set "component=$step")" \
+                  || { FAILED_COMPONENT="$step"; FAILED_REASON="component_packet_render_failed"; log "component step: name=$step phase=failed reason=component_packet_render_failed"; break; }
+                step_digest="$(printf '%s\n' "$step_packet" | sha256sum | awk '{print $1}')"
+                case "$step" in
+                  database) verify_database_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="database_invariant_violated"; break; } ;;
+                  service) verify_service_component "$step_packet" || { FAILED_COMPONENT="$step"; FAILED_REASON="service_invariant_violated"; break; } ;;
+                esac
+                require_render_has_no_cronjob "component=$step packet" "$step_packet" \
+                  || { FAILED_COMPONENT="$step"; FAILED_REASON="retired_cronjob_rendered"; break; }
+                verify_rendered_component_contract "$step_packet" "$step_repo" "$step_tag" \
+                  || { FAILED_COMPONENT="$step"; FAILED_REASON="${step}_baseline_contract_violated"; break; }
+                log "component step: name=$step phase=verified packetDigest=$step_digest image=$step_repo:$step_tag"
+                COMPLETED_COMPONENTS+=" $step"
+              done
+              if [[ -n "$FAILED_COMPONENT" ]]; then
+                log "all components: status=partial order=database->service completed=$COMPLETED_COMPONENTS failed=$FAILED_COMPONENT reason=$FAILED_REASON retryTarget=rerun with the failed component alone"
+                exit 1
+              fi
+              log "all components: status=verified order=database->service completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
             fi
-            log "all components: status=verified order=database->service completed=$COMPLETED_COMPONENTS release=$RELEASE_NAME namespace=$NAMESPACE"
             ;;
         esac
       else
@@ -1779,23 +1819,27 @@ if [[ "$OPERATION" == deploy || -n "$CONTROLLED_SECTORS_OPERATION" \
 fi
 
 if [[ -n "$CONTROLLED_SECTORS_OPERATION" ]]; then
+  case "$CONTROLLED_FUYAO_DATASET" in
+    core|sectors) ;;
+    *) die "unsupported controlled Fuyao dataset: $CONTROLLED_FUYAO_DATASET" ;;
+  esac
   REVIEWED_OFF_RENDER="$(render_release_packet "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_OFF_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
-    || die 'reviewed sectors-off packet failed to render'
+    || die "reviewed ${CONTROLLED_FUYAO_DATASET}-off packet failed to render"
   REVIEWED_ENABLED_RENDER="$(render_release_packet "$REPO_DIR/deploy/helm/a-stock" "$SECTORS_ENABLED_VALUES_FILE" "" "$LOCAL_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" "${EARLY_RENDER_ARGS[@]}")" \
-    || die 'reviewed sectors-enabled packet failed to render'
-  printf '%s\n' "$REVIEWED_OFF_RENDER" | python3 "$PACKET_VALIDATOR" validate-sectors-packet \
+    || die "reviewed ${CONTROLLED_FUYAO_DATASET}-enabled packet failed to render"
+  printf '%s\n' "$REVIEWED_OFF_RENDER" | python3 "$PACKET_VALIDATOR" "validate-${CONTROLLED_FUYAO_DATASET}-packet" \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --require-enabled 0 >/dev/null \
-    || die 'reviewed sectors-off packet violates the disabled runtime contract'
-  printf '%s\n' "$REVIEWED_ENABLED_RENDER" | python3 "$PACKET_VALIDATOR" validate-sectors-packet \
+    || die "reviewed ${CONTROLLED_FUYAO_DATASET}-off packet violates the disabled runtime contract"
+  printf '%s\n' "$REVIEWED_ENABLED_RENDER" | python3 "$PACKET_VALIDATOR" "validate-${CONTROLLED_FUYAO_DATASET}-packet" \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" --require-enabled 1 >/dev/null \
-    || die 'reviewed sectors-enabled packet violates the enabled runtime contract'
-  python3 "$PACKET_VALIDATOR" compare-sectors-config-only \
+    || die "reviewed ${CONTROLLED_FUYAO_DATASET}-enabled packet violates the enabled runtime contract"
+  python3 "$PACKET_VALIDATOR" "compare-${CONTROLLED_FUYAO_DATASET}-config-only" \
     --current <(printf '%s\n' "$REVIEWED_OFF_RENDER") \
     --desired <(printf '%s\n' "$REVIEWED_ENABLED_RENDER") \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --image "$FROZEN_IMAGE_REPOSITORY:$FROZEN_IMAGE_TAG" \
     --from-enabled 0 --to-enabled 1 \
-    || die 'reviewed sectors profiles differ outside the enabled flag'
+    || die "reviewed ${CONTROLLED_FUYAO_DATASET} profiles differ outside the enabled flag"
 fi
 chart_sha256() {
   git ls-files -z -- deploy/helm/a-stock \
@@ -2120,6 +2164,8 @@ if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     || die 'stage-sectors-off could not prove both application CronJobs absent'
   require_namespace_jobs_absent 'stage-sectors-off precondition' \
     || die 'stage-sectors-off requires namespace Jobs absent'
+  require_no_active_collection_writers \
+    || die 'stage-sectors-off requires active run/task/lease=0|0|0'
   PRESERVED_IDENTITIES_BEFORE="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
     || die 'stage-sectors-off could not capture Secret/PVC metadata before execution'
 fi
@@ -2418,12 +2464,12 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
       --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
       --desired "$PROMOTION_DESIRED_MANIFEST" < "$PROMOTION_LIVE_MANIFEST"
     PROMOTION_POD="$(select_runtime_sectors_pod 0)" \
-      || die 'production promotion requires one exact Ready sectors-off Pod'
+      || die "production promotion requires one exact Ready ${CONTROLLED_FUYAO_DATASET}-off Pod"
     verify_hash 'reviewed capability report' "$REVIEWED_REPORT_SHA256" \
       "$(sha256sum "$CAPABILITY_REPORT_FILE" | awk '{print $1}')"
     PROMOTION_ARGS=(
       python -m src.market_environment.cli capabilities promote
-      --input - --provider fuyao --dataset sectors --revision fuyao-market-v2
+      --input - --provider fuyao --dataset "$CONTROLLED_FUYAO_DATASET" --revision fuyao-market-v2
     )
     if [[ "$PROMOTION_APPLY" == true ]]; then
       PROMOTION_ARGS+=(--apply)
@@ -2434,7 +2480,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
     verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
       || die 'promotion postcondition could not prove the frozen runtime image'
     select_runtime_sectors_pod 0 >/dev/null \
-      || die 'promotion postcondition requires the exact Ready Pod to remain sectors-off'
+      || die "promotion postcondition requires the exact Ready Pod to remain ${CONTROLLED_FUYAO_DATASET}-off"
     require_all_application_cronjobs_absent 'promotion postcondition' \
       || die 'promotion postcondition could not prove both application CronJobs absent'
     require_namespace_jobs_absent 'promotion postcondition' \
@@ -2467,7 +2513,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
     CONFIG_RENDER_SHA256="$REVIEWED_OFF_RENDER_SHA256"
   fi
   printf '%s\n' "$CONFIG_RENDER" > "$DESIRED_MANIFEST"
-  python3 "$PACKET_VALIDATOR" compare-sectors-config-only \
+  python3 "$PACKET_VALIDATOR" "compare-${CONTROLLED_FUYAO_DATASET}-config-only" \
     --current "$CURRENT_MANIFEST" --desired "$DESIRED_MANIFEST" \
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --image "$FROZEN_IMAGE" --from-enabled "$CONFIG_FROM" --to-enabled "$CONFIG_TO"
@@ -2477,7 +2523,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
     --release-name "$RELEASE_NAME" --namespace "$NAMESPACE" \
     --desired "$CURRENT_MANIFEST" < "$LIVE_BEFORE_MANIFEST"
   select_runtime_sectors_pod "$CONFIG_FROM" >/dev/null \
-    || die "$OPERATION live Pod does not match the expected pre-rollout sectors state"
+    || die "$OPERATION live Pod does not match the expected pre-rollout ${CONTROLLED_FUYAO_DATASET} state"
 
   assert_clean_worktree
   PRE_WRITE_RENDER="$(render_release_packet "$OPERATION_CHART_DIR" "$CONFIG_VALUES" "" "$TARGET_KUBERNETES_VERSION" "$RELEASE_NAME" "$NAMESPACE" \
@@ -2486,7 +2532,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
   [[ "$(sha256_text "$PRE_WRITE_RENDER")" == "$CONFIG_RENDER_SHA256" ]] \
     || die "$OPERATION frozen packet hash drifted immediately before Helm write"
   verify_generic_deploy_precondition
-  log "applying hook-free same-image sectors config: $CONFIG_FROM -> $CONFIG_TO"
+  log "applying hook-free same-image ${CONTROLLED_FUYAO_DATASET} config: $CONFIG_FROM -> $CONFIG_TO"
   helm upgrade "$RELEASE_NAME" "$OPERATION_CHART_DIR" \
     --namespace "$NAMESPACE" \
     --values "$CONFIG_VALUES" \
@@ -2513,7 +2559,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
   verify_frozen_runtime_image "$FROZEN_IMAGE_REPOSITORY" "$FROZEN_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
     || die "$OPERATION postcondition could not prove the frozen runtime image"
   select_runtime_sectors_pod "$CONFIG_TO" >/dev/null \
-    || die "$OPERATION postcondition Pod has the wrong sectors state"
+    || die "$OPERATION postcondition Pod has the wrong ${CONTROLLED_FUYAO_DATASET} state"
   require_all_application_cronjobs_absent "$OPERATION postcondition" \
     || die "$OPERATION postcondition could not prove both application CronJobs absent"
   require_namespace_jobs_absent "$OPERATION postcondition" \
@@ -2522,7 +2568,7 @@ if [[ "$OPERATION" == promote-sectors-capability || "$OPERATION" == enable-secto
     || die "$OPERATION postcondition could not capture Secret/PVC metadata"
   [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \
     || die "$OPERATION changed preserved Secret/PVC metadata"
-  log "same-image sectors config completed: $CONFIG_FROM -> $CONFIG_TO image=$FROZEN_IMAGE"
+  log "same-image ${CONTROLLED_FUYAO_DATASET} config completed: $CONFIG_FROM -> $CONFIG_TO image=$FROZEN_IMAGE"
   exit 0
 fi
 
@@ -2715,10 +2761,14 @@ deploy_step_or_exit() {
 }
 
 if [[ "$COMPONENT_NAME" == "all" ]]; then
-  deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
-  COMPLETED_COMPONENTS+=" database"
-  deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
-  COMPLETED_COMPONENTS+=" service"
+  if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+    log 'reviewed off convergence: skipping migration/service component writes; applying one complete hook-free release'
+  else
+    deploy_step_or_exit database "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+    COMPLETED_COMPONENTS+=" database"
+    deploy_step_or_exit service "$IMAGE_REPOSITORY" "$IMAGE_TAG"
+    COMPLETED_COMPONENTS+=" service"
+  fi
 
   # Component writes are intentionally staged, but the Helm release must end
   # with one complete stored manifest so future upgrades cannot inherit a
@@ -2734,7 +2784,7 @@ if [[ "$COMPONENT_NAME" == "all" ]]; then
     || die 'component=all complete release packet drifted from preflight'
   require_render_has_no_cronjob 'component=all complete release packet' "$FULL_PACKET" \
     || die 'component=all complete release packet contains a retired CronJob'
-  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true || "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     verify_exact_containerd_image_digest "$DEPLOY_IMAGE_REPOSITORY:$DEPLOY_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
       || die 'component=all complete release containerd manifest digest drifted before Helm write'
   fi
@@ -2757,9 +2807,14 @@ if [[ "$COMPONENT_NAME" == "all" ]]; then
     || die 'component=all complete post-write render failed'
   verify_rendered_component_contract "$FULL_POST_RENDER" "$DEPLOY_IMAGE_REPOSITORY" "$DEPLOY_IMAGE_TAG" \
     || die 'component=all complete release contract failed'
+  EXPECTED_COMPLETE_RELEASE_JOBS=1
+  if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
+    EXPECTED_COMPLETE_RELEASE_JOBS=0
+  fi
   if ! printf '%s\n' "$FULL_POST_RENDER" | python3 -c '
 import sys, yaml
 items = [item for item in yaml.safe_load_all(sys.stdin) if item]
+expected_jobs = int(sys.argv[1])
 deployments = [item for item in items if item.get("kind") == "Deployment"]
 statefulsets = [item for item in items if item.get("kind") == "StatefulSet" and (item.get("metadata") or {}).get("name", "").endswith("-postgresql")]
 services = [item for item in items if item.get("kind") == "Service"]
@@ -2768,9 +2823,11 @@ dashboard_services = [item for item in services if not (item.get("metadata") or 
 pvcs = [item for item in items if item.get("kind") == "PersistentVolumeClaim" and (item.get("metadata") or {}).get("name", "").endswith("-postgresql-data")]
 jobs = [item for item in items if item.get("kind") == "Job"]
 expected_schema_job = (statefulsets[0].get("metadata") or {}).get("name", "").removesuffix("-postgresql") + "-schema-migration" if len(statefulsets) == 1 else ""
-if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 1 or len(dashboard_services) != 1 or len(pvcs) != 1 or len(jobs) != 1 or (jobs[0].get("metadata") or {}).get("name") != expected_schema_job:
+if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 1 or len(dashboard_services) != 1 or len(pvcs) != 1 or len(jobs) != expected_jobs:
     raise SystemExit("complete release must render database and service resources exactly once")
-'; then
+if expected_jobs == 1 and (jobs[0].get("metadata") or {}).get("name") != expected_schema_job:
+    raise SystemExit("complete release schema Job identity does not match")
+' "$EXPECTED_COMPLETE_RELEASE_JOBS"; then
     die 'component=all complete service contract failed'
   fi
   DEPLOYMENT_NAME="$(kubectl -n "$NAMESPACE" get deployment \
@@ -2779,7 +2836,7 @@ if len(deployments) != 1 or len(statefulsets) != 1 or len(postgres_services) != 
   [[ -n "$DEPLOYMENT_NAME" ]] || die 'component=all complete release deployment is missing'
   kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=180s \
     || die 'component=all complete release rollout failed'
-  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true ]]; then
+  if [[ "$GENERIC_IMMUTABLE_IMAGE_REQUIRED" == true || "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     verify_frozen_runtime_image "$DEPLOY_IMAGE_REPOSITORY" "$DEPLOY_IMAGE_TAG" "$FROZEN_IMAGE_DIGEST" \
       || die 'component=all complete release could not prove the frozen runtime image'
   fi
@@ -2825,6 +2882,8 @@ if [[ "$CONTROLLED_SECTORS_OPERATION" == stage-sectors-off ]]; then
     || die 'stage-sectors-off postcondition could not prove both application CronJobs absent'
   require_namespace_jobs_absent 'stage-sectors-off postcondition' \
     || die 'stage-sectors-off postcondition requires namespace Jobs absent'
+  require_no_active_collection_writers \
+    || die 'stage-sectors-off postcondition requires active run/task/lease=0|0|0'
   PRESERVED_IDENTITIES_AFTER="$(capture_preserved_resource_identities "$REVIEWED_OFF_RENDER")" \
     || die 'stage-sectors-off postcondition could not capture Secret/PVC metadata'
   [[ "$PRESERVED_IDENTITIES_AFTER" == "$PRESERVED_IDENTITIES_BEFORE" ]] \

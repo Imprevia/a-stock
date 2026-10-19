@@ -445,7 +445,32 @@ tests/                              公式、服务层和 API 契约测试
 
 验证：19 文件 / 108 tests / 全绿；`npm run build` 通过（单 chunk 警告为 echarts 全量打包，非回归）；`python scripts/check-docs-contract.py --mode=full` 通过。
 - 扶摇市场数据迁移采用 `src/market_environment/infrastructure/providers/fuyao/market.py`，与同包下 `limits_client.py` 的 limits 专用 `FuyaoClient` 并行存在。正常 composition 为两个客户端注入同一个进程级 policy gateway，由 gateway 统一执行串行节流、请求预算和 transport retry；HTTP 200 的 `4001`/`5003` 等业务码有界重试仍由客户端负责，兼容 fixture 才保留可注入的 `request_gate`。根级 `fuyao*.py` 只保留稳定兼容导出。最终错误只保留脱敏的 `code`、`message`、`request_id`。`core` 与 `breadth` 的当前契约 revision 为 `fuyao-market-v2`：前者只使用 `/api/a-share-index/prices/historical` 的逐指数 `thscode/start/end/date_ms` 契约，后者只使用 `/api/a-share/prices/snapshot` 的完整 `limit/offset` 分页。旧 `fuyao-market-v1` 不得批准这两个数据集。`sectors` 仍是东方财富主链后的 Fuyao fallback；`activeDirection` 强制保留 Eastmoney/TDX 链且 capability 保持 `unverified`。所有开关默认关闭。TDX 配置与盘后包实现对应位于 `infrastructure/providers/tdx/config.py` 和 `daily_package.py`，不改变其显式 probe/collector-only 边界。
-- shadow 对账结果只进入采集任务 `timings` 元数据，不覆盖正式快照、source 或 checksum；能力报告保存在 `provider_capability_reports`，SQLite/ PostgreSQL 均为加法 schema。
+- 除下述 core 正式启用例外外，shadow 对账结果只进入采集任务 `timings` 元数据，不覆盖正式快照、source 或 checksum；能力报告保存在 `provider_capability_reports`，SQLite/PostgreSQL 均为加法 schema。
+
+### Fuyao core 正式首选与无 shadow 边界（2026-10-19，离线实现完成）
+
+`core` 的唯一生产组合继续是 typed `CoreAcquisitionPlan`。当
+`MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED=1`、批准 revision 精确为 `fuyao-market-v2`，且运行时存在
+同 identity 的 `eligible` capability report 时，五个指数分别按
+`Fuyao -> mootdx -> 百度 -> 新浪 -> 腾讯 -> 东方财富` 尝试。Fuyao candidate 只有同时证明规范指数身份、
+请求日精确尾日、至少 280 根完整 OHLC 与直接成交额时才能成为正式证据；正式 payload、provenance、
+fingerprint 和 typed quality 均保留 `amountEvidence=direct-turnover` 与 source revision。任一指数失败只推进
+该指数的 fallback，其他 Fuyao 成功不丢失；fallback 保留实际来源和 Fuyao 分类 warning，全部来源失败时
+只允许留存请求日已有合法证据，禁止跨日期 candidate 进入 snapshot 或 aggregate。
+
+core 正式启用是 shadow 的明确例外：off/enabled 配置都强制
+`MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED=0`，正式采集不发起独立 comparison request，不持久化
+容差、其他 provider 数值或多日对账结果。当前日期腾讯报价仍用于指数身份/价格 sanity check，但它不是
+历史 provider 对账；历史日期不请求实时价格。用户已接受因此无法发现“字段完整但成交额语义不同”的风险，
+系统不得缩放、替换或重标 Fuyao 直接成交额。
+
+`fuyao/core/fuyao-market-v2` capability policy 只审查 Fuyao 自身：固定历史 endpoint、五个规范身份、
+OHLC/直接成交额覆盖、每指数请求日与尾日一致、每指数至少 280 根、显式真实 probe 权限以及
+`0 < requestsUsed <= requestBudget`。报告禁止包含 shadow/comparison/tolerance/provider-values；generic promotion
+继续校验脱敏结构和 canonical checksum，并只写一条 capability row。两份完整 TrueNAS profile 固定相同镜像、
+Secret/PVC/Service/数据库/调度/其他数据集和 revision v2，唯一启用差异是
+`MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED: 0 -> 1`，部署使用 hook-free same-image 路径。普通 GET、status 和
+materialized aggregate 仍只读本地精确日期 PostgreSQL 证据，绝不因 core 缺失而调用 Fuyao 或 fallback。
 
 ### 行业板块扶摇降级边界（2026-09-29）
 

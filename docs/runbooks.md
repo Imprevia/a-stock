@@ -409,6 +409,122 @@ promotion 不调用 provider，不创建 collection run，不写 snapshot/aggreg
 enabled flag 或 approved revision。off-first、promotion、enable、collection 和条件 off 必须分别记录
 实际 packet/hash/server-observed 证据；授权本身不能替代任何前置门禁或写后验收。
 
+### Fuyao core 正式首选启用与回滚（2026-10-19，离线实现完成）
+
+core 使用 Fuyao `fuyao-market-v2` 作为五指数逐项正式首选，不运行 shadow，也不做跨 provider 对账。
+当前日期腾讯报价只作身份/价格 sanity check；capability report 不得包含其他 provider 数值、comparison、
+tolerance 或多日观察。下列步骤互不授权：除第 1 步离线验证外，每次生产只读访问、真实 probe、capability
+写入、Helm 写入、provider 采集和回滚都必须单独获得明确授权；任一步失败立即停止，不自动重试或进入下一步。
+
+1. **离线验证（零生产访问）**：在 clean checkout 运行 core acquisition、capability、packet、部署脚本测试，
+   严格 lint 两份 complete profile，并保存 chart/values/render SHA-256。两份 render 必须使用相同冻结镜像，
+   不含 Secret、CronJob 或 Job，shadow 均为 `0`，且语义 diff 只有
+   `MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED: "0" -> "1"`。此步不调用 provider、SSH、kubectl 或生产数据库。
+
+   ```bash
+   helm lint --strict deploy/helm/a-stock --values deploy/truenas/values-fuyao-core-off.yaml
+   helm lint --strict deploy/helm/a-stock --values deploy/truenas/values-fuyao-core-enabled.yaml
+   helm template a-stock deploy/helm/a-stock -n a-stock \
+     --kube-version "$EXACT_K3S_VERSION" \
+     --values deploy/truenas/values-fuyao-core-off.yaml \
+     | python3 scripts/validate-scheduling-packet.py validate-core-packet \
+         --release-name a-stock --namespace a-stock --require-enabled 0
+   ```
+
+2. **生产只读 preflight（需单独授权）**：只读记录 Helm revision、exact image/tag/digest、Ready Pod owner chain、
+   Secret/PVC/Service identity、masked database target、core enabled/shadow/revision、两个历史 CronJob 与全部
+   namespace Job absence、现有 `fuyao/core/fuyao-market-v2` capability identity/checksum/status，以及最近 core
+   task 健康。不得读取 Secret 值、调用 provider、构造 collector 或执行任何写操作。现场与 reviewed core-off
+   packet 不一致时只报告 drift；不得顺手修复。
+
+3. **fresh settlement-gated real probe（需再次单独授权）**：仅在上海目标交易日已结算后，将 API key 从既有
+   Secret/环境注入，输出到权限受限的隔离本地目录；命令必须在任何 provider/client 和输出文件创建前拒绝
+   日期、周末或结算时间不符。只选择 core report，核对 endpoint、五个 canonical identity、每指数请求日/
+   last-valid 日期、至少 280 根、完整 OHLC、`directTurnover=true`、显式 real-probe permission、
+   `0 < requestsUsed <= requestBudget`、redaction 和 canonical checksum。不得执行 shadow 或历史 provider 对账。
+
+   ```bash
+   python -m src.market_environment.cli fuyao real-probe --allow-real \
+     --as-of YYYY-MM-DD --path /secure/isolated/fuyao-core.sqlite3 \
+     --output /secure/isolated/fuyao-core-report.json
+   ```
+
+4. **reviewed capability promotion（需再次单独授权）**：仅当生产已经精确匹配 reviewed core-off render 时执行；
+   否则先停止，另行批准第 5 步，完成后重新做只读 preflight。受控入口在任何 target write 前绑定 clean HEAD、
+   chart、两份 values/render、报告文件 SHA-256、canonical checksum、冻结镜像与 exact disabled Ready Pod。
+   先 dry-run，审阅 `provider=fuyao`、`dataset=core`、`revision=fuyao-market-v2`、masked database target 和
+   conflict state，再对同一文件单独批准 `--apply`。报告只经 stdin 进入 Pod；不得读取/导出数据库 URL、使用
+   `kubectl cp`、TTY、Pod 临时文件或 `sh -c`。apply 只允许写一条 capability row。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh --env-file /secure/path/fuyao-core-packet.env \
+     --promote-core-capability \
+     --off-values deploy/truenas/values-fuyao-core-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-core-enabled.yaml \
+     --report /secure/isolated/fuyao-core-report.json \
+     --kube-version "$EXACT_K3S_VERSION" --release-name a-stock --namespace a-stock
+
+   # dry-run 与 checksum 复核后，对完全相同文件另行授权
+   bash scripts/deploy-truenas-k3s.sh --env-file /secure/path/fuyao-core-packet.env \
+     --promote-core-capability --apply \
+     --off-values deploy/truenas/values-fuyao-core-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-core-enabled.yaml \
+     --report /secure/isolated/fuyao-core-report.json \
+     --kube-version "$EXACT_K3S_VERSION" --release-name a-stock --namespace a-stock
+   ```
+
+5. **core-off 收敛（仅现场需要时，需再次单独授权）**：如果 preflight 证明生产尚未匹配 reviewed core-off，
+   使用 `--stage-core-off` 收敛完整 release；同一冻结镜像、revision v2、formal core=0、shadow=0，禁止 hooks、
+   provider、promotion 和 collection。写前后证明 Secret/PVC/Service/数据库/调度/其他数据集 identity 不变，
+   CronJob/Job absent。完成后必须重新执行第 2 步；promotion 仍需第 4 步的独立授权。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh --env-file /secure/path/fuyao-core-packet.env \
+     --stage-core-off \
+     --off-values deploy/truenas/values-fuyao-core-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-core-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" --release-name a-stock --namespace a-stock
+   ```
+
+6. **same-image formal enable（需再次单独授权）**：只有 exact eligible capability 已读回后，运行
+   `--enable-core-config`。受控入口再次验证唯一 diff、冻结 image/digest、clean source、live/current/desired、
+   exact Pod 和 preserved identities；Helm 必须带 `--no-hooks --atomic --wait`，不得 build/import、migration、
+   provider-backed Job 或 collection。写后证明 formal core=1、shadow=0，其他资源和 provider-free GET 健康。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh --env-file /secure/path/fuyao-core-packet.env \
+     --enable-core-config \
+     --off-values deploy/truenas/values-fuyao-core-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-core-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" --release-name a-stock --namespace a-stock
+   ```
+
+7. **一次 core-only 采集（盘后且需再次单独授权）**：只运行一次，不自动追加观察。检查五个指数的 exact date、
+   source、revision、observations、`direct-turnover` 与 warning。五项全来自 Fuyao 才是 full；任何逐项 fallback
+   都保留实际来源/Fuyao failure 并将 rollout acceptance 标为 partial，不自动重试；跨日期 candidate 永不验收。
+
+   ```bash
+   python -m src.market_environment.cli snapshots refresh \
+     --as-of YYYY-MM-DD --dataset core
+   ```
+
+8. **配置回滚（仅验收失败且需再次单独授权）**：使用 reviewed core-off 与同一冻结镜像运行
+   `--disable-core-config`。唯一允许 diff 为 core enabled `1 -> 0`，仍使用 `--no-hooks`；不得 Helm rollback/
+   uninstall、删除 capability/snapshot/task、Secret 或 PVC。回滚后证明 Fuyao 正式尝试停止、旧 fallback 链恢复
+   为首路、provider-free GET 可用，且所有审计证据保留。
+
+   ```bash
+   bash scripts/deploy-truenas-k3s.sh --env-file /secure/path/fuyao-core-packet.env \
+     --disable-core-config \
+     --off-values deploy/truenas/values-fuyao-core-off.yaml \
+     --enabled-values deploy/truenas/values-fuyao-core-enabled.yaml \
+     --kube-version "$EXACT_K3S_VERSION" --release-name a-stock --namespace a-stock
+   ```
+
+`fuyao-core-packet.env` 为 operator-owned 审核输入，只保存公开 identity 与 SHA-256 绑定，不提交仓库，也不得
+包含 API key、数据库 URL 或 Secret 值。每一步把实际结果写入 active plan；未获授权的步骤保持 pending，不能用
+离线测试、旧报告或口头成功替代生产证据。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后

@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, time as clock_time, timezone
 from pathlib import Path
@@ -372,28 +372,153 @@ def _capability_report_from_result(dataset: str, result: Any, as_of: date, *, re
     ).normalized()
 
 
+def _core_probe_result(
+    core_results: Mapping[str, Any],
+    as_of: date,
+    *,
+    revision: str,
+    permission_evidence: Mapping[str, Any],
+    rate_limit_evidence: Mapping[str, Any],
+    independent_quote_checked: bool,
+    independent_quote_samples: int,
+) -> SimpleNamespace:
+    canonical_identities = {
+        spec.code: (
+            f"{spec.digits}.SH"
+            if spec.code.lower().startswith("sh")
+            else f"{spec.digits}.SZ"
+        )
+        for spec in INDEX_SPECS
+    }
+    observations_by_index: dict[str, int] = {}
+    date_by_index: dict[str, dict[str, Any]] = {}
+    valid_codes: set[str] = set()
+    ohlc_complete = True
+    turnover_complete = True
+    direct_turnover = True
+    warnings: list[str] = []
+    for code, expected_identity in canonical_identities.items():
+        item = core_results.get(code)
+        if item is None:
+            observations_by_index[code] = 0
+            date_by_index[code] = {
+                "identity": expected_identity,
+                "lastValid": None,
+                "exact": False,
+            }
+            ohlc_complete = turnover_complete = direct_turnover = False
+            warnings.append(f"core probe omitted {code}")
+            continue
+        payload = dict(getattr(item, "payload", {}) or {})
+        quality = dict(getattr(item, "quality", {}) or {})
+        bars = list(payload.get("bars") or ())
+        observations = int(getattr(item, "observations", len(bars)) or 0)
+        observations_by_index[code] = observations
+        last_valid = None
+        if bars:
+            value = getattr(bars[-1], "date", None)
+            last_valid = value.isoformat() if isinstance(value, date) else None
+        identity = str(payload.get("identity") or "")
+        exact = last_valid == as_of.isoformat()
+        date_by_index[code] = {
+            "identity": identity or expected_identity,
+            "lastValid": last_valid,
+            "exact": exact,
+        }
+        item_ohlc = bool(bars) and all(
+            all(getattr(bar, name, None) is not None for name in ("open", "high", "low", "close"))
+            for bar in bars
+        )
+        item_turnover = bool(bars) and all(
+            getattr(bar, "amount", None) is not None for bar in bars
+        )
+        item_direct = (
+            payload.get("amountEvidence") == "direct-turnover"
+            and quality.get("amountEvidence") == "direct-turnover"
+        )
+        item_valid = (
+            getattr(item, "status", "insufficient") == "ok"
+            and identity == expected_identity
+            and observations >= 280
+            and exact
+            and item_ohlc
+            and item_turnover
+            and item_direct
+        )
+        if item_valid:
+            valid_codes.add(code)
+        ohlc_complete = ohlc_complete and item_ohlc
+        turnover_complete = turnover_complete and item_turnover
+        direct_turnover = direct_turnover and item_direct
+        warnings.extend(str(value) for value in getattr(item, "warnings", ()) if value)
+
+    quote_required = True
+    quote_complete = independent_quote_checked and independent_quote_samples == len(
+        canonical_identities
+    )
+    eligible = len(valid_codes) == len(canonical_identities) and quote_complete
+    return SimpleNamespace(
+        status="ok" if eligible else "insufficient",
+        payload={
+            "indices": [
+                dict(getattr(core_results[code], "payload", {}) or {})
+                for code in canonical_identities
+                if code in core_results
+            ]
+        },
+        quality={
+            "asOf": as_of.isoformat(),
+            "providerRevision": revision,
+            "endpoint": "/api/a-share-index/prices/historical",
+            "fieldCoverage": {
+                "canonicalIdentities": canonical_identities,
+                "validIndices": len(valid_codes),
+                "ohlcComplete": ohlc_complete,
+                "turnoverComplete": turnover_complete,
+                "directTurnover": direct_turnover,
+                "independentQuote": {
+                    "provider": "tencent",
+                    "required": quote_required,
+                    "checked": independent_quote_checked,
+                    "sampleCount": independent_quote_samples,
+                },
+            },
+            "dateEvidence": {
+                "requested": as_of.isoformat(),
+                "exact": all(value["exact"] is True for value in date_by_index.values()),
+                "indices": date_by_index,
+            },
+            "historyWindow": {
+                "proven": all(value >= 280 for value in observations_by_index.values()),
+                "minimumBars": 280,
+                "observationsByIndex": observations_by_index,
+            },
+            "permissionEvidence": dict(permission_evidence),
+            "rateLimitEvidence": dict(rate_limit_evidence),
+        },
+        warnings=tuple(dict.fromkeys(warnings)),
+        observations=sum(observations_by_index.values()),
+    )
+
+
 def _run_offline_capability_probe(fixture_path: Path, as_of: date) -> dict[str, Any]:
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     adapter = FuyaoMarketAdapter()
     reports: list[ProviderCapabilityReport] = []
     core = adapter.normalize_core(fixture.get("core", {}), as_of, min_bars=280)
-    core_result = type(
-        "CoreProbe",
-        (),
-        {
-            "status": "ok" if len(core) == 5 and all(item.status == "ok" for item in core.values()) else "insufficient",
-            "payload": {"indices": [item.payload for item in core.values()]},
-            "quality": {
-                "asOf": as_of.isoformat(),
-                "providerRevision": adapter.source_revision,
-                "endpoint": "/api/a-share-index/prices/historical",
-                "fieldCoverage": {"indices": len(core), "minimumBars": 280},
-                "dateEvidence": {"requested": as_of.isoformat()},
-            },
-            "warnings": tuple(warning for item in core.values() for warning in item.warnings),
-            "observations": sum(item.observations for item in core.values()),
+    core_result = _core_probe_result(
+        core,
+        as_of,
+        revision=adapter.source_revision,
+        permission_evidence={
+            "configured": False,
+            "approved": False,
+            "mode": "offline-fixture",
         },
-    )()
+        rate_limit_evidence={"requestBudget": 0, "requestsUsed": 0},
+        independent_quote_checked=False,
+        independent_quote_samples=0,
+    )
     reports.append(_capability_report_from_result("core", core_result, as_of))
     for dataset, method, key in (("breadth", "normalize_breadth", "breadth_snapshot_pages"), ("activeDirection", "normalize_active_direction", "active_direction"), ("sectors", "normalize_sectors", "sectors")):
         if dataset == "breadth":
@@ -1057,57 +1182,21 @@ def main(
                 )
                 request_budget = int(getattr(market_client, "request_budget", 0) or 0)
                 request_count = int(getattr(market_client, "request_count", 0) or 0)
-                core_result = SimpleNamespace(
-                    status="ok"
-                    if len(core_results) == 5
-                    and all(item.status == "ok" for item in core_results.values())
-                    else "insufficient",
-                    payload={"indices": [item.payload for item in core_results.values()]},
-                    quality={
-                        "asOf": args.as_of.isoformat(),
-                        "providerRevision": getattr(adapter, "source_revision", "fuyao-market-v2"),
-                        "endpoint": "/api/a-share-index/prices/historical",
-                        "fieldCoverage": {
-                            "indices": len(core_results),
-                            "validIndices": sum(item.status == "ok" for item in core_results.values()),
-                            "minimumBars": 280,
-                            "ohlcTurnover": all(
-                                bool(item.payload.get("bars")) for item in core_results.values()
-                            ),
-                            "independentQuote": {
-                                "provider": "tencent",
-                                "required": args.as_of == effective_market_date(probe_now),
-                                "checked": bool(quotes),
-                                "sampleCount": len(quotes),
-                            },
-                        },
-                        "dateEvidence": {
-                            "requested": args.as_of.isoformat(),
-                            "indices": {
-                                code: item.quality.get("dateEvidence", {})
-                                for code, item in core_results.items()
-                            },
-                        },
-                        "historyWindow": {
-                            "proven": all(item.status == "ok" for item in core_results.values()),
-                            "minimumBars": min(
-                                (
-                                    int(item.quality.get("historyWindow", {}).get("observations", 0))
-                                    for item in core_results.values()
-                                ),
-                                default=0,
-                            ),
-                        },
-                        "permissionEvidence": {
-                            "configured": client_configured,
-                        },
-                        "rateLimitEvidence": {
-                            "requestBudget": request_budget,
-                            "requestsUsed": request_count,
-                        },
+                core_result = _core_probe_result(
+                    core_results,
+                    args.as_of,
+                    revision=getattr(adapter, "source_revision", "fuyao-market-v2"),
+                    permission_evidence={
+                        "configured": client_configured,
+                        "approved": True,
+                        "mode": "explicit-real-probe",
                     },
-                    warnings=tuple(warning for item in core_results.values() for warning in item.warnings),
-                    observations=sum(item.observations for item in core_results.values()),
+                    rate_limit_evidence={
+                        "requestBudget": request_budget,
+                        "requestsUsed": request_count,
+                    },
+                    independent_quote_checked=bool(quotes),
+                    independent_quote_samples=len(quotes),
                 )
                 probe_results = {
                     "core": core_result,

@@ -61,7 +61,7 @@
 - 日期化涨停、跌停、炸板与最高连板生态。
 - THS 行业、概念、区域和特色指数的完整目录、当日排名、板块量价与当日内部宽度；这些内容仅属于 provider observation，不以名称相似性映射为申万一级身份，也不进入 `QTS-01-05-*` 输入。
 - 历史 Eastmoney-first/Fuyao-fallback `sectors` 契约从公共 API、调度、前端和新采集任务中退役。既有快照、任务、warning、checksum 和 capability report 原样保留为审计证据，不删除、不改名，也不投影成任一新数据集。
-- `core` 的 Fuyao v2 主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。当前日期需要独立腾讯报价交叉校验，历史日期不请求实时价格；缺少指数、OHLC、成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。每个指数的 history 尾日必须等于请求日才算本次成功；较早尾日是 date mismatch，只能由请求日既有合法同日指数证据留存，不能重标。所有可用指数均无法证明请求日时，不写新 core snapshot/aggregate，并按是否存在请求日合法快照返回 `failed-retained` 或 `failed-missing`。
+- `core` 的 Fuyao v2 正式主源只在 `fuyao-market-v2` capability report 获批并显式启用后生效，使用指数历史接口逐一获取五个指数；失败时依次回退 mootdx、百度、Sina、腾讯历史，最后才到东方财富。core 正式启用强制关闭 shadow，不做跨 provider 对账或连续多日比较；当前日期腾讯独立报价仅是身份/价格 sanity check，历史日期不请求实时价格。缺少指数、OHLC、直接成交额、280 根历史或精确 `date_ms` 时保持 `partial`/`insufficient`。每个指数的 history 尾日必须等于请求日才算本次成功；较早尾日是 date mismatch，只能由请求日既有合法同日指数证据留存，不能重标。所有可用指数均无法证明请求日时，不写新 core snapshot/aggregate，并按是否存在请求日合法快照返回 `failed-retained` 或 `failed-missing`。用户接受无对账无法发现成交额语义差异的风险，产品保留 `direct-turnover` provenance，不缩放或替换数值。
 - `breadth` 的 Fuyao v2 主源只允许当前上海交易日的 `/api/a-share/prices/snapshot` 完整分页；所有页的 `total`、`timestamp` 和规范证券身份必须稳定，涨跌家数、平盘和中位数由 `price_change_ratio_pct` 派生。Fuyao 失败后才按显式开关使用 TDX 精确日期包，最终回退东方财富；历史日期只能读取本地精确快照，不能用 latest-only 响应回填。
 - `activeDirection` 本阶段不由 Fuyao 替换，继续使用现有东方财富/TDX 语义；Fuyao capability 仅记录为 `unverified`，不得把旧 `fuyao-market-v1` 报告当成切换批准。limits 继续使用扶摇主源与东方财富交叉核对/降级。
 - 01 至 09 文档导航、桌面与移动布局、数据加载和错误状态。
@@ -212,8 +212,8 @@
 - 所有 Helm/Kustomize render 均不包含 CronJob；所有文档化通用生产写操作调用受审部署入口并对两个旧 CronJob identity 做只读 fail-closed 检测，不得恢复、创建或激活 application-owned schedule。schema rollout 只在 database 阶段运行一次 provider-free hook，最终全量收敛不得重复执行 hook。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
-- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core/breadth 只有在 `fuyao-market-v2` capability 状态 `eligible`、批准 revision、离线契约、shadow 和隔离盘后验证均通过后才能 opt-in；三个 THS 板块数据集分别使用 catalog/snapshot、history 和 dump exact capability revision，默认 `unverified`/关闭；activeDirection 继续既有 Eastmoney/TDX。旧 `sectors` 不再参与 fallback 或新响应投影。
-- shadow 仅作为可审计比较，不改变正式来源；差异显示为 `mismatch`、`degraded` 或 `insufficient`，缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
+- 扶摇替换边界：limits 继续使用扶摇主源与东方财富降级/交叉核对；core 只要求 `fuyao-market-v2` 自包含 capability 状态 `eligible`、批准 revision、离线契约和经单独授权的隔离盘后 probe，不要求 shadow 或跨源对账；breadth 的既有批准边界不变。三个 THS 板块数据集分别使用 catalog/snapshot、history 和 dump exact capability revision，默认 `unverified`/关闭；activeDirection 继续既有 Eastmoney/TDX。旧 `sectors` 不再参与 fallback 或新响应投影。
+- shadow 在使用它的数据集上只作为可审计比较且不改变正式来源；core 正式 Fuyao 路由是明确例外，shadow 必须关闭且不产生 comparison metadata。缺失字段保持 `null`/`missing`，不使用零值或其他日期补齐。
 - collector/committer/coordinator 边界验收：coordinator 不反射 collector 方法、不解释 vendor payload；每个 dataset/date 只有一个 lease 和 task sequence；core/limits 的 typed commit 在 PostgreSQL fence/UoW 内保持子结果和 detail/fact/manifest 原子；status/detail 查询 provider 调用数为 0。
 - transport engine 验收：requests 与 Scrapling 对同一离线 fixture 产生除 engine/timing 外等价的 normalized payload 或 failure category；401/403/challenge 快速失败，engine 无内部 retry，默认配置不会启动 enhanced runtime，base 镜像不变且所有 Helm profile 仍不含 CronJob。
 

@@ -1,0 +1,90 @@
+# Complete reviewed baseline for Fuyao core formal activation. The paired
+# enabled profile is byte-for-byte identical except for core.enabled.
+component: all
+
+replicaCount: 1
+
+image:
+  repository: localhost/a-stock-market-environment
+  tag: 20261017-005702-d12dae3
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 80
+  nodePort: 32001
+
+ingress:
+  enabled: false
+
+database:
+  enabled: true
+  existingSecret: a-stock-postgresql
+  migration:
+    enabled: false
+    schemaEnabled: false
+
+persistence:
+  enabled: true
+  existingClaim: a-stock-data
+  mountPath: /data
+  keep: true
+
+marketEnvironment:
+  timezone: Asia/Shanghai
+  automationRefreshEnabled: true
+  persistentCache: true
+  settlementTime: "15:10"
+  scrapling:
+    enabled: false
+    allowlist: []
+  tdx:
+    derivedActiveDirectionEnabled: true
+  limits:
+    v1Enabled: true
+    fuyao:
+      existingSecret: a-stock-market-provider
+      secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+  fuyao:
+    existingSecret: a-stock-market-provider
+    secretKey: MARKET_ENVIRONMENT_FUYAO_API_KEY
+    ths:
+      writesAuthorized: true
+      catalog:
+        enabled: true
+        revision: fuyao-ths-catalog-v1
+      membership:
+        enabled: true
+        revision: fuyao-ths-membership-v1
+      history:
+        enabled: true
+        revision: fuyao-ths-history-v1
+      dumps:
+        dailyEnabled: true
+        incrementalEnabled: true
+        adjustmentEnabled: true
+    datasets:
+      core:
+        enabled: true
+        approvedRevision: fuyao-market-v2
+        shadowEnabled: false
+      breadth:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
+      sectors:
+        enabled: true
+        approvedRevision: fuyao-market-v2
+        shadowEnabled: false
+      activeDirection:
+        enabled: false
+        approvedRevision: ""
+        shadowEnabled: false
+
+extraEnv:
+  - name: MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_TDX_DAILY_PACKAGE_FALLBACK_ENABLED
+    value: "1"
+  - name: MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED
+    value: "0"

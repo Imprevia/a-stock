@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deploy-truenas-k3s.sh"
 VALIDATOR = ROOT / "scripts" / "validate-scheduling-packet.py"
 BASELINE = ROOT / "deploy" / "truenas" / "values-secure-manual-collection.yaml"
+CORE_OFF = ROOT / "deploy" / "truenas" / "values-fuyao-core-off.yaml"
+CORE_ENABLED = ROOT / "deploy" / "truenas" / "values-fuyao-core-enabled.yaml"
 COMPONENT_FIXTURE = ROOT / "tests" / "fixtures" / "truenas_component_baseline.yaml"
 DEPLOY_ENV_EXAMPLE = ROOT / "deploy" / "truenas" / "deploy.env.example"
 REAL_HELM = shutil.which("helm")
@@ -306,6 +308,13 @@ def test_help_exposes_only_retained_components_and_no_scheduling_modes() -> None
 
     assert completed.returncode == 0
     assert "--component {all,database,service}" in completed.stdout
+    for mode in (
+        "--stage-core-off",
+        "--promote-core-capability",
+        "--enable-core-config",
+        "--disable-core-config",
+    ):
+        assert mode in completed.stdout
     for retired in (
         "schedule",
         "--offline-render",
@@ -318,6 +327,105 @@ def test_help_exposes_only_retained_components_and_no_scheduling_modes() -> None
         "--repair-sectors-off-release",
     ):
         assert retired not in completed.stdout
+
+
+@pytest.mark.skipif(REAL_HELM is None or REAL_GIT is None, reason="helm/git unavailable")
+def test_core_control_rejects_missing_review_hashes_before_target_access(
+    tmp_path: Path,
+) -> None:
+    calls = tmp_path / "target-calls.log"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for command in ("ssh", "kubectl", "nc"):
+        _write_executable(
+            fake_bin / command,
+            "#!/usr/bin/env bash\n"
+            f"printf '{command} %s\\n' \"$*\" >> {shlex.quote(str(calls))}\n"
+            "exit 91\n",
+        )
+    _write_executable(
+        fake_bin / "git",
+        "#!/usr/bin/env bash\n"
+        "for argument in \"$@\"; do\n"
+        "  if [[ \"$argument\" == status ]]; then exit 0; fi\n"
+        "done\n"
+        "exec \"$REAL_GIT\" \"$@\"\n",
+    )
+    head = subprocess.run(
+        [REAL_GIT, "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    env_file = tmp_path / "deploy.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f"REPO_DIR={ROOT}",
+                "TRUENAS_HOST=192.0.2.10",
+                "TRUENAS_SSH_USER=tester",
+                "K3S_API_SSH_TUNNEL=false",
+                "FROZEN_IMAGE_REPOSITORY=localhost/a-stock-market-environment",
+                "FROZEN_IMAGE_TAG=20261015-150231-6d96224",
+                f"FROZEN_IMAGE_DIGEST=sha256:{'a' * 64}",
+                f"REVIEWED_GIT_HEAD={head}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--env-file",
+            str(env_file),
+            "--enable-core-config",
+            "--off-values",
+            str(CORE_OFF),
+            "--enabled-values",
+            str(CORE_ENABLED),
+            "--kube-version",
+            "1.26.6",
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_GIT": REAL_GIT,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "reviewed chart expected SHA-256 is required" in completed.stderr
+    assert not calls.exists()
+
+
+def test_core_control_uses_dataset_bound_validation_and_promotion() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert '"validate-${CONTROLLED_FUYAO_DATASET}-packet"' in script
+    assert '"compare-${CONTROLLED_FUYAO_DATASET}-config-only"' in script
+    assert '--dataset "$CONTROLLED_FUYAO_DATASET"' in script
+    assert '--provider fuyao --dataset "$CONTROLLED_FUYAO_DATASET" --revision fuyao-market-v2' in script
+    assert script.index('"validate-${CONTROLLED_FUYAO_DATASET}-packet"') < script.index(
+        "ACTUAL_KUBERNETES_VERSION="
+    )
+
+    controlled = script.split(
+        'if [[ "$OPERATION" == promote-sectors-capability ||', 1
+    )[1].split('\nif [[ "$OPERATION" == deploy ]]; then', 1)[0]
+    assert "helm upgrade" in controlled
+    assert "--no-hooks" in controlled
+    assert '--set "image.repository=$FROZEN_IMAGE_REPOSITORY"' in controlled
+    assert '--set "image.tag=$FROZEN_IMAGE_TAG"' in controlled
+    assert "POSTGRES_PASSWORD" not in controlled
+    assert "FUYAO_API_KEY" not in controlled
 
 
 @pytest.mark.parametrize(
@@ -523,6 +631,67 @@ def test_component_helm_write_hook_flags_are_explicit(tmp_path: Path) -> None:
     final_all = final_all.split("FULL_POST_RENDER=", 1)[0]
     assert "--set component=all" in final_all
     assert final_all.count("--no-hooks") == 1
+
+
+def test_stage_core_off_component_writes_are_hook_free(tmp_path: Path) -> None:
+    calls = tmp_path / "helm-calls.log"
+    function_source = _bash_function_source("deploy_helm_upgrade_with_component")
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "\n".join(
+                [
+                    "set -eu",
+                    "log() { :; }",
+                    "warn() { :; }",
+                    "render_release_packet() { return 0; }",
+                    'helm() { printf "%s\\n" "$*" >> "$CALLS"; }',
+                    'OPERATION_CHART_DIR="/fixture/chart"',
+                    'VALUES_FILE="/fixture/values.yaml"',
+                    'TARGET_KUBERNETES_VERSION="1.26.6"',
+                    'RELEASE_NAME="a-stock"',
+                    'NAMESPACE="a-stock"',
+                    'HELM_TIMEOUT="5m"',
+                    'CONTROLLED_SECTORS_OPERATION="stage-sectors-off"',
+                    function_source,
+                    'deploy_helm_upgrade_with_component database "registry.local/a-stock" "candidate"',
+                    'deploy_helm_upgrade_with_component service "registry.local/a-stock" "candidate"',
+                ]
+            ),
+        ],
+        env={**os.environ, "CALLS": str(calls)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    database, service = [shlex.split(line) for line in calls.read_text().splitlines()]
+    assert database.count("--no-hooks") == 1
+    assert service.count("--no-hooks") == 1
+
+
+def test_stage_core_off_uses_one_complete_hook_free_release() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert (
+        "reviewed off convergence: skipping migration/service component writes; "
+        "applying one complete hook-free release"
+    ) in script
+    assert 'EXPECTED_COMPLETE_RELEASE_JOBS=0' in script
+    assert script.count(
+        "stage-sectors-off requires active run/task/lease=0|0|0"
+    ) == 1
+    assert script.count(
+        "stage-sectors-off postcondition requires active run/task/lease=0|0|0"
+    ) == 1
+
+    convergence = script.split(
+        "reviewed off convergence: skipping migration/service component writes", 1
+    )[1].split('if [[ "$COMPONENT_NAME" == "database" ]]', 1)[0]
+    assert "helm upgrade --install" in convergence
+    assert convergence.count("--no-hooks") == 1
 
 
 def test_automation_refresh_write_is_hook_free_and_does_not_build_or_import() -> None:

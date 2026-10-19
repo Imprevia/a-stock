@@ -313,6 +313,7 @@ def _run_promotion_pod_selection(
     *,
     desired_environment: list[dict[str, Any]],
     live_environment: list[dict[str, Any]],
+    dataset: str = "sectors",
 ) -> subprocess.CompletedProcess[str]:
     deployments, replicasets, pods = _runtime_payloads()
     pods["items"][0]["spec"]["containers"][0]["env"] = live_environment
@@ -357,6 +358,8 @@ def _run_promotion_pod_selection(
         IMAGE,
         "--digest",
         DIGEST,
+        "--dataset",
+        dataset,
     )
 
 
@@ -371,6 +374,31 @@ def test_promotion_pod_accepts_api_server_omitted_empty_env_value(
         tmp_path,
         desired_environment=desired_environment,
         live_environment=live_environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "a-stock-current-abc"
+
+
+def test_core_promotion_pod_requires_exact_disabled_no_shadow_environment(
+    tmp_path: Path,
+) -> None:
+    desired_environment = _promotion_environment()
+    desired_environment.extend(
+        [
+            {
+                "name": "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION",
+                "value": "fuyao-market-v2",
+            },
+        ]
+    )
+    live_environment = copy.deepcopy(desired_environment)
+
+    completed = _run_promotion_pod_selection(
+        tmp_path,
+        desired_environment=desired_environment,
+        live_environment=live_environment,
+        dataset="core",
     )
 
     assert completed.returncode == 0, completed.stderr

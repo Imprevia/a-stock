@@ -23,6 +23,9 @@ MANUAL_REFRESH_LIVE_KINDS = {
 }
 SECTORS_ENABLED_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_ENABLED"
 SECTORS_REVISION_ENV = "MARKET_ENVIRONMENT_FUYAO_SECTORS_APPROVED_REVISION"
+CORE_ENABLED_ENV = "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED"
+CORE_REVISION_ENV = "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION"
+CORE_SHADOW_ENV = "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED"
 MANUAL_REFRESH_ENV = "MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED"
 AUTOMATION_REFRESH_ENV = "MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED"
 SECTORS_DISABLED_ENVS = (
@@ -338,6 +341,126 @@ def validate_sectors_packet(
     }
 
 
+def _validate_core_environment(
+    environment: dict[str, dict[str, Any]], required_enabled: str, description: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    expected_literals = {
+        CORE_ENABLED_ENV: required_enabled,
+        CORE_REVISION_ENV: "fuyao-market-v2",
+        CORE_SHADOW_ENV: "0",
+    }
+    for name, value in expected_literals.items():
+        if environment.get(name) != {"name": name, "value": value}:
+            fail(f"{name} must equal {value}")
+    database_ref = _required_secret_reference(
+        environment, "MARKET_ENVIRONMENT_DATABASE_URL", f"{description} database URL"
+    )
+    provider_ref = _required_secret_reference(
+        environment, "MARKET_ENVIRONMENT_FUYAO_API_KEY", f"{description} Fuyao API key"
+    )
+    if database_ref["name"] == provider_ref["name"]:
+        fail("database and Fuyao credentials must use independent Secrets")
+    return database_ref, provider_ref
+
+
+def validate_core_packet(
+    documents: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    required_enabled: str,
+) -> dict[str, Any]:
+    if required_enabled not in {"0", "1"}:
+        fail("required core enabled value must be 0 or 1")
+    require_no_cronjobs(documents, "core packet")
+    jobs = [
+        str((item.get("metadata") or {}).get("name", "<unnamed>"))
+        for item in documents
+        if item.get("kind") == "Job"
+    ]
+    if jobs:
+        fail("core packet must not contain a Job: " + ", ".join(jobs))
+    _validate_resource_namespaces(documents, namespace, "core packet")
+    deployment = _dashboard_deployment(documents, release_name, "core packet")
+    spec = deployment.get("spec")
+    if not isinstance(spec, dict) or spec.get("replicas") != 1:
+        fail("core packet Dashboard Deployment must have exactly one replica")
+    container = _dashboard_container(deployment, "core packet Dashboard Deployment")
+    image = container.get("image")
+    if not isinstance(image, str) or not image:
+        fail("core packet Dashboard image must be non-empty")
+    environment = _environment_index(container, "core packet Dashboard")
+    database_ref, provider_ref = _validate_core_environment(
+        environment, required_enabled, "runtime"
+    )
+    return {
+        "deployment": metadata_value(deployment, "name"),
+        "image": image,
+        "databaseSecret": database_ref["name"],
+        "providerSecret": provider_ref["name"],
+        "coreEnabled": required_enabled,
+    }
+
+
+def compare_core_config_only(
+    current: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+    release_name: str,
+    namespace: str,
+    expected_image: str,
+    expected_from: str,
+    expected_to: str,
+) -> None:
+    current_summary = validate_core_packet(
+        current, release_name, namespace, expected_from
+    )
+    desired_summary = validate_core_packet(
+        desired, release_name, namespace, expected_to
+    )
+    if current_summary["image"] != expected_image or desired_summary["image"] != expected_image:
+        fail(f"config-only rollout must preserve frozen image {expected_image}")
+    current_index = indexed(current)
+    desired_index = indexed(desired)
+    if current_index.keys() != desired_index.keys():
+        fail("config-only rollout must preserve the complete release resource set")
+    deployment_keys = [key for key in current_index if key[1] == "Deployment"]
+    if len(deployment_keys) != 1:
+        fail("config-only rollout must contain exactly one Deployment")
+    deployment_key = deployment_keys[0]
+    for key in current_index:
+        if key != deployment_key and current_index[key] != desired_index[key]:
+            fail(f"config-only rollout contains non-Deployment drift: {key}")
+    before = copy.deepcopy(current_index[deployment_key])
+    after = copy.deepcopy(desired_index[deployment_key])
+    before_container = _dashboard_container(before, "current Dashboard Deployment")
+    after_container = _dashboard_container(after, "desired Dashboard Deployment")
+    before_environment = _environment_index(before_container, "current Dashboard")
+    after_environment = _environment_index(after_container, "desired Dashboard")
+    if before_environment.keys() != after_environment.keys():
+        fail("config-only rollout must not add or remove environment variables")
+    for name in before_environment:
+        if name == CORE_ENABLED_ENV:
+            continue
+        if before_environment[name] != after_environment[name]:
+            fail(f"config-only rollout contains unrelated environment drift: {name}")
+    before_container.pop("env")
+    after_container.pop("env")
+    if before != after:
+        fail("config-only rollout contains Deployment drift outside dashboard env")
+
+
+def _validate_fuyao_dataset_environment(
+    environment: dict[str, dict[str, Any]],
+    dataset: str,
+    required_enabled: str,
+    description: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if dataset == "core":
+        return _validate_core_environment(environment, required_enabled, description)
+    if dataset == "sectors":
+        return _validate_sectors_environment(environment, required_enabled, description)
+    fail(f"unsupported Fuyao dataset: {dataset}")
+
+
 def compare_sectors_config_only(
     current: list[dict[str, Any]],
     desired: list[dict[str, Any]],
@@ -608,9 +731,10 @@ def select_disabled_promotion_pod(
     expected_image: str,
     digest: str,
     required_enabled: str = "0",
+    dataset: str = "sectors",
 ) -> str:
     if required_enabled not in {"0", "1"}:
-        fail("required sectors enabled value must be 0 or 1")
+        fail("required Fuyao dataset enabled value must be 0 or 1")
     verify_runtime_image(
         deployments_payload,
         replicasets_payload,
@@ -659,7 +783,9 @@ def select_disabled_promotion_pod(
     if dashboard.get("image") != expected_image:
         fail(f"promotion Dashboard Pod must use frozen image {expected_image}")
     environment = _environment_index(dashboard, "promotion Dashboard Pod")
-    _validate_sectors_environment(environment, required_enabled, "promotion runtime")
+    _validate_fuyao_dataset_environment(
+        environment, dataset, required_enabled, "promotion runtime"
+    )
     desired_deployment = _dashboard_deployment(
         without_helm_hooks(desired), release_name, "reviewed promotion packet"
     )
@@ -1673,6 +1799,20 @@ def main() -> None:
     sectors_config.add_argument("--from-enabled", choices=("0", "1"), required=True)
     sectors_config.add_argument("--to-enabled", choices=("0", "1"), required=True)
 
+    core_packet = subparsers.add_parser("validate-core-packet")
+    core_packet.add_argument("--release-name", required=True)
+    core_packet.add_argument("--namespace", required=True)
+    core_packet.add_argument("--require-enabled", choices=("0", "1"), required=True)
+
+    core_config = subparsers.add_parser("compare-core-config-only")
+    core_config.add_argument("--current", type=Path, required=True)
+    core_config.add_argument("--desired", type=Path, required=True)
+    core_config.add_argument("--release-name", required=True)
+    core_config.add_argument("--namespace", required=True)
+    core_config.add_argument("--image", required=True)
+    core_config.add_argument("--from-enabled", choices=("0", "1"), required=True)
+    core_config.add_argument("--to-enabled", choices=("0", "1"), required=True)
+
     manual_packet = subparsers.add_parser("validate-manual-refresh-packet")
     manual_packet.add_argument("--release-name", required=True)
     manual_packet.add_argument("--namespace", required=True)
@@ -1748,6 +1888,7 @@ def main() -> None:
     promotion_pod.add_argument("--replicasets", type=Path, required=True)
     promotion_pod.add_argument("--desired", type=Path, required=True)
     promotion_pod.add_argument("--require-enabled", choices=("0", "1"), default="0")
+    promotion_pod.add_argument("--dataset", choices=("core", "sectors"), default="sectors")
 
     args = parser.parse_args()
     if args.command == "parse-version":
@@ -1809,6 +1950,27 @@ def main() -> None:
         if args.from_enabled == args.to_enabled:
             fail("config-only rollout must change the sectors enabled flag")
         compare_sectors_config_only(
+            load_path(args.current),
+            load_path(args.desired),
+            args.release_name,
+            args.namespace,
+            args.image,
+            args.from_enabled,
+            args.to_enabled,
+        )
+    elif args.command == "validate-core-packet":
+        result = validate_core_packet(
+            load_documents(sys.stdin),
+            args.release_name,
+            args.namespace,
+            args.require_enabled,
+        )
+        json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
+        sys.stdout.write("\n")
+    elif args.command == "compare-core-config-only":
+        if args.from_enabled == args.to_enabled:
+            fail("config-only rollout must change the core enabled flag")
+        compare_core_config_only(
             load_path(args.current),
             load_path(args.desired),
             args.release_name,
@@ -1899,6 +2061,7 @@ def main() -> None:
                 args.image,
                 args.digest,
                 args.require_enabled,
+                args.dataset,
             )
         )
     else:

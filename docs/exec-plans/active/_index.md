@@ -42,6 +42,8 @@
 | `remove-gate-abc-deployment-checks-20260917` | Codex | completed-without-production-write | 2026-09-17 |
 | `refine-index-copy-format-20260921` | Codex | in-progress | 2026-09-21 |
 | `evaluate-fuyao-market-data-provider` | Codex | in-progress | 2026-09-22 |
+| `activate-fuyao-core-provider` | Codex | production-preflight-complete-core-off-convergence-required（21/29） | 2026-10-19 |
+| `activate-fuyao-core-shadow` | Codex | superseded-by-activate-fuyao-core-provider | 2026-10-19 |
 | `add-tdx-daily-package-fallback` | Codex | completed-with-breadth-only-production-rollout | 2026-09-23 |
 | `deploy-tdx-fallback-and-scheduled-collection-20260923` | Codex | completed-final-image-activation-observation-pending | 2026-09-24 |
 | `enable-tdx-derived-active-direction` | Codex | production-deployed-first-natural-job-pending | 2026-09-24 |

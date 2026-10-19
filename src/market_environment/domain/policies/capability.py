@@ -15,6 +15,28 @@ CapabilityEvidencePolicy = Callable[[ProviderCapabilityReport, date], None]
 CapabilityEvidencePolicyKey = tuple[str, str, str]
 
 FUYAO_SECTORS_V2 = ("fuyao", "sectors", "fuyao-market-v2")
+FUYAO_CORE_V2 = ("fuyao", "core", "fuyao-market-v2")
+_FUYAO_CORE_ENDPOINT = "/api/a-share-index/prices/historical"
+_FUYAO_CORE_IDENTITIES = {
+    "sh000001": "000001.SH",
+    "sz399001": "399001.SZ",
+    "sz399006": "399006.SZ",
+    "sh000300": "000300.SH",
+    "sh000905": "000905.SH",
+}
+_FUYAO_CORE_FORBIDDEN_EVIDENCE_KEYS = frozenset(
+    {
+        "comparison",
+        "comparisonResults",
+        "formalProviderValues",
+        "multiDayComparison",
+        "providerValues",
+        "shadow",
+        "shadowMatch",
+        "tolerance",
+        "tolerances",
+    }
+)
 _FUYAO_SECTOR_ENDPOINTS = {
     "calendar": "/api/a-share/calendar/trading-days",
     "catalog": "/api/a-share-index/catalog/ths-index-list",
@@ -86,11 +108,91 @@ def capability_evidence_policies() -> Mapping[
     CapabilityEvidencePolicyKey, CapabilityEvidencePolicy
 ]:
     policies: dict[CapabilityEvidencePolicyKey, CapabilityEvidencePolicy] = {
+        FUYAO_CORE_V2: validate_fuyao_core_v2,
         FUYAO_SECTORS_V2: validate_fuyao_sectors_v2
     }
     for dataset, revision in THS_CAPABILITY_REVISIONS.items():
         policies[("fuyao", dataset, revision)] = validate_fuyao_ths_operation
     return policies
+
+
+def validate_fuyao_core_v2(
+    report: ProviderCapabilityReport,
+    envelope_as_of: date,
+) -> None:
+    if (report.provider, report.dataset, report.revision) != FUYAO_CORE_V2:
+        raise CapabilityEvidenceError("Fuyao core capability identity mismatch")
+    if report.endpoint != _FUYAO_CORE_ENDPOINT:
+        raise CapabilityEvidenceError("Fuyao core endpoint evidence is incomplete")
+    if _contains_forbidden_core_evidence(report.to_dict()):
+        raise CapabilityEvidenceError(
+            "Fuyao core capability must not contain shadow or comparison evidence"
+        )
+
+    expected_date = envelope_as_of.isoformat()
+    fields = report.field_coverage
+    identities = _mapping(fields.get("canonicalIdentities"), "canonical identity")
+    if dict(identities) != _FUYAO_CORE_IDENTITIES:
+        raise CapabilityEvidenceError("Fuyao core canonical identity coverage is incomplete")
+    if (
+        _integer(fields.get("validIndices")) != len(_FUYAO_CORE_IDENTITIES)
+        or fields.get("ohlcComplete") is not True
+        or fields.get("turnoverComplete") is not True
+        or fields.get("directTurnover") is not True
+    ):
+        raise CapabilityEvidenceError("Fuyao core OHLC or direct-turnover coverage is incomplete")
+
+    dates = report.date_evidence
+    date_by_index = _mapping(dates.get("indices"), "index date")
+    if (
+        dates.get("requested") != expected_date
+        or dates.get("exact") is not True
+        or set(date_by_index) != set(_FUYAO_CORE_IDENTITIES)
+        or any(
+            not isinstance(value, Mapping)
+            or value.get("identity") != _FUYAO_CORE_IDENTITIES[code]
+            or value.get("lastValid") != expected_date
+            or value.get("exact") is not True
+            for code, value in date_by_index.items()
+        )
+    ):
+        raise CapabilityEvidenceError("Fuyao core exact-date evidence is inconsistent")
+
+    history = report.history_window
+    observations = _mapping(history.get("observationsByIndex"), "history observation")
+    if (
+        history.get("proven") is not True
+        or _integer(history.get("minimumBars")) != 280
+        or set(observations) != set(_FUYAO_CORE_IDENTITIES)
+        or any((_integer(value) or 0) < 280 for value in observations.values())
+        or report.sample_count < 280 * len(_FUYAO_CORE_IDENTITIES)
+    ):
+        raise CapabilityEvidenceError("Fuyao core history window evidence is incomplete")
+
+    if (
+        report.permission_evidence.get("configured") is not True
+        or report.permission_evidence.get("approved") is not True
+        or report.permission_evidence.get("mode") != "explicit-real-probe"
+    ):
+        raise CapabilityEvidenceError("Fuyao core permission evidence is incomplete")
+    budget = _integer(report.rate_limit_evidence.get("requestBudget"))
+    used = _integer(report.rate_limit_evidence.get("requestsUsed"))
+    if budget is None or used is None or budget < 1 or used < 1 or used > budget:
+        raise CapabilityEvidenceError("Fuyao core rate-limit evidence is invalid")
+    if report.missing_evidence:
+        raise CapabilityEvidenceError("Fuyao core report contains missing evidence")
+
+
+def _contains_forbidden_core_evidence(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            key in _FUYAO_CORE_FORBIDDEN_EVIDENCE_KEYS
+            or _contains_forbidden_core_evidence(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(_contains_forbidden_core_evidence(item) for item in value)
+    return False
 
 
 def validate_fuyao_ths_operation(
@@ -406,7 +508,9 @@ __all__ = [
     "CapabilityEvidenceError",
     "CapabilityEvidencePolicy",
     "CapabilityEvidencePolicyKey",
+    "FUYAO_CORE_V2",
     "FUYAO_SECTORS_V2",
     "capability_evidence_policies",
+    "validate_fuyao_core_v2",
     "validate_fuyao_sectors_v2",
 ]

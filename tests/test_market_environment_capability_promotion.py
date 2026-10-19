@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
 from src.market_environment import cli as market_cli
-from src.market_environment.cli import _capability_report_from_result
+from src.market_environment.cli import _capability_report_from_result, _core_probe_result
 from src.market_environment.application.commands import (
     CapabilityPromotionConflictError,
     CapabilityPromotionRepositoryError,
@@ -22,6 +22,11 @@ from src.market_environment.application.commands import (
 from src.market_environment.domain.models.capability import (
     THS_CAPABILITY_REVISIONS,
     ProviderCapabilityReport,
+)
+from src.market_environment.domain.analysis import Bar
+from src.market_environment.domain.policies.capability import (
+    FUYAO_CORE_V2,
+    capability_evidence_policies,
 )
 from src.market_environment.infrastructure.persistence.postgres import (
     PostgresConnectionFactory,
@@ -41,7 +46,15 @@ from src.market_environment.interfaces.cli.capability_promotion import (
 
 AS_OF = date(2026, 10, 8)
 IDENTITY = ("fuyao", "sectors", "fuyao-market-v2")
+CORE_IDENTITY = FUYAO_CORE_V2
 UNSUPPORTED = ("mainNet", "mainNetPct", "upCount", "downCount", "leader")
+CORE_IDENTITIES = {
+    "sh000001": "000001.SH",
+    "sz399001": "399001.SZ",
+    "sz399006": "399006.SZ",
+    "sh000300": "000300.SH",
+    "sh000905": "000905.SH",
+}
 
 
 def _report(**changes) -> ProviderCapabilityReport:
@@ -97,6 +110,68 @@ def _report(**changes) -> ProviderCapabilityReport:
 
 def _envelope(report: ProviderCapabilityReport | None = None):
     selected = report or _report()
+    return {
+        "provider": "fuyao",
+        "asOf": AS_OF.isoformat(),
+        "reports": [selected.to_dict()],
+    }
+
+
+def _core_report(**changes) -> ProviderCapabilityReport:
+    values = {
+        "provider": CORE_IDENTITY[0],
+        "dataset": CORE_IDENTITY[1],
+        "revision": CORE_IDENTITY[2],
+        "status": "eligible",
+        "endpoint": "/api/a-share-index/prices/historical",
+        "field_coverage": {
+            "canonicalIdentities": CORE_IDENTITIES,
+            "validIndices": 5,
+            "ohlcComplete": True,
+            "turnoverComplete": True,
+            "directTurnover": True,
+            "independentQuote": {
+                "provider": "tencent",
+                "required": True,
+                "checked": True,
+                "sampleCount": 5,
+            },
+        },
+        "date_evidence": {
+            "requested": AS_OF.isoformat(),
+            "exact": True,
+            "indices": {
+                code: {
+                    "identity": identity,
+                    "lastValid": AS_OF.isoformat(),
+                    "exact": True,
+                }
+                for code, identity in CORE_IDENTITIES.items()
+            },
+        },
+        "history_window": {
+            "proven": True,
+            "minimumBars": 280,
+            "observationsByIndex": {code: 280 for code in CORE_IDENTITIES},
+        },
+        "pagination_evidence": {"proven": False},
+        "permission_evidence": {
+            "configured": True,
+            "approved": True,
+            "mode": "explicit-real-probe",
+        },
+        "rate_limit_evidence": {"requestBudget": 80, "requestsUsed": 5},
+        "sample_count": 1400,
+        "warnings": (),
+        "missing_evidence": (),
+        "checked_at": datetime(2026, 10, 8, 8, tzinfo=timezone.utc),
+    }
+    values.update(changes)
+    return ProviderCapabilityReport(**values).normalized()
+
+
+def _core_envelope(report: ProviderCapabilityReport | None = None):
+    selected = report or _core_report()
     return {
         "provider": "fuyao",
         "asOf": AS_OF.isoformat(),
@@ -393,6 +468,17 @@ def _execute(command, envelope=None, *, apply=False):
     )
 
 
+def _execute_core(command, envelope=None, *, apply=False):
+    return command.execute(
+        envelope or _core_envelope(),
+        provider=CORE_IDENTITY[0],
+        dataset=CORE_IDENTITY[1],
+        revision=CORE_IDENTITY[2],
+        target_backend="postgresql://***@db.internal/market",
+        apply=apply,
+    )
+
+
 def _rechecksum(raw: dict) -> dict:
     return ProviderCapabilityReport.from_dict({**raw, "checksum": ""}).to_dict()
 
@@ -411,6 +497,182 @@ def test_dry_run_reads_conflict_state_and_writes_nothing() -> None:
     assert uow.commits == 0
     assert uow.rollbacks == 1
     assert factory.rows == {}
+
+
+def test_fuyao_core_v2_policy_is_registered_and_accepts_self_contained_evidence() -> None:
+    assert CORE_IDENTITY in capability_evidence_policies()
+    command, factory = _command()
+
+    result = _execute_core(command)
+
+    assert result.result == "validated"
+    assert result.mode == "dry-run"
+    assert factory.instances[0].provider_capabilities.writes == 0
+
+
+@pytest.mark.parametrize(
+    ("report", "message"),
+    (
+        (
+            lambda: _core_report(
+                field_coverage={
+                    **_core_report().field_coverage,
+                    "canonicalIdentities": {
+                        key: value
+                        for key, value in CORE_IDENTITIES.items()
+                        if key != "sh000905"
+                    },
+                }
+            ),
+            "identity",
+        ),
+        (
+            lambda: _core_report(
+                field_coverage={
+                    **_core_report().field_coverage,
+                    "turnoverComplete": False,
+                }
+            ),
+            "turnover",
+        ),
+        (
+            lambda: _core_report(
+                history_window={
+                    **_core_report().history_window,
+                    "observationsByIndex": {
+                        **_core_report().history_window["observationsByIndex"],
+                        "sh000905": 279,
+                    },
+                }
+            ),
+            "history",
+        ),
+        (
+            lambda: _core_report(
+                date_evidence={
+                    **_core_report().date_evidence,
+                    "indices": {
+                        **_core_report().date_evidence["indices"],
+                        "sh000905": {
+                            "identity": "000905.SH",
+                            "lastValid": "2026-10-07",
+                            "exact": False,
+                        },
+                    },
+                }
+            ),
+            "exact-date",
+        ),
+        (
+            lambda: _core_report(
+                date_evidence={
+                    **_core_report().date_evidence,
+                    "indices": {
+                        **_core_report().date_evidence["indices"],
+                        "sh000905": {
+                            "identity": "000001.SH",
+                            "lastValid": AS_OF.isoformat(),
+                            "exact": True,
+                        },
+                    },
+                }
+            ),
+            "exact-date",
+        ),
+        (lambda: _core_report(endpoint="/wrong"), "endpoint"),
+        (
+            lambda: _core_report(
+                permission_evidence={
+                    "configured": True,
+                    "approved": False,
+                    "mode": "explicit-real-probe",
+                }
+            ),
+            "permission",
+        ),
+        (
+            lambda: _core_report(
+                rate_limit_evidence={"requestBudget": 4, "requestsUsed": 5}
+            ),
+            "rate-limit",
+        ),
+        (
+            lambda: _core_report(
+                field_coverage={
+                    **_core_report().field_coverage,
+                    "shadow": {"status": "match"},
+                }
+            ),
+            "shadow or comparison",
+        ),
+    ),
+)
+def test_fuyao_core_policy_rejects_incomplete_or_comparison_evidence_without_writes(
+    report,
+    message,
+) -> None:
+    command, factory = _command()
+
+    with pytest.raises(CapabilityPromotionValidationError, match=message):
+        _execute_core(command, _core_envelope(report()))
+
+    assert factory.instances == []
+
+
+def test_core_probe_report_builder_emits_explicit_redacted_self_evidence() -> None:
+    results = {}
+    for code, identity in CORE_IDENTITIES.items():
+        bars = [
+            Bar(
+                date=AS_OF,
+                open=100.0,
+                close=101.0,
+                high=102.0,
+                low=99.0,
+                amount=1_000_000.0,
+            )
+            for _ in range(280)
+        ]
+        results[code] = SimpleNamespace(
+            status="ok",
+            payload={
+                "code": code,
+                "identity": identity,
+                "bars": bars,
+                "amountEvidence": "direct-turnover",
+            },
+            quality={"amountEvidence": "direct-turnover"},
+            observations=280,
+            warnings=(),
+        )
+    probe = _core_probe_result(
+        results,
+        AS_OF,
+        revision="fuyao-market-v2",
+        permission_evidence={
+            "configured": True,
+            "approved": True,
+            "mode": "explicit-real-probe",
+        },
+        rate_limit_evidence={"requestBudget": 80, "requestsUsed": 5},
+        independent_quote_checked=True,
+        independent_quote_samples=5,
+    )
+    report = _capability_report_from_result("core", probe, AS_OF)
+    raw = report.redacted_dict()
+
+    assert report.status == "eligible"
+    assert raw["field_coverage"]["canonicalIdentities"] == CORE_IDENTITIES
+    assert raw["field_coverage"]["directTurnover"] is True
+    assert raw["date_evidence"]["exact"] is True
+    assert raw["history_window"]["observationsByIndex"] == {
+        code: 280 for code in CORE_IDENTITIES
+    }
+    assert "shadow" not in json.dumps(raw)
+    assert "formalProviderValues" not in json.dumps(raw)
+
+    command, _factory = _command()
+    assert _execute_core(command, _core_envelope(report)).result == "validated"
 
 
 @pytest.mark.parametrize(

@@ -238,6 +238,7 @@ def _history_candidate(
     minimum_bars: int = 60,
     guarded_price: bool = False,
     source_revision: str | None = None,
+    evidence_extra: Mapping[str, Any] | None = None,
 ) -> CollectionCandidate | AcquisitionFailure:
     bars = list(raw_bars)
     quote = _quote(request)
@@ -354,6 +355,11 @@ def _history_candidate(
             timings=timings,
             provenance=provenance,
         )
+    normalized_extra = copy.deepcopy(dict(evidence_extra or {}))
+    if normalized_extra:
+        analysis_quality = dict(analysis.get("dataQuality") or {})
+        analysis_quality.update(normalized_extra)
+        analysis["dataQuality"] = analysis_quality
     selected_warning = warning or analysis["dataQuality"].get("warning")
     warnings = (str(selected_warning),) if selected_warning else ()
     try:
@@ -377,6 +383,7 @@ def _history_candidate(
                 "dateEvidenceKind": "history-bar",
                 "indexCode": spec.code,
                 "effectiveAsOf": effective_as_of.isoformat(),
+                **normalized_extra,
             },
         )
     )
@@ -390,6 +397,7 @@ def _history_candidate(
             "source": source,
             "sourceRevision": revision,
             "observations": len(filtered),
+            "evidence": normalized_extra,
             "provenance": {
                 "endpoint": normalized_provenance.endpoint,
                 "engine": normalized_provenance.engine,
@@ -407,7 +415,11 @@ def _history_candidate(
         as_of=request.identity.as_of,
         warning=selected_warning,
         warnings=warnings,
-        extra={"indexCode": spec.code, "effectiveAsOf": effective_as_of.isoformat()},
+        extra={
+            "indexCode": spec.code,
+            "effectiveAsOf": effective_as_of.isoformat(),
+            **normalized_extra,
+        },
         source_revision=revision,
         fetched_at=fetched_at,
         field_availability=availability,
@@ -654,6 +666,36 @@ class FuyaoCoreHistorySourceAdapter:
                 timings=timings,
                 provenance=provenance,
             )
+        expected_identity = (
+            f"{spec.digits}.SH" if spec.code.lower().startswith("sh") else f"{spec.digits}.SZ"
+        )
+        if (
+            str(result.payload.get("code") or "").lower() != spec.code.lower()
+            or str(result.payload.get("identity") or "").upper()
+            != expected_identity
+        ):
+            return _failure(
+                request,
+                self.capability,
+                AcquisitionFailureCategory.CONTRACT,
+                f"Fuyao core returned a non-canonical identity for {spec.code}",
+                fetched_at=fetched_at,
+                timings=timings,
+                provenance=provenance,
+            )
+        if (
+            result.payload.get("amountEvidence") != "direct-turnover"
+            or result.quality.get("amountEvidence") != "direct-turnover"
+        ):
+            return _failure(
+                request,
+                self.capability,
+                AcquisitionFailureCategory.INSUFFICIENT,
+                f"Fuyao core did not prove direct turnover for {spec.code}",
+                fetched_at=fetched_at,
+                timings=timings,
+                provenance=provenance,
+            )
         return _history_candidate(
             list(result.payload.get("bars") or ()),
             request,
@@ -668,6 +710,11 @@ class FuyaoCoreHistorySourceAdapter:
             provenance=provenance,
             minimum_bars=280,
             source_revision=revision,
+            evidence_extra={
+                "canonicalIdentity": expected_identity,
+                "amountEvidence": "direct-turnover",
+                "sourceRevision": revision,
+            },
         )
 
 

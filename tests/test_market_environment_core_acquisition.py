@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from src.market_environment.application.collection import SourceAdapterRegistry
 from src.market_environment.application.ports import SourceRequest
 from src.market_environment.domain.analysis import Bar
@@ -32,6 +34,11 @@ from src.market_environment.infrastructure.providers.core_acquisition import (
     TencentCoreQuoteSourceAdapter,
 )
 from src.market_environment.infrastructure.providers.fuyao.market import FuyaoMarketResult
+from src.market_environment.infrastructure.providers.fuyao.market import (
+    FuyaoMarketPermissionError,
+    FuyaoMarketRateLimitError,
+    FuyaoMarketTransportError,
+)
 from src.market_environment.providers import INDEX_SPECS
 
 
@@ -108,13 +115,33 @@ class FakeFuyao:
     status: str = "ok"
     warnings: tuple[str, ...] = ()
     failing_codes: set[str] = field(default_factory=set)
+    error_by_code: dict[str, Exception] = field(default_factory=dict)
+    identity_by_code: dict[str, str] = field(default_factory=dict)
+    amount_evidence_by_code: dict[str, str | None] = field(default_factory=dict)
+    bar_count_by_code: dict[str, int] = field(default_factory=dict)
 
     def fetch_core(self, as_of, *, codes=None, limit=280, quotes_by_code=None):
         selected = tuple(codes or ())
         self.calls.append((as_of, selected, dict(quotes_by_code or {})))
         result: dict[str, FuyaoMarketResult] = {}
         for code in selected:
-            payload = {"code": code, "bars": _bars(as_of)}
+            if code in self.error_by_code:
+                raise self.error_by_code[code]
+            spec = next(item for item in INDEX_SPECS if item.code == code)
+            identity = self.identity_by_code.get(
+                code,
+                f"{spec.digits}.SH" if code.startswith("sh") else f"{spec.digits}.SZ",
+            )
+            amount_evidence = self.amount_evidence_by_code.get(
+                code, "direct-turnover"
+            )
+            bars = _bars(as_of, count=self.bar_count_by_code.get(code, 280))
+            payload = {
+                "code": code,
+                "identity": identity,
+                "bars": bars,
+                "amountEvidence": amount_evidence,
+            }
             if code in self.failing_codes:
                 result[code] = FuyaoMarketResult(
                     payload=payload,
@@ -123,6 +150,7 @@ class FakeFuyao:
                         "status": "insufficient",
                         "asOf": as_of.isoformat(),
                         "warnings": ["fixture Fuyao history unavailable"],
+                        "amountEvidence": amount_evidence,
                     },
                     status="insufficient",
                     as_of=as_of,
@@ -137,6 +165,7 @@ class FakeFuyao:
                         "status": self.status,
                         "asOf": as_of.isoformat(),
                         "warnings": list(self.warnings),
+                        "amountEvidence": amount_evidence,
                     },
                     status=self.status,
                     as_of=as_of,
@@ -187,6 +216,38 @@ def test_core_plan_declares_order_and_keeps_mootdx_non_http() -> None:
     assert tuple(step.adapter_id for step in plan.steps[1:]) == CORE_HISTORY_SOURCE_ORDER
     assert plan.adapters.get(MOOTDX_CORE_HISTORY_SOURCE_ID).capability.provider == "mootdx"
     assert plan.adapters.get(MOOTDX_CORE_HISTORY_SOURCE_ID).capability.methods == ("TCP",)
+    assert all(
+        tuple(step.adapter_id for step in subplan.steps) == CORE_HISTORY_SOURCE_ORDER
+        for subplan in plan.subplans
+    )
+
+
+def test_formal_fuyao_success_retains_revision_direct_turnover_and_no_shadow() -> None:
+    provider = FakeLegacyProvider()
+    fuyao = FakeFuyao()
+
+    outcome = _plan(
+        provider,
+        fuyao,
+        fuyao_enabled=True,
+        shadow_enabled=True,
+    ).collect(DatasetDate("core", AS_OF))
+
+    assert outcome.state is CollectionTaskState.SUCCESS
+    assert outcome.candidate is not None
+    assert provider.calls == []
+    assert len(fuyao.calls) == 5
+    assert "shadow" not in outcome.candidate.quality.extra
+    assert all(
+        item["dataQuality"]["source"] == "fuyao"
+        and item["dataQuality"]["sourceRevision"] == "fuyao-market-v2"
+        and item["dataQuality"]["amountEvidence"] == "direct-turnover"
+        for item in outcome.candidate.payload["indices"]
+    )
+    assert all(
+        item["source"] == "fuyao" and item["observations"] == 280
+        for item in outcome.candidate.quality.extra["indexResults"]
+    )
 
 
 def test_each_legacy_history_adapter_reports_exact_tail_or_structured_mismatch() -> None:
@@ -442,6 +503,96 @@ def test_fuyao_failure_fallback_is_partial_and_keeps_ordered_attempt_evidence() 
     first_sources = [attempt.source for attempt in outcome.attempts[:3]]
     assert first_sources == ["tencent-realtime-quote", FUYAO_CORE_HISTORY_SOURCE_ID, "mootdx"]
     assert any("扶摇失败并回退" in warning for warning in outcome.candidate.warnings)
+
+
+def test_one_fuyao_index_failure_keeps_four_formal_successes_and_one_real_fallback() -> None:
+    failed_code = INDEX_SPECS[0].code
+    outcome = _plan(
+        FakeLegacyProvider(),
+        FakeFuyao(failing_codes={failed_code}),
+        fuyao_enabled=True,
+    ).collect(DatasetDate("core", AS_OF))
+
+    assert outcome.state is CollectionTaskState.PARTIAL
+    assert outcome.candidate is not None
+    by_code = {item["code"]: item for item in outcome.candidate.payload["indices"]}
+    assert by_code[failed_code]["dataQuality"]["source"] == "mootdx"
+    assert "扶摇失败并回退" in by_code[failed_code]["dataQuality"]["warning"]
+    assert all(
+        by_code[spec.code]["dataQuality"]["source"] == "fuyao"
+        for spec in INDEX_SPECS[1:]
+    )
+
+
+@pytest.mark.parametrize(
+    ("fuyao", "expected_category", "warning_fragment"),
+    (
+        (
+            FakeFuyao(
+                error_by_code={INDEX_SPECS[0].code: FuyaoMarketPermissionError("permission denied")}
+            ),
+            "permission",
+            "permission denied",
+        ),
+        (
+            FakeFuyao(
+                error_by_code={INDEX_SPECS[0].code: FuyaoMarketRateLimitError("rate limited")}
+            ),
+            "rate-limit",
+            "rate limited",
+        ),
+        (
+            FakeFuyao(
+                error_by_code={INDEX_SPECS[0].code: FuyaoMarketTransportError("transport failed")}
+            ),
+            "network",
+            "transport failed",
+        ),
+        (
+            FakeFuyao(identity_by_code={INDEX_SPECS[0].code: "399001.SZ"}),
+            "contract",
+            "non-canonical identity",
+        ),
+        (
+            FakeFuyao(bar_count_by_code={INDEX_SPECS[0].code: 279}),
+            "insufficient",
+            "280 required",
+        ),
+        (
+            FakeFuyao(amount_evidence_by_code={INDEX_SPECS[0].code: None}),
+            "insufficient",
+            "direct turnover",
+        ),
+    ),
+)
+def test_fuyao_contract_failures_fall_back_with_classified_visible_evidence(
+    fuyao: FakeFuyao,
+    expected_category: str,
+    warning_fragment: str,
+) -> None:
+    failed_code = INDEX_SPECS[0].code
+    outcome = _plan(
+        FakeLegacyProvider(),
+        fuyao,
+        fuyao_enabled=True,
+    ).collect(DatasetDate("core", AS_OF))
+
+    assert outcome.candidate is not None
+    failed_attempt = next(
+        attempt
+        for attempt in outcome.attempts
+        if attempt.source == FUYAO_CORE_HISTORY_SOURCE_ID
+        and attempt.warning
+        and warning_fragment in attempt.warning
+    )
+    assert failed_attempt.category.value == expected_category
+    fallback = next(
+        item
+        for item in outcome.candidate.payload["indices"]
+        if item["code"] == failed_code
+    )
+    assert fallback["dataQuality"]["source"] == "mootdx"
+    assert warning_fragment in fallback["dataQuality"]["warning"]
 
 
 def test_stale_history_is_rejected_and_exact_date_fallback_is_used() -> None:

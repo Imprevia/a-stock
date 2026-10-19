@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.market_environment.fuyao_config import (
+    FUYAO_CORE_RUNTIME_REVISION,
     FUYAO_SECTORS_RUNTIME_REVISION,
     FuyaoCollectionConfig,
     FuyaoConfigurationError,
@@ -54,15 +55,40 @@ def test_fuyao_switches_default_closed_and_require_approved_revision() -> None:
         FuyaoCollectionConfig.from_environment({"MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED": "true"})
     with pytest.raises(FuyaoConfigurationError):
         FuyaoCollectionConfig.from_environment({"MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED": "maybe"})
+    with pytest.raises(FuyaoConfigurationError, match="shadow"):
+        FuyaoCollectionConfig.from_environment(
+            {
+                "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED": "true",
+                "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION": FUYAO_CORE_RUNTIME_REVISION,
+                "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED": "true",
+            }
+        )
     enabled = FuyaoCollectionConfig.from_environment(
         {
             "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED": "true",
-            "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION": "r1",
-            "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED": "true",
+            "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION": FUYAO_CORE_RUNTIME_REVISION,
+            "MARKET_ENVIRONMENT_FUYAO_CORE_SHADOW_ENABLED": "false",
         }
     )
-    assert enabled.can_cutover("core", capability_status="eligible", revision="r1")
-    assert not enabled.can_cutover("core", capability_status="unverified", revision="r1")
+    assert enabled.can_cutover(
+        "core",
+        capability_status="eligible",
+        revision=FUYAO_CORE_RUNTIME_REVISION,
+    )
+    assert not enabled.can_cutover(
+        "core",
+        capability_status="unverified",
+        revision=FUYAO_CORE_RUNTIME_REVISION,
+    )
+    unsafe_core = FuyaoCollectionConfig.from_environment(
+        {
+            "MARKET_ENVIRONMENT_FUYAO_CORE_ENABLED": "true",
+            "MARKET_ENVIRONMENT_FUYAO_CORE_APPROVED_REVISION": "fuyao-market-v1",
+        }
+    )
+    assert not unsafe_core.can_cutover(
+        "core", capability_status="eligible", revision="fuyao-market-v1"
+    )
 
     unsafe_sectors = FuyaoCollectionConfig.from_environment(
         {

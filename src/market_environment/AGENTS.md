@@ -231,6 +231,7 @@ collection.CollectionCoordinator
 - 新写路径放 `application/commands/`，通过 `application/ports/` 访问存储、采集和 executor。
 - 新纯计算放 `domain/analysis/` 或 `domain/policies/`；禁止在纯领域层读取数据库、环境 provider 或 FastAPI。
 - 新 provider/fallback 放 `infrastructure/providers/` 的 source adapter/acquisition plan，不得把 vendor import 或 native response 提升到 application/query/coordinator；并保留 exact-date、source、quality、warning、failure-retention 和 fail-closed 语义。
+- Fuyao core 的正式顺序固定为 `Fuyao -> mootdx -> 百度 -> 新浪 -> 腾讯 -> 东方财富`；只接受 `fuyao-market-v2` 与自包含 eligible capability。正式 core 必须关闭 shadow，不生成跨 provider comparison；腾讯当前报价仅作当日 sanity check，Fuyao 直接成交额保留 provenance 且不得缩放或重标。
 - HTTP source 必须经 composition root 共享的 engine-neutral policy gateway；adapter 不得直接创建 `requests.Session`/Scrapling client、复制 retry/limiter 或在 permission/challenge 后自动换 engine。非 HTTP mootdx/TCP 和本地 TDX package 仍返回相同 typed acquisition 结果。
 - `requests` 是默认 engine；Scrapling 只能作为默认关闭、空 allowlist 的可选 static engine。禁止浏览器安装、Spider、代理轮换、challenge solving、blocked-request escalation 和 engine 内部重试。
 - standard/core/limits committer 与 local projector 放在明确的 collection/persistence adapter 边界；collector 不写 snapshot，status/detail projector 不调用 provider。

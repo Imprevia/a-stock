@@ -19,7 +19,12 @@ _ENV_DATASET_NAMES = {
     "activeDirection": "ACTIVE_DIRECTION",
 }
 
+FUYAO_CORE_RUNTIME_REVISION = "fuyao-market-v2"
 FUYAO_SECTORS_RUNTIME_REVISION = "fuyao-market-v2"
+_FIXED_RUNTIME_REVISIONS = {
+    "core": FUYAO_CORE_RUNTIME_REVISION,
+    "sectors": FUYAO_SECTORS_RUNTIME_REVISION,
+}
 
 
 def _parse_bool(raw: str, *, name: str) -> bool:
@@ -47,16 +52,18 @@ class FuyaoDatasetConfig:
             raise FuyaoConfigurationError(
                 f"{self.dataset} requires an approved capability revision when enabled"
             )
+        if self.dataset == "core" and self.enabled and self.shadow_enabled:
+            raise FuyaoConfigurationError(
+                "core formal enablement requires shadow to remain disabled"
+            )
 
     @property
     def can_cutover(self) -> bool:
+        fixed_revision = _FIXED_RUNTIME_REVISIONS.get(self.dataset)
         return (
             self.enabled
             and bool(self.approved_revision)
-            and (
-                self.dataset != "sectors"
-                or self.approved_revision == FUYAO_SECTORS_RUNTIME_REVISION
-            )
+            and (fixed_revision is None or self.approved_revision == fixed_revision)
         )
 
 
@@ -110,6 +117,7 @@ FuyaoProviderConfig = FuyaoCollectionConfig
 
 
 __all__ = [
+    "FUYAO_CORE_RUNTIME_REVISION",
     "FUYAO_SECTORS_RUNTIME_REVISION",
     "FuyaoCollectionConfig",
     "FuyaoConfigurationError",

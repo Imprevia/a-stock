@@ -46,6 +46,7 @@ from src.market_environment.infrastructure.providers.core_acquisition import (
     SINA_CORE_HISTORY_SOURCE_ID,
     TENCENT_CORE_HISTORY_SOURCE_ID,
     TENCENT_CORE_QUOTE_SOURCE_ID,
+    CORE_HISTORY_SOURCE_ORDER,
 )
 from src.market_environment.infrastructure.providers.limits_acquisition import (
     EASTMONEY_LIMITS_SOURCE_ID,
@@ -408,6 +409,12 @@ def test_container_and_cli_expose_complete_shared_runtime_registries() -> None:
     assert isinstance(
         container.registries.acquisition_plans.get("limits"),
         LimitsAcquisitionPlan,
+    )
+    core_plan = container.registries.acquisition_plans.get("core")
+    assert tuple(step.adapter_id for step in core_plan.steps[1:]) == CORE_HISTORY_SOURCE_ORDER
+    assert all(
+        tuple(step.adapter_id for step in subplan.steps) == CORE_HISTORY_SOURCE_ORDER
+        for subplan in core_plan.subplans
     )
 
     cli.close()
