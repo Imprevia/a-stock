@@ -525,6 +525,13 @@ tolerance 或多日观察。下列步骤互不授权：除第 1 步离线验证�
 包含 API key、数据库 URL 或 Secret 值。每一步把实际结果写入 active plan；未获授权的步骤保持 pending，不能用
 离线测试、旧报告或口头成功替代生产证据。
 
+2026-10-19 task 6.2 已按第 5 步完成 core-off 收敛：从 clean commit `4427fe1` 构建镜像
+`20261019-223139-4427fe1`，以 exact k3s `1.26.6+k3s-6a894050-dirty`、完整受审 packet 和唯一一次
+`--no-hooks --atomic --wait` Helm write 将 revision `144 -> 145`。写后 formal core=`0`、shadow=`0`、approved
+revision=`fuyao-market-v2`，Secret/PVC/Service identity、sectors、manual/automation、4 条 capability 均保持不变，
+CronJob/Job absent，rollout 窗口新增 run/task/snapshot/aggregate=`0/0/0/0`。该事实不授权第 3、4、6、7 或 8 步；
+下一步仍须单独批准 fresh real probe。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
