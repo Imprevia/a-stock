@@ -532,6 +532,20 @@ revision=`fuyao-market-v2`，Secret/PVC/Service identity、sectors、manual/auto
 CronJob/Job absent，rollout 窗口新增 run/task/snapshot/aggregate=`0/0/0/0`。该事实不授权第 3、4、6、7 或 8 步；
 下一步仍须单独批准 fresh real probe。
 
+2026-10-19 22:53 Asia/Shanghai，task 6.3 已按第 3 步完成唯一一次 fresh real probe。
+执行基线为 clean commit `80948c9`，as-of=`2026-10-19`；脱敏 envelope 保存于权限为 `700`
+的隔离目录 `/home/gyt/.local/share/a-stock/fuyao-core-probes/20261019-core.VnPXxY`，报告文件权限为
+`600`、SHA-256 为 `c9be20d9cedfd818709effbb3ce99213f8142c73baeb63f0681d99b439a05d09`。精确选中的
+`fuyao/core/fuyao-market-v2` report 为 `eligible`，canonical checksum
+`2f05d46e585a8ef703dd35270f68b2a7f0b6056765e41c4e172759fbe54045c5`；五指数均精确命中
+`2026-10-19`、每项 484 bars，OHLC/直接成交额完整，当日腾讯当前价 sanity check 5/5，
+请求预算 5/80，permission 为 explicit-real-probe，redaction/checksum/policy/SQLite 回读均通过，
+API key 对 JSON/stdout/SQLite 字节扫描为 0 命中。报告不含 shadow、comparison、tolerance、
+provider-values 或多日对账证据。生产只读后检仍为 Helm revision 145、formal core=0、
+shadow=0、approved revision v2、core capability 0 行，probe 窗口新增 run/task/snapshot/aggregate 为
+`0/0/0/0`。本步未 promotion、未写生产库、未发布配置、未启用 core、未采集；第 4 步
+capability promotion 仍需独立授权。
+
 ### THS 目录 observation revision 冲突处置（2026-10-14）
 
 出现 `conflicting THS catalog revision checksum`，或 `industry-ranking` 失败后
