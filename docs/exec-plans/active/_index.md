@@ -63,6 +63,7 @@
 | `fix-ths-catalog-revision` | Codex | production-7-3-complete-7-4-pending-7-5-transferred（29/31） | 2026-10-15 |
 | `replace-market-collection-scheduling-with-hermes` | Codex | production-7-5-observing-feishu-15-30（32/34） | 2026-10-15 |
 | `optimize-build-disk-capacity-20261014` | Codex | completed | 2026-10-14 |
+| `start-deepseek-harness-nginx-20261022` | Codex | completed-with-user-systemd-and-existing-nginx | 2026-10-22 |
 
 ## 说明
 
