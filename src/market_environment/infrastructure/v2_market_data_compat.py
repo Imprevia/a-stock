@@ -359,6 +359,25 @@ class CompatibilityV2MarketDataReadAdapter:
             rows = [row for row in rows if (str(row.get("amount") or ""), str(row.get("code") or "")) > after]
         return self._page(resource, rows, limit=limit, key=lambda row: (str(row.get("amount") or ""), str(row.get("code") or "")))
 
+    def active_direction_workbench(self, as_of: date) -> V2Resource | None:
+        resource = self._chapter(as_of, "activeDirectionWorkbench", "active-direction-workbench")
+        if resource is not None:
+            return resource
+        aggregate = self._aggregate(as_of)
+        if aggregate is None:
+            return None
+        chapter = _dict(aggregate.get("chapter01"))
+        value = _dict(chapter.get("activeDirectionWorkbench"))
+        if not value:
+            return self._resource(
+                as_of,
+                "active-direction-workbench",
+                {"asOf": as_of.isoformat(), "state": "missing", "quality": {"status": "missing", "warnings": ["所选日期未物化主动进攻方向工作台"]}},
+                quality={"status": "missing", "warnings": ["所选日期未物化主动进攻方向工作台"]},
+                aggregate=aggregate,
+            )
+        return self._resource(as_of, "active-direction-workbench", value, quality=value.get("quality"), aggregate=aggregate)
+
     def events(self, as_of: date, *, after=None, limit: int) -> V2Page | None:
         resource = self._chapter(as_of, "events", "market-events")
         if resource is None or not isinstance(resource.data, Mapping):

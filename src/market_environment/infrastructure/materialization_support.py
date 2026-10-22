@@ -22,6 +22,7 @@ from ..domain.analysis.calculations import (
     build_summary_sentence,
 )
 from ..domain.analysis import analyze_breadth, combination_overview, synchronization_assessment
+from ..domain.analysis.active_direction_workbench import compose_active_direction_workbench
 from ..limit_ecosystem import build_limit_ecosystem
 from ..limit_promotion import limit_v1_enabled, without_promotion_fields
 from ..schemas import (
@@ -236,6 +237,17 @@ class MaterializationSupport:
                 "topStocks": [],
                 "quality": {**quality, "dataset": "active-direction"},
             },
+            "activeDirectionWorkbench": {
+                "asOf": as_of.isoformat(),
+                "state": "missing",
+                "quality": {**quality, "dataset": "active-direction-workbench"},
+                "turnoverMap": {"rows": [], "availableCount": 0, "complete": False},
+                "directionOverview": {"observations": [], "canonicalCandidates": [], "coverage": 0.0},
+                "securityEvidence": {},
+                "candidatePools": {},
+                "fundamentals": {"state": "missing", "items": [], "gaps": []},
+                "validation": None,
+            },
         }
 
     @staticmethod
@@ -373,6 +385,28 @@ class MaterializationSupport:
         sector_breadth = provider_data["sector-breadth"]
         sector_analysis = self._continuity_analysis(as_of)
         active_direction = provider_data["activeDirection"]
+        try:
+            active_direction_workbench = compose_active_direction_workbench(
+                active_direction,
+                as_of,
+                limits=limits,
+            )
+        except Exception as exc:
+            active_direction_workbench = {
+                "asOf": as_of.isoformat(),
+                "state": "failed-missing",
+                "quality": {
+                    "status": "failed-missing",
+                    "observations": 0,
+                    "warnings": [f"主动进攻方向工作台物化失败，保留 activeDirection：{type(exc).__name__}"],
+                },
+                "turnoverMap": {"rows": [], "availableCount": 0, "complete": False},
+                "directionOverview": {"observations": [], "canonicalCandidates": [], "coverage": 0.0},
+                "securityEvidence": {},
+                "candidatePools": {},
+                "fundamentals": {"state": "missing", "items": [], "gaps": []},
+                "validation": None,
+            }
         events = {
             "state": "unverified",
             "items": [],
@@ -455,6 +489,7 @@ class MaterializationSupport:
             "sectorBreadth": sector_breadth,
             "sectorAnalysis": sector_analysis,
             "activeDirection": active_direction,
+            "activeDirectionWorkbench": active_direction_workbench,
             "events": events,
             "combinationOverview": combination,
             "summarySentence": summary_sentence,

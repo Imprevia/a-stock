@@ -210,6 +210,10 @@ class V2MarketDataQueries:
             ),
         )
 
+    def active_direction_workbench(self, as_of: date) -> V2Resource | None:
+        reader = getattr(self.reads, "active_direction_workbench", None)
+        return reader(as_of) if callable(reader) else None
+
     def events(
         self,
         as_of: date,

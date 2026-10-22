@@ -953,10 +953,34 @@ class ActiveStock(BaseModel):
     closePosition: float | None
 
 
+class ActiveResearchRow(ActiveStock):
+    rank: int = Field(ge=1, le=30)
+    rawDirectionLabel: str | None = None
+    source: str | None = None
+    sourceRevision: str | None = None
+    industryMappingRevision: str | None = None
+    industryMappingCoverage: float | None = Field(default=None, ge=0, le=1)
+    rowQuality: str = "ok"
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    previousClose: float | None = None
+    turnoverRatePct: float | None = None
+    pe: float | None = None
+    pb: float | None = None
+    marketCap: float | None = None
+    circulatingMarketCap: float | None = None
+    changePct60d: float | None = None
+    changePctYtd: float | None = None
+    fundamentalAsOf: date | None = None
+    fundamentalSource: str | None = None
+
+
 class ActiveDirectionEvidence(BaseModel):
     state: str
     summary: str | None
     topStocks: list[ActiveStock]
+    researchRows: list[ActiveResearchRow] = Field(default_factory=list, max_length=30)
     quality: EvidenceQuality
 
 

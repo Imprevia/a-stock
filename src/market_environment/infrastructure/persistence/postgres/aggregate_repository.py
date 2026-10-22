@@ -56,6 +56,12 @@ class PostgresMaterializedAggregateRepository:
             ) from exc
         return payload
 
+    def list_dates(self) -> tuple[date, ...]:
+        rows = self.connection.execute(
+            text("SELECT as_of FROM materialized_market_environment ORDER BY as_of")
+        ).scalars()
+        return tuple(rows)
+
     def revision(self, as_of: date) -> MaterializationRevision:
         state = {
             "snapshots": self._rows(

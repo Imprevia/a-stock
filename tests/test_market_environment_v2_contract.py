@@ -165,6 +165,57 @@ def test_v2_integrity_failure_is_a_safe_stable_503() -> None:
     assert "must-not-leak" not in response.text
 
 
+def test_v2_history_integrity_failure_never_falls_back_to_legacy_or_another_date() -> None:
+    as_of = date.fromisoformat(AS_OF)
+
+    class BrokenHistoryQueries:
+        legacy_calls = 0
+
+        @staticmethod
+        def _metadata(dataset: str):
+            from src.market_environment.application.ports.v2_market_data import V2Resource
+
+            return V2Resource(
+                as_of,
+                "2026-08-28T16:30:00+08:00",
+                "history-integrity-r1",
+                {"dataset": dataset, "status": "ok"},
+                {"advanceCount": 2273, "declineCount": 3129},
+            )
+
+        def breadth(self, _as_of):
+            return self._metadata("market-breadth")
+
+        def limits(self, _as_of):
+            return self._metadata("market-limits")
+
+        def breadth_history(self, _as_of, **_kwargs):
+            raise SnapshotIntegrityError(
+                "snapshot checksum mismatch: breadth/2026-08-27 secret-payload"
+            )
+
+        def limits_history(self, _as_of, **_kwargs):
+            raise SnapshotIntegrityError(
+                "snapshot exact-date mismatch: limits/2026-08-27 secret-payload"
+            )
+
+    queries = BrokenHistoryQueries()
+    client = TestClient(
+        build_test_app(
+            v2_queries=queries,
+            effective_date=date(2026, 10, 16),
+        )
+    )
+
+    for resource in ("breadth", "limits"):
+        response = client.get(f"{ROOT}/{resource}/history")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "snapshot_integrity_error"
+        assert "secret-payload" not in response.text
+        assert "2273" not in response.text
+    assert queries.legacy_calls == 0
+
+
 def test_v2_variable_collections_reject_limits_above_their_maximum() -> None:
     client = _client()
     cases = (

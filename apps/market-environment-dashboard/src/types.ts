@@ -687,10 +687,34 @@ export interface ActiveStock {
   closePosition?: number | null
 }
 
+export interface ActiveResearchRow extends ActiveStock {
+  rank: number
+  rawDirectionLabel?: string | null
+  source?: string | null
+  sourceRevision?: string | null
+  industryMappingRevision?: string | null
+  industryMappingCoverage?: number | null
+  rowQuality?: string
+  open?: number | null
+  high?: number | null
+  low?: number | null
+  previousClose?: number | null
+  turnoverRatePct?: number | null
+  pe?: number | null
+  pb?: number | null
+  marketCap?: number | null
+  circulatingMarketCap?: number | null
+  changePct60d?: number | null
+  changePctYtd?: number | null
+  fundamentalAsOf?: string | null
+  fundamentalSource?: string | null
+}
+
 export interface ActiveDirectionAnalysis {
   state: string
   summary?: string | null
   topStocks: ActiveStock[]
+  researchRows?: ActiveResearchRow[]
   quality: DataSetQuality
 }
 
@@ -736,6 +760,7 @@ export interface Chapter01Analysis {
   sectorBreadth?: ThsSectorBreadth
   sectorAnalysis?: SectorContinuityAnalysis
   activeDirection?: ActiveDirectionAnalysis
+  activeDirectionWorkbench?: ActiveDirectionWorkbench
   events?: EventAnalysis
   combinationOverview: CombinationOverview
   marketEvidence?: MarketReviewEvidence | null
@@ -743,6 +768,19 @@ export interface Chapter01Analysis {
   summarySentence?: string | null
   dataGaps?: DataGap[]
   assessment: ChapterAssessment
+}
+
+export interface ActiveDirectionWorkbench {
+  asOf: string
+  state: string
+  quality: DataSetQuality & { missingInputs?: string[] }
+  lineage?: Record<string, unknown>
+  directionOverview?: Record<string, unknown>
+  turnoverMap?: { rows: ActiveResearchRow[]; availableCount: number; complete: boolean }
+  securityEvidence?: Record<string, Record<string, unknown>>
+  candidatePools?: Record<string, unknown>
+  fundamentals?: Record<string, unknown>
+  validation?: Record<string, unknown> | null
 }
 
 export type ReviewSegmentStatus = 'available' | 'degraded' | 'insufficient' | 'unverified' | string

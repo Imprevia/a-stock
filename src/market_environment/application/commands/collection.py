@@ -270,13 +270,13 @@ class RefreshDatasetsCommand:
         fetch_previous_limit_details: bool = True,
         repair_integrity: bool = False,
     ):
-        return self.commands.refresh(
-            as_of,
-            datasets,
-            allow_historical_latest_only=allow_historical_latest_only,
-            fetch_previous_limit_details=fetch_previous_limit_details,
-            repair_integrity=repair_integrity,
-        )
+        kwargs = {
+            "allow_historical_latest_only": allow_historical_latest_only,
+            "fetch_previous_limit_details": fetch_previous_limit_details,
+        }
+        if repair_integrity:
+            kwargs["repair_integrity"] = True
+        return self.commands.refresh(as_of, datasets, **kwargs)
 
     def execute_request(self, request: CollectionRefreshRequest):
         return self.commands.refresh_request(request)

@@ -2961,6 +2961,14 @@ class LegacySnapshotStoreAdapter:
         with self._connect() as connection:
             return self._read_materialized_aggregate(connection, as_of)
 
+    def list_materialized_aggregate_dates(self) -> tuple[date, ...]:
+        """Return only dates that already have a persisted aggregate."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT as_of FROM materialized_market_environment ORDER BY as_of"
+            ).fetchall()
+        return tuple(_as_date(row["as_of"]) for row in rows)
+
     def get_materialized_aggregate_state(
         self,
         as_of: date,

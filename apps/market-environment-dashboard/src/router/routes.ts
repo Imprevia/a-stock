@@ -66,7 +66,7 @@ export const routes: RouteRecordRaw[] = [
         path: '06',
         name: 'dashboard-06',
         component: Document06ActiveDirectionPage,
-        meta: { documentId: '06', section: 'activeDirection', resources: ['active-direction'] },
+        meta: { documentId: '06', section: 'activeDirection', resources: ['active-direction', 'active-direction-workbench'] },
       },
       {
         path: '07',

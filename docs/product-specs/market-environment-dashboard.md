@@ -2,7 +2,7 @@
 
 ## Status
 
-`active` · 版本 `0.17`
+`active` · 版本 `0.18`
 
 后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。项目内 Kubernetes 定时采集正在退役，仓库不得再创建或激活 application-owned CronJob；盘后时钟与结果投递由 `192.168.1.21` 上的 Hermes Agent 持有，后端自动化写入口保持独立且默认关闭。
 
@@ -36,6 +36,10 @@
 
 所有 v2 GET 只读本地 exact-date repository/materialized evidence，不构造 provider、不开始或加入采集、不建后台任务、不写 PostgreSQL。无任何本地日期证据返回稳定 404；日期格式、未来日期、未知 closed selector 或越界 limit 返回 422；日期存在但目标数据集缺失时以 200 envelope 保留 `missing` / `insufficient` 和 `null` 或有界空数据，不用 0、旧日期或 latest-only provider 补齐。`failed-retained` 等刷新状态、真实来源、provider、observations、warning、checksum/revision evidence 继续透明表达。本地行存在但 checksum 或 key、payload、actual/effective date 不一致时返回脱敏 HTTP 503 `snapshot_integrity_error`，不得降格为 404、触发 provider、写数据库或回退其他日期；dashboard 必须明确展示该完整性错误，不能用 legacy 成功响应覆盖它。
 
+breadth/limits history 在 PostgreSQL 上必须支持省略全部可选筛选、只给起点、只给终点、同时给边界和带 cursor 续页；省略参数不产生未类型化 `NULL`，结果按精确日期升序、有界、无重复，并保持相同 revision。第 02 页将 breadth summary 与 history 分开提交：summary 200 后立即保留上涨、下跌、平盘、有效家数、中位数、宽度标签和摘要质量；history 的网络/5xx/空结果/不足只影响历史区域，不全局关闭 V2 或清空其他资源。history 409 必须重新取得 overview 并整组重读 summary/history；summary 的 `snapshot_integrity_error` 仍禁止 legacy fallback。
+
+第 02 页历史展示固定使用最近 5 个已验证交易日；覆盖元数据使用全部不超过 250 个唯一有效点，报告 `validObservations`、`requiredObservations=60`、`windowDays=250` 和 `coverage=min(validObservations/250, 1)`。少于 60 个观察时历史质量为 `insufficient`、分位为 `null`，但完整的当日 summary 保持可用；浏览器不得重算计数、中位数、宽度标签或分位。
+
 根级 `/llms.txt` 与 `/llms-full.txt` 是 UTF-8 `text/plain` 发现文档，分别提供紧凑索引和完整集成语义，并链接 `/openapi.json`。它们由 tagged OpenAPI 与受控产品/runbook 语义纯内存渲染，不写生成文件、不查询行情或数据库，也不嵌入实时市场行、凭据、provider header、presigned URL 或私有 runtime metadata。dashboard 按页面渐进迁移并保留 legacy fallback；THS bars 请求不得超过既有 `page_size=1000` 上限，超过一页时必须续取且每行只渲染一次。
 
 ## 用户与流程
@@ -58,6 +62,7 @@
 - “上涨家数和中位数改善”只使用指数历史识别出的精确上一交易日广度快照计算；精确快照缺失时不得用更早日期替代，普通 GET 不得因此访问 provider，当前日判断可以保留但置信度最高为中。
 - 第 01 页实现“指数、位置和成交额结合判断”：展示所选指数命中的六类典型组合、触发证据和交易模式，并汇总市场强弱、阶段、资金认可和交易模式四项输出。
 - 当前交易日的全 A 上涨/下跌/平盘数量、上涨占比和涨跌幅中位数。
+- 第 02 页把当日 breadth summary 和历史趋势视为两个独立可用性层级；历史区域具有单独 loading/error/insufficient 和仅重试 history 的交互，且在桌面与 390px 宽度保持最小 `14px` 文字、无页面级横向溢出或截断。
 - 日期化涨停、跌停、炸板与最高连板生态。
 - THS 行业、概念、区域和特色指数的完整目录、当日排名、板块量价与当日内部宽度；这些内容仅属于 provider observation，不以名称相似性映射为申万一级身份，也不进入 `QTS-01-05-*` 输入。
 - 历史 Eastmoney-first/Fuyao-fallback `sectors` 契约从公共 API、调度、前端和新采集任务中退役。既有快照、任务、warning、checksum 和 capability report 原样保留为审计证据，不删除、不改名，也不投影成任一新数据集。
@@ -81,6 +86,7 @@
 - Fuyao THS 的 catalog/snapshot、单编号历史和 dump/复权分别使用独立 capability policy；任一操作只有在 exact revision `eligible`、对应开关开启、权限和请求预算有效且上海盘后日期门禁通过后才能构造 provider client。旧 `fuyao/sectors/fuyao-market-v2` 报告不能授权新的历史或 dump 操作。
 - capability report 从隔离 probe 进入正式运行时只能通过通用 `capabilities promote` 边界：显式选择 provider/dataset/revision，校验原始 checksum、`eligible`、脱敏一致性和数据集证据策略，默认 dry-run；只有显式 `--apply` 才在运行时 PostgreSQL 的单个事务中写入一条报告。同 checksum 重复操作幂等，同 revision 不同 checksum 冲突拒绝；该命令不得调用 provider、触发采集、写快照/聚合、修改 Secret、调度或任何 provider 开关。
 - 新能力的隔离 probe、capability promotion、生产迁移、首次目录同步、历史回填、dump 导入和部署均不属于默认实现写操作，必须在上海盘后取得再次明确授权。回滚只关闭新 provider 开关和写入口，保留新旧 evidence、additive 表、任务、Secret 与 PVC，不恢复旧 `sectors` 公共采集器。
+- breadth 历史维护只通过默认 dry-run 的 `snapshots breadth-history` CLI 进行，单次最多 20 个已确认交易日；`--apply` 必须同时携带 `--allow-real-provider` 和 `--allow-snapshot-writes`。每个目标日必须证明 TDX 包日期、普通 A 股 universe 和关键字段完整，并复用现有 task/run、lease/fencing、typed committer 与聚合重建链。包不可用、错日或样本不足时记录失败且不写成功快照、不覆盖同日成功证据、不使用其他日期替代。真实 provider 访问、生产 snapshot 写入、部署和生产回填分别需要额外明确授权。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
 - 盘后自动采集由 Hermes 经内网 HTTP 调用 Dashboard service，使用与 Dashboard 相同的后端进程、PostgreSQL Service/Secret、task、lease 和 snapshot；Hermes 不获得数据库凭据、PVC、provider 凭据、CLI 或部署权限，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
 - full endpoint 要求 `Idempotency-Key`。同 key 与同语义（服务端日期、operation version、固定七数据集 fingerprint）跨超时、断线、202 和进程重启复用同一 persisted run；wait timeout 不属于语义，相同 key 的语义冲突返回 409。900 秒内 terminal 返回 HTTP 200；仍运行返回 202、`Location`、`Retry-After` 与 provider-free `statusUrl`，断开客户端不取消任务。
@@ -165,6 +171,16 @@
 第 05 页的申万数据管理区域只读展示 analysis readiness、required/available history、missing sessions、版本、最新 attempt、warning 和 retry eligibility；THS K 线回填操作与申万分析管理保持独立，也不得混入七数据集“全部采集”。普通 GET、启动和默认调度必须保持 provider-free；latest-only THS observation 不可用于历史日期分析。
 
 ## 验收
+
+### 第 06 页：大成交额主动进攻方向研究工作台（2026-10-21）
+
+第 06 页保留 `/dashboard/06` 路由和“大成交额主动进攻方向”导航标题，页面固定按以下五个视图呈现盘后研究流：方向总览、Top-30 成交额资金地图、核心股六项辨识、异动资金/放量长上影/一进二候选池、基本面与次日验证。页面顶部必须显示精确交易日、materialization revision、质量状态、来源和缺口。
+
+active-direction 继续提供旧 `topStocks` Top-10 字段；新增可选 `researchRows` 最多 30 行，保留规范证券身份、原始方向标签、排序方法、来源 revision、行业映射 revision/coverage 和行级质量。旧快照和旧消费者只读 Top-10，不得把十行伪装成完整 Top-30。
+
+工作台读取必须是 provider-free、精确日期且 revision-pinned；普通 GET 不采集、不回填、不写数据库、不跨日期替代。已有精确日期成交额快照中的 PE/PB、市值、换手率和阶段涨跌幅作为原始估值观察；已有涨停明细中的首封/末封时间、开板次数、封单和换手作为盘中封板事实。它们不得被渲染为财务评分或完整分钟结论。利润、成长、现金流、杠杆、可比行业估值和集合竞价序列没有本地批准事实时，分别显示字段级 `missing` / `pending` 与恢复原因。QTS-04-01 至 QTS-04-07 始终显示 `documented-only` / `needs-backtest`，不得渲染 `validated`、龙头/中军/补涨角色、买入/卖出或自动交易建议。严格首板次日候选与五日涨停强势候选必须分开。
+
+桌面和 390px 视口下所有可见文字、控件、图例、坐标和 tooltip 至少 14px；页面不得横向溢出、重叠或截断，宽表仅允许在自身容器内滚动。选择资金地图行时，核心、候选、基本面视图必须复用同一规范证券身份，禁止按名称连接。
 
 ### 01–09 多页市场研判重构（2026-09-14）
 

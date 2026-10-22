@@ -32,9 +32,11 @@ class _Mappings:
 class RecordingConnection:
     def __init__(self) -> None:
         self.calls = []
+        self.statements = []
 
     def execute(self, statement, params):
         sql = str(statement)
+        self.statements.append(statement)
         self.calls.append((sql, params))
         if "limit_security_facts current" in sql:
             return _Mappings(
@@ -91,6 +93,7 @@ class RecordingConnection:
 class EmptyHistoryConnection(RecordingConnection):
     def execute(self, statement, params):
         sql = str(statement)
+        self.statements.append(statement)
         self.calls.append((sql, params))
         return _Mappings([])
 
@@ -187,6 +190,77 @@ def test_postgres_index_history_casts_optional_dates_before_null_checks() -> Non
     assert params["after_date"] is None
 
 
+def test_postgres_breadth_history_omits_absent_optional_date_predicates() -> None:
+    connection = EmptyHistoryConnection()
+    adapter = BoundedAdapter(connection)
+
+    page = adapter.breadth_history(
+        AS_OF,
+        start_date=None,
+        end_date=None,
+        after=None,
+        limit=20,
+    )
+
+    statement, params = connection.calls[0]
+    normalized = " ".join(statement.split()).upper()
+    assert page is not None
+    assert "START_DATE" not in normalized
+    assert "END_DATE" not in normalized
+    assert "AFTER_DATE" not in normalized
+    assert params == {"dataset": "breadth", "as_of": AS_OF, "limit": 21}
+
+
+def test_postgres_breadth_history_binds_only_present_typed_dates() -> None:
+    connection = EmptyHistoryConnection()
+    adapter = BoundedAdapter(connection)
+    start = date(2026, 9, 1)
+    end = date(2026, 9, 22)
+
+    adapter.breadth_history(
+        AS_OF,
+        start_date=start,
+        end_date=end,
+        after=("2026-09-10",),
+        limit=20,
+    )
+
+    statement, params = connection.calls[0]
+    normalized = " ".join(statement.split()).upper()
+    assert "AS_OF>=:START_DATE" in normalized
+    assert "AS_OF<=:END_DATE" in normalized
+    assert "AS_OF>:AFTER_DATE" in normalized
+    assert params["start_date"] == start
+    assert params["end_date"] == end
+    assert params["after_date"] == date(2026, 9, 10)
+    assert all(value is not None for key, value in params.items() if key.endswith("_date"))
+    for name in ("as_of", "start_date", "end_date", "after_date"):
+        assert connection.statements[0]._bindparams[name].type.python_type is date
+
+
+def test_postgres_limits_history_uses_same_present_date_predicate_contract() -> None:
+    connection = EmptyHistoryConnection()
+    adapter = BoundedAdapter(connection)
+
+    adapter.limits_history(
+        AS_OF,
+        start_date=date(2026, 9, 1),
+        end_date=None,
+        after=None,
+        limit=20,
+    )
+
+    statement, params = connection.calls[0]
+    normalized = " ".join(statement.split()).upper()
+    assert "SNAPSHOT.AS_OF>=:START_DATE" in normalized
+    assert "END_DATE" not in normalized
+    assert "AFTER_DATE" not in normalized
+    assert params["start_date"] == date(2026, 9, 1)
+    assert "end_date" not in params and "after_date" not in params
+    assert connection.statements[0]._bindparams["as_of"].type.python_type is date
+    assert connection.statements[0]._bindparams["start_date"].type.python_type is date
+
+
 def test_all_postgres_variable_list_paths_are_bounded_before_materialization() -> None:
     direct_sql_methods = (
         "index_history",
@@ -214,7 +288,7 @@ def test_all_postgres_variable_list_paths_are_bounded_before_materialization() -
     assert "self._aggregate(" not in breadth_source
     limits_source = inspect.getsource(PostgresV2MarketDataReadAdapter.limits_history)
     assert "JOIN trading_sessions" in limits_source
-    assert "session.is_session=TRUE" in limits_source
+    assert "session.is_session=1" in limits_source
     assert "self._aggregate(" not in limits_source
 
 

@@ -25,6 +25,10 @@ class CliContainer:
         return self.application.commands.collection
 
     @property
+    def breadth_history(self):
+        return self.application.commands.breadth_history
+
+    @property
     def registries(self):
         return self.application.registries
 

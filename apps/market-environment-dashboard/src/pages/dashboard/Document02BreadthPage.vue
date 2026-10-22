@@ -27,6 +27,7 @@ const consistencySummary = computed(() => ctx.breadthConsistencySummary.value)
 const verification = computed(() => ctx.breadthVerification.value)
 const warnings = computed(() => ctx.breadthWarnings.value)
 const qualityTone = computed(() => ctx.qualityTone(breadth.value?.quality))
+const historyState = computed(() => market.breadthHistoryState)
 
 const breadthBar = computed(() => {
   const item = breadth.value
@@ -119,6 +120,10 @@ function changeTone(value: number | null | undefined): 'positive' | 'negative' |
   if (value < 0) return 'negative'
   return 'flat'
 }
+
+function retryHistory(): void {
+  void market.retryBreadthHistory()
+}
 </script>
 
 <template>
@@ -208,8 +213,19 @@ function changeTone(value: number | null | undefined): 'positive' | 'negative' |
       <div><span class="panel-kicker">近 5 日宽度趋势</span><h2>已验证交易日</h2></div>
       <span class="quality-badge" :class="ctx.metricQualityTone(breadth?.history?.quality?.status)">{{ ctx.metricQualityLabel(breadth?.history?.quality?.status) }}</span>
     </div>
-    <p v-if="breadth?.history?.validObservations != null && breadth.history.validObservations < 5" class="limits-null-note">近 5 日观察仅 {{ formatCount(breadth.history.validObservations) }} / 5</p>
-    <div v-if="historyPoints.length" class="table-scroll">
+    <div v-if="historyState.phase === 'loading'" class="empty-evidence compact" aria-live="polite">
+      <CircleAlert :size="22" />
+      <strong>正在读取历史窗口</strong>
+      <p>当日上涨、下跌和中位数已经独立保留。</p>
+    </div>
+    <div v-else-if="historyState.phase === 'error'" class="empty-evidence compact" role="alert">
+      <CircleAlert :size="22" />
+      <strong>历史趋势加载失败</strong>
+      <p>{{ historyState.error || '当日摘要仍可用，可单独重试历史数据。' }}</p>
+      <button class="text-button" type="button" @click="retryHistory">仅重试历史</button>
+    </div>
+    <p v-else-if="breadth?.history?.validObservations != null && breadth.history.validObservations < 5" class="limits-null-note">近 5 日观察仅 {{ formatCount(breadth.history.validObservations) }} / 5</p>
+    <div v-if="historyState.phase !== 'loading' && historyState.phase !== 'error' && historyPoints.length" class="table-scroll">
       <table class="limits-table history-table">
         <thead><tr><th>日期</th><th>上涨家数</th><th>下跌家数</th><th>涨跌差</th><th>上涨占比</th><th>下跌占比</th><th>中位数</th><th>5 日动量</th><th>宽度标签</th><th>指数一致</th></tr></thead>
         <tbody>
@@ -228,12 +244,13 @@ function changeTone(value: number | null | undefined): 'positive' | 'negative' |
         </tbody>
       </table>
     </div>
-    <div v-else class="empty-evidence compact">
+    <div v-else-if="historyState.phase !== 'loading' && historyState.phase !== 'error'" class="empty-evidence compact">
       <CircleAlert :size="22" />
       <strong>历史窗口不足</strong>
       <p>只展示精确交易日快照，不使用其他日期回填。当前有效观察 {{ formatCount(breadth?.history?.validObservations) }} / {{ formatCount(breadth?.history?.requiredObservations ?? 60) }}。</p>
     </div>
     <BreadthHistoryChartPanel
+      v-if="historyState.phase !== 'loading' && historyState.phase !== 'error'"
       :points="historyPoints"
       :as-of="market.data?.asOf ?? ''"
       :advance-ratio="breadth?.advanceRatio ?? null"

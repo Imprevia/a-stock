@@ -549,6 +549,19 @@ def active_direction(as_of: date, queries: Annotated[V2MarketEnvironmentQueries,
     return _page_response(page, resource_name="active_direction", scope={"asOf": as_of}, filters={}, limit=limit, revision=revision, if_match=if_match, if_none_match=if_none_match)
 
 
+@router.get("/{as_of}/active-direction/workbench", response_model=EnvelopeModel, operation_id="getV2MarketActiveDirectionWorkbench")
+def active_direction_workbench(as_of: date, queries: Annotated[V2MarketEnvironmentQueries, Depends(get_v2_market_queries)], effective_date: Annotated[date, Depends(get_effective_market_date)], revision: str | None = Query(default=None), if_match: str | None = Header(default=None, alias="If-Match"), if_none_match: str | None = Header(default=None, alias="If-None-Match")):
+    return _exact_resource(
+        as_of,
+        effective_date,
+        lambda: queries.active_direction_workbench(as_of),
+        revision=revision,
+        if_match=if_match,
+        if_none_match=if_none_match,
+        links=_links(as_of, ("active-direction", "limits", "sectors/analysis", "events")),
+    )
+
+
 @router.get("/{as_of}/events", response_model=PageEnvelopeModel, operation_id="listV2MarketEvents")
 def events(as_of: date, queries: Annotated[V2MarketEnvironmentQueries, Depends(get_v2_market_queries)], effective_date: Annotated[date, Depends(get_effective_market_date)], limit: int = Query(default=20, ge=1, le=100), cursor: str | None = Query(default=None), revision: str | None = Query(default=None), if_match: str | None = Header(default=None, alias="If-Match"), if_none_match: str | None = Header(default=None, alias="If-None-Match")):
     invalid = _validate_as_of(as_of, effective_date)

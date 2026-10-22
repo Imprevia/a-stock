@@ -332,13 +332,16 @@ def _validate_top_rows(payload: Mapping[str, Any], observations: int) -> str | N
             f"active-direction requires at least {_MINIMUM_OBSERVATIONS} observations; "
             f"received {observations}"
         )
-    rows = payload.get("topStocks")
-    if not isinstance(rows, list) or len(rows) != _TOP_SIZE:
+    research_rows = payload.get("researchRows")
+    has_research_rows = isinstance(research_rows, list) and bool(research_rows)
+    rows = research_rows if has_research_rows else payload.get("topStocks")
+    required_size = _MINIMUM_OBSERVATIONS if has_research_rows else _TOP_SIZE
+    if not isinstance(rows, list) or len(rows) < required_size:
         observed = len(rows) if isinstance(rows, list) else 0
-        return f"active-direction requires {_TOP_SIZE} ranked rows; received {observed}"
+        return f"active-direction requires {required_size} ranked rows; received {observed}"
     identities: set[str] = set()
     amounts: list[float] = []
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(rows[:required_size], start=1):
         if not isinstance(row, Mapping):
             return f"active-direction row {index} is not an object"
         code = str(row.get("code") or "").strip()
@@ -399,6 +402,7 @@ class EastmoneyActiveDirectionPrimaryAdapter:
                 source="eastmoney-clist",
                 status="partial",
                 warnings=[],
+                preserve_order=True,
             )
         except Exception as exc:
             return _failure(
@@ -481,6 +485,7 @@ class EastmoneyActiveDirectionDelayedAdapter:
                     f"东方财富容量方向主域不可用：{primary_error}",
                     "已降级到东方财富延迟容量方向",
                 ],
+                preserve_order=True,
             )
         except Exception as exc:
             return _failure(

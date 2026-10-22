@@ -17,6 +17,22 @@ AS_OF = date(2026, 10, 15)
 ROOT = f"/api/v2/market-environment/{AS_OF.isoformat()}"
 
 
+class _GuardedCompatibilityAdapter(CompatibilityV2MarketDataReadAdapter):
+    def __init__(self, aggregates):
+        super().__init__(aggregates)
+        self.provider_calls = 0
+        self.write_calls = 0
+        self.history_calls: list[tuple[str, object]] = []
+
+    def breadth_history(self, as_of, **kwargs):
+        self.history_calls.append(("breadth", kwargs.get("after")))
+        return super().breadth_history(as_of, **kwargs)
+
+    def limits_history(self, as_of, **kwargs):
+        self.history_calls.append(("limits", kwargs.get("after")))
+        return super().limits_history(as_of, **kwargs)
+
+
 def _quality(status: str = "ok") -> dict:
     return {
         "dataset": "fixture",
@@ -204,6 +220,78 @@ def test_index_breadth_and_limits_history_paginate_every_point_once() -> None:
         identity = [row.get("date") or row.get("asOf") for row in rows]
         assert identity == ["2026-10-13", "2026-10-14", "2026-10-15"]
         assert len(identity) == len(set(identity))
+
+
+def test_breadth_and_limits_http_history_pages_are_revision_pinned_and_read_only() -> None:
+    reads = _GuardedCompatibilityAdapter({AS_OF: _aggregate()})
+    client = TestClient(
+        build_test_app(
+            v2_queries=V2MarketDataQueries(reads),
+            effective_date=AS_OF,
+        )
+    )
+
+    for resource in ("breadth", "limits"):
+        first = client.get(f"{ROOT}/{resource}/history", params={"limit": 2})
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["pagination"]["returned"] == 2
+        assert first_body["pagination"]["hasMore"] is True
+        second = client.get(
+            f"{ROOT}/{resource}/history",
+            params={
+                "limit": 2,
+                "cursor": first_body["pagination"]["nextCursor"],
+                "revision": first_body["snapshotRevision"],
+            },
+        )
+        assert second.status_code == 200, second.text
+        second_body = second.json()
+        assert second_body["snapshotRevision"] == first_body["snapshotRevision"]
+        assert second_body["pagination"]["returned"] == 1
+
+    assert reads.history_calls == [
+        ("breadth", None),
+        ("breadth", ("2026-10-14",)),
+        ("limits", None),
+        ("limits", ("2026-10-14",)),
+    ]
+    assert reads.provider_calls == 0
+    assert reads.write_calls == 0
+
+
+def test_history_cursor_rejects_stale_revision_changed_filters_and_cross_resource_use() -> None:
+    reads = _GuardedCompatibilityAdapter({AS_OF: _aggregate()})
+    client = TestClient(
+        build_test_app(
+            v2_queries=V2MarketDataQueries(reads),
+            effective_date=AS_OF,
+        )
+    )
+    first = client.get(f"{ROOT}/breadth/history", params={"limit": 2})
+    assert first.status_code == 200
+    body = first.json()
+    cursor = body["pagination"]["nextCursor"]
+
+    stale = client.get(
+        f"{ROOT}/breadth/history",
+        params={"limit": 2, "cursor": cursor, "revision": "sr1_stale"},
+    )
+    changed_filter = client.get(
+        f"{ROOT}/breadth/history",
+        params={"limit": 2, "cursor": cursor, "start_date": "2026-10-14"},
+    )
+    cross_resource = client.get(
+        f"{ROOT}/limits/history",
+        params={"limit": 2, "cursor": cursor},
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "snapshot_revision_conflict"
+    assert changed_filter.status_code == 422
+    assert cross_resource.status_code == 422
+    assert reads.provider_calls == 0
+    assert reads.write_calls == 0
 
 
 def test_limits_summary_evidence_and_each_pool_are_independent() -> None:

@@ -1708,7 +1708,7 @@ class CollectorProviderRuntime:
             "invt": "2",
             "fid": "f6",
             "fs": self._STOCK_UNIVERSE_FILTER,
-            "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
+            "fields": "f2,f3,f6,f8,f9,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f100",
         }
         payload = self._eastmoney_get_json(
             self._STOCK_SNAPSHOT_URL,
@@ -1757,7 +1757,7 @@ class CollectorProviderRuntime:
             "invt": "2",
             "fid": "f6",
             "fs": self._STOCK_UNIVERSE_FILTER,
-            "fields": "f2,f3,f6,f12,f13,f14,f15,f16,f100",
+            "fields": "f2,f3,f6,f8,f9,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f100",
         }
         payload = self._eastmoney_get_json(
             url,
@@ -1826,6 +1826,16 @@ class CollectorProviderRuntime:
             "f3": ("f3", "change_pct", "changePct", "涨跌幅"),
             "f15": ("f15", "high", "最高"),
             "f16": ("f16", "low", "最低"),
+            "f17": ("f17", "open", "开盘"),
+            "f18": ("f18", "previous_close", "prev_close", "昨收"),
+            "f8": ("f8", "turnover_rate", "turnoverRatePct", "换手率"),
+            "f9": ("f9", "pe", "peRatio", "市盈率"),
+            "f20": ("f20", "market_cap", "marketCap", "总市值"),
+            "f21": ("f21", "circulating_market_cap", "circulatingMarketCap", "流通市值"),
+            "f22": ("f22", "pb", "pbRatio", "市净率"),
+            "f23": ("f23", "pb", "pbRatio", "市净率"),
+            "f24": ("f24", "changePct60d", "60日涨跌幅"),
+            "f25": ("f25", "changePctYtd", "年初至今涨跌幅"),
         }
         result = dict(row)
         for canonical, keys in aliases.items():
@@ -2481,24 +2491,52 @@ class CollectorProviderRuntime:
         else:
             state = "unverified"
             summary = "成交额前30未形成至少3只同一行业的聚集线索"
-        stocks = []
-        for row in top30[:10]:
+        def project_row(row: Mapping[str, Any], rank: int) -> dict[str, Any]:
             close = self._optional_float(row.get("f2"))
             high = self._optional_float(row.get("f15"))
             low = self._optional_float(row.get("f16"))
             close_position = None
             if close is not None and high is not None and low is not None and high > low:
                 close_position = max(0.0, min(1.0, (close - low) / (high - low)))
-            stocks.append(
-                {
-                    "code": self._optional_text(row.get("f12")),
-                    "name": self._optional_text(row.get("f14")),
-                    "industry": self._optional_text(row.get("f100")),
-                    "changePct": self._optional_float(row.get("f3")),
-                    "amount": self._optional_float(row.get("f6")),
-                    "closePosition": round(close_position, 4) if close_position is not None else None,
-                }
-            )
+            return {
+                "rank": rank,
+                "code": self._optional_text(row.get("f12")),
+                "name": self._optional_text(row.get("f14")),
+                "industry": self._optional_text(row.get("f100")),
+                "rawDirectionLabel": self._optional_text(row.get("f100")),
+                "changePct": self._optional_float(row.get("f3")),
+                "amount": self._optional_float(row.get("f6")),
+                "closePosition": round(close_position, 4) if close_position is not None else None,
+                "open": self._optional_float(row.get("f17")),
+                "high": high,
+                "low": low,
+                "previousClose": self._optional_float(row.get("f18")),
+                "turnoverRatePct": self._optional_float(row.get("f8")),
+                "pe": self._optional_float(row.get("f9")),
+                "pb": self._optional_float(row.get("f23")),
+                "marketCap": self._optional_float(row.get("f20")),
+                "circulatingMarketCap": self._optional_float(row.get("f21")),
+                "changePct60d": self._optional_float(row.get("f24")),
+                "changePctYtd": self._optional_float(row.get("f25")),
+                "fundamentalAsOf": as_of.isoformat(),
+                "fundamentalSource": source,
+                "source": source,
+                "sourceRevision": metadata.get("sourceRevision") or metadata.get("providerRevision"),
+                "industryMappingRevision": metadata.get("industryMappingRevision"),
+                "industryMappingCoverage": metadata.get("industryMappingCoverage"),
+                "rowQuality": "ok" if self._optional_text(row.get("f12")) and self._optional_text(row.get("f14")) and self._optional_float(row.get("f6")) is not None else "insufficient",
+            }
+
+        research_rows = [project_row(row, rank) for rank, row in enumerate(top30, start=1)]
+        stocks = [dict(row) for row in research_rows[:10]]
+        for row in stocks:
+            row.pop("rank", None)
+            row.pop("rawDirectionLabel", None)
+            row.pop("source", None)
+            row.pop("sourceRevision", None)
+            row.pop("industryMappingRevision", None)
+            row.pop("industryMappingCoverage", None)
+            row.pop("rowQuality", None)
         quality_warnings = [
             *warnings,
             "仅有当日成交额、涨跌幅和收盘位置；20日成交放大、超额收益与连续2日确认尚未接入",
@@ -2511,6 +2549,7 @@ class CollectorProviderRuntime:
             "state": state,
             "summary": summary,
             "topStocks": stocks,
+            "researchRows": research_rows,
             "quality": self._quality(
                 "active-direction",
                 source,

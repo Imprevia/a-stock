@@ -205,6 +205,7 @@ async function mountDocument02() {
   await flushPromises()
   await flushPromises()
   await flushPromises()
+  return market
 }
 
 beforeEach(() => {
@@ -273,6 +274,51 @@ describe('breadth page rendering', () => {
   it('exposes a copy verification button', async () => {
     await mountDocument02()
     expect(wrapper!.html()).toContain('复制验证项')
+  })
+
+  it('shows a history-only error and retry without hiding the current summary', async () => {
+    const market = await mountDocument02()
+    market.breadthHistoryState = { phase: 'error', error: '历史服务暂不可用' }
+    await flushPromises()
+
+    const html = wrapper!.html()
+    expect(html).toContain('上涨家数')
+    expect(html).toContain('3,212')
+    expect(html).toContain('历史趋势加载失败')
+    expect(html).toContain('历史服务暂不可用')
+    expect(wrapper!.find('button').text()).not.toBe('')
+    expect(wrapper!.text()).toContain('仅重试历史')
+  })
+
+  it('shows loading and insufficient history as separate states', async () => {
+    const market = await mountDocument02()
+    market.breadthHistoryState = { phase: 'loading', error: '' }
+    await flushPromises()
+    expect(wrapper!.text()).toContain('正在读取历史窗口')
+    expect(wrapper!.text()).toContain('当日上涨、下跌和中位数已经独立保留')
+
+    market.breadthHistoryState = { phase: 'ready', error: '' }
+    if (market.data?.chapter01?.breadth?.history) {
+      market.data.chapter01.breadth.history.points = []
+      market.data.chapter01.breadth.history.validObservations = 0
+      market.data.chapter01.breadth.history.quality = {
+        status: 'insufficient', reason: 'history-gap', observations: 0,
+        asOf: '2026-09-16', source: 'fixture', warnings: [],
+      }
+    }
+    await flushPromises()
+    expect(wrapper!.text()).toContain('历史窗口不足')
+    expect(wrapper!.text()).toContain('0 / 60')
+  })
+
+  it('does not introduce horizontal overflow at desktop width', async () => {
+    await mountDocument02()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 })
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    const main = wrapper!.element as HTMLElement
+    expect(main.scrollWidth).toBeLessThanOrEqual(1440)
   })
 
   it('does not introduce horizontal overflow at 390px viewport', async () => {

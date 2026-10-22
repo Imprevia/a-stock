@@ -107,6 +107,15 @@ class PostgresSnapshotRepository:
         ).mappings().first()
         if row is None:
             return None
+        return self.candidate_from_row(identity, row)
+
+    @staticmethod
+    def candidate_from_row(
+        identity: DatasetDate,
+        row: Mapping[str, Any],
+    ) -> CollectionCandidate:
+        """Validate and decode a selected snapshot row without another query."""
+
         payload = dict(_json_load(row["payload_json"], {}))
         if payload_checksum(payload) != row["checksum"]:
             raise SnapshotIntegrityError(

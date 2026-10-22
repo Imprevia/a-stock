@@ -44,7 +44,7 @@ python -m src.market_environment.cli snapshots refresh \
 
 `--repair-integrity` 必须与 `--force`、唯一 `--dataset core` 和单日模式同时出现；它不允许 limits history、多数据集、HTTP 或 Hermes 调用。提交前仍完整验证 candidate 日期，并要求 core outcome 及五个 index result 全部 `success`、无 retained payload；否则不覆盖坏 existing。获批 replacement 在 active lease/fence 内写入 snapshot、task/index/session，并由同一任务重建 aggregate。异常路径必须把无 lease 的旧 task 标为 `worker-interrupted` 并结算 parent run，不得直接 UPDATE 目标 snapshot/aggregate 或把失败 run 改成成功。
 
-发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview、indices/history 和 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发写入均阻断发布。PostgreSQL 可选日期/cursor 参数必须显式 cast，真实 PostgreSQL smoke 需覆盖无 cursor 首页。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
+发布后只读 smoke 不再只检查 `/api/health`：还要请求一个已知合法历史日期的 v2 overview（预期 200），请求 effective date 的 v2 overview、indices/history、breadth summary、breadth history 首页/续页、limits history 和 legacy core，并按现场事实接受 200、无证据 404/missing 或稳定 503 `snapshot_integrity_error`；任何 500、跨日期 200 或 GET 触发 provider、task、lease 或数据库写入均阻断发布。PostgreSQL 历史查询只追加实际存在的固定日期/cursor predicate，并显式绑定非空 date 值；真实 PostgreSQL smoke 必须覆盖无筛选首页、单边/双边日期和 continuation cursor。该 smoke 不授权真实 provider、采集、数据库修复或部署写。
 
 ## 环境要求
 
@@ -1145,10 +1145,33 @@ probe 成功也不等于生产启用资格；启用前需审阅脱敏报告，�
 第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照之上，由 `domain.analysis.breadth` 与 `BreadthHistoryReader` 串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 PostgreSQL read repository 的精确日期 snapshot list/get，与第 01 章 `syncPattern` / `next-session` 共用同一 provider-free 读取路径；物化重建由 `MaterializationSupport` 复用同一纯分析组合。派生过程只读取本地快照，不调用 provider、不引入新的 API 路由、不修改 PostgreSQL schema、不增加新采集任务。`QTS-01-02-01..05` 规则 ID、阈值、权重与 YAML 保持不变；`rules validate` 仍输出 49 条规则。
 
 排查 02 页 5 日趋势或 250 日分位缺失时：
-- `breadth.history.validObservations` < 60 → 标注 `quality.status=insufficient`，3 个分位字段保持 `null`，不要补 0。
+- 先分别检查 `GET /api/v2/market-environment/{as_of}/breadth` 与 `/breadth/history`。summary 200 而 history 失败时，当日上涨/下跌/中位数和质量必须继续显示，历史区域单独报错并提供 history-only retry；不得切换全局 V2 flag 或用 legacy 覆盖 summary。
+- history 409 → 重新获取 overview，再整组读取 summary 与 history；不要只续取 history 后与旧 summary 合并。
+- `breadth.history.validObservations` < 60 → 标注 `quality.status=insufficient`，分位字段保持 `null`，不要补 0；同时确认 `requiredObservations=60`、`windowDays=250`、`coverage=min(validObservations/250, 1)`，不得用返回条数伪造满覆盖。
 - `breadth.history.points` < 5 → 趋势表与折线图按已有天数渲染，不要用最近日期回填。
+- `breadth.history.points` > 5 → 页面只展示按日期升序的最后 5 点，但 coverage 使用去重后的全部有效返回点（最多 250）。
 - `breadth.indexConsistent` 为 `null` → 5 个指数当日 `changePct` 全缺失时如实展示，不强行判定。
 - `breadth.widthLabel="数据不足"` → 检查当日 `validCount == 0` 或 `quality.status in {missing, failed, insufficient}`。
+
+breadth/limits history 返回 500 且日志含 PostgreSQL 参数类型歧义时，先用相同 revision 对无筛选、仅 `start_date`、仅 `end_date`、双边界和 cursor 续页做只读复现。repository SQL 必须只绑定实际存在的非空日期参数，不得恢复 `(:value IS NULL OR ...)`；结果需要精确日期升序、每页 `limit` 条且以 `limit + 1` 判断 next cursor。排查期间不得触发 provider 或直接修改 snapshot。
+
+### Breadth 历史维护（默认 dry-run，真实执行需另行授权）
+
+维护入口为 `snapshots breadth-history`，输入只能是显式 `--date`（可重复）或闭区间 `--start-date/--end-date` 二选一，范围解析为真实交易日且单次最多 20 个日期。默认只输出 `eligible/succeeded/retained/unavailable/failed` 计划且网络调用、正式数据库写入均为零；`--apply` 还必须同时提供 `--allow-real-provider` 与 `--allow-snapshot-writes`，否则在构造 provider 之前拒绝。非交易日、反向区间、超过预算或混用两种输入同样在 provider I/O 前失败。
+
+本地 PostgreSQL API smoke 可使用一次性 fixture `scripts/seed_market_environment_smoke.py`。它只接受 `--database-url` 或 `MARKET_ENVIRONMENT_TEST_DATABASE_URL`，拒绝非 PostgreSQL URL，通过正式 schema 与 typed snapshot store 写入隔离的 5 个精确交易日和合法 checksum/exact-date aggregate。示例（仅限新建的本地临时数据库）：
+
+```bash
+export MARKET_ENVIRONMENT_TEST_DATABASE_URL='postgresql+psycopg://user:password@127.0.0.1:55433/a_stock_test'
+.venv/bin/python scripts/seed_market_environment_smoke.py
+export MARKET_ENVIRONMENT_DATABASE_URL="$MARKET_ENVIRONMENT_TEST_DATABASE_URL"
+```
+
+seed 不调用 provider、不创建 collection task/run/lease；完成验证后只删除本次创建的临时容器。不得把该 URL 指向生产 PostgreSQL，也不得把 seed fixture 当作生产回填。
+
+获批 apply 逐日串行复用现有 breadth acquisition plan、TDX exact-date/package 校验、`tdx-stock-universe-v1`、coordinator、lease/fencing、typed committer 和 task/run audit；禁止直接 INSERT/UPDATE snapshot。每个日期独立结算，包不可用、source date 不匹配、过滤后样本不足或关键字段缺失都记录为 unavailable/failed，不回滚兄弟日期，也不覆盖同日成功证据。新历史成功后只按日期升序、有界批次重建其 250-session 依赖窗口可受影响的已存 aggregate；不相关日期的 checksum/revision 保持不变。
+
+本仓库实现、fixture、dry-run 和本地只读 smoke 不授权真实 TDX/provider 请求、生产 snapshot 写入、生产回填、部署或调度变更。若未来分别获批，顺序必须是：零写 dry-run → 隔离 capability probe → 审阅 exact-date/universe/预算 → 单独授权生产 apply → provider-free API 与 task audit 读回；任一阶段失败即停止并保留 `insufficient`，不得删除 PVC、卸载 release 或直接 SQL 补数据。
 
 ### 第 03 页 limits 生态采集与验证
 
@@ -1752,3 +1775,12 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 - 真实验证只能在盘后、显式本地隔离路径执行：`python -m src.market_environment.cli fuyao real-probe --allow-real --as-of YYYY-MM-DD --path /tmp/fuyao-real.sqlite3 --output /tmp/fuyao-real.json`，API key 仅来自 `MARKET_ENVIRONMENT_FUYAO_API_KEY`。缺 key、日期不一致、权限/限流错误均 fail closed。
 - 行业 real probe 必须明确记录扶摇的交易日历、同花顺行业目录和行业快照三个 endpoint，以及目录/快照覆盖和快照时间戳日期一致性；快照 `data.timestamp` 是响应时间戳，分批原始毫秒值可以不同，但必须全部映射到同一精确上海交易日。报告必须说明行业 fallback 不提供主力净流入、上涨/下跌家数或领涨股，缺失字段保持 `null`，不得以代码或零值填充。
 - 回滚按数据集清除 `MARKET_ENVIRONMENT_FUYAO_<DATASET>_ENABLED` 或批准 revision；保留能力报告、任务元数据和同日期旧快照，不跨日期回填。Secret 不写入 values、日志、fixture 或 API 响应。
+# 第 06 页工作台运行边界（2026-10-21）
+
+`/api/v2/market-environment/{as_of}/active-direction/workbench` 是精确日期、revision-pinned、provider-free 的只读资源。排查时先确认日期快照、aggregate component、revision vector 和模块质量，再检查 `researchRows` 是否为新 Top-30 或旧 Top-10 兼容快照；不得通过 GET 触发 provider、collection、background task、回填或 PostgreSQL 写入，也不得用其他日期替代。
+
+若工作台模块缺失，保留可用 active-direction/Top-10 数据并展示 `missing` 或 `insufficient`；若组件 materialization 失败，使用 `failed-retained`/`failed-missing` 语义，不删除旧快照。若 revision stale，先重新读取同一日期的 aggregate/revision，再重试；不要混合不同 revision。
+
+排查第 06 页证据时，先看 `fundamentals.items` 是否有同日 PE/PB、市值、换手率和阶段涨跌幅；再看 `candidatePools.firstToSecond.intraday.rows` 是否有涨停首末时间、开板次数、封单和换手。它们是原始观察，不是财务评分或分钟级交易结论。若 `auction.state=pending`，说明本地未保存 09:15–09:25 序列；若 fundamentals 的 `missingFields` 含利润/成长/现金流/杠杆，不能以 PE/PB 缺口来推断安全。补充这些输入必须走单独批准的数据采集/回填计划，普通 GET 不会自动恢复。
+
+发布或回滚顺序：先发布/回滚前端五视图，再启用/停用 additive workbench resource 与 materializer，最后观察旧 `/active-direction` Top-10 消费者。回滚不得删除 `researchRows`、旧 JSON、数据库历史或任务记录，不新增 CronJob/调度/生产回填。真实 provider smoke、历史重建和生产写入均需另行授权的独立 active plan。

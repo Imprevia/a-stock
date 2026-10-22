@@ -16,8 +16,10 @@ from typing import Any
 
 from .bootstrap.container import ContainerAdapters
 from .application.commands import (
+    BreadthHistoryMaintenanceRequest,
     CapabilityPromotionError,
     CapabilityPromotionRepositoryError,
+    MAX_BREADTH_HISTORY_DATES,
 )
 from .infrastructure.collection import SUPPORTED_COLLECTION_DATASETS, CollectionCoordinator
 from .infrastructure.providers.fuyao.market import FuyaoMarketAdapter, FuyaoMarketClient
@@ -55,6 +57,35 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _add_breadth_history_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--date",
+        action="append",
+        dest="maintenance_dates",
+        type=date.fromisoformat,
+        default=[],
+        help="exact confirmed trading date; repeat up to the maintenance maximum",
+    )
+    parser.add_argument("--start-date", type=date.fromisoformat)
+    parser.add_argument("--end-date", type=date.fromisoformat)
+    parser.add_argument("--apply", action="store_true", help="commit the bounded repair")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="explicitly request the default read-only plan",
+    )
+    parser.add_argument(
+        "--allow-real-provider",
+        action="store_true",
+        help="explicitly authorize real provider access for --apply",
+    )
+    parser.add_argument(
+        "--allow-snapshot-writes",
+        action="store_true",
+        help="explicitly authorize snapshot/aggregate writes for --apply",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.market_environment.cli")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -75,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="collect the latest N confirmed sessions; values above 1 require --dataset limits",
     )
+    breadth_history = snapshot_commands.add_parser(
+        "breadth-history",
+        help="plan or explicitly apply bounded exact-date breadth history repair",
+    )
+    _add_breadth_history_arguments(breadth_history)
     relabel = snapshot_commands.add_parser(
         "relabel-date",
         aliases=["relabel", "migrate-date", "date-relabel", "migrate"],
@@ -952,17 +988,70 @@ def _run_snapshot_refresh(args, active_coordinator: CollectionCoordinator) -> in
                 repair_integrity=args.repair_integrity,
             )
         else:
-            result = active_coordinator.collect(
-                args.as_of,
-                args.datasets,
-                repair_integrity=args.repair_integrity,
-            )
+            if args.repair_integrity:
+                result = active_coordinator.collect(
+                    args.as_of,
+                    args.datasets,
+                    repair_integrity=True,
+                )
+            else:
+                result = active_coordinator.collect(args.as_of, args.datasets)
     except ValueError as exc:
         _print_payload({"status": "rejected", "error": str(exc)})
         return 2
     payload = _collection_payload(result, forced=args.force)
     _print_payload(payload)
     return 0 if result.run.status == "success" else 2
+
+
+def _run_breadth_history(args, service=None) -> int:
+    try:
+        if args.apply and args.dry_run:
+            raise ValueError("--apply and --dry-run cannot be combined")
+        request = BreadthHistoryMaintenanceRequest(
+            dates=tuple(args.maintenance_dates),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            apply=bool(args.apply and not args.dry_run),
+            allow_real_provider=bool(args.allow_real_provider),
+            allow_snapshot_writes=bool(args.allow_snapshot_writes),
+        )
+    except ValueError as exc:
+        _print_payload(
+            {
+                "status": "rejected",
+                "error": str(exc),
+                "providerCalls": 0,
+                "formalWrites": 0,
+                "maximumDates": MAX_BREADTH_HISTORY_DATES,
+            }
+        )
+        return 2
+
+    # Build the runtime only after request-level gates pass.  Dry-run uses the
+    # same local repository/session resolution but no provider or formal write.
+    runtime = None
+    try:
+        if service is None:
+            runtime = build_cli_container()
+            service = runtime.breadth_history
+        result = service.execute(request)
+    except (ValueError, RuntimeError) as exc:
+        _print_payload(
+            {
+                "status": "rejected",
+                "error": str(exc),
+                "providerCalls": 0,
+                "formalWrites": 0,
+                "maximumDates": MAX_BREADTH_HISTORY_DATES,
+            }
+        )
+        return 2
+    finally:
+        if runtime is not None:
+            runtime.close()
+    _print_payload(result.as_dict())
+    return 0 if result.as_dict()["status"] in {"planned", "success", "partial"} else 2
 
 
 def main(
@@ -972,6 +1061,7 @@ def main(
     now: Callable[[], datetime] | None = None,
     capability_runtime_factory: Callable[[], Any] | None = None,
     ths_runtime_factory: Callable[[], Any] | None = None,
+    breadth_history_service: Any | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "ths":
@@ -1420,6 +1510,8 @@ def main(
     if args.command == "snapshots" and args.snapshot_command == "refresh":
         with _collection_coordinator_scope(coordinator) as active_coordinator:
             return _run_snapshot_refresh(args, active_coordinator)
+    if args.command == "snapshots" and args.snapshot_command == "breadth-history":
+        return _run_breadth_history(args, breadth_history_service)
     if args.command == "snapshots" and args.snapshot_command in {"relabel-date", "relabel", "migrate-date", "date-relabel", "migrate"}:
         # Date relabels must always select their backend explicitly.  In
         # particular, never fall back to MARKET_ENVIRONMENT_SNAPSHOT_PATH:

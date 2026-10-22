@@ -130,10 +130,18 @@ class V2MarketDataReadPort(Protocol):
     ) -> V2Page | None: ...
 
 
+@runtime_checkable
+class ActiveDirectionWorkbenchReadPort(Protocol):
+    """Optional additive capability for exact-date workbench reads."""
+
+    def active_direction_workbench(self, as_of: date) -> V2Resource | None: ...
+
+
 __all__ = [
     "JsonObject",
     "SortKey",
     "V2MarketDataReadPort",
+    "ActiveDirectionWorkbenchReadPort",
     "V2Page",
     "V2Resource",
 ]

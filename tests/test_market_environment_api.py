@@ -150,7 +150,8 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
         ("/api/v2/market-environment/{as_of}/sectors/turnover", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/sectors/breadth", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/sectors/analysis", "get"): ("200", "V2Envelope_dict_str__Any__"),
-        ("/api/v2/market-environment/{as_of}/active-direction", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
+            ("/api/v2/market-environment/{as_of}/active-direction", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
+            ("/api/v2/market-environment/{as_of}/active-direction/workbench", "get"): ("200", "V2Envelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/events", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/assessment", "get"): ("200", "V2Envelope_dict_str__Any__"),
     }

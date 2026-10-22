@@ -7,11 +7,12 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any, Callable
 
-from sqlalchemy import Connection, text
+from sqlalchemy import Date, Connection, bindparam, text
 
+from ....domain.models import DatasetDate
 from ....application.ports.v2_market_data import SortKey, V2Page, V2Resource
 from .aggregate_repository import PostgresMaterializedAggregateRepository
-from .repositories import _json_load
+from .repositories import PostgresSnapshotRepository, _json_load
 
 
 _PRIVATE_KEYS = frozenset(
@@ -66,6 +67,35 @@ def _without(value: Mapping[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
         result.pop(key, None)
     return result
+
+
+def _history_date_predicates(
+    column: str,
+    *,
+    start_date: date | None,
+    end_date: date | None,
+    after: SortKey | None,
+) -> tuple[str, dict[str, date], tuple[str, ...]]:
+    """Return fixed predicates and typed values only for present date filters."""
+
+    predicates: list[str] = []
+    params: dict[str, date] = {}
+    if start_date is not None:
+        predicates.append(f"AND {column}>=:start_date")
+        params["start_date"] = start_date
+    if end_date is not None:
+        predicates.append(f"AND {column}<=:end_date")
+        params["end_date"] = end_date
+    if after is not None:
+        predicates.append(f"AND {column}>:after_date")
+        params["after_date"] = date.fromisoformat(str(after[0]))
+    return "\n                  ".join(predicates), params, tuple(params)
+
+
+def _typed_date_statement(sql: str, *date_params: str):
+    return text(sql).bindparams(
+        *(bindparam(name, type_=Date()) for name in date_params)
+    )
 
 
 def _page(
@@ -395,30 +425,47 @@ class PostgresV2MarketDataReadAdapter:
         after: SortKey | None,
         limit: int,
     ) -> list[dict[str, Any]]:
+        optional_predicates, optional_params, optional_date_params = (
+            _history_date_predicates(
+                "as_of",
+                start_date=start_date,
+                end_date=end_date,
+                after=after,
+            )
+        )
+        params: dict[str, Any] = {
+            "dataset": dataset,
+            "as_of": as_of,
+            "limit": limit + 1,
+            **optional_params,
+        }
         rows = self.connection.execute(
-            text(
-                """SELECT as_of,payload_json
+            _typed_date_statement(
+                f"""SELECT *
                 FROM snapshot_entries
                 WHERE dataset=:dataset AND as_of<=:as_of
-                  AND (:start_date IS NULL OR as_of>=:start_date)
-                  AND (:end_date IS NULL OR as_of<=:end_date)
-                  AND (:after_date IS NULL OR as_of>:after_date)
+                  {optional_predicates}
                 ORDER BY as_of
-                LIMIT :limit"""
+                LIMIT :limit""",
+                "as_of",
+                *optional_date_params,
             ),
-            {
-                "dataset": dataset,
-                "as_of": as_of,
-                "start_date": start_date,
-                "end_date": end_date,
-                "after_date": after[0] if after else None,
-                "limit": limit + 1,
-            },
+            params,
         ).mappings()
         values: list[dict[str, Any]] = []
+        snapshots = PostgresSnapshotRepository(self.connection)
         for row in rows:
-            payload = _mapping(_json_load(row["payload_json"], {}))
-            payload.setdefault("asOf", row["as_of"].isoformat() if hasattr(row["as_of"], "isoformat") else str(row["as_of"]))
+            row_as_of = (
+                row["as_of"]
+                if isinstance(row["as_of"], date)
+                else date.fromisoformat(str(row["as_of"]))
+            )
+            candidate = snapshots.candidate_from_row(
+                DatasetDate(dataset, row_as_of),
+                row,
+            )
+            payload = _mapping(candidate.payload)
+            payload.setdefault("asOf", row_as_of.isoformat())
             values.append(payload)
         return values
 
@@ -553,35 +600,50 @@ class PostgresV2MarketDataReadAdapter:
         )
         if metadata is None:
             return None
+        optional_predicates, optional_params, optional_date_params = (
+            _history_date_predicates(
+                "snapshot.as_of",
+                start_date=start_date,
+                end_date=end_date,
+                after=after,
+            )
+        )
+        params: dict[str, Any] = {
+            "as_of": as_of,
+            "limit": limit + 1,
+            **optional_params,
+        }
         rows = self.connection.execute(
-            text(
-                """SELECT snapshot.as_of,snapshot.payload_json
+            _typed_date_statement(
+                f"""SELECT snapshot.*
                 FROM snapshot_entries snapshot
                 JOIN trading_sessions session
-                  ON session.as_of=snapshot.as_of AND session.is_session=TRUE
+                  ON session.as_of=snapshot.as_of AND session.is_session=1
                 WHERE snapshot.dataset='limits' AND snapshot.as_of<=:as_of
-                  AND (:start_date IS NULL OR snapshot.as_of>=:start_date)
-                  AND (:end_date IS NULL OR snapshot.as_of<=:end_date)
-                  AND (:after_date IS NULL OR snapshot.as_of>:after_date)
+                  {optional_predicates}
                 ORDER BY snapshot.as_of
-                LIMIT :limit"""
+                LIMIT :limit""",
+                "as_of",
+                *optional_date_params,
             ),
-            {
-                "as_of": as_of,
-                "start_date": start_date,
-                "end_date": end_date,
-                "after_date": after[0] if after else None,
-                "limit": limit + 1,
-            },
+            params,
         ).mappings()
         values = []
+        snapshots = PostgresSnapshotRepository(self.connection)
         for row in rows:
-            payload = _mapping(_json_load(row["payload_json"], {}))
+            row_as_of = (
+                row["as_of"]
+                if isinstance(row["as_of"], date)
+                else date.fromisoformat(str(row["as_of"]))
+            )
+            candidate = snapshots.candidate_from_row(
+                DatasetDate("limits", row_as_of),
+                row,
+            )
+            payload = _mapping(candidate.payload)
             payload.setdefault(
                 "asOf",
-                row["as_of"].isoformat()
-                if hasattr(row["as_of"], "isoformat")
-                else str(row["as_of"]),
+                row_as_of.isoformat(),
             )
             values.append(payload)
         points = [
@@ -786,6 +848,21 @@ class PostgresV2MarketDataReadAdapter:
             page.total,
         )
 
+    def active_direction_workbench(self, as_of: date) -> V2Resource | None:
+        value = self._chapter_resource(as_of, "activeDirectionWorkbench", "active-direction-workbench")
+        if value is None:
+            return None
+        if not isinstance(value.data, Mapping) or not value.data:
+            warning = "所选日期未物化主动进攻方向工作台"
+            return V2Resource(
+                value.as_of,
+                value.generated_at,
+                value.component_revision,
+                {**dict(value.quality), "status": "missing", "warnings": [warning]},
+                {"asOf": as_of.isoformat(), "state": "missing", "quality": {"status": "missing", "warnings": [warning]}},
+            )
+        return value
+
     def events(
         self,
         as_of: date,
@@ -953,6 +1030,7 @@ class PostgresV2MarketDataReadService:
     def sector_breadth(self, as_of, **kwargs): return self._call("sector_breadth", as_of, **kwargs)
     def sector_analysis(self, as_of): return self._call("sector_analysis", as_of)
     def active_direction(self, as_of, **kwargs): return self._call("active_direction", as_of, **kwargs)
+    def active_direction_workbench(self, as_of): return self._call("active_direction_workbench", as_of)
     def events(self, as_of, **kwargs): return self._call("events", as_of, **kwargs)
     def assessment(self, as_of): return self._call("assessment", as_of)
     def operation_summary(self, run_id): return self._call("operation_summary", run_id)

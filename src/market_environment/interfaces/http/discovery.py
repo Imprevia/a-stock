@@ -87,6 +87,9 @@ DISCOVERY_CONTRACTS: Mapping[str, DiscoveryOperationContract] = {
     f"{V2_PREFIX}/{{as_of}}/active-direction": _page(
         "listV2MarketActiveDirection", "as_of", *_PAGE_PARAMETERS, limit=(20, 100)
     ),
+    f"{V2_PREFIX}/{{as_of}}/active-direction/workbench": _resource(
+        "getV2MarketActiveDirectionWorkbench", "as_of"
+    ),
     f"{V2_PREFIX}/{{as_of}}/events": _page(
         "listV2MarketEvents", "as_of", *_PAGE_PARAMETERS, limit=(20, 100)
     ),

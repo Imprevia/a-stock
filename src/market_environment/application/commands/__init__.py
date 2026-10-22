@@ -31,6 +31,15 @@ from .materialized_aggregate import (
     MaterializedAggregateComposer,
     MaterializedAggregateRebuilder,
 )
+from .breadth_history_maintenance import (
+    AGGREGATE_REBUILD_BATCH_SIZE,
+    BREADTH_HISTORY_WINDOW,
+    MAX_BREADTH_HISTORY_DATES,
+    BreadthHistoryMaintenanceFailure,
+    BreadthHistoryMaintenanceRequest,
+    BreadthHistoryMaintenanceResult,
+    BreadthHistoryMaintenanceService,
+)
 from .timezone_preferences import UpdateTimezonePreferenceCommand
 from .sector_continuity_backfill import (
     BackfillReadiness,
@@ -64,6 +73,13 @@ __all__ = [
     "FullCollectionSkippedResult",
     "MaterializedAggregateComposer",
     "MaterializedAggregateRebuilder",
+    "AGGREGATE_REBUILD_BATCH_SIZE",
+    "BREADTH_HISTORY_WINDOW",
+    "MAX_BREADTH_HISTORY_DATES",
+    "BreadthHistoryMaintenanceFailure",
+    "BreadthHistoryMaintenanceRequest",
+    "BreadthHistoryMaintenanceResult",
+    "BreadthHistoryMaintenanceService",
     "PrepareLimitHistoryCommand",
     "PromoteCapabilityReportCommand",
     "RecoverableCollectionSubmissionService",

@@ -51,10 +51,10 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `src/market_environment/interfaces/cli/` | CLI 参数到 application command/query 的适配 | application/domain；具体实现由 bootstrap 注入 |
 | `src/market_environment/application/ports/` | repository、unit-of-work、collector、committer、local projector、executor、持久 idempotency claim/replay/submission 等 typed 协议 | domain 与标准库，不依赖具体基础设施、vendor 或 native transport 类型 |
 | `src/market_environment/application/queries/` | provider-free 精确日期读取、状态和 next-session | 只读 ports、domain；不得导入 collector/provider |
-| `src/market_environment/application/commands/` | collection run、刷新、sync-first full automation 和 materialization command；服务端决定日期与固定七数据集 | 写 ports、collector registry、executor、domain |
+| `src/market_environment/application/commands/` | collection run、刷新、sync-first full automation、materialization command，以及默认 dry-run/显式授权的有界 breadth 历史维护；服务端决定日期与固定七数据集 | 写 ports、collector registry、executor、domain；维护命令不得被 GET、启动或默认部署调用 |
 | `src/market_environment/application/collection/` | 七个 stable dataset identifier 的 collector/committer/local-projector registry、确定性注册与查找 | application ports、domain；不依赖具体 provider、persistence 或 native response |
 | `src/market_environment/domain/` | 领域值、日期/质量/留存策略、normalized candidate/outcome/failure/evidence 与纯分析 | 标准库/Pydantic 边界外的纯模块；不依赖 FastAPI、SQLAlchemy、requests、Scrapling |
-| `src/market_environment/infrastructure/persistence/postgres/` | PostgreSQL repository、unit of work、lease/fencing、持久 idempotency/submission、structured failure 和 aggregate CAS | application ports/domain/SQLAlchemy |
+| `src/market_environment/infrastructure/persistence/postgres/` | PostgreSQL repository、unit of work、lease/fencing、持久 idempotency/submission、structured failure、aggregate CAS，以及 breadth/limits V2 历史的条件式 typed date predicate 与 `limit + 1` keyset 查询 | application ports/domain/SQLAlchemy；禁止 nullable untyped optional bind |
 | `src/market_environment/infrastructure/persistence/sqlite_import/` | 测试或停写迁移 SQLite 适配器 | application ports/domain；不得成为生产静默回退 |
 | `src/market_environment/infrastructure/providers/` | source adapter、dataset acquisition plan、七类 collector、`CollectorProviderRuntime` 与共享 core identity contract；Fuyao 实现归入 `fuyao/`，TDX 实现归入 `tdx/` | application ports、domain、共享 policy gateway；不得自行提交快照或管理 task/lease |
 | `src/market_environment/infrastructure/collection/` | coordinator、typed committer、local projector 与采集维护命令适配 | application ports/domain/PostgreSQL UoW；不得解释 vendor payload 或反射发现 collector 方法 |
@@ -81,12 +81,14 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 |---|---|---|
 | `src/market_environment/interfaces/http/routers/`、`interfaces/http/schemas/`、`interfaces/http/errors.py` | additive v2/discovery routes、专用 envelope/resource DTO、ETag/304/404/409/422 与 `snapshot_integrity_error` 503 stable mapping；不得复用完整 Chapter 01 DTO | `docs/architecture.md`、`docs/product-specs/market-environment-dashboard.md`、`docs/runbooks.md`、active plan |
 | `src/market_environment/application/queries/`、`application/ports/` | provider-free resource facade、exact-date typed read ports、opaque revision/cursor validation；不得导入 provider、HTTP 或 infrastructure implementation | `docs/architecture.md`、产品规格、active plan |
-| `src/market_environment/infrastructure/providers/core_acquisition.py`、`infrastructure/collection/core_*`、`infrastructure/legacy/snapshot_store.py` 与 `infrastructure/persistence/postgres/` | core 单指数精确日期证明、同日留存、compatibility/typed snapshot 严格写入、materialized aggregate CAS 与 component revision；跨日期候选不得进入新写，普通读取 fail closed | `docs/architecture.md`、产品规格、`docs/runbooks.md`、active plan |
+| `src/market_environment/infrastructure/persistence/postgres/v2_market_data.py`、`application/queries/` 与 V2 history routers | breadth/limits history 只追加实际存在的 typed date/cursor predicate，保持升序、`limit + 1`、revision/cursor 校验、provider-free/write-free 和 integrity fail-closed | `docs/architecture.md`、产品规格、`docs/runbooks.md`、OpenSpec `fix-breadth-page-data-availability`、active plan |
+| `src/market_environment/infrastructure/providers/core_acquisition.py`、`infrastructure/collection/core_*`、`infrastructure/legacy/snapshot_store.py` 与其余 `infrastructure/persistence/postgres/` | core 单指数精确日期证明、同日留存、compatibility/typed snapshot 严格写入、materialized aggregate CAS 与 component revision；跨日期候选不得进入新写，普通读取 fail closed | `docs/architecture.md`、产品规格、`docs/runbooks.md`、active plan |
 | `src/market_environment/infrastructure/providers/fuyao/config.py`、`domain/policies/capability.py`、`src/market_environment/cli.py` | Fuyao core v2 正式门禁、自包含 capability evidence/promotion 与脱敏 probe；core 正式启用必须关闭 shadow，禁止跨 provider comparison 字段 | `docs/architecture.md`、产品规格、`docs/runbooks.md`、active plan |
 | `deploy/truenas/values-fuyao-core-*.yaml`、`scripts/validate-scheduling-packet.py`、`scripts/deploy-truenas-k3s.sh` | complete core-off/enabled packet、仅 core enabled flag 的语义 diff、冻结镜像、exact disabled Pod promotion 与 hook-free enable/rollback | `docs/architecture.md`、`docs/runbooks.md`、active plan |
 | `src/market_environment/bootstrap/`、`src/market_environment/api.py` | composition root additive 注册 v2 与 discovery，无 mutable module singleton，legacy routes 始终保留 | `docs/architecture.md`、`docs/runbooks.md`、active plan |
-| `apps/market-environment-dashboard/src/stores/market.ts`、`types.ts`、各 `pages/dashboard/` 与对应 tests | v2 envelope/revision/cursor/error client、逐页迁移、legacy fallback、THS bars 最大 1000 与续页 | 产品规格、设计规范、`docs/runbooks.md`、active plan |
-| `tests/test_market_environment_*` 与前端 `*.test.ts` | legacy characterization、v2 resource isolation/bounds/revision/provider-free、OpenAPI/discovery drift 与渐进迁移回归 | OpenSpec `add-ai-market-data-api` spec/tasks、active plan |
+| `apps/market-environment-dashboard/src/stores/market.ts`、`types.ts`、第 02 页组件与对应 tests | v2 envelope/revision/cursor/error client、breadth summary/history 独立提交与重试、409 整组重启、60/250 coverage、最近 5 日展示；integrity error 不 fallback | 产品规格、设计规范、`docs/runbooks.md`、OpenSpec `fix-breadth-page-data-availability`、active plan |
+| `src/market_environment/application/commands/`、`interfaces/cli/`、`src/market_environment/cli.py` 与 breadth acquisition/collection/materialization 测试 | 默认 dry-run、有限预算、显式授权、逐日独立的 breadth 历史维护；复用 exact-date TDX、coordinator、lease/fencing、typed committer、audit 与依赖 aggregate rebuild，禁止直接 snapshot SQL | `docs/architecture.md`、产品规格、`docs/runbooks.md`、OpenSpec `fix-breadth-page-data-availability`、active plan |
+| `tests/test_market_environment_*` 与前端 `*.test.ts` | legacy characterization、真实 PostgreSQL breadth/limits history、HTTP provider/write-free、integrity、summary/history 隔离、60/250 与渐进迁移回归 | OpenSpec `add-ai-market-data-api` 与 `fix-breadth-page-data-availability` specs/tasks、active plan |
 
 上述映射不授权 provider、生产数据库、部署或调度写操作。`src/trading_knowledge/` 不在本 change 范围；发现文档只描述受支持的 read surface，不把 MCP 扩展为行情服务。若实现证明需要 migration、新 provider 或新写路径，必须先回到 OpenSpec 和本映射修订范围，不能静默吸收。
 
@@ -160,6 +162,18 @@ THS 目录同步和回填不得进入申万 continuity backfill、普通 GET、�
 - `.githooks/*` 的转发目标
 
 ## 代码-文档映射
+
+### 第 06 页主动进攻方向工作台映射（2026-10-21）
+
+| 代码区 | 事实职责 | 必须同步 |
+|---|---|---|
+| `src/market_environment/infrastructure/providers/runtime.py` | active-direction primary/delayed/TDX 派生样本校验、Top-30 retention、Top-10 projection | `docs/architecture.md`、`docs/runbooks.md`、active plan |
+| `src/market_environment/domain/`、`application/queries/`、`infrastructure/materialization_support.py` | provider-free workbench facts、rule maturity、quality/lineage、missing semantics、failure isolation | `docs/architecture.md`、产品规格 |
+| `src/market_environment/application/ports/v2_market_data.py`、`application/queries/v2_market_data.py`、`infrastructure/persistence/postgres/v2_market_data.py` | 精确日期 workbench read port、repository 和 revision precondition | `docs/architecture.md`、`docs/runbooks.md` |
+| `src/market_environment/interfaces/http/routers/market_environment_v2.py`、`interfaces/http/schemas/models.py` | `/active-direction/workbench` DTO、links、ETag/revision 错误语义 | 产品规格、`docs/runbooks.md` |
+| `apps/market-environment-dashboard/src/pages/dashboard/Document06ActiveDirectionPage.vue`、`stores/market.ts`、`types.ts` | 五视图、Top-30 选择传播、missing/partial 状态和 390px 样式 | 产品规格、`docs/architecture.md` |
+
+工作台不得在前端拼接其他章节 endpoint，不得按名称猜测 identity；旧 `topStocks` 读取路径保持兼容。
 
 业务代码落地后按下表扩展（映射非空时由 gate 强制执行）：
 

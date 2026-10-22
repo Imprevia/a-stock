@@ -21,6 +21,7 @@ from src.trading_system.data.provider_scrapling import ScraplingStaticHttpEngine
 
 from ..application.collection import DatasetCollectorRegistry
 from ..application.commands import (
+    BreadthHistoryMaintenanceService,
     FullCollectionCommand,
     RecoverableCollectionSubmissionService,
     ThsOperationGates,
@@ -64,12 +65,16 @@ from ..timezone_preferences import TimezonePreferenceStore
 from ..infrastructure.compatibility import (
     CoordinatorCollectionCommandAdapter,
     CoordinatorCollectionQueryAdapter,
+    FencedRebuilderAggregateCommandAdapter,
+    MaterializedAggregateReaderAdapter,
     RebuilderAggregateCommandAdapter,
     RepositoryMarketEnvironmentQueryAdapter,
+    SnapshotRepositoryAdapter,
     ThsSectorCommandAdapter,
     ThsSectorQueryAdapter,
     TimezoneCommandAdapter,
     TimezoneQueryAdapter,
+    TradingSessionReaderAdapter,
 )
 from ..infrastructure.execution import BoundedTaskExecutor
 from ..infrastructure.persistence.postgres.runtime_store import PostgresRuntimeStore
@@ -108,6 +113,7 @@ class CommandDependencies:
     collection: CollectionCommandPort
     full_collection: FullCollectionCommand
     aggregate: RebuilderAggregateCommandAdapter
+    breadth_history: BreadthHistoryMaintenanceService
     timezone_preferences: TimezoneCommandAdapter
     ths_sectors: Any
 
@@ -458,6 +464,20 @@ def build_container(
         collection=collection_commands,
         full_collection=full_collection,
         aggregate=RebuilderAggregateCommandAdapter(rebuilder),
+        breadth_history=BreadthHistoryMaintenanceService(
+            trading_sessions=TradingSessionReaderAdapter(repository),
+            snapshots=SnapshotRepositoryAdapter(
+                repository,
+                now=lambda: _market_now(clock).astimezone(timezone.utc),
+            ),
+            aggregates=MaterializedAggregateReaderAdapter(repository),
+            collection=collection_commands,
+            aggregate=FencedRebuilderAggregateCommandAdapter(
+                repository,
+                rebuilder,
+                now=lambda: _market_now(clock).astimezone(timezone.utc),
+            ),
+        ),
         timezone_preferences=TimezoneCommandAdapter(timezone_repository),
         ths_sectors=ths_commands,
     )

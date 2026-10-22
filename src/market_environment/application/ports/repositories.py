@@ -174,6 +174,8 @@ class TradingSessionRepository(TradingSessionReader, Protocol):
 class MaterializedAggregateReader(Protocol):
     def get_aggregate(self, as_of: date) -> Mapping[str, Any] | None: ...
 
+    def list_dates(self) -> Sequence[date]: ...
+
 
 @runtime_checkable
 class MaterializedAggregateRepository(MaterializedAggregateReader, Protocol):

@@ -12,7 +12,11 @@
 
 ### 第 02 页市场广度派生边界（2026-09-16）
 
-第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照基础上，由 `MarketEnvironmentService._enrich_breadth` 在每次章节请求时串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 `SnapshotStore.list_snapshot_dates("breadth")` + `SnapshotStore.get("breadth", date)`，与第 01 章 `syncPattern` / `next-session` 共用同一快照读取路径；不引入新的 provider、API 路由、PostgreSQL schema 或采集任务。所有新字段为可空，缺失样本数 < 60 时整段标注 `insufficient`，不补 0。前端 02 页由 2 section 替换为 5 section（复盘卡 / 量化证据 / 近 5 日趋势 / 指数一致性矩阵 / 次交易日验证项 + 质量元数据）；新增独立 `breadthChart` ECharts 实例，与指数 K 线 `chart` / 成交量 `volumeChart` 数据源和生命周期独立。`QTS-01-02-01..05` 的规则 ID、阈值、权重与 YAML 保持不变。
+第 02 页 "上涨家数、下跌家数和涨跌幅中位数" 在 provider 抓取的全 A 快照基础上，由 `MarketEnvironmentService._enrich_breadth` 在每次章节请求时串接派生指标：涨跌家数差、涨跌差率、4 条 250 日滚动分位（上涨占比 / 涨跌差率 / 中位数 / 5 日动量）、5 日动量、5 个指数与广度同向判定、6 档宽度标签（含自然语言依据）。历史来源固定为 PostgreSQL exact-date breadth snapshot/read repository，与第 01 章 `syncPattern` / `next-session` 共用同一 provider-free 读取路径；不引入新的 provider、PostgreSQL schema 或日常采集任务。所有新字段为可空，分位计算最低需要 60 个有效交易日，分析窗口固定为最近 250 个有效交易日；页面只展示最近 5 个已验证点位，coverage 使用真实唯一观察数除以 250 并限制在 `[0, 1]`，不得把返回条数同时伪装成所需观察数、窗口或满覆盖率。缺失样本数 < 60 时历史分位标注 `insufficient` 且保持 `null`，不补 0，但完整的当日计数、中位数、宽度标签和摘要质量仍可独立展示。
+
+V2 breadth summary 与 breadth history 构成同一 revision-pinned resource group，但具有独立提交点：summary 校验成功后立即进入前端状态；history 的 loading/error/insufficient 单独维护，网络或 5xx 失败不得清空 summary、不得关闭全局 V2，也不得覆盖其他已成功资源。history 返回 409 时必须刷新 overview 并重新读取 summary 与 history 后再提交新 revision，禁止把旧 summary 与新 history 合并。summary 自身的 `snapshot_integrity_error` 继续 fail closed，不得以 legacy 或其他日期证据替代。
+
+历史缺口只能由显式、有界、默认 dry-run 的 `snapshots breadth-history` maintenance command 处理。命令接受明确日期集合或闭区间交易日，单次最多 20 个已确认交易日；`--apply` 还必须同时携带 `--allow-real-provider` 与 `--allow-snapshot-writes`，任一缺失都在 provider 构造和 I/O 前拒绝。获批执行逐日复用 breadth acquisition plan、TDX exact-date/package 与普通 A 股 universe 校验、coordinator、lease/fencing、typed committer、task/run audit 和 materialized aggregate rebuild；不得直接 SQL 写 snapshot。每个日期独立结算，已有同日成功证据不得被不可用、错日或不足包覆盖。真实 provider probe、生产写入、生产回填与部署是互相独立的授权动作，本 change 的代码和离线测试不构成授权。
 
 ## 系统角色
 
@@ -22,7 +26,7 @@
 
 ## AI 市场数据读取边界（2026-10-16）
 
-新增 HTTP namespace `/api/v2/market-environment`，但不新增事实源：HTTP 专用 DTO/mapper → resource query facade → typed local read ports → PostgreSQL repositories/materialized evidence 是唯一读取方向。query facade 不依赖 FastAPI、provider 或具体 persistence；HTTP 层不直接构造 repository；生产列表 adapter 在 SQL 中完成 filter、稳定 order、cursor seek 与 `limit + 1` 后才物化。keyset 首页不包含 cursor predicate、也不绑定无类型 `NULL`，只有后续页才绑定完整非空排序键并执行严格大于 seek，避免 PostgreSQL 参数类型推断失败。仅兼容/测试 adapter 可从有界 fixture 投影，生产不得加载完整 JSON/行集后切片。
+新增 HTTP namespace `/api/v2/market-environment`，但不新增事实源：HTTP 专用 DTO/mapper → resource query facade → typed local read ports → PostgreSQL repositories/materialized evidence 是唯一读取方向。query facade 不依赖 FastAPI、provider 或具体 persistence；HTTP 层不直接构造 repository；生产列表 adapter 在 SQL 中完成 filter、稳定 order、cursor seek 与 `limit + 1` 后才物化。breadth/limits 等历史查询只从封闭 predicate 集合追加实际存在的 `start_date`、`end_date` 和 cursor 条件，并以显式 date 类型绑定非空值；首页不得包含 cursor predicate，也不得用 `(:value IS NULL OR ...)` 绑定未类型化 `NULL`。后续页绑定完整非空排序键并执行严格大于 seek，保持精确日期升序与 `limit + 1` 分页。仅兼容/测试 adapter 可从有界 fixture 投影，生产不得加载完整 JSON/行集后切片。
 
 精确日期资源包括 overview；indices summary/detail/history；breadth summary/history；limits summary/pool/history/evidence；sector rankings/turnover/breadth/analysis；active-direction、events、assessment；以及按 run id 分离的 operation summary/checkpoints。每项有独立 DTO，共享 envelope 只含 `asOf`、`generatedAt`、opaque `snapshotRevision`、`quality`、`data`、`links` 和集合专用 `pagination`。不得用 `response_model_exclude` 包装完整 `MarketEnvironmentResponse` / `Chapter01Response`，否则 OpenAPI 仍会公开错误结构并可能泄漏兄弟字段。
 
@@ -34,7 +38,7 @@ core 的精确日期身份从单指数 history 的最后有效 observation 开�
 
 普通读取发现本地行存在但 checksum 或 key/payload/effective date 不一致时，v2 与 legacy 统一返回脱敏 HTTP 503、code=`snapshot_integrity_error`；它不同于无本地事实的 404 或单数据集 missing/insufficient。完整性失败仍为 provider-free、零 collection/background task、零 PostgreSQL 写入；dashboard 不把该错误替换成 legacy 或其他日期成功结果。存量坏行只能由显式只读审计识别，任何备份、停写、前向重采/重建或数据处置都需要独立计划和授权，GET 与正常采集不得自动重标、复制、删除或修复。
 
-core 前向修复仍走正常 collector → typed candidate → fenced committer → aggregate rebuild 链，只允许维护 CLI 同时明示 `--force --repair-integrity --dataset core` 后启用一次性 replacement intent。replacement intent 不进入 HTTP、Hermes 或普通采集，只接受五个指数全部 success 且所有 payload/history/quality 日期均与目标日一致的 candidate；它只跳过对已确认坏 existing 的留存读取，随后由 snapshot repository 重新计算 checksum 并原子 upsert。partial、retained、failed 或错日 candidate 继续 fail closed。worker 在完整性异常中断时必须把 task/run 固化为真实失败状态，不能遗留无 lease 的 `collecting`。PostgreSQL 历史查询在可选日期/cursor 为空时必须显式 cast 参数类型，禁止再次触发 `AmbiguousParameter` 500。
+core 前向修复仍走正常 collector → typed candidate → fenced committer → aggregate rebuild 链，只允许维护 CLI 同时明示 `--force --repair-integrity --dataset core` 后启用一次性 replacement intent。replacement intent 不进入 HTTP、Hermes 或普通采集，只接受五个指数全部 success 且所有 payload/history/quality 日期均与目标日一致的 candidate；它只跳过对已确认坏 existing 的留存读取，随后由 snapshot repository 重新计算 checksum 并原子 upsert。partial、retained、failed 或错日 candidate 继续 fail closed。worker 在完整性异常中断时必须把 task/run 固化为真实失败状态，不能遗留无 lease 的 `collecting`。
 
 现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留非完整性错误的 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
 
@@ -663,3 +667,14 @@ gateway 只负责传输可靠性和请求压力控制，不改变 provider 字�
 缓存与 single-flight identity 包含 engine、规范 URL、完整参数、精确请求日期和不可逆 authentication/tenant-scope digest。401/403、其他 permission failure、CAPTCHA/interstitial challenge 与响应日期/契约错误快速失败，不重试、不自动换 engine。日志和持久证据不保存 credential、Authorization、Cookie、proxy material、secret query、原始 challenge page 或敏感 body。
 
 该 gateway 的 host policy 是单进程共享，不是 Dashboard/自动化 HTTP/维护 CLI/多 Pod 的分布式限流；跨触发器只由 PostgreSQL dataset/date lease 防止重复采集。失败仍由 acquisition/coordinator 输出真实 `failed`、`degraded`、`insufficient`、`failed-retained` 或 `failed-missing`，不得用零值、其他日期或更宽松 engine 替代。
+# 大成交额主动进攻方向工作台边界（2026-10-21）
+
+active-direction 采集在通过既有字段、样本数和成交额非递增校验后，保留前 30 行 `researchRows`，并将前 10 行投影到兼容的 `topStocks`。研究行可携带证券 identity、原始方向 observation、排序/来源 revision、行业映射 revision/coverage 和行级质量；新增字段为可选，旧 JSON 无需迁移即可读取。
+
+工作台由同一精确日期 materialized aggregate 的可选 `activeDirectionWorkbench` 组件提供。组件在本地事实 revision 上组合方向观察/规范映射、Top-30、已存历史、涨跌停与事件事实，并通过 `/api/v2/market-environment/{as_of}/active-direction/workbench` provider-free 读取。普通 GET 不调用 provider、不启动 collection/background task、不回填或写 PostgreSQL，也不以其他日期补齐；revision 冲突必须在读取混合数据前失败。工作台失败按模块隔离为 `partial`/`missing`/`insufficient`，不得擦除有效 active-direction 或阻断其他 aggregate component。
+
+工作台现在还投影两类已有本地事实：active-direction 行中的 PE/PB、市值、换手率和阶段涨跌幅作为 `fundamentals.items[].metrics` 原始估值观察；limits `securityDetails` 中的首封/末封时间、开板次数、封单和换手作为 `candidatePools.firstToSecond.intraday`。这些字段保留来源和日期，不产生 QTS 分数。集合竞价字段（竞价涨跌幅、竞价金额、未匹配量、同题材竞价宽度）以及利润/成长/现金流/杠杆/可比行业财务事实仍按字段级 `pending`/`missing` 返回，禁止用行情快照冒充财务报表或分钟序列。
+
+跨数据集关联只允许规范证券 identity 与请求日期有效的版本化 sector mapping；原始 provider 标签保留为 observation，无法映射时不得晋级 canonical candidate。QTS-04 规则证据从 trading-rules 注册表接入，当前只输出原始 trace、缺口、否决、确认/失效提示，状态保持 `documented-only` / `needs-backtest`，不在 market-environment 内复制阈值或生成角色/交易信号。
+
+回滚顺序为先回滚前端五视图，再停用工作台 endpoint/materializer；保留 `topStocks`、`researchRows`、旧聚合、PostgreSQL 历史和 task 记录，不删除数据、不执行自动回填。该变更不新增 CronJob、调度或生产写路径。

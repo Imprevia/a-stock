@@ -95,6 +95,9 @@ class MaterializedAggregateReaderAdapter:
     def revision(self, as_of: date) -> MaterializationRevision:
         return MaterializationRevision(self.store.materialization_revision(as_of))
 
+    def list_dates(self) -> tuple[date, ...]:
+        return self.store.list_materialized_aggregate_dates()
+
 
 @dataclass(frozen=True, slots=True)
 class TradingSessionReaderAdapter:
@@ -298,6 +301,38 @@ class RebuilderAggregateCommandAdapter:
         return RebuildAggregateCommand(
             _RebuilderAggregateCommand(self.rebuilder)
         ).execute(as_of)
+
+
+@dataclass(frozen=True, slots=True)
+class FencedRebuilderAggregateCommandAdapter:
+    """Persist one maintenance rebuild under the affected breadth/date lease."""
+
+    store: Any
+    rebuilder: Any
+    now: Callable[[], datetime]
+    lease_seconds: float = 600.0
+
+    def rebuild(self, as_of: date):
+        current = self.now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        current = current.astimezone(timezone.utc)
+        owner = f"breadth-history-{uuid.uuid4().hex}"
+        lease = self.store.acquire_lease(
+            "breadth",
+            as_of,
+            owner,
+            lease_seconds=self.lease_seconds,
+            now=current,
+        )
+        if lease is None:
+            raise RuntimeError(
+                f"breadth aggregate rebuild lease is busy: {as_of.isoformat()}"
+            )
+        try:
+            return self.rebuilder.rebuild(as_of, lease=lease, now=current)
+        finally:
+            self.store.release_lease("breadth", as_of, lease=lease)
 
 
 @dataclass(frozen=True, slots=True)
@@ -665,6 +700,7 @@ __all__ = [
     "CoordinatorCollectionCommandAdapter",
     "CoordinatorCollectionQueryAdapter",
     "MaterializedAggregateReaderAdapter",
+    "FencedRebuilderAggregateCommandAdapter",
     "RebuilderAggregateCommandAdapter",
     "RepositoryMarketEnvironmentQueryAdapter",
     "SnapshotRepositoryAdapter",

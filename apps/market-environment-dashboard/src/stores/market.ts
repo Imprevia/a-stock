@@ -48,15 +48,22 @@ export type DashboardV2Resource =
   | 'sector-breadth'
   | 'sector-analysis'
   | 'active-direction'
+  | 'active-direction-workbench'
   | 'events'
   | 'assessment'
 
 type V2ResourceState = { phase: SectionState['phase']; error: string }
 type LimitPoolType = 'limit_up' | 'limit_down' | 'failed_limit_up' | 'promoted'
+type BreadthHistoryState = { phase: SectionState['phase']; error: string }
+
+const BREADTH_REQUIRED_OBSERVATIONS = 60
+const BREADTH_WINDOW_DAYS = 250
+const BREADTH_PRESENTATION_DAYS = 5
 
 const V2_RESOURCES: DashboardV2Resource[] = [
   'indices', 'breadth', 'limits', 'sector-rankings', 'sector-turnover',
   'sector-breadth', 'sector-analysis', 'active-direction', 'events', 'assessment',
+  'active-direction-workbench',
 ]
 
 function createV2ResourceStates(): Record<DashboardV2Resource, V2ResourceState> {
@@ -186,6 +193,7 @@ function retainLoadedChapterEvidence(
     retained.sectorAnalysis = previous.chapter01.sectorAnalysis
   }
   if (loaded.includes('activeDirection')) retained.activeDirection = previous.chapter01.activeDirection
+  if (loaded.includes('activeDirection')) retained.activeDirectionWorkbench = previous.chapter01.activeDirectionWorkbench
   return { ...incoming, chapter01: retained }
 }
 
@@ -206,6 +214,7 @@ export const useMarketStore = defineStore('market', () => {
   const snapshotRevision = ref('')
   const v2ResourceStates = ref<Record<DashboardV2Resource, V2ResourceState>>(createV2ResourceStates())
   const loadedV2Resources = ref<DashboardV2Resource[]>([])
+  const breadthHistoryState = ref<BreadthHistoryState>({ phase: 'idle', error: '' })
   const v2LimitPool = ref({
     poolType: 'limit_up' as LimitPoolType,
     rows: [] as Array<Record<string, any>>,
@@ -272,6 +281,104 @@ export const useMarketStore = defineStore('market', () => {
     return `/api/v2/market-environment/${encodeURIComponent(selectedDate.value)}`
   }
 
+  function commitBreadthSummary(envelope: V2Envelope<Record<string, any>>): void {
+    const existingHistory = data.value?.chapter01?.breadth?.history ?? null
+    mergeChapter({ breadth: {
+      ...envelope.data,
+      quality: legacyQuality(envelope.quality, 'market-breadth'),
+      history: existingHistory,
+    } as never })
+    loadedSections.value = [...new Set([...loadedSections.value, 'breadth'])]
+    markV2Ready('breadth')
+  }
+
+  function commitBreadthHistory(
+    items: Array<Record<string, any>>,
+    quality: V2Quality | null,
+  ): void {
+    const unique = new Map<string, Record<string, any>>()
+    for (const item of items) {
+      const identity = String(item.asOf ?? item.date ?? '')
+      if (identity) unique.set(identity, item)
+    }
+    const observations = [...unique.values()]
+      .sort((left, right) => String(left.asOf ?? left.date).localeCompare(String(right.asOf ?? right.date)))
+      .slice(-BREADTH_WINDOW_DAYS)
+    const validObservations = observations.length
+    const status = validObservations < BREADTH_REQUIRED_OBSERVATIONS
+      ? 'insufficient'
+      : quality?.status ?? 'insufficient'
+    mergeChapter({ breadth: {
+      ...data.value?.chapter01?.breadth,
+      history: {
+        points: observations.slice(-BREADTH_PRESENTATION_DAYS),
+        validObservations,
+        requiredObservations: BREADTH_REQUIRED_OBSERVATIONS,
+        windowDays: BREADTH_WINDOW_DAYS,
+        coverage: Math.min(validObservations / BREADTH_WINDOW_DAYS, 1),
+        percentile250: {},
+        quality: {
+          status,
+          reason: validObservations < BREADTH_REQUIRED_OBSERVATIONS ? 'history-gap' : null,
+          observations: validObservations,
+          asOf: selectedDate.value,
+          source: quality?.source ?? null,
+          warnings: quality?.warnings ?? [],
+        },
+      },
+    } as never })
+  }
+
+  async function restartBreadthGroup(): Promise<void> {
+    const overviewResult = await fetchV2Overview<Record<string, any>>(selectedDate.value)
+    if (overviewResult.status === 'not-modified') throw new Error('breadth 版本重启时 overview 返回意外 304')
+    v2Overview.value = overviewResult.envelope
+    snapshotRevision.value = overviewResult.envelope.snapshotRevision
+    data.value = responseFromOverview(overviewResult.envelope)
+    loadedV2Resources.value = []
+    v2ResourceStates.value = createV2ResourceStates()
+    loadedSections.value = []
+    breadthHistoryState.value = { phase: 'loading', error: '' }
+    await loadBreadthResource(false)
+  }
+
+  async function loadBreadthHistory(allowGroupRestart = true): Promise<void> {
+    if (!v2Enabled.value || !data.value || !snapshotRevision.value) return
+    const hasHistory = Boolean(data.value.chapter01?.breadth?.history?.points?.length)
+    breadthHistoryState.value = {
+      phase: hasHistory ? 'refreshing' : 'loading',
+      error: '',
+    }
+    try {
+      const pages = await fetchAllV2Pages<Record<string, any>>(
+        `${v2Root()}/breadth/history?limit=250`,
+        snapshotRevision.value,
+        (item) => String(item.asOf ?? item.date),
+      )
+      commitBreadthHistory(pages.items, pages.quality)
+      breadthHistoryState.value = { phase: 'ready', error: '' }
+    } catch (cause) {
+      if (allowGroupRestart && cause instanceof V2RevisionConflictError) {
+        await restartBreadthGroup()
+        return
+      }
+      breadthHistoryState.value = {
+        phase: 'error',
+        error: cause instanceof Error ? cause.message : '市场广度历史加载失败',
+      }
+    }
+  }
+
+  async function loadBreadthResource(allowGroupRestart = true): Promise<void> {
+    const envelope = await readPinned<Record<string, any>>(`${v2Root()}/breadth`)
+    commitBreadthSummary(envelope)
+    await loadBreadthHistory(allowGroupRestart)
+  }
+
+  async function retryBreadthHistory(): Promise<void> {
+    await loadBreadthHistory(true)
+  }
+
   async function loadDashboardShell(force = false): Promise<void> {
     if (data.value && !force) return
     loading.value = true
@@ -287,6 +394,7 @@ export const useMarketStore = defineStore('market', () => {
         loadedV2Resources.value = []
         v2ResourceStates.value = createV2ResourceStates()
         loadedSections.value = []
+        breadthHistoryState.value = { phase: 'idle', error: '' }
       }
       coreRequestedDate = result.envelope.asOf
       if (result.envelope.asOf !== selectedDate.value) selectedDate.value = result.envelope.asOf
@@ -351,29 +459,7 @@ export const useMarketStore = defineStore('market', () => {
         return
       }
       if (resource === 'breadth') {
-        const envelope = await readPinned<Record<string, any>>(`${root}/breadth`)
-        const pages = await fetchV2CollectionWithOverviewRestart<Record<string, any>, Record<string, any>>({
-          asOf: selectedDate.value,
-          path: `${root}/breadth/history?limit=250`,
-          snapshotRevision: snapshotRevision.value,
-          identity: (item) => String(item.asOf ?? item.date),
-        })
-        const breadth = {
-          ...envelope.data,
-          quality: legacyQuality(envelope.quality, 'market-breadth'),
-          history: {
-            points: pages.items,
-            validObservations: pages.items.length,
-            requiredObservations: pages.items.length,
-            windowDays: pages.items.length,
-            coverage: pages.items.length ? 1 : null,
-            percentile250: {},
-            quality: null,
-          },
-        }
-        mergeChapter({ breadth: breadth as never })
-        loadedSections.value = [...new Set([...loadedSections.value, 'breadth'])]
-        markV2Ready(resource)
+        await loadBreadthResource(true)
         return
       }
       if (resource === 'limits') {
@@ -401,7 +487,14 @@ export const useMarketStore = defineStore('market', () => {
         markV2Ready(resource)
         return
       }
-      const pagePath: Record<Exclude<DashboardV2Resource, 'indices' | 'breadth' | 'limits' | 'sector-analysis' | 'assessment'>, string> = {
+      if (resource === 'active-direction-workbench') {
+        const envelope = await readPinned<Record<string, any>>(`${root}/active-direction/workbench`)
+        mergeChapter({ activeDirectionWorkbench: envelope.data as never })
+        markV2Ready(resource)
+        loadedSections.value = [...new Set([...loadedSections.value, 'activeDirection'])]
+        return
+      }
+      const pagePath: Record<Exclude<DashboardV2Resource, 'indices' | 'breadth' | 'limits' | 'sector-analysis' | 'assessment' | 'active-direction-workbench'>, string> = {
         'sector-rankings': 'sectors/rankings?limit=100',
         'sector-turnover': 'sectors/turnover?limit=100',
         'sector-breadth': 'sectors/breadth?limit=100',
@@ -432,6 +525,10 @@ export const useMarketStore = defineStore('market', () => {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'v2 资源加载失败'
       v2ResourceStates.value = { ...v2ResourceStates.value, [resource]: { phase: 'error', error: message } }
+      if (resource === 'breadth' && cause instanceof V2ApiError && cause.code === 'snapshot_integrity_error') {
+        mergeChapter({ breadth: undefined })
+        return
+      }
       // A failed v2 resource falls back to the existing cumulative read path.
       v2Enabled.value = false
       await loadCore()
@@ -609,6 +706,7 @@ export const useMarketStore = defineStore('market', () => {
       snapshotRevision.value = ''
       loadedV2Resources.value = []
       v2ResourceStates.value = createV2ResourceStates()
+      breadthHistoryState.value = { phase: 'idle', error: '' }
       loadedSections.value = []
       void loadDashboardShell()
     } else void loadCore()
@@ -635,6 +733,7 @@ export const useMarketStore = defineStore('market', () => {
     snapshotRevision.value = ''
     loadedV2Resources.value = []
     v2ResourceStates.value = createV2ResourceStates()
+    breadthHistoryState.value = { phase: 'idle', error: '' }
     v2LimitPool.value = {
       poolType: 'limit_up', rows: [], quality: null, hasMore: false,
       page: 1, loading: false, error: '',
@@ -675,6 +774,7 @@ export const useMarketStore = defineStore('market', () => {
     snapshotRevision,
     loadedV2Resources,
     v2ResourceStates,
+    breadthHistoryState,
     v2LimitPool,
     // sections
     loadedSections,
@@ -686,6 +786,7 @@ export const useMarketStore = defineStore('market', () => {
     loadDashboardShell,
     loadV2Resource,
     loadV2LimitPool,
+    retryBreadthHistory,
     loadSection,
     loadNextSession,
     setDate,
