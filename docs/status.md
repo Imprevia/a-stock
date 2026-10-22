@@ -126,6 +126,9 @@
 
 ## 最后更新
 
+2026-10-22
+  - **`main=16d9b3e` 部署到 TrueNAS k3s 完成**：经受控 `scripts/deploy-truenas-k3s.sh --component all` 从 clean detached worktree 发布，Helm revision `146 → 149`（147 database 唯一一次 schema hook / 148 service `--no-hooks` / 149 完整清单收敛 `--no-hooks`），最终 revision `149` deployed。镜像 `localhost/a-stock-market-environment:20261022-172620-16d9b3e`，archive SHA-256 `07a9ae64…f308`，containerd manifest digest `sha256:9e830440…e7cc`；Pod `a-stock-bb55cdfff-s4cmh` Ready/0 重启、PostgreSQL 0 重启。`/api/health`、首页、`overview`、`indices/history`、`breadth/summary`、`breadth/history`、`limits/history` 与 v2 同名 GET 均 HTTP 200；active run/task/lease=`0|0|0`，CronJob/Job absent。PVC/Secret UID、单副本、`Recreate`、`NodePort:32001`、manual/automation=`1|1`、Fuyao core/sectors/THS 开关与 schema `0008` 全部未漂移；本次未调用 provider、未触发采集。环境侧 1.21 VM 的 `/run/user/1000` tmpfs 被无关 Trae 安装包占满，改用磁盘 podman runtime 完成构建，未删除任何用户文件。
+
 2026-10-15
   - **Hermes 7.5 最终定义已收口**：在先后发生 delivery 与 schedule 外部修改后，操作人明确确认采用飞书当前会话和工作日 15:30；保持原 30 分钟恢复窗口，截止改为 16:00。OpenSpec/caller/docs 已同步，caller/prompt/runbook 回归 `36 passed`，新 caller checksum 已安装并编译通过。job 仍未运行，下一次为 `2026-10-16T15:30:00+08:00`；生产计数、revision 117 与 Kubernetes absence 均未漂移。
   - **历史 checkpoint（已由最终定义取代）— Hermes 7.5 因 delivery/schedule drift 暂停**：17:24:50 飞书入站消息要求把 job `ef7389b87a92` 的投递目标改为当前会话，17:25:15 jobs state 随之变更；17:26:11 又要求改为 `30 15 * * 1-5`，17:26:19 落盘。job 当时仍未运行且后端无新批次，验收曾暂停等待确认。
