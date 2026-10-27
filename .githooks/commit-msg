@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python scripts/check-test-gate.py --mode=message --message-file "$1"
+elif [ -x .venv/Scripts/python.exe ]; then
+  exec .venv/Scripts/python.exe scripts/check-test-gate.py --mode=message --message-file "$1"
+elif command -v python3 >/dev/null 2>&1; then
+  exec python3 scripts/check-test-gate.py --mode=message --message-file "$1"
+elif command -v python >/dev/null 2>&1; then
+  exec python scripts/check-test-gate.py --mode=message --message-file "$1"
+elif command -v py >/dev/null 2>&1; then
+  exec py -3 scripts/check-test-gate.py --mode=message --message-file "$1"
+else
+  echo '[test-gate] 缺少 Python，无法审核测试跳过原因。' >&2
+  exit 1
+fi

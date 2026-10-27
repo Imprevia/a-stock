@@ -50,12 +50,14 @@
 
 ## 本地门禁
 
-- 提交前自动跑：`.githooks/pre-commit` → `python scripts/check-docs-contract.py --mode=fast`
-- 推送前自动跑：`.githooks/pre-push` → `python scripts/check-docs-contract.py --mode=full`
-- 手动验证：`python scripts/check-docs-contract.py --mode=full`
-- hook 重连：`python scripts/install-hooks.py`
+- 提交前自动跑：`.githooks/pre-commit` → `python scripts/check-test-gate.py --mode=commit`（docs fast + 暂存树范围测试，30s 建议预算）
+- 推送前自动跑：`.githooks/pre-push` → `python scripts/check-test-gate.py --mode=push`（按 Git refs 的精确 diff 执行 docs full、架构/规则/范围测试，180s 建议预算）；`DOCS_CONTRACT_DIFFS` 仅为 dispatcher 内部范围协议，无效 JSON/ref 必须修复而不能当空 diff 放行，fast 模式拒绝该覆盖。
+- 提交说明审核：`.githooks/commit-msg` → `--mode=message`；pre-commit 不读取旧 `COMMIT_EDITMSG`。
+- 手动文档验证：`python scripts/check-docs-contract.py --mode=full`
+- hook 安装/只读核查：`python scripts/install-hooks.py` / `python scripts/install-hooks.py --check`
+- 应急跳过本地测试：`SKIP_TEST_GATE=1`，必须同时提供 `TEST_GATE_SKIP_REASON`，commit message 用 `[skip-tests] 理由` 审核；输出为 unverified，不代表测试通过，CI 不接受跳过。
 
-GitHub Actions 的规则门禁见 `.github/workflows/trading-rules-pr.yml`；它会校验规则、文档同步、全量确定性测试和 docs contract。若本机缺少 Python，hook 可能只警告放行，不能把这种放行当作验证通过。
+GitHub Actions 保留 `.github/workflows/trading-rules-pr.yml` 的名称与 job identity，运行规则/文档校验、一次 coverage 全量后端测试和 Vitest。正式棘轮只在配置隔离 PostgreSQL 的权威层比较：测试清单、真实 HTTP 操作、`src/` 逐文件未覆盖语句上限。基线普通检查只读，更新须显式审核，不能放宽上限掩盖倒退。缺解释器/测试工具、不可比环境、意外 DB skip 均非验证通过。部分暂存导致工作树与索引不一致时应拒绝而非用未暂存修复伪造成功。
 
 ## active plan 必需字段（Gate 4 检查，标题中英任一即可）
 

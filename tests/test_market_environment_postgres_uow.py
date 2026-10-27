@@ -268,7 +268,22 @@ def test_postgres_unit_of_work_commit_and_rollback_use_real_transaction() -> Non
     identity = DatasetDate("core", as_of)
     candidate = CollectionCandidate(
         identity=identity,
-        payload={"asOf": as_of.isoformat(), "contract": uuid.uuid4().hex},
+        payload={
+            "asOf": as_of.isoformat(),
+            "quality": {
+                "asOf": as_of.isoformat(),
+                "effectiveAsOf": as_of.isoformat(),
+                "status": "ok",
+            },
+            "indices": [
+                {
+                    "code": "000001.SH",
+                    "name": "上证指数",
+                    "history": [{"date": as_of.isoformat(), "close": 3200.0}],
+                }
+            ],
+            "contract": uuid.uuid4().hex,
+        },
         source="postgres-transaction-contract",
         status="ok",
         observations=1,

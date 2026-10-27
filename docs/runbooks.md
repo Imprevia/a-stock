@@ -1429,6 +1429,19 @@ LAST SCHEDULE 为空、namespace Job 为空、冻结镜像/PVC/Secret/schema/活
 
 生产前顺序固定为：固定 clean reviewed source/fixture/capability packet → 离线 schema/fixture replay → 隔离数据库 additive migration 演练 → 小范围交易日回填 → 60 日覆盖 → 272 日默认预热 → 更长研究范围。每一步都需核对 exact-date、taxonomy/membership、universe、adjustment、benchmark、input checksum 和 quality；任一失败保持 `insufficient`/`failed-*`，不扩大范围。真实 provider probe、PostgreSQL migration、非 fixture 回填、部署、Secret 变更、automation gate 或 Hermes job 变更均不得混入普通测试。
 
+## 测试棘轮与提交门禁（2026-10-27）
+
+实施计划：`docs/exec-plans/active/add-test-ratchet-and-commit-gate.md`。安装 hooks 用 `python scripts/install-hooks.py`，只读核查用 `--check`。配置未挂载不代表本地提交已经验证。
+
+- L0：`python scripts/check-test-gate.py --mode=commit`，先 docs fast 再范围 pytest/Vitest；建议 30s，只告警不以超时掩盖失败。索引与工作树不一致需先整理暂存内容（包含非 ignored 文档/fixture 和未跟踪文件，测试也可能读取这些输入）；门禁不 stash、不改 index。
+- L1：`--mode=push` 接收 Git 的 stdin refs，以精确 before/after diff 驱动 docs full、架构和规则校验、扩大范围测试；建议 180s，不重复全量。多 refs 合并审计，新分支全树、删除 refs 不引入新代码；无 upstream 也不能静默空检。dispatcher 内部 `DOCS_CONTRACT_DIFFS` JSON 协议由真实 refs 或 CI 可信 parent/target 生成，非法格式/不可读 Git 对象非零失败，fast 不接受覆盖；CI 丢弃外部注入后重建范围。
+- 范围选择：超过 8 个测试相关文件或涉及超过 2 个顶层区域视为 broad。后端未映射改动回退至 API/v2 contract/discovery/HTTP coverage 四文件及 `tests/test_test_*.py`；push 再加入 market-environment contract 文件。规则事实与 `src/trading_system/` 优先规则平台测试，push 加 golden。前端命中同名 `.test.ts` 则范围执行，否则全量 Vitest；混合改动分别执行，不以空集合当通过。任意目录纯 Markdown/RST 只跑文档契约。
+- L2：`--mode=ci` 在隔离 PostgreSQL 配置下只启动一次 coverage pytest（携带 HTTP recorder），然后比较 node inventory、passing-test HTTP operations 与逐文件 uncovered ceiling；frontend 由同一 workflow 运行 `npm ci` / `npm run test` / `npm run build`，全部在后端测量前完成。app factory 会根据本地 `dist` 是否存在挂载前端，因此正式 profile 要求已构建 dashboard（包括 `dist/index.html` 和 `dist/assets`）；不要并发构建与后端测试，也不要混用有/无构建产物的覆盖率基线。不读取生产库或 provider；依赖下载属于 setup，不是测试时访问行情。
+- 正式基线：`tests/baselines/test-ratchet.json`。首次由 `python scripts/check-test-gate.py --mode=baseline --reason "初始隔离数据库测量"` 明确生成，再在完全相同测试/数据库 profile 下执行 `--mode=ci` 重复验证；探索阶段 83% 不能直接当基线。报告/coverage 原始文件放临时目录，不入库。基线更新要审核 parent/target，不能提高未覆盖上限。新源文件候选在普通 CI 中拒绝，需要显式 baseline mode 加理由纳入。重命名以 `--reconciliation-file <json>` 提供 `reason`、`mapping` 与精确 `reverse_mapping`，基线保留该审核记录，不能把删除节点映射到父基线已经存在的其他节点。整文件/节点有意删除默认仍阻断，应独立审核契约变更，不支持静默重置。
+- DB 环境缺失、profile 不匹配、原本必跑的 DB 测试意外 skip：权威检查非零退出，不得绿色放行。元数据只记 profile/版本，不记 URL 或凭据。逐文件行覆盖率不等同分支或断言质量。
+- 应急本地 bypass：同时设置 `SKIP_TEST_GATE=1` 与 `TEST_GATE_SKIP_REASON`，并在提交说明写 `[skip-tests] 理由`；commit-msg 审核原因。pre-commit 不读取尚不存在的未来提交说明。输出标注 unverified；CI 忽略本地逃生口。`--no-verify` 可绕过本地 hook，因此远端 required status checks 仍必须保留。
+- 保留现有 workflow 文件名/display name/job id 和 PostgreSQL digest/env，不调整 GitHub 分支保护或生产环境。
+
 ## 验证矩阵
 
 | 检查 | 命令 / 方法 | 证据位置 | 必需 |

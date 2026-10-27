@@ -90,6 +90,23 @@ def test_refresh_stores_successful_datasets_as_settled(tmp_path, caplog) -> None
     assert all(record.cache_result == "stored" for record in refresh_records)
     assert all("providerCollectionMs" in record.phase_timings for record in refresh_records)
 
+    reused = SnapshotRefresher(
+        provider,
+        store,
+        now=lambda: AFTER_MARKET,
+    ).refresh(
+        AS_OF,
+        ["breadth"],
+        reuse_fresh_within_seconds=60,
+    )
+
+    assert reused["status"] == "ok"
+    assert reused["datasets"][0]["cacheResult"] == "reused"
+    assert reused["datasets"][0]["quality"] == "fallback"
+    assert reused["datasets"][0]["source"] == "fixture"
+    assert "freshRecheckMs" in reused["datasets"][0]["timings"]
+    assert provider.calls == ["breadth", "activeDirection"]
+
 
 def test_partial_refresh_keeps_previous_success(tmp_path, caplog) -> None:
     store = SnapshotStore(tmp_path / "snapshots.sqlite3")

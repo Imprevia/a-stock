@@ -1,12 +1,16 @@
 #!/usr/bin/env sh
-# 薄入口：真正规则在 scripts/check-docs-contract.py（保持本文件无业务逻辑）
 set -eu
-
-if command -v python >/dev/null 2>&1; then
-  exec python scripts/check-docs-contract.py --mode=fast
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python scripts/check-test-gate.py --mode=commit
+elif [ -x .venv/Scripts/python.exe ]; then
+  exec .venv/Scripts/python.exe scripts/check-test-gate.py --mode=commit
+elif command -v python3 >/dev/null 2>&1; then
+  exec python3 scripts/check-test-gate.py --mode=commit
+elif command -v python >/dev/null 2>&1; then
+  exec python scripts/check-test-gate.py --mode=commit
 elif command -v py >/dev/null 2>&1; then
-  exec py scripts/check-docs-contract.py --mode=fast
+  exec py -3 scripts/check-test-gate.py --mode=commit
 else
-  echo "[docs-contract] 未找到 python 解释器，跳过检查（建议安装 Python 3，见 docs/runbooks.md）" >&2
-  exit 0
+  echo '[test-gate] 缺少 Python，未验证；请安装 Python 后重试。' >&2
+  exit 1
 fi

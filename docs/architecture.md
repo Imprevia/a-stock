@@ -1,5 +1,9 @@
 # 架构
 
+## 仓库验证边界（2026-10-27）
+
+测试基础设施与应用运行时分离：thin Git hooks → `scripts/check-test-gate.py` → docs/架构/规则检查及 pytest/Vitest；opt-in `scripts.test_ratchet_plugin` 仅在测试进程内测量 HTTP dispatch，不能进入生产 composition。权威模式在一次 coverage pytest 中生成全部报告，再由 `scripts/test_ratchet.py` 比较 node inventory、passing-test operation set 和 `src/` per-file uncovered ceiling。普通检查不改基线，审核更新比较可信 parent/target。基线 metadata 不含 URL/Secret。隔离 PostgreSQL 是唯一允许的数据库测试服务；缺配置或意外 skip 不可伪装通过。Git 暂存树校验不得通过 stash/改 index 影响用户工作区；包括未暂存文档/fixture，不能让这些输入把暂存提交伪装为通过。docs full 由 dispatcher 提供 refs 或可信 CI target/parent 的精确 diff，不依赖 detached HEAD 的 upstream；范围无效须 fail closed。pytest 子进程隔离 recorder PID/run token，旧报告和空 coverage 都不是完整测量。现有 workflow 名称、job identity 和数据库配置保持不变，不新增应用调度或部署权限。
+
 ## 多页市场研判重构边界（2026-09-14）
 
 市场环境 Dashboard 保持 01–09 独立路由和按需章节加载。第 01 页的七项复盘证据与 `ReviewSentence` 在计算层由五项指数和精确市场广度聚合生成；第 09 页仅消费综合摘要。`GET /api/market-environment/next-session` 是 provider-free 只读路径：服务从 `trading_sessions` 解析严格大于 `as_of` 的最小真实交易日，并读取该日核心/广度 materialized aggregate，缺失返回 `pending` 或 `insufficient`，不触发采集、不跨日期回退。新增 schema 为 additive，旧 `summarySentence`、`syncPattern` 和组合矩阵字段继续兼容。看板不保存用户复盘记录、输入或训练进度。

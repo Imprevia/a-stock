@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import subprocess
@@ -109,6 +110,35 @@ def try_git(args: list[str]) -> str:
         return ""
 
 
+def docs_contract_diffs() -> list[tuple[str | None, str]] | None:
+    """Validate explicit push ranges and resolve every referenced commit."""
+    raw = os.environ.get("DOCS_CONTRACT_DIFFS")
+    if raw is None:
+        return None
+    if MODE != "full":
+        raise ValueError("DOCS_CONTRACT_DIFFS is accepted only in full mode")
+    try:
+        entries = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("DOCS_CONTRACT_DIFFS must be valid JSON") from error
+    if not isinstance(entries, list):
+        raise ValueError("DOCS_CONTRACT_DIFFS must be a list of [base, head] ranges")
+    ranges: list[tuple[str | None, str]] = []
+    for entry in entries:
+        if not isinstance(entry, list) or len(entry) != 2:
+            raise ValueError("DOCS_CONTRACT_DIFFS requires [base, head] pairs")
+        before, head = entry
+        revisions = [head] if before is None else [before, head]
+        for revision in revisions:
+            if not isinstance(revision, str) or re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision) is None:
+                raise ValueError("DOCS_CONTRACT_DIFFS refs must be full 40/64 character commit SHAs")
+            git(["rev-parse", "--verify", revision + "^{commit}"])
+        if head is None:
+            raise ValueError("DOCS_CONTRACT_DIFFS head must be a commit SHA")
+        ranges.append((before, head))
+    return ranges
+
+
 def changed_files() -> list[str]:
     """返回当前变更集文件列表。
 
@@ -116,6 +146,14 @@ def changed_files() -> list[str]:
     committed branch diff and the current worktree/untracked diff so a local
     verification cannot miss documentation edits that are still unstaged.
     """
+    ranges = docs_contract_diffs()
+    if ranges is not None:
+        files: set[str] = set()
+        for before, head in ranges:
+            arguments = (["ls-tree", "-r", "--name-only", "-z", head] if before is None
+                         else ["diff", "--name-only", "-z", before, head])
+            files.update(name for name in git(arguments).split("\0") if name)
+        return sorted(files)
     if MODE == "fast":
         raw = try_git(["diff", "--name-only", "--cached"])
     else:
@@ -135,6 +173,23 @@ def changed_files() -> list[str]:
 
 def changed_line_count(files: list[str]) -> int:
     """统计变更集的增删行数（用于 <20 行小改判定）。"""
+    ranges = docs_contract_diffs()
+    if ranges is not None:
+        total = 0
+        wanted = set(files)
+        for before, head in ranges:
+            if before is None:
+                total += SMALL_CHANGE_LINES
+                continue
+            raw = git(["diff", "--numstat", "--no-renames", "-z", before, head])
+            for record in raw.split("\0"):
+                parts = record.split("\t", 2)
+                if len(parts) != 3:
+                    continue
+                added, deleted, name = parts
+                if name in wanted:
+                    total += sum(int(count) for count in (added, deleted) if count.isdigit())
+        return total
     if MODE == "fast":
         raw = try_git(["diff", "--numstat", "--cached"])
     else:
@@ -304,7 +359,8 @@ def gate5to7_docs_map(code_files: list[str], doc_files: list[str]) -> bool:
 
 # ---------- 主流程 ----------
 
-def main() -> int:
+def _main() -> int:
+    docs_contract_diffs()
     if os.environ.get("SKIP_DOCS_CONTRACT") == "1":
         print("docs-contract: SKIP_DOCS_CONTRACT=1，已跳过（应急用法，须记录原因）")
         return 0
@@ -344,6 +400,15 @@ def any_plan_on_disk() -> bool:
     return any(
         n.endswith(".md") and n != "_index.md" for n in os.listdir(active_dir)
     )
+
+
+def main() -> int:
+    """Report invalid explicit diff scopes as failed verification."""
+    try:
+        return _main()
+    except (ValueError, RuntimeError, OSError) as error:
+        fail(f"docs-contract: 无法验证变更范围：{error}")
+        return 1
 
 
 if __name__ == "__main__":

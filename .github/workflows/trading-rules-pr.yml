@@ -29,20 +29,35 @@ jobs:
       TRADING_RULES_OFFLINE: "1"
       PYTHONHASHSEED: "0"
       MARKET_ENVIRONMENT_TEST_DATABASE_URL: postgresql+psycopg://test:test@127.0.0.1:5432/market
+      TEST_GATE_BASE_REF: ${{ github.event.before }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/market-environment-dashboard/package-lock.json
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Install dashboard dependencies
+        working-directory: apps/market-environment-dashboard
+        run: npm ci
       - name: Validate registry and documentation coverage
         run: |
           python -m src.trading_system.cli rules validate
           python -m src.trading_system.cli rules coverage
           python -m src.trading_system.cli docs sync-check
-      - name: Run deterministic tests
-        run: python -m pytest tests -q
-      - name: Run full docs contract
-        run: python scripts/check-docs-contract.py --mode=full
+      - name: Run dashboard tests
+        working-directory: apps/market-environment-dashboard
+        run: npm run test
+      - name: Build dashboard before backend measurement
+        working-directory: apps/market-environment-dashboard
+        run: npm run build
+      - name: Run authoritative repository test gate
+        run: python scripts/check-test-gate.py --mode=ci

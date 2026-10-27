@@ -5,6 +5,7 @@ pandas>=2.2,<3
 pyarrow>=17,<24
 mootdx>=0.11.7,<1
 pytest>=8,<10
+coverage>=7,<8
 # mootdx 0.11.7 requires httpx >=0.25,<0.26; keep the clean CI solve consistent.
 httpx>=0.25,<0.26
 PyYAML>=6.0,<7
