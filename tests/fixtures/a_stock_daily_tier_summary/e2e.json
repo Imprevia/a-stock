@@ -1,0 +1,125 @@
+{
+  "request": {
+    "relative": "today",
+    "now": "2026-10-23T16:10:00+08:00",
+    "tradingSessions": ["2026-10-21", "2026-10-22", "2026-10-23"]
+  },
+  "sessions": {
+    "2026-10-22": {
+      "requestedDate": "2026-10-22",
+      "actualDate": "2026-10-22",
+      "source": "synthetic-fixture",
+      "revision": "fixture-previous",
+      "quality": {"status": "ok", "warnings": []},
+      "pools": {
+        "limit_up": {
+          "quality": {"status": "ok"},
+          "rows": [
+            {"exchange": "SH", "code": "600001", "name": "高位甲", "streak_days": 4},
+            {"exchange": "SH", "code": "600002", "name": "高位乙", "streak_days": 5},
+            {"exchange": "SZ", "code": "000001", "name": "中位甲", "streak_days": 2},
+            {"exchange": "SZ", "code": "000002", "name": "中位乙", "streak_days": 3},
+            {"exchange": "BJ", "code": "430001", "name": "低位甲", "streak_days": 1},
+            {"exchange": "SZ", "code": "000003", "name": "低位乙", "streak_days": 1}
+          ]
+        },
+        "failed_limit_up": {
+          "quality": {"status": "ok"},
+          "rows": [
+            {"exchange": "SH", "code": "600010", "name": "炸板甲"},
+            {"exchange": "SZ", "code": "000010", "name": "炸板乙"}
+          ]
+        },
+        "limit_down": {
+          "quality": {"status": "ok"},
+          "rows": [{"exchange": "SH", "code": "600020", "name": "跌停甲"}]
+        }
+      }
+    },
+    "2026-10-23": {
+      "requestedDate": "2026-10-23",
+      "actualDate": "2026-10-23",
+      "previousSession": "2026-10-22",
+      "source": "synthetic-fixture",
+      "revision": "fixture-current",
+      "quality": {"status": "ok", "warnings": []},
+      "pools": {
+        "limit_up": {
+          "quality": {"status": "ok"},
+          "rows": [
+            {"exchange": "SH", "code": "600001", "name": "高位甲", "streak_days": 5},
+            {"exchange": "SZ", "code": "000001", "name": "中位甲", "streak_days": 3},
+            {"exchange": "SZ", "code": "000003", "name": "低位乙", "streak_days": 2},
+            {"exchange": "SH", "code": "600010", "name": "炸板甲", "streak_days": 1},
+            {"exchange": "SH", "code": "600011", "name": "新首板甲", "streak_days": 1},
+            {"exchange": "SZ", "code": "000012", "name": "新首板乙", "streak_days": 1}
+          ]
+        },
+        "failed_limit_up": {
+          "quality": {"status": "ok"},
+          "rows": [
+            {"exchange": "SH", "code": "600002", "name": "高位乙"},
+            {"exchange": "BJ", "code": "430002", "name": "今日炸板"}
+          ]
+        },
+        "limit_down": {
+          "quality": {"status": "ok"},
+          "rows": [{"exchange": "SZ", "code": "000002", "name": "中位乙"}]
+        }
+      }
+    }
+  },
+  "marketEnvironment": {
+    "asOf": "2026-10-23",
+    "revision": "fixture-current",
+    "quality": {"status": "ok", "warnings": []},
+    "summary": {
+      "synchronizationAssessment": {
+        "patternCode": "undetermined_divergence",
+        "patternLabel": "分化未定型",
+        "status": "unconfirmed",
+        "conclusionCode": "undetermined-divergence",
+        "conclusion": "指数表现分化，尚未形成明确的同步方向。",
+        "confidence": "low"
+      },
+      "marketEvidence": {
+        "directionPattern": null,
+        "advancingIndexCount": 1,
+        "decliningIndexCount": 4,
+        "validIndexCount": 5,
+        "aboveMa20Count": 0,
+        "ma20ValidCount": 5,
+        "medianAmountRatio5": 1.03,
+        "volumeBackedAdvanceCount": 0,
+        "volumeBackedDeclineCount": 0,
+        "advanceRatio": 0.404,
+        "medianReturn": -0.4638
+      }
+    },
+    "indices": [
+      {"code": "000001.SH", "name": "上证指数", "changePct": 0.1, "close": 3200, "movingAverages": {"ma20": 3210}, "amountRatio5": 1.01, "volumePriceState": "量价平稳"},
+      {"code": "399001.SZ", "name": "深证成指", "changePct": -0.2, "close": 10000, "movingAverages": {"ma20": 10100}, "amountRatio5": 1.02, "volumePriceState": "下跌缩量"},
+      {"code": "399006.SZ", "name": "创业板指", "changePct": -0.3, "close": 2100, "movingAverages": {"ma20": 2150}, "amountRatio5": 1.03, "volumePriceState": "下跌缩量"},
+      {"code": "000300.SH", "name": "沪深300", "changePct": -0.1, "close": 3800, "movingAverages": {"ma20": 3820}, "amountRatio5": 1.04, "volumePriceState": "下跌缩量"},
+      {"code": "000905.SH", "name": "中证500", "changePct": -0.4, "close": 5800, "movingAverages": {"ma20": 5850}, "amountRatio5": 1.05, "volumePriceState": "下跌缩量"}
+    ],
+    "breadth": {
+      "advanceRatio": 0.404,
+      "medianReturn": -0.4638,
+      "widthLabel": "同向走弱",
+      "widthLabelReason": "多数指数下跌且多数个股走弱。",
+      "indexConsistent": true,
+      "quality": {"status": "ok", "warnings": []}
+    }
+  },
+  "previousPlan": {
+    "layer": "high",
+    "originalText": "下一交易日只验证高位层：确认条件至少2只继续涨停，失效条件至少1只炸板。",
+    "confirmation": [
+      {"metric": "tierOutcomes.high.continuedLimitUp", "operator": ">=", "value": 2, "text": "高位至少2只继续涨停"}
+    ],
+    "invalidation": [
+      {"metric": "tierOutcomes.high.failedLimitUp", "operator": ">=", "value": 1, "text": "高位至少1只炸板"}
+    ]
+  }
+}

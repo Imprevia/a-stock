@@ -1,0 +1,49 @@
+{
+  "eastmoneyPrecedence": [
+    {"m": "1", "c": "600100", "n": "字段优先样本", "lbc": 2, "zttj": {"days": 8, "ct": 4}}
+  ],
+  "duplicateRows": [
+    {"exchange": "SSE", "code": "600101", "name": "重复样本", "streak_days": 1},
+    {"exchange": "SH", "code": "600101", "name": "重复样本", "streak_days": 1}
+  ],
+  "conflictingRows": [
+    {"exchange": "SH", "code": "600102", "name": "冲突样本", "streak_days": 2},
+    {"exchange": "SSE", "code": "600102", "name": "冲突样本", "streak_days": 3}
+  ],
+  "partialTierRows": [
+    {"exchange": "SZ", "code": "000101", "name": "缺连续板样本"}
+  ],
+  "dateMismatch": {
+    "requestedDate": "2026-10-23",
+    "actualDate": "2026-10-22"
+  },
+  "closedDateRequest": {
+    "relative": "today",
+    "now": "2026-10-25T16:00:00+08:00",
+    "tradingSessions": ["2026-10-22", "2026-10-23"]
+  },
+  "zeroDenominatorPools": {
+    "limit_up": {"rows": [], "quality": {"status": "ok"}},
+    "failed_limit_up": {"rows": [], "quality": {"status": "ok"}},
+    "limit_down": {"rows": [], "quality": {"status": "ok"}}
+  },
+  "planStates": {
+    "unavailable": null,
+    "confirmed": {
+      "confirmation": [{"metric": "x", "operator": ">=", "value": 2, "text": "x至少2"}],
+      "invalidation": [{"metric": "y", "operator": ">=", "value": 1, "text": "y至少1"}]
+    },
+    "invalidated": {
+      "confirmation": [{"metric": "x", "operator": ">", "value": 2, "text": "x大于2"}],
+      "invalidation": [{"metric": "y", "operator": "==", "value": 0, "text": "y等于0"}]
+    },
+    "inconclusive": {
+      "confirmation": [{"metric": "missing", "operator": ">=", "value": 1, "text": "缺失值至少1"}],
+      "invalidation": [{"metric": "y", "operator": ">", "value": 0, "text": "y大于0"}]
+    },
+    "conflicting": {
+      "confirmation": [{"metric": "x", "operator": ">=", "value": 2, "text": "x至少2"}],
+      "invalidation": [{"metric": "y", "operator": "==", "value": 0, "text": "y等于0"}]
+    }
+  }
+}

@@ -15,6 +15,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `docs/exec-plans/completed/` | 已归档计划 | 只读，完成时移入 |
 | `scripts/` | 本地门禁与工具脚本；`deploy-truenas-k3s.sh` 是 TrueNAS k3s 的 all/database/service 入口，对两个历史 CronJob identity 与 namespace Job 做只读 fail-closed 检测，database 只运行一次 schema hook、最终 all 以 `--no-hooks` 收敛；Hermes caller/prompt 是版本化外部调度集成资产 | 改动须同步 `docs/runbooks.md` 与 `docs/architecture.md` |
 | `.githooks/` | git hook 薄入口 | 只做转发，规则不写在这里 |
+| `.agents/skills/` | 仓库级 Agent Skill；保存任务路由、领域工作流、确定性辅助脚本与按需参考资料 | Skill 实现不得扩大生产权限；改动后运行 Skill 快速校验和对应离线测试 |
 | `.codegraph/` | 代码索引缓存（已 gitignore） | 不手工编辑 |
 | `搭建交易系统/` | 交易系统知识库；按 `01`—`11` 章节目录归档，章节总览使用 `0-主题.md`，正文直接位于对应目录 | 维护章节目录内的 Markdown；新增章节时同步更新本表 |
 | `搭建交易系统-量化版/` | 原交易系统知识库的一对一量化重写；统一规则 ID、数据口径、公式、阈值状态、评分和否决条件 | 与原目录保持相对路径一致；规则变化同步量化版索引和状态文档 |
@@ -41,6 +42,18 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 - 交易系统机器规则库：`trading-rules/`；YAML 是执行事实源，`coverage.yaml` 覆盖全部文档规则 ID。
 - 交易知识 MCP：`src/trading_knowledge/`；消费上述 Git 事实源，索引放在被忽略的 `.artifacts/knowledge-base/`，不进入市场环境 API 或生产数据库。
 - 交易系统目录索引：`docs/trading-system-directory.md` 与 `docs/trading-system-quantified-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
+- 每日市场环境与高/中/低位亏钱效应联合复盘：`.agents/skills/a-stock-daily-tier-summary/`；确定性分析由其 `scripts/analyze_tier_summary.py` 承担，数据合同与描述性方法分别位于 `references/data-contract.md` 和 `references/methodology.md`。
+
+### 仓库级 Agent Skill 边界
+
+| 路径 | 事实职责 | 验证与安全边界 |
+|------|----------|----------------|
+| `.agents/skills/*/SKILL.md` | Skill 触发描述、编排步骤、输出合同和按需参考路由 | 使用 bundled `quick_validate.py` 校验；指令不得暗示对生产、部署、调度、凭据或数据库的额外授权 |
+| `.agents/skills/a-stock-daily-tier-summary/scripts/` | 精确日期的五指数、MA20、宽度、成交与高/中/低位输入归一化、确定性计算和结构化 JSON 输出 | 当前交易日的 v2 overview/indices/breadth/limits 必须同日同 revision，且仅 GET；不得触发采集或写应用存储；外部行情只允许显式、已完成交易日、超时有界的只读降级 |
+| `.agents/skills/a-stock-daily-tier-summary/references/` | 数据字段优先级、质量传播、环境与分层描述标签，以及彼此独立的下一交易日验证方法 | `needs-backtest` 标签不得提升为已验证评分、自动交易建议或机器交易规则；不得把不同日期的环境与分层证据拼接 |
+| `tests/test_a_stock_daily_tier_summary_skill.py`、`tests/fixtures/a_stock_daily_tier_summary/` | Skill 脚本的离线行为、合成样本和端到端输出结构验证 | 禁止网络、真实市场快照、凭据和运行时产物；fixture 必须保持小型且可审计 |
+
+每日联合复盘 Skill 是现有市场数据读面的消费者，不拥有 API、provider、数据库或采集任务。输出保留一个分层验证项和一个环境验证项，两者不得互相替代。若实现需要新增路由、schema、provider、持久化或调度，必须先修订 OpenSpec、架构与 active plan，不能在 Skill 脚本中隐式吸收。
 
 ### 市场环境后端内部地图
 
