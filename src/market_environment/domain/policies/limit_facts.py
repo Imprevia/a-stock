@@ -18,7 +18,23 @@ from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
 
 LIMIT_FACT_SCHEMA_VERSION = 2
+PROMOTION_RULE_VERSION = "limits-promotion-v2"
 POOL_TYPES = frozenset({"limit_up", "failed_limit_up", "limit_down"})
+INVALID_MEMBERSHIP_REASONS = frozenset(
+    {
+        "malformed-row",
+        "malformed-identity",
+        "ambiguous-identity",
+        "identity-code-mismatch",
+        "identity-exchange-mismatch",
+        "invalid-provider-row-date",
+        "provider-row-date-mismatch",
+        "missing-actual-session-date",
+        "provider-date-mismatch",
+        "duplicate-security",
+        "conflicting-pool-membership",
+    }
+)
 VALID_REGIMES = frozenset(
     {
         "main",
@@ -132,25 +148,12 @@ class LimitSecurityFactRecord:
     def membership_valid(self) -> bool:
         """Whether the row can participate in a dated pool membership set."""
 
-        invalid_membership_reasons = {
-            "malformed-row",
-            "malformed-identity",
-            "ambiguous-identity",
-            "identity-code-mismatch",
-            "identity-exchange-mismatch",
-            "invalid-provider-row-date",
-            "provider-row-date-mismatch",
-            "missing-actual-session-date",
-            "provider-date-mismatch",
-            "duplicate-security",
-            "conflicting-pool-membership",
-        }
         return bool(
             self.security_id
             and self.code
             and self.exchange
             and self.actual_as_of == self.as_of
-            and self.invalid_reason not in invalid_membership_reasons
+            and self.invalid_reason not in INVALID_MEMBERSHIP_REASONS
         )
 
     def logical_dict(self) -> dict[str, Any]:
@@ -938,6 +941,8 @@ def normalize_limit_pools(
 
 __all__ = [
     "LIMIT_FACT_SCHEMA_VERSION",
+    "PROMOTION_RULE_VERSION",
+    "INVALID_MEMBERSHIP_REASONS",
     "LimitSecurityFactRecord",
     "LimitSecurityFact",
     "NormalizedLimitSecurityFact",

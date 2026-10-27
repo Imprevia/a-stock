@@ -10,27 +10,47 @@ from typing import Any, Callable
 from sqlalchemy import Date, Connection, bindparam, text
 
 from ....domain.models import DatasetDate
+from ....domain.policies.limit_facts import (
+    INVALID_MEMBERSHIP_REASONS,
+    LIMIT_FACT_SCHEMA_VERSION,
+    PROMOTION_RULE_VERSION,
+)
+from ....snapshot_store import LIMIT_DETAIL_CHECKSUM_KEY, SnapshotIntegrityError
+from ....trading_sessions import TradingDayResolver
 from ....application.ports.v2_market_data import SortKey, V2Page, V2Resource
 from .aggregate_repository import PostgresMaterializedAggregateRepository
-from .repositories import PostgresSnapshotRepository, _json_load
+from .limit_repository import PostgresLimitDetailRepository
+from .repositories import PostgresSnapshotRepository, PostgresTradingSessionRepository, _json_load
 
 
 _PRIVATE_KEYS = frozenset(
     {"_storageSchemaVersion", "_limitsSnapshotState", "_componentRevision"}
 )
+def _membership_predicate(alias: str) -> str:
+    """Translate the domain membership rule for fixed, internal SQL aliases."""
+
+    if alias not in {"current", "previous"}:
+        raise ValueError("unsupported limit membership alias")
+    return (
+        f"{alias}.security_id <> '' AND {alias}.code <> '' "
+        f"AND {alias}.exchange <> '' AND {alias}.actual_as_of={alias}.as_of "
+        f"AND ({alias}.invalid_reason IS NULL "
+        f"OR {alias}.invalid_reason NOT IN :membership_invalid_reasons)"
+    )
+
+
 _LIMIT_POOL_FILTERS = {
     "limit_up": "current.pool_type = 'limit_up'",
     "limit_down": "current.pool_type = 'limit_down'",
     "failed_limit_up": "current.pool_type = 'failed_limit_up'",
     "promoted": (
-        "current.pool_type = 'limit_up' AND current.closed_limit_up = TRUE "
-        "AND EXISTS (SELECT 1 FROM trading_sessions session "
-        "JOIN limit_security_facts previous "
-        "ON previous.as_of = session.previous_as_of "
+        "current.pool_type = 'limit_up' AND current.closed_limit_up = 1 "
+        "AND EXISTS (SELECT 1 FROM limit_security_facts previous "
+        "WHERE previous.as_of = :previous_as_of "
         "AND previous.security_id = current.security_id "
         "AND previous.pool_type = 'limit_up' "
-        "AND previous.closed_limit_up = TRUE "
-        "WHERE session.as_of = current.as_of)"
+        "AND previous.closed_limit_up = 1 "
+        f"AND {_membership_predicate('previous')})"
     ),
 }
 _LIMIT_POOL_GROUPS = {
@@ -137,6 +157,17 @@ def _insufficient_if_empty(
         {**dict(resource.quality), "status": "insufficient"},
         resource.data,
     )
+
+
+class _PromotionSessions:
+    def __init__(self, connection: Connection) -> None:
+        self.repository = PostgresTradingSessionRepository(connection)
+
+    def get_trading_session(self, as_of: date):
+        session = self.repository.get_session(as_of)
+        if session is not None and session.actual_as_of not in (None, as_of):
+            raise SnapshotIntegrityError(f"trading session exact-date mismatch: {as_of.isoformat()}")
+        return session
 
 
 class PostgresV2MarketDataReadAdapter:
@@ -508,6 +539,72 @@ class PostgresV2MarketDataReadAdapter:
             _without(value.data, "securityDetails", "history", "ruleEvidence", "riskEvidence"),
         )
 
+    def _promotion_evidence(
+        self, as_of: date, metadata: V2Resource
+    ) -> tuple[V2Resource, date | None]:
+        """Validate two dated manifests and snapshots without loading their facts."""
+
+        def unavailable(
+            reason: str, warnings: Sequence[str] = ()
+        ) -> tuple[V2Resource, None]:
+            quality = dict(metadata.quality)
+            if quality.get("status") not in {"failed-retained", "failed-missing"}:
+                quality["status"] = "insufficient"
+            quality["reason"] = reason
+            quality["warnings"] = list(
+                dict.fromkeys([*quality.get("warnings", []), *warnings])
+            )
+            return V2Resource(
+                metadata.as_of,
+                metadata.generated_at,
+                metadata.component_revision,
+                quality,
+                metadata.data,
+            ), None
+
+        resolution = TradingDayResolver(_PromotionSessions(self.connection)).resolve(as_of)
+        previous_as_of = resolution.previous_as_of
+        if not resolution.sufficient or previous_as_of is None:
+            return unavailable(resolution.reason or "missing-session-evidence", resolution.warnings)
+
+        details = PostgresLimitDetailRepository(self.connection)
+        dated_manifests = [
+            (day, details.get_manifest(day)) for day in (previous_as_of, as_of)
+        ]
+        if any(manifest is None for _, manifest in dated_manifests):
+            return unavailable("missing-limit-security-dataset")
+        for day, manifest in dated_manifests:
+            assert manifest is not None
+            if (
+                manifest["as_of"] != day
+                or manifest["actual_as_of"] not in (None, day)
+                or manifest["schema_version"] != LIMIT_FACT_SCHEMA_VERSION
+            ):
+                raise SnapshotIntegrityError(f"limit manifest integrity mismatch: {day.isoformat()}")
+            if (
+                manifest.get("membership_complete") is not True
+                or manifest["actual_as_of"] != day
+                or manifest["rule_version"] != PROMOTION_RULE_VERSION
+            ):
+                return unavailable(
+                    "incomplete-adjacent-session-sample",
+                    [warning for _, item in dated_manifests for warning in item.get("warnings", ())],
+                )
+
+        snapshots = PostgresSnapshotRepository(self.connection)
+        for day, manifest in dated_manifests:
+            snapshot = snapshots.get(DatasetDate("limits", day))
+            quality = snapshot.payload.get("quality") if snapshot is not None else None
+            checksum = quality.get(LIMIT_DETAIL_CHECKSUM_KEY) if isinstance(quality, Mapping) else None
+            if not checksum:
+                return unavailable(
+                    "unbound-limit-aggregate",
+                    ["limits aggregate is not bound to the normalized detail checksum"],
+                )
+            if checksum != manifest["dataset_checksum"]:
+                raise SnapshotIntegrityError(f"limit aggregate detail checksum mismatch: {day.isoformat()}")
+        return metadata, previous_as_of
+
     def limits_pool(
         self,
         as_of: date,
@@ -524,7 +621,13 @@ class PostgresV2MarketDataReadAdapter:
         params: dict[str, Any] = {
             "as_of": as_of,
             "limit": limit + 1,
+            "membership_invalid_reasons": sorted(INVALID_MEMBERSHIP_REASONS),
         }
+        if pool_type == "promoted":
+            metadata, previous_as_of = self._promotion_evidence(as_of, metadata)
+            if previous_as_of is None:
+                return _page(metadata, [], limit=limit, sort_key=lambda row: ())
+            params["previous_as_of"] = previous_as_of
         if after is not None:
             cursor_predicate = """AND
                        (current.exchange,current.code,current.security_id)>
@@ -540,12 +643,11 @@ class PostgresV2MarketDataReadAdapter:
             text(
                 f"""SELECT current.* FROM limit_security_facts current
                 WHERE current.as_of=:as_of AND {predicate}
-                  AND current.actual_as_of=current.as_of
-                  AND current.invalid_reason IS NULL
+                                    AND {_membership_predicate('current')}
                   {cursor_predicate}
                 ORDER BY current.exchange,current.code,current.security_id
                 LIMIT :limit"""
-            ),
+            ).bindparams(bindparam("membership_invalid_reasons", expanding=True)),
             params,
         ).mappings()
         values = [self._limit_row(row) for row in rows]
@@ -558,6 +660,9 @@ class PostgresV2MarketDataReadAdapter:
 
     @staticmethod
     def _limit_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        warnings = [str(item) for item in _json_load(row.get("row_warnings_json"), [])]
+        if row.get("invalid_reason") and row["invalid_reason"] not in warnings:
+            warnings.append(str(row["invalid_reason"]))
         return {
             "securityId": row["security_id"],
             "code": row["code"],
@@ -580,8 +685,8 @@ class PostgresV2MarketDataReadAdapter:
             "turnoverRatioPct": row.get("turnover_ratio_pct"),
             "turnover": row.get("turnover"),
             "source": row.get("source"),
-            "rowQuality": row.get("row_quality"),
-            "warnings": list(_json_load(row.get("row_warnings_json"), [])),
+            "rowQuality": row.get("row_quality") or ("ok" if row.get("eligible") else "insufficient"),
+            "warnings": warnings,
         }
 
     def limits_history(

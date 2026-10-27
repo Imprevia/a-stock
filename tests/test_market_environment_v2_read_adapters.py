@@ -1,7 +1,21 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from datetime import date
+from types import SimpleNamespace
+
+import pytest
+
+from src.market_environment.domain.policies.limit_facts import (
+    INVALID_MEMBERSHIP_REASONS,
+    LIMIT_FACT_SCHEMA_VERSION,
+    LimitSecurityFactRecord,
+)
+from src.market_environment.interfaces.http.schemas.models import PROMOTION_RULE_VERSION
+from src.market_environment.limit_ecosystem import _detail_row
+from src.market_environment.snapshot_store import LIMIT_DETAIL_CHECKSUM_KEY, SnapshotIntegrityError
+from src.market_environment.infrastructure.persistence.postgres import v2_market_data as postgres_reads
 
 from src.market_environment.application.ports.v2_market_data import V2Resource
 from src.market_environment.infrastructure.persistence.postgres.v2_market_data import (
@@ -146,7 +160,12 @@ def test_postgres_limits_pool_omits_cursor_sql_and_null_binds_on_first_page() ->
     assert "AFTER_EXCHANGE" not in normalized
     assert "AFTER_CODE" not in normalized
     assert "AFTER_SECURITY_ID" not in normalized
-    assert params == {"as_of": AS_OF, "limit": 3}
+    assert params == {
+        "as_of": AS_OF,
+        "limit": 3,
+        "membership_invalid_reasons": sorted(INVALID_MEMBERSHIP_REASONS),
+    }
+    assert connection.statements[0]._bindparams["membership_invalid_reasons"].expanding is True
 
 
 def test_postgres_limits_pool_binds_non_null_cursor_only_on_later_pages() -> None:
@@ -395,3 +414,250 @@ def test_compatibility_empty_history_first_page_is_insufficient() -> None:
         "insufficient",
         "insufficient",
     ]
+
+
+@pytest.mark.parametrize("pool_type", ["limit_up", "limit_down", "failed_limit_up"])
+def test_pool_membership_predicates_precede_pagination_and_bind_domain_reasons(pool_type) -> None:
+    connection = RecordingConnection()
+    BoundedAdapter(connection).limits_pool(AS_OF, pool_type, after=None, limit=2)
+
+    sql, params = connection.calls[0]
+    normalized = " ".join(sql.split())
+    for identity in ("security_id", "code", "exchange"):
+        assert f"current.{identity} <> ''" in normalized
+    assert "current.actual_as_of=current.as_of" in normalized
+    assert "current.invalid_reason IS NULL OR current.invalid_reason NOT IN" in normalized
+    assert normalized.index("current.invalid_reason NOT IN") < normalized.index("ORDER BY")
+    assert normalized.index("ORDER BY") < normalized.index("LIMIT")
+    assert params["membership_invalid_reasons"] == sorted(INVALID_MEMBERSHIP_REASONS)
+    assert not any(reason in sql for reason in INVALID_MEMBERSHIP_REASONS)
+    assert "eligible" not in normalized
+
+
+@pytest.mark.parametrize("eligible,row_quality", [(False, None), (True, None), (False, "degraded")])
+@pytest.mark.parametrize("warnings", [[], ["missing-board"], ["provider-warning"]])
+def test_postgres_limit_row_matches_detail_quality_and_warning_projection(eligible, row_quality, warnings) -> None:
+    fact = LimitSecurityFactRecord(
+        as_of=AS_OF, actual_as_of=AS_OF, security_id="SSE:600001",
+        code="600001", exchange="SSE", pool_type="limit_up",
+        eligible=eligible, invalid_reason="missing-board", row_quality=row_quality,
+        row_warnings=tuple(warnings), streak_days=None,
+    )
+    row = {**fact.__dict__, "row_warnings_json": warnings}
+    projected = PostgresV2MarketDataReadAdapter._limit_row(row)
+    expected = _detail_row(fact)
+    assert projected == {key: expected[key] for key in projected}
+    assert projected["warnings"].count("missing-board") == 1
+    assert projected["streakDays"] is None
+
+
+@pytest.fixture
+def promotion_evidence(monkeypatch):
+    previous = date(2026, 9, 22)
+    calls = []
+    manifests = {
+        day: {
+            "as_of": day, "actual_as_of": day, "membership_complete": True,
+            "rule_version": PROMOTION_RULE_VERSION,
+            "schema_version": LIMIT_FACT_SCHEMA_VERSION,
+            "dataset_checksum": day.isoformat(), "warnings": (),
+        }
+        for day in (previous, AS_OF)
+    }
+    snapshots = {
+        day: SimpleNamespace(payload={"quality": {LIMIT_DETAIL_CHECKSUM_KEY: day.isoformat()}})
+        for day in (previous, AS_OF)
+    }
+    sessions = {
+        day: SimpleNamespace(
+            as_of=day, actual_as_of=day, is_session=True,
+            previous_as_of=previous if day == AS_OF else None,
+        )
+        for day in (previous, AS_OF)
+    }
+
+    class Details:
+        def __init__(self, connection): pass
+        def get_manifest(self, day):
+            calls.append(("manifest", day))
+            return manifests.get(day)
+        def get_facts(self, day):
+            raise AssertionError("promoted reads must never materialize all facts")
+
+    class Snapshots:
+        def __init__(self, connection): pass
+        def get(self, identity):
+            assert identity.dataset == "limits"
+            calls.append(("snapshot", identity.as_of))
+            return snapshots.get(identity.as_of)
+
+    class Sessions:
+        def __init__(self, connection): pass
+        def get_session(self, day):
+            calls.append(("session", day))
+            return sessions.get(day)
+
+    monkeypatch.setattr(postgres_reads, "PostgresLimitDetailRepository", Details)
+    monkeypatch.setattr(postgres_reads, "PostgresSnapshotRepository", Snapshots)
+    monkeypatch.setattr(postgres_reads, "PostgresTradingSessionRepository", Sessions)
+    return SimpleNamespace(
+        previous=previous, calls=calls, manifests=manifests, snapshots=snapshots, sessions=sessions,
+    )
+
+
+def test_promoted_uses_proven_adjacent_dates_and_identical_member_predicates(promotion_evidence) -> None:
+    connection = RecordingConnection()
+    page = BoundedAdapter(connection).limits_pool(AS_OF, "promoted", after=None, limit=2)
+
+    assert page is not None and len(page.resource.data) == 2
+    sql, params = connection.calls[0]
+    assert params["previous_as_of"] == promotion_evidence.previous
+    for alias in ("current", "previous"):
+        for identity in ("security_id", "code", "exchange"):
+            assert f"{alias}.{identity} <> ''" in sql
+        assert f"{alias}.actual_as_of={alias}.as_of" in sql
+        assert f"{alias}.invalid_reason NOT IN" in sql
+        assert f"{alias}.closed_limit_up = 1" in sql
+    assert "eligible" not in sql
+    assert promotion_evidence.calls == [
+        ("session", AS_OF), ("session", promotion_evidence.previous),
+        ("manifest", promotion_evidence.previous), ("manifest", AS_OF),
+        ("snapshot", promotion_evidence.previous), ("snapshot", AS_OF),
+    ]
+
+
+@pytest.mark.parametrize("day_key", ["previous", "current"])
+@pytest.mark.parametrize("problem", ["missing-manifest", "incomplete", "unknown-completeness", "missing-date", "unsupported-rule", "missing-snapshot", "missing-binding"])
+def test_promoted_missing_prerequisites_stop_before_fact_query(promotion_evidence, day_key, problem) -> None:
+    day = promotion_evidence.previous if day_key == "previous" else AS_OF
+    manifest = promotion_evidence.manifests[day]
+    if problem == "missing-manifest":
+        del promotion_evidence.manifests[day]
+    elif problem in {"incomplete", "unknown-completeness"}:
+        manifest["membership_complete"] = False if problem == "incomplete" else None
+    elif problem == "missing-date":
+        manifest["actual_as_of"] = None
+    elif problem == "unsupported-rule":
+        manifest["rule_version"] = "unsupported"
+    elif problem == "missing-snapshot":
+        del promotion_evidence.snapshots[day]
+    else:
+        promotion_evidence.snapshots[day].payload["quality"].clear()
+    connection = RecordingConnection()
+    page = BoundedAdapter(connection).limits_pool(AS_OF, "promoted", after=None, limit=2)
+    assert page.resource.quality["status"] == "insufficient"
+    assert page.resource.data == [] and page.next_sort_key is None
+    assert connection.calls == []
+
+
+@pytest.mark.parametrize("problem", ["missing-current", "missing-previous", "missing-previous-pointer", "missing-actual", "invalid-order", "non-session"])
+def test_promoted_requires_proven_session_without_older_date_search(promotion_evidence, problem) -> None:
+    current = promotion_evidence.sessions[AS_OF]
+    if problem == "missing-current":
+        del promotion_evidence.sessions[AS_OF]
+    elif problem == "missing-previous":
+        del promotion_evidence.sessions[promotion_evidence.previous]
+    elif problem == "missing-previous-pointer":
+        current.previous_as_of = None
+    elif problem == "missing-actual":
+        current.actual_as_of = None
+    elif problem == "invalid-order":
+        current.previous_as_of = AS_OF
+    else:
+        current.is_session = False
+    connection = RecordingConnection()
+    page = BoundedAdapter(connection).limits_pool(AS_OF, "promoted", after=None, limit=2)
+    assert page.resource.quality["status"] == "insufficient"
+    assert page.resource.data == []
+    assert connection.calls == []
+    assert all(kind == "session" for kind, _ in promotion_evidence.calls)
+
+
+@pytest.mark.parametrize("day_key", ["previous", "current"])
+@pytest.mark.parametrize("problem", ["binding", "manifest-key-date", "manifest-actual-date", "manifest-schema", "session-date"])
+def test_promoted_stored_integrity_errors_are_not_downgraded(promotion_evidence, day_key, problem) -> None:
+    day = promotion_evidence.previous if day_key == "previous" else AS_OF
+    manifest = promotion_evidence.manifests[day]
+    wrong_date = date(2026, 9, 21)
+    if problem == "binding":
+        manifest["dataset_checksum"] = "corrupt"
+    elif problem == "manifest-key-date":
+        manifest["as_of"] = wrong_date
+    elif problem == "manifest-actual-date":
+        manifest["actual_as_of"] = wrong_date
+    elif problem == "manifest-schema":
+        manifest["schema_version"] = -1
+    else:
+        promotion_evidence.sessions[day].actual_as_of = wrong_date
+    connection = RecordingConnection()
+    with pytest.raises(SnapshotIntegrityError):
+        BoundedAdapter(connection).limits_pool(AS_OF, "promoted", after=None, limit=2)
+    assert connection.calls == []
+
+
+def test_promoted_complete_empty_previous_membership_preserves_zero_denominator_quality(promotion_evidence) -> None:
+    class EmptyPrevious(RecordingConnection):
+        def execute(self, statement, params):
+            self.calls.append((str(statement), params))
+            return _Mappings([])
+
+    class EmptyMetadata(BoundedAdapter):
+        def _limits_pool_metadata(self, as_of, pool_type):
+            metadata = self._metadata("market-limits-pool")
+            return replace(metadata, quality={
+                "status": "insufficient", "reason": "zero-denominator", "observations": 0,
+            })
+
+    connection = EmptyPrevious()
+    page = EmptyMetadata(connection).limits_pool(AS_OF, "promoted", after=None, limit=2)
+    assert page.resource.data == [] and page.next_sort_key is None
+    assert page.resource.quality == {
+        "status": "insufficient", "reason": "zero-denominator", "observations": 0,
+    }
+    assert len(connection.calls) == 1
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_promoted_retained_quality_is_preserved_even_when_prerequisites_are_missing(promotion_evidence, unavailable) -> None:
+    class Retained(BoundedAdapter):
+        def _limits_pool_metadata(self, as_of, pool_type):
+            return replace(self._metadata("market-limits-pool"), quality={
+                "status": "failed-retained", "warnings": ["retained same-day snapshot"],
+                "refreshWarning": "retained same-day snapshot",
+            })
+
+    if unavailable:
+        del promotion_evidence.manifests[promotion_evidence.previous]
+    page = Retained(RecordingConnection()).limits_pool(AS_OF, "promoted", after=None, limit=2)
+    assert page.resource.quality["status"] == "failed-retained"
+    assert page.resource.quality["warnings"] == ["retained same-day snapshot"]
+    assert page.resource.quality["refreshWarning"] == "retained same-day snapshot"
+
+
+@pytest.mark.parametrize("snapshot_status,pool_status,expected", [
+    ("degraded", "degraded", "degraded"),
+    ("failed-retained", "ok", "failed-retained"),
+    ("ok", "insufficient", "insufficient"),
+])
+def test_postgres_pool_metadata_preserves_pool_and_retained_quality(snapshot_status, pool_status, expected) -> None:
+    class MetadataConnection:
+        def execute(self, statement, params):
+            assert params == {"as_of": AS_OF}
+            return _Mappings([{
+                "generated_at": "2026-09-23T16:00:00+08:00",
+                "source": "fixture", "status": snapshot_status, "observations": 9,
+                "warnings_json": ["snapshot-warning"],
+                "fetched_at": "2026-09-23T16:00:00+08:00",
+                "refresh_warning": "retained same-day snapshot",
+                "pool_quality_json": {"status": pool_status, "warnings": ["pool-warning"]},
+            }])
+
+    adapter = PostgresV2MarketDataReadAdapter(MetadataConnection())
+    adapter.aggregates = SimpleNamespace(revision=lambda day: SimpleNamespace(value="private-r1"))
+    metadata = adapter._limits_pool_metadata(AS_OF, "limit_up")
+    assert metadata.quality["status"] == expected
+    assert metadata.quality["observations"] == 9
+    assert metadata.quality["warnings"] == [
+        "pool-warning", "snapshot-warning", "retained same-day snapshot",
+    ]
+    assert metadata.quality["refreshWarning"] == "retained same-day snapshot"

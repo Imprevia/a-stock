@@ -42,6 +42,14 @@ core 前向修复仍走正常 collector → typed candidate → fenced committer
 
 现有未版本化 aggregate、core、累计 Chapter 01、next-session、collection 与 THS route 继续并行注册；THS catalog/bars 从 sector links 复用而不复制 contract。dashboard 逐页迁移且保留非完整性错误的 legacy fallback。该 change 不新增数据库 schema、provider、采集/调度、authentication、MCP 或部署路径。回滚只需撤下 v2/discovery router 注册并让 dashboard 恢复 legacy caller；PostgreSQL facts、snapshot、aggregate、collection state 和旧 API 均不变。
 
+## v2 涨跌停池成员与晋级证据（2026-10-27）
+
+领域 `membership_valid` 是三池成员过滤的事实源；成员无效原因使用共享不可变集合。PostgreSQL 在稳定排序和 `limit + 1` 前按非空证券身份、精确 `actual_as_of = as_of`、成员排除原因过滤，并显式允许 null 原因。高级属性不足和 `not-v1-pool` 不清空有效成员。连板梯队只接受有效连续板数；缺连续板数的成员保持可见与 null，不从 observations 或池总数补成首板。
+
+`promoted` 在当前/前日别名复用成员谓词并要求收盘涨停；前日只由可信交易会话证明。读取固定两日 manifest、limits snapshot、trading-session 元数据，复核 membership_complete、支持的规则版本、实际日期与 detail checksum 绑定，不调用 `get_facts()` 全量加载。缺集合、完整度 null/false 或不支持版本返回 missing/insufficient；存储日期或绑定完整性错误沿用 `snapshot_integrity_error`。完整空前日为零分母、null 比率和不足质量。高级 eligible 不作为基础交集门槛，全页晋级身份应与同 revision 聚合分子一致。
+
+行投影沿用既有 nullable 字段、rowQuality 与 warning，存储 exclusion reason 未出现时追加一次。池质量与 failed-retained/refresh warning 不因恢复成员而升级；observations 与本页 returned 分开表达。所有 GET 保持 provider-free、write-free、revision/cursor 绑定和 SQL 有界分页。验收仅用合成数据及隔离 PostgreSQL 临时表/事务回滚，覆盖生产 SQL、HTTP 与每日分层消费者；本变更无 migration、采集、调度或生产写入，生产恢复需独立授权验证。
+
 ## 交易规则平台
 
 ```text

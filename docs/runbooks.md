@@ -27,6 +27,14 @@ PostgreSQL keyset 首页没有 cursor 时，repository 必须使用不含 cursor
 
 验证 v2 时只使用本地 fixture/测试数据库和离线测试：断言 provider 构造/调用、collection start/join、background task 与 write count 均为零；不得用真实 provider smoke、生产 NodePort、生产 PostgreSQL 或部署写来证明 GET 正常。回滚为移除 v2/discovery route 注册并让 dashboard 切回 legacy caller；不删除 PostgreSQL、snapshot、aggregate、run/task/checkpoint，不改 provider gate，不执行 migration，也不改 Hermes/部署配置。legacy 未版本化路径在整个迁移期必须保持可读。
 
+### v2 池观察数非零但明细为空（2026-10-27）
+
+先核对同一精确日期、revision 的三池全页身份、实际日期与行 warning。高级属性不足或 `not-v1-pool` 不应隐藏有效成员；身份/日期/重复/跨池冲突仍排除，SQL 原因判断显式允许 null，过滤必须发生在排序和 `limit + 1` 前。保留原 pool quality、failed-retained 与 refresh warning，不将恢复明细表述为新采集成功。缺 `streakDays` 不能按首板处理，也不能用 observations 补分层样本。
+
+晋级排查固定核对当前/可信前一会话的 manifest、limits snapshot：membership_complete 必须为 true、规则版本受支持、实际日期正确且 detail checksum 绑定通过；高级 eligible 不参与基础晋级门槛。不足证据返回 missing/insufficient，日期或 checksum 损坏返回 `snapshot_integrity_error`；完整空前日仍是 zero-denominator、null 比率。禁止搜索更早会话或通过 GET 补采/修复。合法完整合成集合应满足全页晋级身份数等于同 revision 聚合分子。
+
+本地验收运行 `python -m pytest tests/test_market_environment_v2_postgres_pools.py tests/test_a_stock_daily_tier_summary_skill.py -q`；真实 SQL 测试只接收 `MARKET_ENVIRONMENT_TEST_DATABASE_URL` 指向的隔离 PostgreSQL，以合成临时表和事务回滚验证三池矩阵、分页、晋级、HTTP revision/409/完整性及消费者分层守恒，并监控 GET 的 provider/DML 为零。未设置测试库明确 skip 并记录真实 SQL 验收缺口，不以 skipped 宣称通过。不得使用生产数据库、真实快照或 provider 补齐测试；本修复不新增 migration、调度、采集、回填或部署。生产发布及恢复核对需另行明确授权，回滚仅回退应用版本且保留原事实/快照。
+
 ### Core 跨日期完整性审计与受控前向修复
 
 只读审计先在隔离 fixture/恢复库验证，再由单独获批的生产计划执行。审计只选择 `snapshot_entries(dataset='core')` 与 `materialized_market_environment` 的 key、payload `asOf`、quality `asOf/effectiveAsOf`、各指数 history 最后一日、checksum/revision 引用；不得打印数据库 URL、完整 payload、provider header 或凭据。审计必须使用只读事务并证明 write count 为零。

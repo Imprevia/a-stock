@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
+from ....domain.policies.limit_facts import PROMOTION_RULE_VERSION
 from ....timezone_preferences import validate_timezone
 
 CollectionDataset = Literal[
@@ -74,7 +75,6 @@ PromotionRuleVersion = Literal["limits-promotion-v1", "limits-promotion-v2"]
 PROMOTION_SAMPLE_RULE = (
     "previous complete limit-up membership -> current complete limit-up membership"
 )
-PROMOTION_RULE_VERSION = "limits-promotion-v2"
 SynchronizationAssessmentStatus = Literal["confirmed", "unconfirmed", "contradicted", "insufficient"]
 SynchronizationDimensionStatus = Literal["confirming", "neutral", "contradicting", "insufficient"]
 SynchronizationConclusionCode = Literal[

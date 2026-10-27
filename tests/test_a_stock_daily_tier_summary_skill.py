@@ -517,3 +517,104 @@ def test_insufficient_required_pool_does_not_emit_a_stronger_structure_label() -
     assert result["quality"]["status"] == "insufficient"
     assert result["structure"]["label"] == "数据不足"
     assert result["structure"]["status"] == "insufficient"
+
+
+class PoolRouterTransport:
+    """Exercise the real HTTP mapper in memory, with small pages for consumers."""
+
+    def __init__(self, client):
+        self.client = client
+        self.calls = []
+
+    def get_json(self, url: str, *, timeout: float, headers=None):
+        parsed = urlparse(url)
+        params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+        if "/pools/" in parsed.path:
+            params["limit"] = "2"
+        self.calls.append((parsed.path, dict(params), timeout))
+        response = self.client.get(parsed.path, params=params, headers=headers or {})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+
+def _assert_restored_http_tier_samples(adapter, evidence, *, missing_streak):
+    from contextlib import closing
+    from tests.test_market_environment_v2_postgres_pools import pool_http_client
+
+    with closing(pool_http_client(adapter)) as client:
+        transport = PoolRouterTransport(client)
+        previous = summary.fetch_local_session(
+            "http://synthetic.test", evidence.previous,
+            previous_session=None, transport=transport,
+        )
+        current = summary.fetch_local_session(
+            "http://synthetic.test", evidence.current,
+            previous_session=evidence.previous, transport=transport,
+        )
+    result = summary.analyze_sessions(previous, current)
+    for tier in ("high", "middle", "low"):
+        outcome = result["tierOutcomes"][tier]
+        assert outcome["sampleSize"] == 4
+        categories = ("continuedLimitUp", "failedLimitUp", "limitDown", "outsideObservedPools")
+        assert [outcome[key] for key in categories] == [1, 1, 1, 1]
+        assert sum(outcome[key] for key in categories) == outcome["sampleSize"]
+        assert outcome["continuedRatio"] == 0.25
+    repair = result["failedSampleRepair"]
+    assert (repair["numerator"], repair["denominator"], repair["ratio"]) == (1, 2, 0.5)
+    assert all(not fact.eligible for facts in evidence.facts_by_date.values() for fact in facts)
+    assert len(previous.pools["limit_up"].members) == 12 + int(missing_streak)
+    assert sum(outcome["sampleSize"] for outcome in result["tierOutcomes"].values()) == 12
+    assert result["quality"]["status"] == "degraded"
+    if missing_streak:
+        missing = [member for member in previous.pools["limit_up"].members if member.identity.code == "609999"]
+        assert len(missing) == 1 and missing[0].streak_days is None
+        assert any("lack a valid consecutive-board field" in warning for warning in previous.pools["limit_up"].quality.warnings)
+        aggregate_count = evidence.aggregates[evidence.previous]["chapter01"]["limits"]["limitUpCount"]
+        assert aggregate_count == 13
+    assert any(params.get("cursor") for _, params, _ in transport.calls)
+    assert all(timeout == 5.0 for _, _, timeout in transport.calls)
+    assert all("/limits" in path and "collection" not in path for path, _, _ in transport.calls)
+    assert all("revision" in params for path, params, _ in transport.calls if "/pools/" in path)
+
+
+@pytest.fixture
+def restored_pool_provider_guard(monkeypatch):
+    from tests.test_market_environment_v2_postgres_pools import forbid_pool_provider_access
+
+    yield from forbid_pool_provider_access.__wrapped__(monkeypatch)
+
+
+@pytest.mark.parametrize("missing_streak", (False, True))
+def test_restored_pool_http_evidence_reaches_daily_tier_arithmetic(
+    restored_pool_provider_guard, missing_streak,
+):
+    from src.market_environment.infrastructure.v2_market_data_compat import CompatibilityV2MarketDataReadAdapter
+    from tests.test_market_environment_v2_postgres_pools import build_pool_evidence
+
+    evidence = build_pool_evidence(missing_streak=missing_streak)
+    _assert_restored_http_tier_samples(
+        CompatibilityV2MarketDataReadAdapter(evidence.aggregates), evidence,
+        missing_streak=missing_streak,
+    )
+
+
+@pytest.fixture
+def restored_pool_postgres_connection():
+    from tests.test_market_environment_v2_postgres_pools import postgres_pool_connection
+
+    yield from postgres_pool_connection.__wrapped__()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("missing_streak", (False, True))
+def test_restored_postgres_http_evidence_reaches_daily_tier_arithmetic(
+    restored_pool_postgres_connection, restored_pool_provider_guard, monkeypatch, missing_streak,
+):
+    from tests.test_market_environment_v2_postgres_pools import (
+        build_pool_evidence, pool_reads_only, seed_postgres_pool_evidence,
+    )
+
+    evidence = build_pool_evidence(missing_streak=missing_streak)
+    adapter = seed_postgres_pool_evidence(restored_pool_postgres_connection, evidence)
+    with pool_reads_only(restored_pool_postgres_connection, monkeypatch):
+        _assert_restored_http_tier_samples(adapter, evidence, missing_streak=missing_streak)

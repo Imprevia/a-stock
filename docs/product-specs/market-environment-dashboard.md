@@ -124,6 +124,12 @@ breadth/limits history 在 PostgreSQL 上必须支持省略全部可选筛选、
 
 本页必须覆盖 `ready`、`partial`、`refreshing`、`missing`、`failed-retained`、`failed-missing`、`degraded` 和 `insufficient` 状态。刷新失败时保留同日期最后一次成功证据并标记刷新 warning；没有保留值才显示 `failed-missing`。普通 GET 只读取本地快照/materialized aggregate，provider 调用数必须为 0。
 
+### v2 池成员读取验收（2026-10-27）
+
+涨停、跌停、炸板明细保留具有有效规范身份与精确实际日期的成员，即使高级属性不足或旧排除原因为 `not-v1-pool`；身份、日期、重复与跨池冲突行仍排除。缺连续板数的成员保留 null，不进入已验证高/中/低位分母，不用 aggregate 计数补齐。行级来源、rowQuality、排除 warning、nullable 字段与池级 degraded/failed-retained 必须保留。
+
+晋级明细与基础聚合使用同一可信相邻两日完整涨停身份交集，要求支持的规则版本和 detail checksum/limits snapshot 绑定；不要求旧 eligible。缺前日、完整度 null/false、版本不足时返回 missing/insufficient 空明细，已存日期/校验和损坏返回既有完整性错误。完整空前日保持空晋级集合、null 比率与 zero-denominator 不足。全页成员稳定有序、无重复无遗漏，过滤先于分页；revision 变化继续返回 409。observations 是数据集口径，returned 是本页口径，不能互相替代。测试使用隔离 PostgreSQL 合成两日证据并验证每日分层结果守恒，不调整总结格式或经验阈值。本次验收不表示生产已恢复。
+
 ### 第 03 页数据与发布边界
 
 - limits detail/V1 写入开关 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED` 默认关闭；关闭时旧五字段路径和本地快照继续可读，开启前须通过 Alembic 迁移、幂等、lease/CAS、provider-free GET、失败保留和前端状态验证。

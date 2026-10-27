@@ -3,7 +3,12 @@ import sqlite3
 
 import pytest
 
-from src.market_environment.limit_facts import normalize_limit_pools, normalize_limit_rows
+from src.market_environment.limit_facts import (
+    INVALID_MEMBERSHIP_REASONS,
+    LimitSecurityFactRecord,
+    normalize_limit_pools,
+    normalize_limit_rows,
+)
 from src.market_environment.snapshot_store import (
     SnapshotIntegrityError,
     SnapshotStore,
@@ -434,3 +439,38 @@ def test_limit_fact_row_and_dataset_checksums_round_trip(tmp_path) -> None:
         connection.execute("UPDATE limit_security_facts SET close_price = 99")
     with pytest.raises(SnapshotIntegrityError, match="checksum mismatch"):
         store.get_limit_security_facts(AS_OF)
+
+
+@pytest.mark.parametrize("reason", sorted(INVALID_MEMBERSHIP_REASONS))
+def test_shared_membership_reasons_exclude_invalid_rows_without_changing_eligibility(reason) -> None:
+    assert isinstance(INVALID_MEMBERSHIP_REASONS, frozenset)
+    fact = LimitSecurityFactRecord(
+        as_of=AS_OF, actual_as_of=AS_OF, security_id="SSE:600000",
+        code="600000", exchange="SSE", pool_type="limit_up",
+        eligible=True, invalid_reason=reason,
+    )
+    assert fact.membership_valid is False
+    assert fact.eligible is True
+
+
+@pytest.mark.parametrize("reason", [None, "missing-board", "missing-listing-window", "not-v1-pool"])
+def test_shared_membership_rule_keeps_optional_enrichment_exclusions_visible(reason) -> None:
+    fact = LimitSecurityFactRecord(
+        as_of=AS_OF, actual_as_of=AS_OF, security_id="SSE:600000",
+        code="600000", exchange="SSE", pool_type="limit_up",
+        eligible=False, invalid_reason=reason,
+    )
+    assert fact.membership_valid is True
+    assert fact.eligible is False
+
+
+@pytest.mark.parametrize("override", [
+    {"security_id": ""}, {"code": ""}, {"exchange": ""},
+    {"actual_as_of": None}, {"actual_as_of": PREVIOUS},
+])
+def test_shared_membership_rule_requires_nonempty_identity_and_exact_actual_date(override) -> None:
+    values = dict(
+        as_of=AS_OF, actual_as_of=AS_OF, security_id="SSE:600000",
+        code="600000", exchange="SSE", pool_type="limit_up",
+    )
+    assert LimitSecurityFactRecord(**{**values, **override}).membership_valid is False

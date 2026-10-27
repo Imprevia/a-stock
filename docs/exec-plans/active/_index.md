@@ -10,6 +10,7 @@
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
 | `refactor-active-direction-research-workbench` | Codex | evidence-module-repair-complete-with-explicit-source-gaps（34/34） | 2026-10-21 |
+| `restore-v2-limit-pool-membership` | Codex | completed-local-only（17/17；生产恢复未授权） | 2026-10-27 |
 | `fix-breadth-page-data-availability` | Codex | completed（20/20） | 2026-10-22 |
 | `repair-market-api-errors-20261016` | Codex | completed-with-production-repair | 2026-10-17 |
 | `deploy-core-date-integrity-to-k3s-20261016` | Codex | completed-with-production-write | 2026-10-16 |
