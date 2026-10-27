@@ -14,7 +14,7 @@ complete-deployed-data-repair-pending
 - 将存量 snapshot/materialized 完整性冲突映射为稳定、脱敏、provider-free 的 HTTP 503 `snapshot_integrity_error`。
 - 前端不得把该完整性错误隐藏为 legacy 或跨日期成功结果；普通兼容 fallback 继续保留。
 - 补充只读审计、受控前向修复和发布后业务 GET smoke 文档。
-- 本 implementation change 本身不执行真实 provider、生产 PostgreSQL 修复写入、Secret/PVC、Hermes 或 Kubernetes 调度操作；镜像部署由独立计划 `deploy-core-date-integrity-to-k3s-20261016` 执行并留证。
+- 本 implementation change 本身不执行真实 provider、生产 PostgreSQL 修复写入、Secret/PVC、外部调度或 Kubernetes 调度操作；镜像部署由独立计划 `deploy-core-date-integrity-to-k3s-20261016` 执行并留证。
 
 ## Acceptance（验收）
 

@@ -12,7 +12,7 @@
 
 ## Stage（阶段）
 
-- 当前阶段：**10 实地打通（10.1–10.5、10.9、历史 10.11 激活及 0006 发布已完成；revision 107 激活先由 revision 113、现由 revision 116 absent 状态取代，观察转交 Hermes）**
+- 当前阶段：**10 实地打通（10.1–10.5、10.9、历史 10.11 激活及 0006 发布已完成；revision 107 激活已由 revision 113、现由 revision 116 absent 状态取代，未完成的自然观察随一次性调度资产从仓库退役）**
 - 阶段序列：OpenSpec → 事实文档 → 数据模型/持久化 → provider/应用编排 → API/CLI → 前端 → 全量验证 → 回写
 
 ## Status（状态）
@@ -23,10 +23,9 @@ identity 的耦合修复已由 active plan [`fix-ths-catalog-revision`](fix-ths-
 依赖语义；本 plan 的 `30/32` 历史进度、生产 release/CronJob 事实、旧成功数据及 failed/blocked 审计均不
 重标、不删除、不改写。新修复经用户批准新增 `0007_ths_catalog_identity`，仅删除不含交易日的
 冗余唯一约束；该 migration 和不可变镜像发布已在 `fix-ths-catalog-revision` 7.2–7.3 完成，该 change 的发布终点
-为 Helm revision 113、schema v10/0007。后续 Hermes change 7.2 已将当前生产升级至 revision 116、schema
+为 Helm revision 113、schema v10/0007。后续 7.2 已将当前生产升级至 revision 116、schema
 v11/0008，manual=0、automation=0、writer=0、CronJob/Job absent。revision 106/107 仅作为历史激活证据；
-其首次自然触发没有完成验收，也不得为补证而重建。该观察由 `replace-market-collection-scheduling-with-hermes`
-7.5 承接。
+其首次自然触发没有完成验收，也不得为补证而重建；该观察已随一次性外部调度资产从仓库退役。
 
 `stage-10-11-cronjob-activated-observation-pending` · 2026-10-14 用户明确要求“启动 CronJob”，授权对生产 `a-stock/a-stock` 执行受控调度激活。写前只读确认 Helm revision 105 deployed、k3s `v1.26.6+k3s-6a894050-dirty`、controller/host timezone `Asia/Shanghai`、CronJob/Job absent、活动 collection run/task 均为 0、Dashboard/PostgreSQL 1/1 Ready 且 0 restart；冻结镜像为 `localhost/a-stock-market-environment:20261014-104800-b0a7c35`，containerd manifest digest `sha256:ef8b524bf3e143ec68348100ed9384be8bd21048637a03cd1c358fcaaf7a2ae7`。离线 `compare-add-suspended` 与 `compare-suspend-only`、server-side dry-run 均通过。受控入口随后创建 revision 106 的 Helm-owned suspended CronJob，再以 `ACTIVATION_CATCH_UP_MODE=next-schedule` 将 revision 107 激活；两次时间窗门禁均确认首次自然触发为 2026-10-14 16:30（Asia/Shanghai）。revision 106 → 107 的完整 manifest diff 只有 `spec.suspend: true -> false`；写后 CronJob UID `bfea250d-3ae4-4b16-b5a3-28a5ed8dd625` 未变、ACTIVE=0、LAST SCHEDULE 为空、namespace Job 为空，未创建一次性 Job 或手工调用 provider。
 
@@ -126,9 +125,9 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 - 2026-10-14 11:29–11:30（Asia/Shanghai）受控激活完成：`--release-suspended` 生成 Helm revision 106，CronJob `suspend=true`；`--activate-schedule` 在 preflight/pre-write 两次时间窗校验均返回 `allowed=true, mode=next-schedule, nextTriggerShanghai=2026-10-14T16:30:00+08:00` 后生成 revision 107。写后 stored values 为 `enabled=true / suspend=false / timezoneStrategy=controller / controllerTimeZone=Asia/Shanghai / controllerCanaryVerified=true`；CronJob schedule `30 16 * * 1-5`、`Forbid`、starting/active deadline `1800/3600`、目标镜像与 PostgreSQL Secret 不变。Dashboard/PostgreSQL 1/1 Ready、0 restart，两个 PVC UID 与两个 Secret UID 不变，schema v9/Alembic `0006_ths_rank_null_pct`，活动 run/task 仍为 0；health、首页和 `/data-collection` 均 HTTP 200。
 - 激活后文档与调度门禁验证：`openspec validate add-fuyao-ths-sector-datasets --strict` 通过；`.venv/bin/python scripts/check-docs-contract.py --mode=full` 通过；`tests/test_scheduling_packet_validator.py` + `tests/test_truenas_scheduling_guard.py` 共 `186 passed`；`git diff --check` 通过。OpenSpec 保持 `30/32`，未将 9.1/9.2 因 CronJob 激活误标完成。
 - revision 106/107 激活只保留为历史：`fix-ths-catalog-revision` 7.1–7.3 后曾收敛至 Helm revision 113、
-  schema v10/0007；后续 Hermes change 7.2 已 additive 升级至 revision 116 / schema v11/0008，仍保持
+  schema v10/0007；后续 7.2 已 additive 升级至 revision 116 / schema v11/0008，仍保持
   manual/automation=0、writer=0、CronJob/Job absent；没有把未观察的 Kubernetes 自然触发标成成功。
-  Kubernetes schedule 不再恢复，后续两个交易日观察由 Hermes change 7.5 承接。
+  Kubernetes schedule 不再恢复；该两日观察已随一次性外部调度资产从仓库退役，不再作为仓库内待办。
 
 - 2026-10-14 生产发布完成：新备份 SHA-256 `82286ef4…e52c` 已通过 archive list 和隔离恢复；Helm 101 临时冻结 manual refresh，102 应用 0006，103 rollout 新服务，104 收敛完整 release，105 hook-free 恢复 manual refresh。最终 schema v9 / Alembic `0006_ths_rank_null_pct` / `change_pct nullable=YES`，目标镜像 1/1 Ready、0 restart，health/首页/数据采集页/status/catalog 均 HTTP 200；PVC/Secret/capability/normalized THS 行数不变，CronJob/Job absent，未调用 provider。
 - 10.5 collection regression fix 已完成：`put_catalog_revision` 对同 revision 的抓取时间漂移保持幂等，`list_rankings` 能安全读取 nullable `change_pct`/`volume`/`turnover`；新增 `0006_ths_ranking_nullable_change_pct` 并将 runtime schema minimum 提升至 9。最终 THS/迁移 focused `58 passed`、全库 `1432 passed, 6 skipped`；未执行生产 migration、部署或重新采集。
@@ -166,7 +165,7 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
 
 - THS capability 与写授权仍必须经 capability policy、双 revision、结算时间和请求预算门禁；当前 manual=0、writer=0，
   CronJob/Job absent。revision 107 的激活和当时 `THS_WRITES_AUTHORIZED=1` 仅为历史状态；未完成的自然观察不再通过
-  Kubernetes 补做，而由 Hermes change 7.5 承接。
+  Kubernetes 补做，其记录已随一次性外部调度资产从仓库退役。
 - **10 实地打通分步授权清单（每一步单独确认）**：
   - [x] 10.1 用户选 B；`industry-ranking` 在 `883401.TI` 缺 `changePct` 时不再 hard fail；adapter / sort key / probe / policy / collector / committer 已落地（10.1-followup 详见 Status）。
   - [x] 10.2 盘后真实 probe：`/tmp/fuyao-ths-report-20261012.json`；六份 report 中三份 `eligible`（catalog 845 行 / membership 203 人 / history 484 根 K 线），三 dump `ineligible`（SHA-256 缺失）；outcome 已写入 Status 表。
@@ -179,13 +178,13 @@ fuyao|sector-turnover-history|fuyao-ths-history-v1|eligible|484|1|2026-10-12 15:
   - 10.8 完整 dry-run 三数据集采集，校验数据采集页状态。
   - [x] 10.9 pg_dump + 隔离 PostgreSQL 恢复演练：dump `/tmp/a-stock-pgdump-20261013.dump`（sha256 `1723b24c…3ee5`）+ 本地隔离 PG 容器恢复校验，详见 Status 表与 10.9 evidence。
   - [x] 10.10 文档回写（plan / OpenSpec tasks 9.1+9.2 保持未完成 / `docs/status.md` / runbook）。
-  - [x] 10.11 历史生产 CronJob 受控激活：revision 105 -> 106 suspended -> 107 active；未即时创建 Job，且首次自然触发未完成验收。当前 revision 116 已证明 CronJob/Job absent，观察转交 Hermes 7.5，不重建旧调度。
+  - [x] 10.11 历史生产 CronJob 受控激活：revision 105 -> 106 suspended -> 107 active；未即时创建 Job，且首次自然触发未完成验收。当前 revision 116 已证明 CronJob/Job absent；该观察已随一次性外部调度资产从仓库退役，不重建旧调度。
 
 ## Next Step（下一步）
 
 当前有效下一步：保持 production revision 116 的 CronJob/Job absent、manual/automation=0、writer=0，不重建 revision 107
 调度。`fix-ths-catalog-revision` 7.4 盘后定向三任务验证独立收口；两个交易日 observation、七数据集读回与
-THS lineage 由 `replace-market-collection-scheduling-with-hermes` 7.5 承接。OpenSpec 9.1/9.2 继续保持未完成；
+THS lineage 的仓库内记录已随一次性外部调度资产退役。OpenSpec 9.1/9.2 继续保持未完成；
 10.6/10.7/10.8 与隔离 PG 容器 `cleanup` 仍需分别授权，provider 失败继续保留真实
 `partial` / `degraded` / `insufficient`，不得改写为 success。
 

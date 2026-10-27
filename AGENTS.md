@@ -86,7 +86,7 @@ python scripts/check-docs-contract.py --mode=full
 
 - 市场数据必须保留真实日期、来源和质量状态；缺失数据用 `null` / `missing` / `insufficient` 表达，不用 0 或其他日期数据补齐。
 - 普通 GET 只读本地精确日期快照或聚合；provider 采集只能由明确的盘后或本地采集命令触发。
-- 仓库不得提供 application-owned market-data CronJob、`scheduledCollection` values 或调度激活路径；普通部署只读检查两个历史 CronJob identity 并在任一存在或状态不确定时 fail closed。Hermes job、automation gate、生产部署、手工采集、Helm release、NodePort、PVC 和 SQLite 数据操作须遵循 `docs/runbooks.md`，需要外部写入时先取得明确授权。
+- 仓库不得提供 application-owned market-data CronJob、`scheduledCollection` values 或调度激活路径；普通部署只读检查两个历史 CronJob identity 并在任一存在或状态不确定时 fail closed。外部盘后调度 job、automation gate、生产部署、手工采集、Helm release、NodePort、PVC 和 SQLite 数据操作须遵循 `docs/runbooks.md`，需要外部写入时先取得明确授权。
 - 不得提交凭据、私有环境文件、真实数据快照或运行时产物；不要执行删除 PVC、卸载 release、修改生产集群或改变远端分支的命令来“清理”问题。
 - 前端所有可见文字（含图例、坐标轴和 tooltip）不小于 `14px`；桌面和 390px 移动宽度均不得出现页面级横向溢出、重叠或截断。宽表自身滚动除外。
 - 当前未接入的数据集和未验证的交易规则必须保持明确的 `unverified` / `documented-only` 状态，不得用历史评论或口头说明代替证据。
@@ -96,4 +96,5 @@ python scripts/check-docs-contract.py --mode=full
 ## 沟通语言
 
 - 后续与用户的回复统一使用中文。
+- 后续 Git 提交信息的标题和正文统一使用中文；类型前缀（如 `feat`、`fix`）、代码标识符和必要的技术名词可保留原文。
 - 不输出内部思考过程；仅提供必要的结论、依据和执行结果。

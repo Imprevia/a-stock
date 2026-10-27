@@ -36,7 +36,7 @@ completed-with-production-write
 
 ## Remaining Gaps（剩余缺口）
 
-- 无本次部署范围内缺口。业务数据采集与 Hermes 调度观察属于既有独立运行流程，本次未触发。
+- 无本次部署范围内缺口。业务数据采集与外部盘后调度观察属于既有独立运行流程，本次未触发。
 
 ## Next Step（下一步）
 

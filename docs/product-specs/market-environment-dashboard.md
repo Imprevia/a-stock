@@ -4,7 +4,7 @@
 
 `active` · 版本 `0.18`
 
-后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。项目内 Kubernetes 定时采集正在退役，仓库不得再创建或激活 application-owned CronJob；盘后时钟与结果投递由 `192.168.1.21` 上的 Hermes Agent 持有，后端自动化写入口保持独立且默认关闭。
+后端分层重构的实现状态：普通查询、状态和 next-session 读取已切换到 provider-free application query boundary；正式运行时存储为 PostgreSQL，SQLite 仅用于停写迁移/测试输入；旧 `service.py`、`providers.py`、`snapshot_store.py` 仅保留稳定导入 shim，实际 legacy 实现位于 `infrastructure/legacy/`。项目内 Kubernetes 定时采集正在退役，仓库不得再创建或激活 application-owned CronJob；盘后时钟与结果投递由仓库外的受控调度器持有，后端自动化写入口保持独立且默认关闭。
 
 采集适配器统一已完成；本版本将公共采集集合由五项迁移为 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth`、`activeDirection` 七项。各数据集统一消费 typed `CollectionOutcome`，provider 差异由 dataset acquisition plan 与 source adapter 隔离，task/lease/同日留存/提交/聚合由 coordinator 和 typed committer 统一处理。`requests` 保持默认 HTTP engine；可选 Scrapling static engine 默认不安装、不启用且 host/source allowlist 为空，不构成生产数据源批准。
 
@@ -52,7 +52,7 @@ breadth/limits history 在 PostgreSQL 上必须支持省略全部可选筛选、
 - 开发阶段通过独立的 `/data-collection` 数据管理页查看精确日期的七类数据状态，可单项重新采集或一键采集全部数据；`industry-ranking`、`sector-turnover`、`sector-breadth` 使用三个独立任务卡，历史回填和成员事实导入另列 operation 进度，不伪装成普通每日重试。普通研究页面不承担自动采集职责；第 05 页仅可通过明确操作发起板块历史回填。
 - 数据采集页首次打开时由后端按上海时区解析有效市场日：开市前（09:30 前）选择上一工作日对应的真实交易日并跳过周末；节假日或实际日期无证据时返回 `insufficient`/拒绝，provider 返回的实际日期必须与目标日期一致；开市后才选择上海当天。这样不会把尚未开始的当日误标为已完成，也不会把上一交易日行情伪装成当天；用户手工选择历史日期后仍严格展示 provider 日期限制。
 - 已确认的盘前误标必须显式选择后端：生产运行时只允许在受控停写窗口对目标 PostgreSQL 使用 `snapshots relabel-date --database-url ...`，先 dry-run 再显式 `--apply`；隔离 SQLite 副本仅用于迁移/回归演练。流程同步快照、任务、涨跌停事实与聚合，校验 checksum/目标冲突并留下可回滚审计，不允许普通采集路径自动跨日期改名、静默回退 SQLite 或覆盖目标日期已有成功值。
-- Hermes 在明确配置的 `Asia/Shanghai` 时区于工作日 15:30 调用 `POST /api/market-environment/collection-runs/full`，并把摘要投递到已批准的飞书当前会话；后端不接受客户端指定日期或数据集，固定执行七项 canonical collection。自动化与手工采集共享同一 task、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采；16:00 后不为遗漏时隙补跑。
+- 盘后自动采集由仓库外的受控调度器在明确配置的 `Asia/Shanghai` 时区于工作日盘后调用 `POST /api/market-environment/collection-runs/full`，并把摘要投递到其已批准的通知目标；该调度器的主机、schedule、投递目标和 pre-run 脚本属于一次性外部配置，不在本仓库记录。后端不接受客户端指定日期或数据集，固定执行七项 canonical collection。自动化与手工采集共享同一 task、lease、快照和失败隔离模型，结果继续在 `/data-collection` 查看和补采；同一调度时隙的补偿必须复用相同 slot key，后端不对 `partial` 自动整批重试。
 
 ## 范围
 
@@ -88,7 +88,7 @@ breadth/limits history 在 PostgreSQL 上必须支持省略全部可选筛选、
 - 新能力的隔离 probe、capability promotion、生产迁移、首次目录同步、历史回填、dump 导入和部署均不属于默认实现写操作，必须在上海盘后取得再次明确授权。回滚只关闭新 provider 开关和写入口，保留新旧 evidence、additive 表、任务、Secret 与 PVC，不恢复旧 `sectors` 公共采集器。
 - breadth 历史维护只通过默认 dry-run 的 `snapshots breadth-history` CLI 进行，单次最多 20 个已确认交易日；`--apply` 必须同时携带 `--allow-real-provider` 和 `--allow-snapshot-writes`。每个目标日必须证明 TDX 包日期、普通 A 股 universe 和关键字段完整，并复用现有 task/run、lease/fencing、typed committer 与聚合重建链。包不可用、错日或样本不足时记录失败且不写成功快照、不覆盖同日成功证据、不使用其他日期替代。真实 provider 访问、生产 snapshot 写入、部署和生产回填分别需要额外明确授权。
 - 涨跌停生态以扶摇三类日期化股票池为主源、东方财富为降级与交叉核对源；交易日历确认请求日期后允许记录 `dateEvidence=request-parameter`，分页总数、规范身份或显式日期冲突任一不完整时不得写成成功集合。两源集合不一致时按规范身份取并集，扶摇字段优先，东方财富独有行和整日质量标记 `degraded` 并保留 warning。
-- 盘后自动采集由 Hermes 经内网 HTTP 调用 Dashboard service，使用与 Dashboard 相同的后端进程、PostgreSQL Service/Secret、task、lease 和 snapshot；Hermes 不获得数据库凭据、PVC、provider 凭据、CLI 或部署权限，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
+- 盘后自动采集由该外部调度器经内网 HTTP 调用 Dashboard service，使用与 Dashboard 相同的后端进程、PostgreSQL Service/Secret、task、lease 和 snapshot；该调度器不获得数据库凭据、PVC、provider 凭据、CLI 或部署权限，也不复用只生成交易规则 Artifact 的 GitHub Actions workflow。
 - full endpoint 要求 `Idempotency-Key`。同 key 与同语义（服务端日期、operation version、固定七数据集 fingerprint）跨超时、断线、202 和进程重启复用同一 persisted run；wait timeout 不属于语义，相同 key 的语义冲突返回 409。900 秒内 terminal 返回 HTTP 200；仍运行返回 202、`Location`、`Retry-After` 与 provider-free `statusUrl`，断开客户端不取消任务。
 - 每项结果持久化 nullable `failure {category,message,retryable,retained}`。`failed-retained` 只能表示本次失败且保留同日旧成功数据，不得计入本次成功；`failed-missing`、`blocked/dependency`、`busy/concurrency` 和 worker interruption 保持独立分类。单项失败不停止无关数据集，terminal 全失败仍以 HTTP 200 返回完整业务结果。
 - Helm/Kustomize/TrueNAS render 不再包含 application CronJob，也不暴露 schedule component、suspend/activate/disable 模式或 `scheduledCollection` values。普通部署在首个目标写入前后都以 `a-stock-data-collection` 和 `market-data-collection` 两个旧 identity 检查 stored/live 状态；任一 active 或 suspended 遗留资源存在即 fail closed，处置需要独立审核，不能通过普通部署恢复或修改。调度/provider-backed collection Job 始终 absent；经单独授权的 backend/schema rollout 仅允许精确的 provider-free `a-stock-schema-migration` hook 在 database 阶段执行一次，命令只能是 `alembic upgrade head`，legacy SQLite migration 必须关闭。service 与最终完整 release 收敛都使用 `--no-hooks`；成功后全部 namespace Job 再次 absent，失败则停止 service/full 收敛并保留 failed Job 与脱敏诊断证据，不得删除 Job 制造 absent。
@@ -215,16 +215,16 @@ active-direction 继续提供旧 `topStocks` Top-10 字段；新增可选 `resea
 - 研究页首次自动加载沿用 15:00 截止规则；若候选日期不是交易日，顶部日期同步为核心响应确认的实际交易日，用户手动选择日期后不被自动覆盖。
 - 同步性研判在桌面和 390px 移动视口均完整显示模式、三项确认、结论和风险；移动端确认项纵向排列，不出现文字重叠或小于 14px 的可见文字。
 - 数据采集页在桌面和 390px 移动视口中保持日期、状态、进度和操作可读，不出现控件重叠；采集期间保留旧数据而不是全屏阻塞。
-- TrueNAS 固定 `NodePort:32001` 的生产部署保持 manual refresh 关闭；若负责人显式开启独立 automation gate，文档与验收必须说明所有可路由客户端都能调用 full endpoint，不得将该网络误述为经过认证、授权或仅限 Hermes。
+- TrueNAS 固定 `NodePort:32001` 的生产部署保持 manual refresh 关闭；若负责人显式开启独立 automation gate，文档与验收必须说明所有可路由客户端都能调用 full endpoint，不得将该网络误述为经过认证、授权或仅限该调度器。
 - 开市前（09:30 前）首次打开数据采集页时，默认日期为后端解析的上一工作日对应的真实交易日（周末跳过）；节假日或 provider 日期证据不足时保持 `insufficient`/`failed` 并拒绝写入，不得将前一日数据写入当日键。`industry-ranking`、`sector-turnover`、`sector-breadth` 仅接受当前已完成上海交易日，结算前拒绝 provider I/O；研究页仍保持 15:00 前默认上一日期的规则。
 - 四类目录或完整快照的瞬态失败按共享 transport policy 在请求预算内有界恢复；覆盖、日期或身份仍不完整时只允许保留同日期成功快照，并区分 `failed-retained`、`failed-missing` 与依赖 `blocked`。
 - 新板块契约不提供或推断单一 `leader` 角色；Top 成交和 Top 涨幅名单只展示经过验证的证券身份、原始值、排序与 lineage。
 - 容量方向主域有效时不请求延迟域；主域恢复失败而延迟域有效时保存 `eastmoney-clist-delay` / `fallback` 结果并保留主域 warning。
 - 容量方向延迟域不足 30 个有效样本、缺少代码/名称/成交额或未按成交额非递增排列时必须拒绝保存；两个端点均失败时只保留同日期成功快照，不得跨日期替代。
-- Hermes 在 `Asia/Shanghai` 工作日 15:30 使用一个稳定 schedule-slot key 调用 full endpoint，并覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection`；三项板块任务保持依赖顺序。漏跑只允许在 16:00 前以同一 slot key 补偿，之后必须跳过并通知到已批准的飞书当前会话。
+- 盘后自动采集调度器采用一个稳定 schedule-slot key 调用 full endpoint，并覆盖 `core`、`breadth`、`limits`、`industry-ranking`、`sector-turnover`、`sector-breadth` 和 `activeDirection`；三项板块任务保持依赖顺序。同一时隙的补偿必须复用相同 slot key，漏跑时段之外必须跳过并通知到该调度器的通知目标。
 - full endpoint 在结算时间前以 422 且零 run/task/provider I/O 拒绝，周末返回 skipped；单项失败时其他成功数据仍落盘，父批次状态、结构化 failure 和兼容 warning 可在 `/data-collection` 与 status GET 查看。
-- Hermes 重放依靠持久 idempotency 复用同一 run；不同 key 的手工触发与自动化触发同日期同数据集时由 lease 返回 busy 且不重复调用 provider；异常退出后的同 key replay 恢复原 run。
-- 暂停 Hermes 或关闭 automation gate 不影响 Dashboard、本地快照读取、显式维护 CLI 或开发期开关控制的手工 HTTP 采集，也不删除 run/task/idempotency/snapshot 历史。
+- 自动化重放依靠持久 idempotency 复用同一 run；不同 key 的手工触发与自动化触发同日期同数据集时由 lease 返回 busy 且不重复调用 provider；异常退出后的同 key replay 恢复原 run。
+- 暂停该外部调度或关闭 automation gate 不影响 Dashboard、本地快照读取、显式维护 CLI 或开发期开关控制的手工 HTTP 采集，也不删除 run/task/idempotency/snapshot 历史。
 - 所有 Helm/Kustomize render 均不包含 CronJob；所有文档化通用生产写操作调用受审部署入口并对两个旧 CronJob identity 做只读 fail-closed 检测，不得恢复、创建或激活 application-owned schedule。schema rollout 只在 database 阶段运行一次 provider-free hook，最终全量收敛不得重复执行 hook。
 - 后端测试、前端生产构建和 docs-contract 完整门禁通过。
 - 第 03 页完整矩阵在完整、空池、部分池、相邻日期缺失和刷新失败 fixture 下均保留上述状态与元数据；缺失证据不得渲染为伪造的 0、百分比或规则结论。
@@ -247,7 +247,7 @@ active-direction 继续提供旧 `topStocks` Top-10 字段；新增可选 `resea
 - Chapter 01 新物化结果只暴露 `industryRanking`、`sectorTurnover`、`sectorBreadth`、`sectorAnalysis`，不把旧 `sectors` payload 伪装成新字段；任一新板块任务单独成功后都能创建或重建聚合，失败任务不移除同日成功兄弟 evidence。
 - 数据管理页显示三个独立任务卡、coverage、有界 missing code、稳定 reason code、依赖 `blockedBy`、最近 attempt、保留结果和 operation progress；第 05 页四个 tab 分别承载排名、板块宽度、量价 K 线和申万持续性，并保留不可排名行但不把它们用于 Top-N。THS 视图与申万视图在名称、身份、质量和 lineage 上明确隔离，THS 数据不进入 `QTS-01-05-*` 输入。
 - 量价 K 线视图同时渲染非空蜡烛、成交量和成交额；本地历史不足时仅展示实际覆盖并提供显式回填操作，不因打开或切换视图自动访问 provider。桌面和 390px 视口无页面级横向溢出、重叠或截断，所有可见文字、图例、坐标和 tooltip 不小于 14px。
-- 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行。仓库所有部署 profile 均不含 Kubernetes CronJob 或调度启用值；生产自动化由独立 backend gate 与已授权的 Hermes job 控制。
+- 后端 focused/full pytest、前端 Vitest/Vite build、桌面与 390px 浏览器检查、rules validate/coverage/docs sync-check、OpenSpec strict 和 docs-contract full 均通过或在 active plan 中记录精确既有阻塞；真实 probe、生产数据库迁移、部署和首次回填在再次明确授权前保持未执行。仓库所有部署 profile 均不含 Kubernetes CronJob 或调度启用值；生产自动化由独立 backend gate 与外部受控调度器控制。
 
 ## Provider 请求可靠性边界（2026-10-08）
 

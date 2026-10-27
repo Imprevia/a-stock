@@ -69,7 +69,7 @@ bash scripts/deploy-truenas-k3s.sh --env-file deploy/truenas/deploy.env --compon
 
 首次部署前先创建 `database.existingSecret`，再等待 PostgreSQL StatefulSet/ClusterIP ready；Helm 的
 schema migration Job 成功执行 `alembic upgrade head` 后，才 rollout Dashboard。
-迁移旧环境时先确认 Hermes job 已暂停、automation/manual 写入口都关闭，再用迁移工具生成不可覆盖的 SQLite before-image并校验
+迁移旧环境时先确认外部盘后调度已暂停、automation/manual 写入口都关闭，再用迁移工具生成不可覆盖的 SQLite before-image并校验
 `quick_check`、行数、checksum 和日期覆盖；导入校验通过后切换同一 Secret。PostgreSQL 首次写入后不回切
 过期 SQLite，恢复只能使用 PostgreSQL 备份或前向修复；旧 SQLite PVC 与备份继续保留作归档。
 
@@ -90,11 +90,11 @@ kubectl get cronjob market-data-collection --namespace a-stock --ignore-not-foun
 PVC 保持不变。
 
 Chart 支持 Kubernetes 1.26+；所有 Helm/Kustomize profile 都只部署 PostgreSQL、migration 和 Dashboard service，
-不包含 application-owned market-data CronJob，也没有 `scheduledCollection` values。盘后时钟与通知由
-`192.168.1.21` 上的 Hermes Agent 持有，工作日上海时间 15:30 调用后端默认关闭的
-`POST http://192.168.1.20:32001/api/market-environment/collection-runs/full`。该接口固定七数据集且要求
-`Idempotency-Key`；开启后所有可路由内网客户端均可调用，幂等不是鉴权。安装、启用、停止和回滚步骤见
-`docs/runbooks.md`；无 Ingress Controller 时可显式使用 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL
+不包含 application-owned market-data CronJob，也没有 `scheduledCollection` values。盘后时钟与通知由仓库外的
+受控调度器持有，其主机、schedule、投递目标和 pre-run 脚本属于一次性配置，不在本仓库记录；该调度器调用
+后端默认关闭的 `POST http://192.168.1.20:32001/api/market-environment/collection-runs/full`。该接口固定七数据集且要求
+`Idempotency-Key`；开启后所有可路由内网客户端均可调用，幂等不是鉴权。backend gate 的启用、停止和回滚步骤见
+`docs/runbooks.md`；外部调度器的安装配置不在仓库记录。无 Ingress Controller 时可显式使用 NodePort，无动态 StorageClass 时应预先创建 PostgreSQL
 静态 PV/PVC 并通过数据库 values 引用。
 
 ## 交易规则平台

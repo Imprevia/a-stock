@@ -731,14 +731,7 @@ def test_repository_has_no_kustomize_or_helm_cronjob_creation_path() -> None:
     assert not (ROOT / "scripts" / "render-k3s.py").exists()
 
     production_assets = [
-        path
-        for root in (
-            ROOT / "deploy",
-            ROOT / "scripts" / "hermes_market_collection.py",
-            ROOT / "scripts" / "hermes_market_collection_prompt.txt",
-        )
-        for path in ([root] if root.is_file() else root.rglob("*"))
-        if path.is_file()
+        path for path in (ROOT / "deploy").rglob("*") if path.is_file()
     ]
     assert production_assets
     assert all(

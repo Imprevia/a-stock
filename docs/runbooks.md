@@ -131,12 +131,12 @@ application-owned market-data CronJob，也不再提供 `scheduledCollection`、
 `--release-suspended`、`--activate-schedule`、`--disable-schedule` 或 `scheduled-refresh`。历史文档中的
 revision 26/70/106/107、`enabled=true` 和 `suspend=false` 仅是审计记录，不是可恢复的当前操作说明。
 
-盘后时钟由 `192.168.1.21` 上的 Hermes Agent 持有：顶层 `timezone` 或
-`HERMES_TIMEZONE=Asia/Shanghai`，cron 为 `30 15 * * 1-5`，摘要投递到已批准的飞书当前会话。Hermes 的版本化 pre-run caller 调用
+盘后时钟由仓库外的受控调度器持有；其主机、时区、cron、投递目标和 pre-run 脚本属于一次性外部配置，
+本仓库不再记录，也不包含对应资产。该调度器调用
 `POST http://192.168.1.20:32001/api/market-environment/collection-runs/full`，不选择日期、数据集或
-provider；后端固定七数据集并按上海日期与结算边界决定执行。漏跑只允许在不晚于 16:00 时用相同 schedule-slot
-key 补偿，之后跳过并通知。第一版无交易所节假日日历；周末返回无 run/provider I/O 的 `skipped`，工作日
-节假日必须保留真实失败/留存状态，不能用其他日期补齐。
+provider；后端固定七数据集并按上海日期与结算边界决定执行。同一调度时隙的补偿必须复用相同 schedule-slot
+key，后端不对 `partial` 自动整批重试。第一版无交易所节假日日历；周末返回无 run/provider I/O 的 `skipped`，
+工作日节假日必须保留真实失败/留存状态，不能用其他日期补齐。
 
 端点合同：
 
@@ -151,102 +151,14 @@ key 补偿，之后跳过并通知。第一版无交易所节假日日历；周�
 - 该内网接口不鉴权。开启后，任何能路由到 `192.168.1.20:32001` 的客户端都能调用；幂等、CORS、
   前端按钮和 lease 都不是访问控制。Hermes 不获得 PostgreSQL/Secret/PVC/provider/deployment 权限。
 
-#### Hermes v0.12.0 caller、prompt 与 job 安装（仅在 7.x 获得外部写授权后执行）
+#### 一次性外部调度资产的退役（2026-10-26）
 
-仓库事实资产为 `scripts/hermes_market_collection.py` 和
-`scripts/hermes_market_collection_prompt.txt`。caller 只输出一行 `hermes-market-collection/v1` 规范化 JSON；
-prompt 只负责分类和中文投递。安装前在受审 checkout 记录两份源文件 SHA-256，并在 `192.168.1.21` 上把
-安装后的 hash 与它们逐项比较。`HERMES_HOME` 必须先解析为该主机上的明确绝对目录；以下 `/home/hermes/.hermes`
-和 `/srv/a-stock` 只是需要由操作人确认的示例，不得直接猜测：
-
-```bash
-cd /srv/a-stock
-caller_sha256="$(sha256sum scripts/hermes_market_collection.py | awk '{print $1}')"
-prompt_sha256="$(sha256sum scripts/hermes_market_collection_prompt.txt | awk '{print $1}')"
-
-export HERMES_HOME=/home/hermes/.hermes
-install -d -m 0700 "$HERMES_HOME/scripts"
-install -m 0755 /srv/a-stock/scripts/hermes_market_collection.py "$HERMES_HOME/scripts/hermes_market_collection.py"
-install -m 0644 /srv/a-stock/scripts/hermes_market_collection_prompt.txt "$HERMES_HOME/scripts/hermes_market_collection_prompt.txt"
-test "$caller_sha256" = "$(sha256sum "$HERMES_HOME/scripts/hermes_market_collection.py" | awk '{print $1}')"
-test "$prompt_sha256" = "$(sha256sum "$HERMES_HOME/scripts/hermes_market_collection_prompt.txt" | awk '{print $1}')"
-python -m py_compile "$HERMES_HOME/scripts/hermes_market_collection.py"
-```
-
-Hermes v0.12.0 会拒绝解析到 `HERMES_HOME/scripts` 之外的 `--script`，包括路径穿越、外部绝对路径和逃逸
-symlink；job 因而只使用相对值 `--script hermes_market_collection.py`。不要把仓库 checkout 路径、数据库脚本或
-provider 工具作为 pre-run script。
-
-调度时区必须用顶层 `timezone`（推荐）或 gateway 进程的 `HERMES_TIMEZONE`，不能写不存在的嵌套
-`cron.timezone`。pre-run caller 最长可能经历 930 秒首请求和 600 秒状态轮询，故 script timeout 至少为
-1700 秒。Hermes v0.12.0 的 `HERMES_CRON_TIMEOUT` 是 **Agent 无活动超时**：有 stream/tool 活动时计时会刷新，
-它不是严格的总 job deadline，也不得在验收中这样声称。建议配置如下；环境变量文件位置必须通过 CLI 查询后
-由操作人审阅编辑：
-
-```bash
-hermes --version
-hermes config path
-hermes config env-path
-test "$(hermes config path)" = "$HERMES_HOME/config.yaml"
-test "$(hermes config env-path)" = "$HERMES_HOME/.env"
-hermes config set timezone Asia/Shanghai
-hermes config set cron.script_timeout_seconds 1700
-# 在 `hermes config env-path` 返回的文件中设置：HERMES_CRON_TIMEOUT=1800
-hermes config check
-hermes gateway restart
-hermes gateway status --deep
-hermes cron status
-```
-
-也可在 gateway 的受审 service environment 使用 `HERMES_TIMEZONE=Asia/Shanghai` 与
-`HERMES_CRON_SCRIPT_TIMEOUT=1700`，但不能同时留下相互冲突的 config/env 值。变更配置和重启 gateway 都是
-`192.168.1.21` 上的外部写，离线实现阶段只验证命令形态，不执行。
-
-Hermes v0.12.0 help 接受 `origin`、`local`、`telegram`、`discord`、`signal` 或明确的
-`platform:chat_id`。生产 `<approved-delivery-target>` 应优先选择并验证明确的 `platform:chat_id`；裸 platform
-只有在对应 home channel 已配置时才可使用。CLI 创建不会捕获聊天 origin，`origin` 可能回退到首个可用 home
-channel，不能在未核实目标时使用；`local` 只保存结果、不外发，不满足生产通知验收。提示词是 `create` 的第二个
-位置参数，`--script` 只传相对 caller 文件名；Hermes 会把 caller stdout 注入该提示词。不要给 Agent HTTP、
-provider、数据库、部署工具或项目 `--workdir` 上下文：
-
-```bash
-export HERMES_HOME=/home/hermes/.hermes
-HERMES_PROMPT="$(cat "$HERMES_HOME/scripts/hermes_market_collection_prompt.txt")"
-hermes cron create '30 15 * * 1-5' "$HERMES_PROMPT" \
-  --name a-stock-after-market-collection \
-  --deliver '<approved-delivery-target>' \
-  --script hermes_market_collection.py
-hermes cron list --all
-hermes cron status
-```
-
-创建输出中的 job ID 记入 `HERMES_JOB_ID`。`hermes cron list --all` 必须显示 schedule `30 15 * * 1-5`、已批准的
-Feishu delivery、相对 script 和带 `+08:00` 语义的下一次上海工作日 15:30 `next_run_at`；gateway 不健康、时区不符、
-hash 不符或 automation gate 未按 7.x 单独授权时不得触发。
-
-离线检查和只读连通检查不会调用 provider：
-
-```bash
-python -m pytest tests/test_hermes_market_collection.py tests/test_hermes_market_collection_prompt.py -q
-curl --fail --silent --show-error http://192.168.1.20:32001/api/health
-hermes gateway status --deep
-hermes cron list --all
-```
-
-`python "$HERMES_HOME/scripts/hermes_market_collection.py"` 或 `hermes cron run "$HERMES_JOB_ID"` 会调用 full endpoint，
-只能在 automation gate 已获授权、上海结算后且不晚于 16:00 的 canary/人工验证窗口执行；同一 slot 的人工重放
-必须沿用 caller 生成的相同 key，不能改脚本生成第二个批次。非破坏停止、恢复和删除命令为：
-
-```bash
-export HERMES_JOB_ID='从 create 输出记录的 job ID'
-hermes cron pause "$HERMES_JOB_ID"
-hermes cron list --all
-# 仅在另行授权恢复时：hermes cron resume "$HERMES_JOB_ID"
-# 仅在明确决定移除定义时：hermes cron remove "$HERMES_JOB_ID"
-```
-
-暂停 job 后还要独立关闭 backend automation gate；两者都不得恢复 Kubernetes CronJob、删除 collection
-history、snapshot、idempotency binding、PostgreSQL 数据或 PVC。
+盘后自动采集的外部 caller/prompt 脚本、专用测试、golden fixture、安装步骤和
+active plan 已按用户要求从仓库删除，作为一次性个人配置不再纳入版本管理与文档事实源；该变更只涉及
+仓库内容，未修改该调度器宿主上已安装的 job、投递目标或调度。本 runbook 不再记录其
+job ID、cron 表达式、投递目标、脚本 SHA-256、本机路径和安装命令，也不提供重建步骤；不得从 git
+历史恢复这些资产或据此重新安装。后端 full endpoint、automation gate、幂等/结构化失败和
+Kubernetes 调度退役合同继续由上文与 `docs/architecture.md` 描述。
 
 普通部署继续只读、fail closed 地检查历史资源，且不提供清理或激活能力。检查顺序：
 
@@ -613,21 +525,6 @@ release/image、两个历史 CronJob identity、active writer、PVC/Secret、sch
 排名/bar 和失败/blocked 审计。2026-10-15 revision 113 是本 change 发布前只读基线；task 7.3 完成后当前为
 revision 117 / schema v11/0008，两个 CronJob 和全部 Job absent、manual=0、automation=1 且没有活动 writer；
 不得为补证重建 Kubernetes schedule。
-
-后续生产恢复已由 `replace-market-collection-scheduling-with-hermes` 7.x 接管。2026-10-15 tasks 7.1–7.4 已完成：
-不可覆盖备份和 immutable backend/schema 部署、独立 automation gate、唯一 key 盘后 canary/replay，以及 approved
-Weixin delivery、checksum 一致 caller/prompt 和 Hermes job `ef7389b87a92` 均已有证据。job 使用
-`30 16 * * 1-5`、`Asia/Shanghai`、1700 秒 script timeout 与 1800 秒 Agent inactivity timeout，下一次为
-`2026-10-16T16:30:00+08:00`；创建后未执行 caller/full endpoint，生产仍为 revision 117、manual=0、automation=1、
-活动 writer=0、Kubernetes CronJob/Job absent。下一步仅在另行授权后观察两个完整上海交易日；旧 THS 7.1–7.5
-授权不自动授权主动运行 job、停止演练或额外同日 provider 重采，任一步健康或数据对账失败即停止。
-
-上述 Weixin/16:30 是 task 7.4 首次创建时的历史证据。首个自然执行前，操作人最终确认改为飞书当前会话与
-`30 15 * * 1-5`；保留原 30 分钟补跑窗口，因此 caller 使用 `15:30` slot key（后缀 `1530`）并在 16:00 后跳过。
-仓库与 runtime caller SHA-256 均为
-`a4d996d0d68af97e9a34c5c147960d6ff2887c6f0d3150e9448541e3c18ba663`，job 下一次为
-`2026-10-16T15:30:00+08:00`，投递为 `feishu:oc_3a44907a83cd2d8f7f588716e7a09d3d`；job 仍未运行，
-生产 run/task/binding 计数与 Kubernetes CronJob/Job absence 未漂移。
 
 ### Fuyao THS 目录、K 线与成员导入（2026-10-12，离线实现与隔离 probe）
 
@@ -1049,18 +946,8 @@ warning/限流、PostgreSQL lock/连接池、任务时长与数据库 PVC 增长
 完成 service/final convergence。最终 v11/0008、manual/automation=0、writer/CronJob/Job=0，provider-free GET
 与 OpenAPI 通过，旧计数、PVC/Secret UID 和备份 hash 未漂移。该证据不授权 task 7.3 的 gate 或 provider 写入。
 
-2026-10-15 task 7.3 使用 clean candidate `5ebe48a15b313969d06be353d9616273730c9113` 的专用
-`--enable-automation-refresh` 入口完成。revision 117 的唯一 release 差异是 automation `0→1`；manual=0、
-同一 image/tag/digest、stored hooks、schema、PVC/Secret identity、former CronJob/Job absent 均不变。随后从
-`192.168.1.21` 以 `hermes-canary-2026-10-15-t7.3-01` 调用 full endpoint：run
-`93dd3c9b633b4cf5bb6d76132e3a5098` 为 `partial`，exact date `2026-10-15`，七个唯一 task 全部终态；三项
-success、四项带可用证据的 partial，没有 terminal failure，因此 persisted failure 均为 null。终态同 key replay
-保持 submission attempts/timestamps 与 binding/run/task/snapshot/materialization 指纹
-`b81cf3b39b0a34a9cb1d0f165cd1305c6ba39f9db8e432a53c04c5be8ec1b62f` 不变；应用 Pod 对公网 80/443 的
-replay 窗口没有新 SYN/有效载荷。该证据只完成 7.3，不授权安装 Hermes caller/prompt、选择投递目标或创建 job。
-
 2026-10-17 市场 API/core 前向修复使用 clean reviewed HEAD
-`d12dae330e91c7e58500188acfd45a6d91516ddd` 完成。生产写前暂停 Hermes job `ef7389b87a92`，以专用入口依次关闭
+`d12dae330e91c7e58500188acfd45a6d91516ddd` 完成。生产写前暂停外部调度 job，以专用入口依次关闭
 manual/automation 并证明 writer=`0|0|0`；PostgreSQL custom dump SHA-256 为
 `abf58de8b5e11bde1e30069af8161ad2b3528118b650858bec95985515535bf8`，已在全新 PostgreSQL 16.4 隔离容器中单事务恢复。
 最终镜像 `localhost/a-stock-market-environment:20261017-005702-d12dae3` 的 archive SHA-256 为
@@ -1071,7 +958,7 @@ manual/automation 并证明 writer=`0|0|0`；PostgreSQL custom dump SHA-256 为
 core 均为 HTTP 200；limit-up 的 36 条事实因 `missing-board` 被合同过滤，空 items 不是接口错误。revision 141 以
 同镜像无 hook 恢复 automation，revisions 142/143/144 通过普通 `component=all` 流程恢复 manual 并完成完整 release
 收敛；最终两个 gate=`1|1`、writer=`0|0|0`、Pod Ready/0 restart、CronJob/Job absent，PVC/Secret UID 未漂移。
-Hermes job 随后恢复为 active，下一次自然运行是 `2026-10-19T15:30:00+08:00`；未执行人工 `cron run`。
+外部调度 job 随后恢复为 active；未执行人工触发。
 
 若出现异常请求、provider 压力、PostgreSQL 锁等待或数据库 PVC 增长，第一步暂停 Hermes job 并设置
 `MARKET_ENVIRONMENT_AUTOMATION_REFRESH_ENABLED=0`；manual 继续为 0。验证两个写入口都拒绝且没有新 run/provider
@@ -1196,7 +1083,7 @@ MARKET_ENVIRONMENT_FUYAO_API_KEY=<secret> \
 
 回滚时先将 `MARKET_ENVIRONMENT_LIMITS_V1_ENABLED=0` 并重启 API/采集进程，再恢复应用版本。保留 PVC、旧五字段快照、`trading_sessions`、`limit_security_datasets`、`limit_security_facts` 和 checksum；不删除数据库、不回填其他日期，也不因回滚修改规则 ID、权重或校准状态。
 
-盘后自动采集不再部署在 Kubernetes 内。当前唯一自动化合同是本 runbook 开头的 Hermes caller → full endpoint；
+盘后自动采集不再部署在 Kubernetes 内。当前唯一自动化合同是本 runbook 开头的盘后自动采集契约 → full endpoint；
 Chart/TrueNAS 脚本不提供 CronJob template、scheduling values、schedule component、offline/server schedule render
 或 release/activate/disable mode。通用入口只允许 `--component all|database|service`，并在任何 build/write 前及
 写后对 release-derived former name 与 `market-data-collection` 做 stored/live 只读 fail-closed 检查。
@@ -1325,7 +1212,7 @@ pg_restore --clean --if-exists --no-owner \
 - `MARKET_ENVIRONMENT_FUYAO_THS_DAILY_DUMP_ENABLED=0`、`MARKET_ENVIRONMENT_FUYAO_THS_INCREMENTAL_DUMP_ENABLED=0`、`MARKET_ENVIRONMENT_FUYAO_THS_ADJUSTMENT_DUMP_ENABLED=0`：三类成员事实导入能力分别门禁，默认全部关闭；revision 从受审 manifest 提供，预签名 URL、API key 和原始响应不得持久化或输出。官方 dump 必须逐行证明 `currency=CNY`、日 K `interval=1d`、`adjusted=none`、业务键唯一和 metadata checksum；未提供 SHA-256 时保持 `ineligible`。
 - `MARKET_ENVIRONMENT_FUYAO_SECTORS_*` 仅保留给尚未切换的历史部署兼容和旧证据审计；新七数据集 coordinator、公共 API、CLI 每日 dataset selector 和前端不会读取或列出 `sectors`。
 - `MARKET_ENVIRONMENT_EASTMONEY_SECTOR_ENRICHMENT_ENABLED=0`：扶摇行业基础结果的东方财富 dataapi 同供应商字段补充开关，默认关闭；开启仍需满足当前上海市场日、结算后、扶摇结果已接受和严格身份/口径门禁，不引入新 Secret。
-- `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；full automation endpoint 与显式维护采集在该时间前拒绝 provider I/O，Hermes 固定在 15:30 调用。
+- `MARKET_ENVIRONMENT_SETTLEMENT_TIME=15:10`：上海时区盘后结算边界；full automation endpoint 与显式维护采集在该时间前拒绝 provider I/O，盘后自动采集在该边界之后才可能成功。
 - 运行时不依赖 SQLite 文件；旧 SQLite 文件只能作为停写迁移源和归档，不能挂载给 Dashboard 或采集 task 作为共享协调边界。
 
 开发期手工采集 API：
@@ -1549,7 +1436,7 @@ LAST SCHEDULE 为空、namespace Job 为空、冻结镜像/PVC/Secret/schema/活
 | Helm chart | `helm lint deploy/helm/a-stock` 与 `helm template a-stock deploy/helm/a-stock --namespace a-stock` | 终端输出 / plan | 是 |
 | Snapshot refresh | 普通 PR/本变更只用 fake provider/临时存储验证 `python -m src.market_environment.cli snapshots refresh --as-of <date>` 等价路径；真实 provider 命令仅在另行授权的盘后隔离环境运行 | CLI JSON / plan | 是 |
 | Collection management | 启用开发开关后验证状态 GET、单项 POST、全部 POST、轮询和 partial 结果 | pytest / 浏览器 / plan | 是 |
-| Automated collection | full endpoint 的 success/partial/failed/skipped/settlement/lease/idempotency/202/restart 固定 fake-provider 回归；Hermes caller/prompt fake-server/golden 测试；所有 Helm/Kustomize profile 无 CronJob，部署 guard 能拒绝两个旧 identity | pytest / render / plan | 是 |
+| Automated collection | full endpoint 的 success/partial/failed/skipped/settlement/lease/idempotency/202/restart 固定 fake-provider 回归；所有 Helm/Kustomize profile 无 CronJob，部署 guard 能拒绝两个旧 identity | pytest / render / plan | 是 |
 | Warm cache | 对已预计算日期请求 Chapter 01，确认 provider 0 调用且 <500ms | pytest / plan | 是 |
 | Frontend build | `npm run build --prefix apps/market-environment-dashboard` | 终端输出 / plan | 是 |
 | Browser QA | 启动前后端后检查 01 至 09 视图的桌面与移动宽度、最小 `14px` 字号和溢出；01 页检查真实 OHLC K 线、均线和 tooltip；确认首屏先于章节数据出现、章节失败不清空核心数据 | 截图 / plan | 是 |
@@ -1576,12 +1463,15 @@ LAST SCHEDULE 为空、namespace Job 为空、冻结镜像/PVC/Secret/schema/活
 - **数据采集批次显示 `partial`**：查看每个 task 的 warning；成功 task 已独立保存，只对失败行执行重新采集，不要删除整批成功快照。
 - **最近采集失败但数据仍可用**：这是 `failed-retained`，页面继续服务同日期最后成功值并展示刷新错误；只有 `failed-missing` 才表示该日期没有可用数据。
 - **数据采集按钮不可用**：检查 `MARKET_ENVIRONMENT_MANUAL_REFRESH_ENABLED` 是否被显式设为 `0`，并检查所选日期和 provider 日期能力；不要用强制参数把最新快照写成历史日期。
-- **Hermes 没有触发**：先检查 gateway health、顶层 `timezone`/`HERMES_TIMEZONE`、cron `30 15 * * 1-5`、
-  `next_run_at`、caller checksum 和 automation gate。16:00 后不得补跑该 slot，也不得创建 Kubernetes Job 代替。
+- **外部调度没有触发**：先检查 automation gate，以及该调度器自身的 gateway health、时区与 cron 定义。
+  这些属于仓库外一次性配置，本仓库不再记录其具体值；不得为补跑而创建 Kubernetes Job 代替。
+- **同一交易日出现重复采集或重试未按预期发生**：一次交易日只允许一个首采时隙加最多一次失败重试。重试
+  判定依赖调度器本地状态，不在仓库管理范围内；不要用同一 schedule-slot key 伪装重试（同 key 只会回放首轮
+  persisted run），也不要用新 key 制造第三次采集。
 - **full endpoint 返回 partial/failed**：读取同一 run 的七个 task `failure` 与 warning；terminal 业务失败仍是 HTTP 200，
   成功兄弟任务已经落盘。不要用新 key 自动整批重试，针对性恢复需要另行明确操作。
-- **Hermes 超时或返回 still running**：按响应的 `statusUrl` 做 provider-free 读取；重放必须沿用相同
-  `Idempotency-Key` 且不得启动替代批次。若需停止后续触发，暂停 Hermes 并关闭 automation gate，不删除活动历史。
+- **外部调度超时或返回 still running**：按响应的 `statusUrl` 做 provider-free 读取；重放必须沿用相同
+  `Idempotency-Key` 且不得启动替代批次。若需停止后续触发，暂停该调度 job 并关闭 automation gate，不删除活动历史。
 - **节假日出现 failed/partial**：第一版预期会在周一至周五节假日触发；确认没有跨日期 snapshot 后保留审计记录，不要伪造当天成功。
 - **行业板块采集偶发 `RemoteDisconnected`**：确认请求经过共享串行门；主域会先执行有限连接重试，再降级到 `push2delay`。若两个域都失败，查看 task warning 和同日期 snapshot 是否触发 `failed-retained`，不要删除旧值或跨日期回填。
 - **容量方向采集为 `failed-missing`**：先检查 warning 是否为 `push2` 主域断连，并确认实现已继续请求 `push2delay`。延迟域成功应记录 `eastmoney-clist-delay` / `fallback`；若延迟域少于 30 个有效样本、缺少代码/名称/成交额或排序异常，必须继续视为失败。存在同日期成功值时应为 `failed-retained`，不要用其他日期或零值替代。

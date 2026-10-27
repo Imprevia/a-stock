@@ -13,7 +13,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `docs/` | 事实源（规格 / 架构 / runbook / plan / status） | 高频更新，见下方映射表 |
 | `docs/exec-plans/active/` | 活动执行计划（多步工作入口） | 每次多步任务先改这里 |
 | `docs/exec-plans/completed/` | 已归档计划 | 只读，完成时移入 |
-| `scripts/` | 本地门禁与工具脚本；`deploy-truenas-k3s.sh` 是 TrueNAS k3s 的 all/database/service 入口，对两个历史 CronJob identity 与 namespace Job 做只读 fail-closed 检测，database 只运行一次 schema hook、最终 all 以 `--no-hooks` 收敛；Hermes caller/prompt 是版本化外部调度集成资产 | 改动须同步 `docs/runbooks.md` 与 `docs/architecture.md` |
+| `scripts/` | 本地门禁与工具脚本；`deploy-truenas-k3s.sh` 是 TrueNAS k3s 的 all/database/service 入口，对两个历史 CronJob identity 与 namespace Job 做只读 fail-closed 检测，database 只运行一次 schema hook、最终 all 以 `--no-hooks` 收敛；外部盘后调度的一次性 caller/prompt 资产已于 2026-10-26 退役，不在仓库内 | 改动须同步 `docs/runbooks.md` 与 `docs/architecture.md` |
 | `.githooks/` | git hook 薄入口 | 只做转发，规则不写在这里 |
 | `.agents/skills/` | 仓库级 Agent Skill；保存任务路由、领域工作流、确定性辅助脚本与按需参考资料 | Skill 实现不得扩大生产权限；改动后运行 Skill 快速校验和对应离线测试 |
 | `.codegraph/` | 代码索引缓存（已 gitignore） | 不手工编辑 |
@@ -105,23 +105,21 @@ coordinator `Legacy*` facade。新增业务模块不得进入根目录；布局�
 
 上述映射不授权 provider、生产数据库、部署或调度写操作。`src/trading_knowledge/` 不在本 change 范围；发现文档只描述受支持的 read surface，不把 MCP 扩展为行情服务。若实现证明需要 migration、新 provider 或新写路径，必须先回到 OpenSpec 和本映射修订范围，不能静默吸收。
 
-### Hermes 全量采集与 Kubernetes 调度退役的代码—文档映射
+### 全量采集与 Kubernetes 调度退役的代码—文档映射
 
 | 代码区 | 事实职责 | 必须同步的事实文档 |
 |---|---|---|
 | `src/market_environment/domain/`、`application/ports/` | semantic fingerprint、idempotency claim/replay/conflict、submission state、redaction-safe structured failure | `docs/architecture.md`、产品规格、active plan |
 | `src/market_environment/application/commands/`、`interfaces/http/` | 服务端上海日期、固定七数据集、settlement/weekend、sync-first 200/202 full endpoint、status response | `docs/architecture.md`、产品规格、`docs/runbooks.md` |
 | `src/market_environment/infrastructure/persistence/postgres/`、`postgres_schema.py`、`alembic/versions/` | 原子 key→run/tasks binding、submission recovery、failure round-trip、schema migration | `docs/architecture.md`、`docs/runbooks.md`、active plan |
-| `scripts/` 中的 Hermes caller/prompt 资产 | 15:30 schedule-slot key、有限重放/轮询、16:00 catch-up 截止、中文摘要；不得获得 provider/DB/deploy 能力 | `docs/runbooks.md`、产品规格、active plan |
 | `deploy/helm/a-stock/`、`deploy/k3s/`、`deploy/truenas/` | 不创建 CronJob；只配置 automation gate 并保持 manual 独立；所有 render 无 scheduled workload | `docs/architecture.md`、`docs/runbooks.md`、active plan |
 | `scripts/deploy-truenas-k3s.sh` 及部署 validator | 普通部署只读拒绝 stored/live `a-stock-data-collection` 与 `market-data-collection`；起始与成功后 namespace Job absent，只允许 database 阶段执行精确 `a-stock-schema-migration` hook 一次，service/final all 使用 `--no-hooks`；失败停止后续收敛并保留 failed Job 证据；不提供正向 schedule mutation | `docs/architecture.md`、`docs/runbooks.md`、active plan |
 | `apps/market-environment-dashboard/` | 兼容 nullable structured failure，优先 safe message 且保留 warning fallback | 产品规格、设计规范、`docs/runbooks.md` |
 
-该 change 不构成其他生产或 Hermes 外部写的 blanket authorization。tasks 7.2–7.5 已分别获得授权：backend/schema
-rollout、automation canary/replay、Hermes 资产/job，以及两个自然交易日观察；当前批准的 job 定义为工作日
-15:30 和飞书当前会话。主动运行 job/caller、额外 THS provider 重采和 task 7.6 仍未授权。
-`Idempotency-Key`、CORS、UI 和 lease 是可靠性机制，不是鉴权；
-automation gate 开启后，所有可路由到 `192.168.1.20:32001` 的客户端都能调用 full endpoint。
+外部盘后调度的一次性配置（caller/prompt 脚本、job 定义、投递目标、脚本 checksum）自 2026-10-26 起
+不在仓库内；`scripts/` 不再包含对应资产，也不存在需要同步的文档映射。该退役不构成生产或其他外部写的
+blanket authorization：`Idempotency-Key`、CORS、UI 和 lease 是可靠性机制，不是鉴权；automation gate
+开启后，所有可路由到 `192.168.1.20:32001` 的客户端都能调用 full endpoint。
 重新引入 Kubernetes scheduling 必须新建受审 change，不能把历史模板、overlay 或 CLI 恢复为回滚路径。
 
 ### 第 05 页持续性分析的代码—文档映射（规划归属）
