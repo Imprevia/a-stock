@@ -2,6 +2,8 @@
 
 ## 已实现
 
+- 2026-10-27 用户授权的当前 HEAD `1bfe367` 已通过受控普通入口部署到 TrueNAS k3s `a-stock` release revision 152，镜像 `20261027-143500-1bfe367`，Dashboard/PostgreSQL Ready、0 重启；values/spec 除镜像外零漂移，PVC/Secret identity 不变。部署与隔离 PostgreSQL 定向测试共 309 passed、0 skipped；发布后 84 条只读 smoke 通过，2026-10-26 三池恢复 55/26/23 条、晋级 15 条且不再 500，保留 degraded/warning。未触发 provider/collection，快照及 run/task/lease 计数不变；当日无快照继续明确 missing。完整证据见 `docs/exec-plans/active/deploy-current-head-to-k3s-20261027.md`。
+
 - 2026-09-27 新增本地交易知识 MCP：`src/trading_knowledge/` 将原版/量化版 Markdown、YAML 规则、coverage 和 Git 证据摘要离线索引到 `.artifacts/knowledge-base/`，提供中文检索、精确引用、规则/证据/索引状态和五个只读 stdio MCP 工具。索引记录来源层级、行号、规则 ID、生命周期、证据状态和内容 hash；当前构建为 143 个源文件、3,699 个 chunk、330 个规则记录，`evidence/rules/index.yaml` 的 `latestEvidence: null` 保持 `insufficient`，不把经验阈值解释为已验证收益。
 
 - 2026-09-14 启动的 `market-environment-multipage-rework` 已完成：01–09 独立页面、第 01 页市场级句式和第 01/09 页精确下一交易日只读对照均已落地。

@@ -91,6 +91,14 @@ npm run dev --prefix apps/market-environment-dashboard
 
 本机开发默认使用 8001，避免与常见的 CLodop 打印服务占用的 8000 端口冲突；Vite 会将 `/api` 代理到 `http://127.0.0.1:8001`。容器内 API 端口和 k3s Service 仍为 8000，不受此本机开发配置影响。
 
+## 2026-10-27 当前版本 k3s 发布
+
+本次用户已授权发布 HEAD `1bfe367051049197573a99883fb0b2e086f91cf7` 到既有 TrueNAS `a-stock` release。发布从 revision 149 的完整现场 values 与独立 clean worktree 起步，使用普通 `--component all` 入口；不变更 manual/automation、Fuyao/THS 开关、NodePort、Secret 或 PVC，不触发 provider/collection，不恢复已退役的外部调度资产。现场 schema 为 `0008_collection_idempotency`，候选无新增 Alembic revision，schema hook 仅做幂等 head 校验。
+
+本次已完成生产发布：Helm revisions 150/151/152 分别完成 database/schema、service 与完整 release 收敛，最终 revision 152 deployed。镜像为 `localhost/a-stock-market-environment:20261027-143500-1bfe367`，Ready Pod 0 重启；完整 values/Deployment spec 除镜像外零漂移，Secret/PVC UID 不变。隔离 PostgreSQL 与部署定向测试合计 309 passed、0 skipped；发布后只读 smoke 84 条记录通过，2026-10-26 三池恢复 55/26/23 条、晋级 15 条（HTTP 500 → 200），保留原 degraded/warning。2026-10-27 无本地证据，v2 返回 404、legacy core 返回显式 missing 的 503，不补采。采集 run/task/lease 与快照/聚合计数发布前后不变。精确证据记录于 `docs/exec-plans/active/deploy-current-head-to-k3s-20261027.md`。
+
+本机 `/run/user/1000` 无剩余空间，仅设置磁盘 `XDG_RUNTIME_DIR` 仍会被原 Podman 数据库固定 runroot 阻断；本次使用私有 wrapper 指向全新磁盘 graphroot/runroot 与 cgroupfs，构建临时只读挂载可达 pip 镜像源配置，不改仓库发布入口、不将该配置写入镜像、不删除用户文件或清理无关容器。npm 构建报告的 10 个既有依赖漏洞需独立评估，本次未执行依赖自动修复。
+
 ## k3s 部署
 
 仓库根目录的 `Dockerfile` 使用 Node 构建前端，再将 `dist` 与 Python API 放入同一个非 root 运行镜像。构建并推送固定版本镜像：
