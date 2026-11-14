@@ -1,0 +1,16 @@
+{
+ "asOf": "2026-11-13",
+ "benchmark": "000001.SH",
+ "benchmarkBars": [
+  {
+   "close": 3000,
+   "date": "2026-11-13",
+   "turnover": 1000000000000.0
+  }
+ ],
+ "constituents": {},
+ "industries": [],
+ "industryBars": {},
+ "note": "synthetic fixture; no industries",
+ "stockBars": {}
+}

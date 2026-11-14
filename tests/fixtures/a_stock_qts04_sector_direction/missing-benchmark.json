@@ -1,0 +1,23 @@
+{
+ "asOf": "2026-11-13",
+ "benchmark": "000001.SH",
+ "benchmarkBars": [],
+ "constituents": {},
+ "industries": [
+  {
+   "name": "种植业与林业",
+   "thscode": "881101.TI"
+  }
+ ],
+ "industryBars": {
+  "881101.TI": [
+   {
+    "close": 1000,
+    "date": "2026-11-13",
+    "turnover": 1000000000.0
+   }
+  ]
+ },
+ "note": "synthetic fixture; missing benchmark bars",
+ "stockBars": {}
+}

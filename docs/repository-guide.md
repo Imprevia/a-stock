@@ -32,6 +32,8 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 
+根目录布局约束：本仓库根目录不得出现嵌套克隆（例如曾存在的 `a-stock/a-stock`），也不得把第二份完整源码树登记为无 `.gitmodules` 的 gitlink。此类副本会让 `pytest`、搜索与 IDE 索引重复扫描整棵源码树，并因同名测试模块触发 `import file mismatch`；历史原因见 [`remove-nested-a-stock-clone-20261114`](exec-plans/active/remove-nested-a-stock-clone-20261114.md)。`.gitignore` 已锚定 `/a-stock/`，重新放置同名目录不会进入索引；确需隔离副本时放到仓库外。
+
 ## 主要行为在哪
 
 - 文档契约检查：`scripts/check-docs-contract.py`
@@ -44,6 +46,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 - 交易知识 MCP：`src/trading_knowledge/`；消费上述 Git 事实源，索引放在被忽略的 `.artifacts/knowledge-base/`，不进入市场环境 API 或生产数据库。
 - 交易系统目录索引：`docs/trading-system-directory.md` 与 `docs/trading-system-quantified-directory.md`；目录结构变化时与 `AGENTS.md` 一并更新。
 - 每日市场环境与高/中/低位亏钱效应联合复盘：`.agents/skills/a-stock-daily-tier-summary/`；确定性分析由其 `scripts/analyze_tier_summary.py` 承担，数据合同与描述性方法分别位于 `references/data-contract.md` 和 `references/methodology.md`。
+- QTS-04 STEP 1 板块层定向：`.agents/skills/a-stock-qts04-sector-direction/`；由 `scripts/sector_pipeline.py` 编排 `fuyao_client.py`、`cache.py`、`scoring.py`，数据契约与规则口径分别位于 `references/data-contract.md` 和 `references/scoring-rules.md`。
 
 ### 仓库级 Agent Skill 边界
 
@@ -53,6 +56,9 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `.agents/skills/a-stock-daily-tier-summary/scripts/` | 精确日期的五指数、MA20、宽度、成交与高/中/低位输入归一化、确定性计算和结构化 JSON 输出 | 当前交易日的 v2 overview/indices/breadth/limits 必须同日同 revision，且仅 GET；不得触发采集或写应用存储；外部行情只允许显式、已完成交易日、超时有界的只读降级 |
 | `.agents/skills/a-stock-daily-tier-summary/references/` | 数据字段优先级、质量传播、环境与分层描述标签，以及彼此独立的下一交易日验证方法 | `needs-backtest` 标签不得提升为已验证评分、自动交易建议或机器交易规则；不得把不同日期的环境与分层证据拼接 |
 | `tests/test_a_stock_daily_tier_summary_skill.py`、`tests/fixtures/a_stock_daily_tier_summary/` | Skill 脚本的离线行为、合成样本和端到端输出结构验证 | 禁止网络、真实市场快照、凭据和运行时产物；fixture 必须保持小型且可审计 |
+| `.agents/skills/a-stock-qts04-sector-direction/scripts/` | QTS-04 STEP 1 板块层定向：通过 fuyao 官方 CLI 取行业目录/板块日线/成分股/个股日线，计算五指标、滚动分位、覆盖率闸门与四象限 | 只读调用 `hithink-finance`；凭据取自 `FUYAO_API_KEY` 或已忽略的 `deploy/truenas/deploy.env`，且不得写入文件/日志/argv；不得读取仓库 v2 接口或直连数据库；失败必须降级，不得用他日数据顶替 |
+| `.agents/skills/a-stock-qts04-sector-direction/references/` | fuyao 命令契约、缓存与降级口径，以及 `QTS-04-01-01`~`-05` 的公式/窗口/权重/分位边界 | 规则状态保持 `needs-backtest`；不得输出买卖点、仓位、个股推荐或 `validated` |
+| `tests/test_a_stock_qts04_sector_direction_skill.py`、`tests/fixtures/a_stock_qts04_sector_direction/` | Skill 脚本的离线行为、合成板块/个股样本与失败路径验证 | 禁止网络、真实行情快照、凭据和运行时产物；必须断言未调用真实 `hithink-finance` 子进程 |
 
 每日联合复盘 Skill 是现有市场数据读面的消费者，不拥有 API、provider、数据库或采集任务。输出保留一个分层验证项和一个环境验证项，两者不得互相替代。若实现需要新增路由、schema、provider、持久化或调度，必须先修订 OpenSpec、架构与 active plan，不能在 Skill 脚本中隐式吸收。
 

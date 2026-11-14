@@ -1,0 +1,5 @@
+# Rebuildable runtime cache for the QTS-04 sector-direction skill.
+# Never commit cached market data.
+.cache/
+__pycache__/
+*.pyc

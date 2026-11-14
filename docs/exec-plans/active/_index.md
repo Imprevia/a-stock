@@ -20,6 +20,8 @@
 | `deploy-current-head-to-k3s-20261027` | Codex | completed-with-production-write | 2026-10-27 |
 | `deploy-current-main-to-k3s-20261022` | Codex | completed-with-production-write | 2026-10-22 |
 | `qts-04-stock-selection-pipeline-plan` | Codex | planning（探索结论已固化，未实现） | 2026-11-14 |
+| `add-qts04-sector-direction-skill` | Codex | complete（42/42；OpenSpec 已归档） | 2026-11-14 |
+| `add-qts04-sector-report-contract` | Codex | planning-complete（OpenSpec 产物已就绪） | 2026-11-14 |
 | `add-ai-market-data-api` | Codex | complete（34/34；OpenSpec 已归档） | 2026-10-16 |
 | `restore-truenas-nodeport-direct-access` | 资深后端工程师 | in-progress | 2026-09-05 |
 | `deploy-to-truenas-k3s-192-168-1-20` | 资深运维专家 | completed | 2026-09-05 |
@@ -72,6 +74,7 @@
 | `retire-hermes-one-off-collection-assets` | Codex | completed-repo-retirement | 2026-10-26 |
 | `add-a-stock-daily-tier-summary-skill` | Codex | completed（16/16） | 2026-10-26 |
 | `start-deepseek-harness-nginx-20261022` | Codex | completed-with-user-systemd-and-existing-nginx | 2026-10-22 |
+| `remove-nested-a-stock-clone-20261114` | DeepSeek | completed-local-cleanup | 2026-11-14 |
 
 ## 说明
 

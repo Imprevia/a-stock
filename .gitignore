@@ -13,6 +13,9 @@ midscene_run/
 apps/*/dist/
 mobile-dashboard*.png
 
+# 仓库根目录下的嵌套克隆（2026-11-14 已清理，禁止恢复）
+/a-stock/
+
 # 系统与编辑器
 .DS_Store
 Thumbs.db
