@@ -5,7 +5,7 @@ STEP 1 板块层定向已经能产出方向，但产物是"自己看"的：JSON 
 ## What Changes
 
 - JSON 增加 `schemaVersion`、`reportId`、`config` 冻结块，使其可作为跨 Skill 接口。
-- **BREAKING** `confirmation` / `invalidation` 由中文散文字符串改为结构化谓词对象（`{text, all:[{field, op, value, horizonDays}]}`），散文降级为 `text` 字段。
+- **BREAKING** `confirmation` / `invalidation` 由中文散文字符串改为结构化谓词对象（`{text, horizonDays, all:[{field, op, value, basis}]}`），散文降级为 `text` 字段。
 - 新增 `scripts/check_report.py`：对 agent 撰写的文章做数字溯源、禁词与必备项校验，校验自身确定性且可测试。
 - `scripts/report.py` 降级为"事实骨架"生成器，不再是对外主报告；`--format markdown` 保留为无模型兜底。
 - SKILL.md 的输出段落由固定模板改写为约束（必备字段、必备警告、禁止措辞），允许 agent 按当日情况压缩或展开。

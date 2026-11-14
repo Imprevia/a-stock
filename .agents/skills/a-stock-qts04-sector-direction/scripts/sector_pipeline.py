@@ -22,6 +22,8 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from sector_contract import attach_interface  # noqa: E402
+from predicate import build_confirmation, build_invalidation  # noqa: E402
 from cache import (  # noqa: E402
     CACHE_STATE_COLD,
     KIND_INDUSTRY,
@@ -49,6 +51,7 @@ from scoring import (  # noqa: E402
     confidence_from_metrics,
     normalize_weights,
     persistence_metric,
+    pool_state,
     quadrant,
     relative_strength,
     slice_until,
@@ -235,17 +238,9 @@ def _build_direction(
         if any(value is not None for value in turnovers)
         else None
     )
-    confirmation = None
-    invalidation = None
-    if close is not None:
-        confirmation = (
-            f"次日收盘不低于 {close * 1.005:.2f}（当日收盘 {close:.2f} 的 +0.5%）"
-            + (f" 且成交额不低于 {turnover_mean:.0f}（20日均额）" if turnover_mean else "")
-        )
-        invalidation = (
-            f"次日收盘低于 {close * 0.97:.2f}（当日收盘的 -3%）"
-            + (f" 或成交额低于 {turnover_mean * 0.8:.0f}（20日均额×0.8）" if turnover_mean else "")
-        )
+    # Prose and predicate come from one call so they cannot drift apart.
+    confirmation = build_confirmation(close, turnover_mean)
+    invalidation = build_invalidation(close, turnover_mean)
     return {
         "thscode": industry.thscode,
         "name": industry.name,
@@ -253,9 +248,7 @@ def _build_direction(
         "totalScore": None if total is None else round(total, 2),
         "confidence": confidence,
         "persistenceScore": persistence_score,
-        "pool": "focus" if total is not None and total >= 70 and (persistence_score or 0) >= 60
-        else "watch" if total is not None and total >= 50
-        else "excluded",
+        "pool": pool_state(total, persistence_score),
         "quadrant": quadrant_value,
         "metrics": [metric.to_dict() for metric in metrics],
         "confirmation": confirmation,
@@ -322,7 +315,7 @@ def run_pipeline(
         try:
             worker.check_prerequisites()
         except FuyaoInsufficient as error:
-            return _insufficient(as_of, str(error), warnings, source)
+            return _insufficient(as_of, str(error), warnings, source, breadth_universe)
         benchmark_bars = _fetch_benchmark(worker, cache, as_of)
         if not has_session(benchmark_bars, as_of):
             return _insufficient(
@@ -330,24 +323,25 @@ def run_pipeline(
                 f"基准 {BENCHMARK_CODE} 在 {as_of} 没有日线，无法计算相对强度",
                 warnings,
                 source,
+                breadth_universe,
             )
         try:
             industries = _fetch_industries(worker, cache, as_of)
         except FuyaoError as error:
-            return _insufficient(as_of, str(error), warnings, source)
+            return _insufficient(as_of, str(error), warnings, source, breadth_universe)
         cache_state = cache.cache_state(KIND_INDUSTRY, [item.thscode for item in industries], as_of)
 
     if not industries:
-        return _insufficient(as_of, "目标日期没有可用的行业板块", warnings, source)
+        return _insufficient(as_of, "目标日期没有可用的行业板块", warnings, source, breadth_universe)
     if not has_session(benchmark_bars, as_of):
-        return _insufficient(as_of, f"基准 {BENCHMARK_CODE} 在 {as_of} 没有日线", warnings, source)
+        return _insufficient(as_of, f"基准 {BENCHMARK_CODE} 在 {as_of} 没有日线", warnings, source, breadth_universe)
 
     usable = [item for item in industries if has_session(item.bars, as_of)]
     missing = len(industries) - len(usable)
     if missing:
         warnings.append(f"{missing} 个行业在目标日期没有日线，已排除")
     if not usable:
-        return _insufficient(as_of, f"没有任何行业在 {as_of} 有日线", warnings, source)
+        return _insufficient(as_of, f"没有任何行业在 {as_of} 有日线", warnings, source, breadth_universe)
 
     ranked = sorted(
         ((item, _provisional_score(item.bars, benchmark_bars, as_of)) for item in usable),
@@ -403,7 +397,7 @@ def run_pipeline(
         "disclaimer": DISCLAIMER,
         "providerCalls": len(worker.calls) if worker is not None else 0,
     }
-    return result
+    return attach_interface(result, breadth_universe)
 
 
 def chosen_with_breadth(selected: Sequence[IndustryInputs]) -> list[IndustryInputs]:
@@ -452,8 +446,14 @@ def _overall_status(directions: Sequence[Mapping[str, Any]], warnings: Sequence[
     return STATUS_OK
 
 
-def _insufficient(as_of: date, reason: str, warnings: Sequence[str], source: str) -> dict[str, Any]:
-    return {
+def _insufficient(
+    as_of: date,
+    reason: str,
+    warnings: Sequence[str],
+    source: str,
+    breadth_universe: int = DEFAULT_BREADTH_UNIVERSE,
+) -> dict[str, Any]:
+    return attach_interface({
         "asOf": as_of.isoformat(),
         "generatedAt": now_shanghai().isoformat(),
         "status": STATUS_INSUFFICIENT,
@@ -467,7 +467,7 @@ def _insufficient(as_of: date, reason: str, warnings: Sequence[str], source: str
         "ruleVersion": RULE_VERSION,
         "calibration": "needs-backtest",
         "disclaimer": DISCLAIMER,
-    }
+    }, breadth_universe)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -489,19 +489,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="fuyao 凭据文件（默认自动查找 deploy/truenas/deploy.env 中的 FUYAO_API_KEY）",
     )
     parser.add_argument("--fixture", type=Path, default=None, help="离线 fixture JSON")
-    parser.add_argument("--output", type=Path, default=None, help="JSON 结果写入路径")
+    parser.add_argument("--output", type=Path, default=None, help="JSON 结果写入路径（唯一事实源）")
     parser.add_argument(
         "--report",
         type=Path,
         default=None,
-        help="人工可读 Markdown 报告写入路径（给 --output 时默认写到同名 .md）",
+        help="事实骨架 Markdown 写入路径（agent 撰文底稿/无模型兜底，非对外主报告；给 --output 时默认写到同名 .md）",
     )
     parser.add_argument(
         "--format",
         dest="format",
         choices=("json", "markdown", "both"),
         default="json",
-        help="stdout 输出格式（默认 json；markdown 供人工阅读）",
+        help="stdout 输出格式（默认 json；markdown 打印事实骨架，仅作底稿或兜底）",
     )
     args = parser.parse_args(argv)
 
@@ -524,6 +524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "quality": {"status": error.status, "warnings": [str(error)]},
             "calibration": "needs-backtest",
         }
+        attach_interface(result, args.breadth_universe)
 
     text = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     markdown = render_markdown(result)

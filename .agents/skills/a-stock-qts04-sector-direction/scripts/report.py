@@ -1,8 +1,15 @@
-"""Render the QTS-04 STEP 1 result as a human-readable Markdown report.
+"""Render the QTS-04 STEP 1 result as a Markdown **fact skeleton**.
 
-The JSON contract stays the machine interface; this module is a pure
-presentation layer.  It never invents a value that the JSON does not carry:
-missing scores render as an em dash, not as zero.
+This is not the outward-facing report.  The article the user reads is written
+by the caller from the JSON and must pass ``check_report.py`` first.  The
+skeleton exists for three jobs only:
+
+1. draft sheet while writing the article (so nothing is forgotten);
+2. no-model fallback via ``--format markdown``;
+3. reference artifact for the checker.
+
+It never invents a value the JSON does not carry: missing scores render as an
+em dash, not as zero.
 """
 
 from __future__ import annotations
@@ -249,6 +256,17 @@ def _metric_table(direction: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _condition_text(predicate: Any) -> str:
+    """Read the prose out of a structured predicate, tolerating legacy strings."""
+
+    if isinstance(predicate, Mapping):
+        text = predicate.get("text")
+        return str(text) if text else DASH
+    if isinstance(predicate, str) and predicate:
+        return predicate
+    return DASH
+
+
 def _direction_section(index: int, direction: Mapping[str, Any]) -> list[str]:
     quadrant = direction.get("quadrant") or {}
     lines = [
@@ -267,8 +285,8 @@ def _direction_section(index: int, direction: Mapping[str, Any]) -> list[str]:
         "",
         *_metric_table(direction),
         "",
-        f"- **次日确认**：{direction.get('confirmation') or DASH}",
-        f"- **次日失效**：{direction.get('invalidation') or DASH}",
+        f"- **次日确认**：{_condition_text(direction.get('confirmation'))}",
+        f"- **次日失效**：{_condition_text(direction.get('invalidation'))}",
     ]
     risk = _risk_line(direction)
     if risk:
@@ -286,8 +304,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     quality = result.get("quality") or {}
 
     header = [
-        f"# 板块层定向报告 · {as_of}",
+        f"# 板块层定向事实骨架 · {as_of}",
         "",
+        "> 这是事实骨架：agent 撰文的底稿与无模型兜底，不是对外主报告；对外文章必须通过 `check_report.py` 校验。",
         "> 规则族 `QTS-04-01`（STEP 1 板块层）｜ 基准 上证综指 `000001.SH` ｜ 只做 `industry` 标签",
         "> 数据源 {source} ｜ 生成 {generated} ｜ 状态 **{status}**（{label}）".format(
             source=result.get("source") or DASH,
@@ -296,6 +315,11 @@ def render_markdown(result: Mapping[str, Any]) -> str:
             label=STATUS_LABEL.get(status, status),
         ),
     ]
+    contract_line = "> 契约 `{}` ｜ reportId `{}`".format(
+        result.get("schemaVersion") or DASH,
+        result.get("reportId") or DASH,
+    )
+    header.append(contract_line)
     cache = result.get("cacheState")
     calls = result.get("providerCalls")
     if cache or calls is not None:
@@ -367,6 +391,30 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+FALLBACK_NOTICE = "文章未通过校验，以下为事实骨架"
+
+
+def render_fallback(result: Mapping[str, Any], issues: Sequence[Mapping[str, Any]] = ()) -> str:
+    """Skeleton with the mandatory notice, used when the article fails checks.
+
+    The notice stays on top because everything below it is the skeleton, not
+    the article the caller tried to publish.
+    """
+
+    lines = [f"> {FALLBACK_NOTICE}", ""]
+    if issues:
+        lines.append("未通过项：")
+        lines.append("")
+        for issue in issues:
+            detail = str(issue.get("detail") or "").strip()
+            line = issue.get("line")
+            column = issue.get("column")
+            location = f"（第 {line} 行第 {column} 列）" if line and column else ""
+            lines.append(f"- {detail}{location}")
+        lines.append("")
+    return "\n".join(lines) + "\n" + render_markdown(result)
 
 
 def default_report_path(json_path) -> Any:

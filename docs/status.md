@@ -2,6 +2,10 @@
 
 ## 已实现
 
+- 2026-11-14 QTS-04 STEP 2 题材层 Skill 已实现：新增共享底座 `.agents/skills/qts04-core/` 与 `a-stock-qts04-theme-layer`，以“概念当前成分股 ∩ 当日涨停池”建立题材单元，输出 `lift`、共享 token、四级题材（核心/扩散/事件/伪题材）与四级催化（`confirmed` 不可达）、`noCoreTheme`、`quality.pointInTime/backtestGrade` 和 point-in-time 快照；2026-11-13 实测 `reportId 4662180ce0dbceb4`、短剧游戏 core/lift 9.9474、算力租赁 diffuse/2.2556，文章校验 PASS；STEP 2 离线测试 31 passed，与 STEP 1 合并 121 passed。规则仍为 `needs-backtest`，历史成分股与全量回放仍是缺口。详见 `docs/exec-plans/active/qts-04-stock-selection-pipeline-plan.md`。
+
+- 2026-11-14 QTS-04 STEP 1 报告契约化已完成：JSON 新增 `schemaVersion: 1.0`、`config`（冻结权重、分位五档、最少观测、覆盖率门槛、宽度范围、四象限/池位/置信度阈值与确认/失效系数）与 `reportId`（对 `{schemaVersion, asOf, benchmark, config, directions}` 取 SHA-256 前 16 位，排除生成时间、调用次数、缓存状态与凭据来源）；`confirmation` / `invalidation` 由中文散文字符串改为 `{text, horizonDays, all:[{field, op, value, basis}]}`，可由 `predicate.evaluate` 三值求值（目标日缺行情为 `unknown`）；新增离线确定性校验器 `check_report.py`（数字溯源、禁用措辞、必备项）与 `report.render_fallback` 降级路径；`report.py` 降级为事实骨架。规则状态仍为 `needs-backtest`，回测执行未实现。详见 `docs/exec-plans/active/add-qts04-sector-report-contract.md`。
+
 - 2026-10-27 用户授权的当前 HEAD `1bfe367` 已通过受控普通入口部署到 TrueNAS k3s `a-stock` release revision 152，镜像 `20261027-143500-1bfe367`，Dashboard/PostgreSQL Ready、0 重启；values/spec 除镜像外零漂移，PVC/Secret identity 不变。部署与隔离 PostgreSQL 定向测试共 309 passed、0 skipped；发布后 84 条只读 smoke 通过，2026-10-26 三池恢复 55/26/23 条、晋级 15 条且不再 500，保留 degraded/warning。未触发 provider/collection，快照及 run/task/lease 计数不变；当日无快照继续明确 missing。完整证据见 `docs/exec-plans/active/deploy-current-head-to-k3s-20261027.md`。
 
 - 2026-09-27 新增本地交易知识 MCP：`src/trading_knowledge/` 将原版/量化版 Markdown、YAML 规则、coverage 和 Git 证据摘要离线索引到 `.artifacts/knowledge-base/`，提供中文检索、精确引用、规则/证据/索引状态和五个只读 stdio MCP 工具。索引记录来源层级、行号、规则 ID、生命周期、证据状态和内容 hash；当前构建为 143 个源文件、3,699 个 chunk、330 个规则记录，`evidence/rules/index.yaml` 的 `latestEvidence: null` 保持 `insufficient`，不把经验阈值解释为已验证收益。

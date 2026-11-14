@@ -36,9 +36,9 @@
 
 替代方案（未采用）：只留谓词，散文交给 agent 生成。会让确认条件的措辞完全依赖模型发挥。
 
-### D2 谓词采用扁平 `{field, op, value, horizonDays}` 而非表达式树
+### D2 谓词采用扁平 `{field, op, value, basis}` 而非表达式树
 
-单层 `all` 数组，字段限定在 `close` / `turnover` / `pctChange`，比较符限定 `>=` / `>` / `<=` / `<`。
+单层 `all` 数组，评估窗口放在谓词顶层的 `horizonDays`，每条的 `basis` 记录阈值推导式（如 `referenceClose*1.005`）。字段限定在 `close` / `turnover` / `pctChange`，比较符限定 `>=` / `>` / `<=` / `<`。
 
 理由：当前所有条件都是"与"关系，没有嵌套或析取。表达式树是过度设计，且求值器要处理优先级与括号。
 

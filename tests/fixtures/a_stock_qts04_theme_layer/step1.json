@@ -1,0 +1,27 @@
+{
+ "schemaVersion": "1.0",
+ "step": "STEP 1",
+ "reportId": "abc123def4567890",
+ "asOf": "2026-11-13",
+ "config": {},
+ "benchmark": "000001.SH",
+ "directions": [
+  {
+   "thscode": "881101.TI",
+   "name": "传媒",
+   "members": [
+    "000101.SZ",
+    "000102.SZ",
+    "000103.SZ"
+   ]
+  },
+  {
+   "thscode": "881102.TI",
+   "name": "计算机",
+   "members": [
+    "000201.SZ",
+    "000202.SZ"
+   ]
+  }
+ ]
+}

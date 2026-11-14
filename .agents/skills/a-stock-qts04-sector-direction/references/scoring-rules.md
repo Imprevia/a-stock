@@ -16,6 +16,8 @@
 
 指标缺失时按剩余有效权重重新归一，缺失项记 `null`，不补 0。
 
+上述权重、五档边界、最少观测、覆盖率门槛、四象限与池位/置信度阈值，以及确认/失效系数，全部冻结进 JSON 的 `config` 块；`config` 参与 `reportId` 计算，因此改阈值即换号。规则文件与 `config` 不一致时以代码常量为准，并视为文档缺陷。
+
 ## 五个指标
 
 ### QTS-04-01-01 5 日相对强度
@@ -129,12 +131,27 @@
 
 ## 确认与失效条件
 
-每个方向输出两条带具体数值的条件：
+每个方向输出两条**结构化谓词**，中文只是它的渲染结果：
 
-- 确认：次日收盘 ≥ 当日收盘 × 1.005，且成交额 ≥ 20 日均额。
-- 失效：次日收盘 < 当日收盘 × 0.97，或成交额 < 20 日均额 × 0.8。
+- 确认：`close >= 当日收盘 × 1.005` 且 `turnover >= 20 日均额 × 1.0`
+- 失效：`close < 当日收盘 × 0.97` 或 `turnover < 20 日均额 × 0.8`
 
-数值由当日收盘价与 20 日均额直接算出并写入字段，不留给用户自行换算。
+字段形态为 `{text, horizonDays, all:[{field, op, value, basis}]}`，`horizonDays = 1` 表示报告日之后第一个交易日。
+
+系数属于冻结配置的一部分，随 `config.confirmation` / `config.invalidation` 一起输出：
+
+| 参数 | 值 | 含义 |
+|---|---:|---|
+| `confirmation.closeMultiplier` | 1.005 | 确认阈值 = 当日收盘 × 1.005（正文写作 +0.5%） |
+| `confirmation.closeChange` | 0.005 | 同一系数的增量表达，供正文 `+0.5%` 溯源 |
+| `confirmation.turnoverMultiplier` | 1.0 | 确认量能门槛 = 20 日均额 |
+| `invalidation.closeMultiplier` | 0.97 | 失效阈值 = 当日收盘 × 0.97（正文写作 -3%） |
+| `invalidation.closeChange` | -0.03 | 同一系数的增量表达 |
+| `invalidation.turnoverMultiplier` | 0.8 | 失效量能门槛 = 20 日均额 × 0.8 |
+
+`value` 与 `text` 使用同一舍入（收盘两位小数、成交额取整），阈值由当日收盘价与 20 日均额直接算出，不留给用户自行换算，也不允许手写散文。
+
+系数为显式经验默认值，状态 `needs-backtest`；调参必须同步 `config`、本文与测试，并接受 `reportId` 变号。
 
 ## 边界
 

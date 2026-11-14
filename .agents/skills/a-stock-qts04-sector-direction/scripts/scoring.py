@@ -8,12 +8,20 @@ documented defaults whose calibration status remains ``needs-backtest``.
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+# Shared model lives in qts04-core; the names stay importable from here.
+_CORE = Path(__file__).resolve().parents[2] / "qts04-core" / "scripts"
+if str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))
+from qts04.model import Bar, normalize_bars, to_number  # noqa: E402
 
 # (rule id, metric name, weight) in upstream order; never reorder.
 RULE_WEIGHTS = (
@@ -32,21 +40,24 @@ MIN_BREADTH_COVERAGE = 0.70
 STRENGTH_TURNOVER_RATIO = 1.20
 BROAD_ADVANCE_RATIO = 0.50
 
+# Pool thresholds; ``pool_state`` is the only place that may apply them.
+FOCUS_TOTAL_SCORE = 70
+FOCUS_PERSISTENCE_SCORE = 60
+WATCH_TOTAL_SCORE = 50
+
+# Effective-metric coverage thresholds for confidence.
+CONFIDENCE_HIGH_COVERAGE = 0.90
+CONFIDENCE_MEDIUM_COVERAGE = 0.70
+CONFIDENCE_LOW_COVERAGE = 0.50
+
+# Rolling windows used by the three percentile rules.
+RELATIVE_STRENGTH_5_WINDOW = 5
+RELATIVE_STRENGTH_20_WINDOW = 20
+TURNOVER_WINDOW = 20
+
 STATUS_OK = "ok"
 STATUS_REDUCED = "reduced-confidence"
 STATUS_INSUFFICIENT = "insufficient"
-
-
-def to_number(value: Any) -> float | None:
-    """Return a finite float or ``None``; never coerce blanks to zero."""
-
-    if value is None or value == "" or value == "-":
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
 
 
 def midrank_percentile(value: float | None, sample: Iterable[float | None]) -> float | None:
@@ -122,49 +133,6 @@ def win_days_score(days: int | None) -> int | None:
     if days == 3:
         return 75
     return 100
-
-
-@dataclass(frozen=True)
-class Bar:
-    trading_date: date
-    close: float
-    turnover: float | None = None
-    open: float | None = None
-    high: float | None = None
-    low: float | None = None
-
-    @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> "Bar | None":
-        raw_date = payload.get("date_ms")
-        close = to_number(payload.get("close_price"))
-        if raw_date is None or close is None:
-            return None
-        try:
-            millis = int(float(raw_date))
-        except (TypeError, ValueError):
-            return None
-        trading_date = datetime.fromtimestamp(millis / 1000, tz=SHANGHAI).date()
-        return cls(
-            trading_date=trading_date,
-            close=close,
-            turnover=to_number(payload.get("turnover")),
-            open=to_number(payload.get("open_price")),
-            high=to_number(payload.get("high_price")),
-            low=to_number(payload.get("low_price")),
-        )
-
-
-def normalize_bars(rows: Iterable[Mapping[str, Any]]) -> list[Bar]:
-    """Normalize raw fuyao bar rows into sorted, de-duplicated bars."""
-
-    by_date: dict[date, Bar] = {}
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        bar = Bar.from_payload(row)
-        if bar is not None:
-            by_date[bar.trading_date] = bar
-    return [by_date[key] for key in sorted(by_date)]
 
 
 def slice_until(bars: Sequence[Bar], as_of: date) -> list[Bar]:
@@ -446,8 +414,8 @@ def build_metrics(
     metrics: list[Metric] = []
 
     for rule_id, name, window in (
-        ("QTS-04-01-01", "relative_strength_5", 5),
-        ("QTS-04-01-02", "relative_strength_20", 20),
+        ("QTS-04-01-01", "relative_strength_5", RELATIVE_STRENGTH_5_WINDOW),
+        ("QTS-04-01-02", "relative_strength_20", RELATIVE_STRENGTH_20_WINDOW),
     ):
         current, history = relative_strength(sector, benchmark, window)
         percentile, observations, status = rolling_midrank(current, history)
@@ -467,7 +435,7 @@ def build_metrics(
             )
         )
 
-    current, history = turnover_ratio(sector, 20)
+    current, history = turnover_ratio(sector, TURNOVER_WINDOW)
     percentile, observations, status = rolling_midrank(current, history)
     metrics.append(
         Metric(
@@ -608,9 +576,9 @@ def pool_state(total: float | None, persistence_score: int | None) -> str:
 
     if total is None:
         return "insufficient"
-    if total >= 70 and (persistence_score or 0) >= 60:
+    if total >= FOCUS_TOTAL_SCORE and (persistence_score or 0) >= FOCUS_PERSISTENCE_SCORE:
         return "focus"
-    if total >= 50:
+    if total >= WATCH_TOTAL_SCORE:
         return "watch"
     return "excluded"
 
@@ -629,11 +597,11 @@ def confidence_from_metrics(metrics: Sequence[Metric]) -> str:
         return STATUS_INSUFFICIENT
     scored = sum(1 for metric in metrics if metric.score is not None)
     coverage = scored / total
-    if coverage >= 0.9:
+    if coverage >= CONFIDENCE_HIGH_COVERAGE:
         level = "high"
-    elif coverage >= 0.7:
+    elif coverage >= CONFIDENCE_MEDIUM_COVERAGE:
         level = "medium"
-    elif coverage >= 0.5:
+    elif coverage >= CONFIDENCE_LOW_COVERAGE:
         level = "low"
     else:
         return STATUS_INSUFFICIENT

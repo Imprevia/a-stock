@@ -1,7 +1,7 @@
 # QTS-04 板块、题材与个股筛选流水线 — 探索与实施方案
 
-> 文档状态：**planning**（探索结论已固化，尚未实现）
-> 来源：对 `搭建交易系统/04-板块、题材与个股筛选/` 与 `搭建交易系统-量化版/04-板块、题材与个股筛选/` 全部 9 份文档的系统性梳理，叠加对仓库代码与数据底座的只读核查。
+> 文档状态：**planning-complete-for-step2**（阶段 1 已交付；STEP 2 完整版探索固化，待实施）
+> 来源：对 `搭建交易系统/04-板块、题材与个股筛选/` 与 `搭建交易系统-量化版/04-板块、题材与个股筛选/` 全部 9 份文档的系统性梳理，叠加对仓库代码与数据底座的只读核查；2026-11-14 追加对 fuyao 官方 CLI 的只读能力复核（见 6.3、6.4）。
 > 本文只固化方案，不包含任何代码改动；后续实现须另起 OpenSpec change 与本 plan 的分期任务。
 
 ---
@@ -351,14 +351,90 @@ $ python -m src.trading_system.cli rules coverage
 | `sector_continuity_results` | 板块连续性分析结果 | STEP 1 |
 | `ths_sector_memberships` | 成分股归属（行业/概念） | STEP 2 题材归属 |
 
-### 6.3 缺失的能力（实测）
+### 6.3 缺失的能力（2026-11-14 复核修订）
 
-- **无财务数据源**：全仓 grep 不到 ROE / PE / 现金流 / 审计意见字段 → STEP 8 无法落地。
-- **无竞价数据**：无 9:15—9:25 竞价成交额、未匹配量的采集 → STEP 7B 的竞价层缺失。
-- **无主力资金流口径**：只有成交额，没有净流入/大单口径。
-- **无分钟级分时**：长上影的盘中确认、触压时的成交密度无数据来源。
-- **无交易日历服务**：代码中未见 trading-calendar 模块。
-- **单个股换手率**：仅 `limit_security_facts` 的涨停股行内有，全市场换手率字段不可得。
+6.3 的旧结论只看了仓库内采集管线。STEP 1 已验证本流水线的实际取数通路是**直接调用 fuyao 官方 CLI**（不读 v2 接口、不连数据库），因此必须按该通路重新判定：
+
+| 能力 | 仓库内管线 | fuyao CLI | 结论 |
+|---|---|---|---|
+| 财务数据（ROE/PE/现金流） | 无 | `financials indicators/income/balance-sheet/cash-flow`（单只 + batch，10 年窗口） | STEP 8 **可落地** |
+| 竞价数据 | 无采集 | `special auction-opportunities`（含 `--date`，恰好 1 年）；`market auction-snapshot` 仅当日 `live/final` | STEP 7B 竞价层**可回溯 1 年** |
+| 交易日历 | 无服务 | `market calendar`（242 个交易日 ≈ 1 年） | 可替代 |
+| 涨停事实 | 有（`limit_security_facts`） | `special limit-up-pool/ladder/statistics/break-pool` | 两路可用 |
+| 主力资金流 | 无 | 无 | 仍缺 |
+| 分钟级分时（个股） | 无 | 仅 `futures/options intraday`，个股无 | 仍缺 |
+| 全市场换手率 | 仅涨停股行内有 | `market snapshot` 无换手率字段，`symbol list` 无流通股本 | 仍缺 |
+| 历史成分股版本 | 无 | `index constituents` 无日期参数，仅当前快照 | **仍缺（回测硬约束）** |
+
+结论：原判断中"STEP 8 无法落地""STEP 7B 竞价层缺失"已不成立；仍成立的是分钟级分时、主力资金流、全市场换手率，以及最关键的**历史成分股版本**。
+
+### 6.4 STEP 2 题材层深度实测（完整版）
+
+"完整版"指：三重共振全量（共同催化 + 共同资金 + 共同价格反馈）+ 题材真伪判定 + 催化证实分级。以下五项均为 2026-11-13 实测。
+
+#### （1）题材归属：词表不通，必须改成成员共现
+
+当日 38 只涨停，按 `limit_up_reason` 的 `+` 拆分得到 112 个 token，与 390 个概念名比对：
+
+| 匹配方式 | 数量 | 例 |
+|---|---|---|
+| 精确匹配 | 9 | 人形机器人、算力租赁、减速器 |
+| 模糊匹配 | 11 | 数据中心 → 数据中心(AIDC)；光刻胶树脂 → 光刻胶 |
+| 无法映射 | **92** | 影视院线、AI算力、词元服务、电子皮肤、三季报增长 |
+
+因此"共同催化"不能用名称 join，必须按**概念成员交集**统计：先取概念成分股与当日涨停池的交集，再在交集内部统计共享 token。该路径不依赖词表，且天然抗造词。
+
+#### （2）题材真伪：必须做基准率校正（lift）
+
+宽概念天然高命中，直接按涨停家数排序会系统性误判。定义 `lift = 当日涨停命中数 / (成员数 × 全市场涨停率)`：
+
+| 概念 | 代码 | 成员 | 当日涨停 | 期望 | lift | 共享 token | 正确判定 |
+|---|---|---|---|---|---|---|---|
+| 短剧游戏 | 886060.TI | 100 | 7 | 0.7 | **9.95** | 影视院线、AI短剧 | 核心 |
+| 算力租赁 | 886050.TI | 189 | 3 | 1.3 | **2.26** | 算力租赁 | 次强/扩散 |
+| 新能源汽车 | 885431.TI | 1068 | **10** | 7.5 | 1.33 | 人形机器人（借道） | 伪题材 |
+| 人形机器人 | 886069.TI | 498 | 3 | 3.5 | 0.86 | 人形机器人 | 标签重合 |
+| 存储芯片 | 886042.TI | 205 | 1 | 1.4 | 0.69 | — | 无支持 |
+| 固态电池 | 886032.TI | 300 | 0 | 2.1 | 0.00 | — | 无支持 |
+
+按涨停家数排序第一名是新能源汽车（10 只），按真实度排序第一名是短剧游戏（7 只，lift 10）。**这就是"伪题材（只有标签重合）"的可计算版本**：lift 是硬闸门，不是加分项。
+
+#### （3）催化证实：四级标签，但 `confirmed` 今日不可达
+
+| 标签 | 机械判据 | 今日可达 |
+|---|---|---|
+| `confirmed` 已证实 | 主源原文（公告/交易所/政府文件）可定位且与 token 语义一致 | **否** |
+| `partial` 部分证实 | ≥2 个独立厂商源指向同一 token，且成员同向 | 是 |
+| `speculative` 市场推测 | 仅单一厂商源，或价格未确认 | 是 |
+| `unknown` 原因不明 | 无 token，或 token 全属属性类 | 是 |
+
+`confirmed` 不可达的三条实测：
+
+1. `news notice-detail` 只接受 opaque `seq`，无公告列表枚举入口。
+2. `news article-detail` 需要 `encoded-seq`，用题材 id 试报 `FUYAO_1002`。
+3. `news stock-timeline-list` 返回 `FUYAO_5003 Data source unavailable`。
+
+而 `news anomaly-analysis` 的解读文本自带"本内容由AI技术搜集公开信息总结生成"，属厂商 AI 摘要，只能支撑 `partial`。**必须显式输出 `confirmed = unavailable`，不允许用 AI 摘要冒充主源。**
+
+属性类 token（股份回购、三季报增长、次新股、预重整、摘帽、国企改革、实控人变更）不构成题材；判据为内置停用表 + "命中股票分属 ≥3 个互不相关概念即判属性类"。
+
+#### （4）回测台账
+
+| 数据 | 实测窗口 | 可回测等级 |
+|---|---|---|
+| 概念指数日线 | 5 年（新概念 659—830 根，如 886069 起于 2024-02） | A |
+| 个股日线 | 10 年 | A |
+| 涨停池 | 约 12—13 个月（2025-10-31 可查，2025-10-28 报参数错误） | B |
+| 涨停统计 / 热榜历史 / 竞价机会 / 交易日历 | 恰好 1 年（242 个交易日，2025-11-14 起） | B |
+| 异动解读 | ≥2 年（2023-11-13 有 94 条，2022-11-14 为 0） | B（AI 摘要） |
+| 深度题材 `topic-hot-list` | 约 6.5 个月（cursor 回溯至 2026-04-27，191 条） | C |
+| 概念成分股 | 仅当前快照，无历史版本 | **D** |
+
+结论：**"价格 + 资金"可回 5 年；"催化 + 归属"只能回约 1 年，且成分股无历史版本。** 若完整版要真的可回测，必须从上线首日起每日快照 top 10 题材的成员与 token，自建 point-in-time 数据；不做这件事，完整版回测只有一半可信。
+
+#### （5）成本模型
+
+K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概念快照 1（实测 390 个代码一次成功）、题材日线 ⌈K/10⌉、涨停池 + 统计 2—4、成分股 K、涨停成员个股日线 ⌈M/10⌉ ≤ 20、异动解读 1、深度题材 1—2。低于 STEP 1 在 N=30 时的约 120 次。
 
 ---
 
@@ -405,18 +481,21 @@ $ python -m src.trading_system.cli rules coverage
 
 | STEP | 卡点 | 需要什么 |
 |---|---|---|
-| STEP 2 题材 | 库里有成分股归属，但**“共同催化”的证据**（政策原文、公告、订单、涨价）无来源 | 走 lark-doc / lark-base 取数通道，还是指定公告源 |
-| STEP 7 形态B「一进二」 | 首板质量可算，但**竞价数据**（9:15—9:25 竞价成交额、未匹配量）无采集 | 是否新增竞价采集数据集（属新 provider 能力，需单独授权） |
-| STEP 5 抗跌/独立 | 需要板块指数与个股对齐的时间序列，以及“前一日低点、涨停日最低价、5/10 日线”锚点 | 确认用哪个板块指数作基准 |
-| 全流程分位校准 | 量化版要求 250 日滚动分位，本地历史深度未验证 | 是否接受先分段计算，不足 60 个观测标 `insufficient` |
+| STEP 2 题材 | 已可用涨停原因 + 异动解读支撑 `partial`，但**主源原文不可枚举**，`confirmed` 档不可达 | 是否接受 `confirmed = unavailable` 并永久以 `partial` 封顶；若否，需指定公告/政策源 |
+| STEP 2 题材 | 概念成分股只有当前快照 | 是否接受"仅从上线日起 point-in-time 可回测"，或另建历史成分数据集 |
+| STEP 7 形态B「一进二」 | 竞价数据可回溯 1 年（`auction-opportunities --date`），但 `auction-snapshot` 仅当日 | 确认竞价层只用 1 年窗口，还是接受"仅当日可跑、历史不可回测" |
+| STEP 5 抗跌/独立 | 需要板块指数与个股对齐的时间序列，以及"前一日低点、涨停日最低价、5/10 日线"锚点 | 确认基准固定沿用 STEP 1 的 `000001.SH` |
+| 全流程分位校准 | 量化版要求 250 日滚动分位；概念指数历史普遍 659—1212 根，新概念不足 250 | 沿用 STEP 1 口径：不足 60 标 `insufficient`，60—249 标 `reduced-confidence` |
 
-### 7.3 目前做不了
+### 7.3 目前仍做不了
 
 | STEP / 能力 | 原因 |
 |---|---|
-| STEP 8 基本面（07 篇） | 全仓无财务数据源（ROE/PE/现金流/审计意见均无字段），需新增数据接入与协议 |
-| STEP 6 的「主力净流入 / 资金流」 | 量化版本身也说口径因平台而异不能单独作依据；当前只有成交额 |
-| STEP 7 长上影的「分时确认」 | 需分钟级数据（触压时分成交密度），现仅日线 |
+| STEP 6 的「主力净流入 / 资金流」 | 无净流入/大单口径命令；量化版本身也说该口径因平台而异不能单独作依据 |
+| STEP 7 长上影的「分时确认」 | 个股无分钟级数据（`intraday` 仅 futures/options），现仅日线 |
+| 全市场换手率 | `market snapshot` 无换手率字段，`symbol list` 无流通股本，无法自行计算 |
+| 历史成分股版本 | `index constituents` 无日期参数；回测题材归属存在事后归属偏差 |
+| 公告/政策主源原文 | `notice-detail` 需 opaque `seq`，无列表枚举；`article-detail` 需 `encoded-seq` |
 | 盘中实时（竞价→开盘 30 分钟） | 本地 API 当前未运行（`127.0.0.1:8001` 无响应）；按仓库规则盘中实时只能在盘后或显式本地命令触发；生产调度需单独授权 |
 
 ---
@@ -450,19 +529,30 @@ $ python -m src.trading_system.cli rules coverage
 
 | 阶段 | 范围 | 前置 | 验收口径 |
 |---|---|---|---|
-| 阶段 1 | `QTS-04-01-01` ~ `-05`（板块五指标）+ `QTS-04-03-01` ~ `-06`（龙头六特征）+ `QTS-04-05-01` ~ `-05`（长上影） | 无（数据已具备） | 规则入 YAML、注册 evaluator、测试覆盖、snapshot 可回放；状态保持 `needs-backtest` |
-| 阶段 2 | `QTS-04-02-01` ~ `-05`（大成交额榜）+ `QTS-04-04-01` ~ `-05`（异动资金） | 阶段 1 的个股打分产物 | 同上；并验证“成交高但价格结果 <40 标记兑现”的判定 |
-| 阶段 3 | `QTS-04-06-01` ~ `-05`（一进二）+ `QTS-04-07-01` ~ `-05`（基本面）+ `QTS-04-08-01` ~ `-04`（合成） | 竞价数据集 / 财务数据源决策 | 同上；缺数据时输出 `insufficient` 而非伪造 |
+| 阶段 1 | STEP 1 板块层（`QTS-04-01-01` ~ `-05`） | 无 | **已完成**：`a-stock-qts04-sector-direction` Skill + `schemaVersion 1.0` 报告契约；状态 `needs-backtest` |
+| 阶段 1.5 | **STEP 2 题材层（完整版）**：概念成员共现 + lift 校正 + 共享 token + 四级催化标签 + 空结果 | 阶段 1 的 `reportId` 与方向成员 | 可独立运行也接受 STEP 1 JSON；带 `input.step1ReportId` / `quality.backtestGrade` / `noCoreTheme`；`confirmed` 显式 `unavailable`；fixture + 真实日 + 约 1 年回测；状态 `needs-backtest` |
+| 阶段 2 | STEP 3 大成交额榜（`QTS-04-02-01` ~ `-05`）+ STEP 6 异动资金（`QTS-04-04-01` ~ `-05`） | 阶段 1 的个股打分产物 | 同上；并验证“成交高但价格结果 <40 标记兑现”的判定 |
+| 阶段 3 | STEP 7 形态（`QTS-04-05`/`-06`）+ STEP 4/5 角色与龙头（`QTS-04-03`）+ STEP 8 基本面（`QTS-04-07`）+ STEP 9/10 仲裁与合成（`QTS-04-08`） | 竞价/财务取数确认（CLI 已具备，需定 1 年窗口口径） | 同上；缺数据时输出 `insufficient` 而非伪造 |
 | 阶段 4 | 回测与校准 | 阶段 1—3 | 记录训练区间、样本外区间、交易成本、规则版本；满足第 10 章后才可升级 `validated` |
+
+> 阶段 1.5 先于阶段 2 执行：题材层需要概念层的价格与资金口径，而 STEP 3 的个股成交额排名要到阶段 2 才产出；阶段 1.5 的“共同资金行为”先用概念指数成交额，不阻塞。
 
 ---
 
 ## 10. 未决问题清单
 
-1. **执行路径**：先走 A（手工跑指定日候选清单最快看到结果），还是直接走 B（起 plan + OpenSpec change 做可执行化）？
-2. **数据环境**：本地 PostgreSQL 是否可连？哪个环境有可用于验证的真实数据？
-3. **题材催化证据**：走 lark-doc / lark-base 通道，还是指定外部公告源？
-4. **板块指数基准**：STEP 1 的相对强度与 STEP 5 的抗跌比较，使用哪个基准指数？
+已定（2026-11-14）：
+
+1. **执行路径** → 方案 B，且阶段 1 已完成为 `a-stock-qts04-sector-direction` Skill。
+2. **数据环境** → 走 fuyao 官方 CLI，不连数据库、不读 v2 接口；凭据解析顺序同 STEP 1。
+3. **题材催化证据** → 涨停原因 + 异动解读可支撑 `partial`；`confirmed` 因主源不可枚举而显式 `unavailable`，不再走 lark-doc / lark-base。
+4. **板块指数基准** → 固定 `000001.SH`，STEP 2 与 STEP 5 沿用。
+
+仍待确认：
+
+5. **题材成员快照留存**：是否接受"仅从上线日起 point-in-time 可回测"，并每日落盘 top 10 题材成员与 token？
+6. **lift 分母口径**：全市场股票数用 `symbol list` 实际条数，还是沿用估算 5400？
+7. **停用 token 表维护**：属性类 token（股份回购、三季报增长等）由谁定期复核？
 
 ---
 
@@ -478,42 +568,68 @@ $ python -m src.trading_system.cli rules coverage
 
 ## Stage（阶段）
 
-- 当前阶段：**Stage 0 — 探索结论固化**
-- 阶段序列：探索固化 → OpenSpec change 创建 → 阶段 1（01/03/05 规则可执行化）→ 阶段 2（02/04）→ 阶段 3（06/07/08 + 数据源）→ 阶段 4（回测校准）
-- 本轮边界：仅完成本探索文档；未创建 OpenSpec change，未修改任何代码、规则或现有文档。
+- 当前阶段：**Stage 1.5 — STEP 2 题材层（完整版）已实现并归档**
+- 阶段序列：探索固化 → 阶段 1（STEP 1 板块层，已完成）→ **阶段 1.5（STEP 2 题材层）** → 阶段 2（02/04 成交额榜与异动）→ 阶段 3（03/05/06/07/08 角色形态基本面合成）→ 阶段 4（回测校准）
+- 本轮边界：抽取 `qts04-core` 共享底座，新增 `a-stock-qts04-theme-layer` Skill；未修改 `trading-rules/`、`src/`、`coverage.yaml`、生产集群与数据库。
 
 ## Status（状态）
 
-`planning` — 方案已固化，等待主控确认执行路径（A/B）与数据环境后进入实现阶段。
+`step2-skill-complete` — 45/45 任务已实现并验证；门禁通过，OpenSpec 变更已归档到 `openspec/changes/archive/2026-11-14-add-qts04-theme-layer-skill/`。
 
 ## Acceptance（验收）
 
-- [ ] 主控确认执行路径（A 手工跑 / B 可执行化）
-- [ ] 阶段 1 三组规则（`QTS-04-01` / `-03` / `-05`）在 `coverage.yaml` 中从 `documented-only` 变为 `executable`，且有对应测试
-- [ ] 规则集可对固定 snapshot 离线回放，输出 `degraded` / `insufficient` 而非伪造成功
-- [ ] 校准状态保持 `needs-backtest`，未被提前升级为 `validated`
+- [x] 主控确认执行路径（方案 B）与数据环境（fuyao 官方 CLI）
+- [x] STEP 2 完整版四环节可落地度实测完成（归属/真伪/催化/回测台账）
+- [x] `confirmed` 不可达的实测证据与降级口径已记录
+- [x] 阶段 1.5 交付 `a-stock-qts04-theme-layer` Skill：JSON 带 `schemaVersion` / `reportId` / `input.step1` / `quality.backtestGrade` / `noCoreTheme`
+- [x] lift 硬闸门与共享 token 判据有 fixture 测试；弱题材日输出 `noCoreTheme=true` 而非编造核心题材
+- [x] 阶段 1 与阶段 1.5 可离线回放，输出 `degraded` / `insufficient` 而非伪造成功
+- [x] 校准状态保持 `needs-backtest`，未被提前升级为 `validated`
 
 ## Completion Evidence（完成证据）
 
-无（未实现）。
+- 阶段 1：`a-stock-qts04-sector-direction` Skill 与 `add-qts04-sector-report-contract` 变更（26/26 任务完成，待归档）；STEP 1 测试 **90 passed**。
+- 阶段 1.5：`a-stock-qts04-theme-layer` Skill，45/45 任务；STEP 2 测试 **31 passed**；STEP 1 + STEP 2 合并 **121 passed**（2026-11-14）。
+- 共享底座：`.agents/skills/qts04-core/scripts/qts04/`（`client` / `cache` / `contract` / `model` / `predicate` / `check`），STEP 1/2 通过同名 shim 复用；STEP 1 的 `reportId` 在抽取前后逐字节一致。
+- 2026-11-13 真实链路（`--max-candidates 24 --max-themes 5`）：
+  - `reportId 4662180ce0dbceb4`、`status degraded`、`noCoreTheme false`。
+  - 短剧游戏 `core` / lift 9.9474 / 部分证实；算力租赁 `diffuse` / 2.2556 / 部分证实；手机游戏、预制菜、减速器均 `event`，催化 `unknown`。
+  - agent 文章经 `theme_check_report.py` 校验 **PASS**；降级原因：历史日期无概念快照、涨停池 38 行 vs 统计 37 只。
+- 数据口径实测：概念目录 390 个；`index snapshot` 390 个代码单次返回 390 行（0 缺行）；涨停池 38 行；异动解读 726 条；短剧游戏概念日线 732 根、算力租赁 830 根；成分股仅当前快照。
+- 分级验证（5 个交易日）：
+  - 弱/低涨停日：2026-11-13（38 只）core=短剧游戏；2026-09-15（32 只）noCore；2026-02-13（43 只）noCore。
+  - 强/高涨停日：2026-06-12（98 只）noCore；2026-07-15（72 只）noCore。
+  - 偏差：2026-06-12 有 98 只涨停但仍无核心题材，疑似历史日期候选召回不足（无概念快照，仅靠原因词匹配），列入 Remaining Gaps。
+- 一年窗口统计回放（2025-11-14 → 2026-11-13，每 15 个交易日采样，17 天）：
+  - `statusCounts={"degraded":17}`、`noCoreDays=7`、`coreDays=10`、`tierCounts={"core":13,"diffuse":33,"event":17,"pseudo":22}`、`backtestGrade=D`。
+  - 采样参数：`maxCandidates=12`、`memberSampleLimit=5`（控制取数成本；仅用于状态/窗口/空结果率，不用于阈值校准）。
+  - 边界：2025-10-30 输出 `insufficient`（不在交易日历/涨停池窗口）；最早可回放日 2025-11-14。
+- 日期校验：未来日期、当日 15:10 前、非交易日三类输入均拒绝并输出 `insufficient`；fixture 无凭据运行不发起网络请求。
+- 任务 9.3 门禁：`openspec validate add-qts04-theme-layer-skill --strict` 通过；`check-docs-contract.py --mode=full` 通过（代码 34 / 文档 9 / plan 4）；`git diff --check` 通过。
+- 任务 9.4：`git status --porcelain` 不含 `trading-rules/`、`src/`、`coverage.yaml`、生产集群与数据库路径。
+- 任务 9.5：`add-qts04-sector-report-contract` 的 delta 仅覆盖 `qts04-sector-direction-skill`，与本变更的 `qts04-theme-layer-skill` 不重叠；归档顺序不阻塞。
+- 归档：主 spec `openspec/specs/qts04-theme-layer-skill/spec.md` 已创建（9 requirements / 21 scenarios），变更移动到 `openspec/changes/archive/2026-11-14-add-qts04-theme-layer-skill/`。
 
 ## Remaining Gaps（剩余缺口）
 
-- 第 04 章 45 条规则全部 `documented-only`，无一条可执行。
-- 缺财务数据源（STEP 8）、竞价数据（STEP 7B）、主力资金流口径、分钟级分时、交易日历服务、全市场换手率字段。
-- 本地 PostgreSQL 连接性与真实数据可用性未验证。
-- 四个未决问题（见第 10 节）尚无结论。
+- 一年回放是**采样**（17/242 天）而非全量；`memberSampleLimit=5` 会放大宽度指标噪声，不能用于阈值校准。
+- 历史日期没有概念快照，候选生成只靠涨停原因词匹配；2026-06-12 的 98 只涨停仍无核心题材，疑似漏掉主线，需人工复核。
+- `confirmed` 催化档永久不可达（主源不可枚举），最高只能到 `partial`。
+- 历史成分股版本缺失，`pointInTime=false`、`backtestGrade=D`；题材归属的事后偏差无法消除。
+- 核心/扩散阈值（lift 3.0/1.5、分数 50/35）是按 2026-11-13 单日校准的，尚未样本外验证。
+- 涨停池与涨停统计存在口径差（2026-11-13 38 vs 37、2026-06-12 98 vs 88），当前只告警不修正。
+- 第 04 章 45 条规则仍全部 `documented-only`，本流水线以 Skill 形态先行，未进入 `trading-rules/`。
+- `add-qts04-sector-report-contract` 尚未归档；本变更归档需确认顺序。
 
 ## Next Step（下一步）
 
-1. 回答第 10 节的第 1、2 个问题（执行路径 + 数据环境）。
-2. 若选 B：`openspec new change "add-qts-04-stock-selection-pipeline"`，再按依赖顺序生成 `proposal.md` / `design.md` / `specs/` / `tasks.md`。
-3. 若选 A：提供目标交易日，按 STEP 1 → 3 → 5 → 10 手工产出候选清单与剧本。
-
----
+1. 执行 `openspec validate add-qts04-theme-layer-skill --strict`、`check-docs-contract.py --mode=full`、`git diff --check`，回填 9.3 结果。
+2. 本变更已归档；`add-qts04-sector-report-contract` 仍待归档。
+3. 样本外验证 lift/分数阈值；补全 242 天回放或改为按月采样并固定 `memberSampleLimit`。
+4. 以 STEP 2 JSON 作为 STEP 3/4 的题材输入，继续 02/04 成交额榜与异动资金候选池。
 
 ## 附录 A · 三个值得注意的缺口
 
 1. **01/02 的“临盘节奏”只写到复盘** —— 盘中竞价、开盘 30 分钟的具体处理散落在 06 和第 08 章，**没有被统一成一张执行时序图**。
 2. **量化版到目前全部是 `needs-backtest`** —— 只有 `QTS-04-08-04` 这类结构完整性检查是 `defined`。也就是说 70 分线、六项 ≥75、成交额前 30 这些数字都还没样本外验证，只能当**排序工具**用，还不能当**信号**用。
-3. **“共同催化”和“原因核验”是整条流水线最容易变成主观判断的环节** —— 人读层用文字定义，量化版用“来源可靠性分”一笔带过，可执行性最弱。
+3. **“共同催化”和“原因核验”是整条流水线最容易变成主观判断的环节** —— 人读层用文字定义，量化版用“来源可靠性分”一笔带过。2026-11-14 实测后已改为可机械判定的四级标签 + 成员共现 + lift 校正（见 6.4）；但 `confirmed` 档因主源不可枚举而永久 `unavailable`，这是整条流水线最硬的证据天花板。

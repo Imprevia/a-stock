@@ -122,24 +122,100 @@ CLI 统一输出 `{ok, command, data, meta}`。
 - 缺口补齐只拉未覆盖区间，不整段重拉。
 - 缓存是可重建派生物：删除只影响首跑耗时，不影响正确性，也不写入数据库。
 
-## 产物契约
+## 报告契约（JSON 是唯一事实源）
 
-一次运行产出两份同源结果：
+一次运行产出三样东西：
 
-| 文件 | 写入开关 | 默认 | 读者 |
+| 产物 | 写入开关 | 默认 | 读者 |
 |---|---|---|---|
-| JSON | `--output PATH` | 无（除非 `--format json` 打 stdout） | 机器 |
-| Markdown | `--report PATH` | 给了 `--output` 时自动写同名 `.md` | 人 |
+| JSON | `--output PATH` | 无（除非 `--format json` 打 stdout） | 机器 / 下游 Skill / 校验器 |
+| Markdown 事实骨架 | `--report PATH` | 给了 `--output` 时自动写同名 `.md` | agent 底稿、无模型兜底 |
+| 人读文章 | 由 agent 另行撰写 | 无 | 用户（必须校验通过后才可呈现） |
 
 stdout 由 `--format` 控制：`json`（默认）/ `markdown` / `both`。
 
-Markdown 报告由 `scripts/report.py` 的 `render_markdown()` 纯函数生成，只读 JSON，不重新计算任何指标，因此两份产物不可能出现数值分歧。渲染规则：
+### 顶层接口字段
+
+`report.json` 顶层包含 `schemaVersion`、`reportId`、`config`，另有 `asOf`、`generatedAt`、`status`、`source`、`benchmark`、`breadthUniverse`、`breadthUniverseUsed`、`cacheState`、`credentialSource`、`quality`、`directions`、`ruleVersion`、`calibration`、`disclaimer`、`providerCalls`。
+
+| 字段 | 语义 |
+|---|---|
+| `schemaVersion` | 数据结构版本，当前 `1.0`。与 `ruleVersion`（规则族版本 `0.1`）不是一回事。缺该字段的结果下游必须拒绝解析。 |
+| `reportId` | `{schemaVersion, asOf, benchmark, config, directions}` 的规范化 JSON（`sort_keys`、紧凑分隔符、`ensure_ascii=False`）取 SHA-256 前 16 位。 |
+| `config` | 本次判定实际使用的全部阈值；两份报告只有 `config` 相同才可直接比较。 |
+
+`reportId` 明确排除 `generatedAt`、`providerCalls`、`cacheState`、`credentialSource`：同一交易日、同一配置重跑必须同号，缓存冷热与调用次数不能改变身份。任一阈值或 `breadthUniverse` 变化都会换号。
+
+`config` 冻结的键：
+
+```json
+{
+  "weights": {"QTS-04-01-01": 0.25, "QTS-04-01-02": 0.15, "QTS-04-01-03": 0.2, "QTS-04-01-04": 0.2, "QTS-04-01-05": 0.2},
+  "percentileTiers": {"boundaries": [0.2, 0.4, 0.6, 0.8], "scores": [0, 25, 50, 75, 100]},
+  "minObservations": 60,
+  "fullWindow": 250,
+  "ruleWindows": {"relativeStrength5": 5, "relativeStrength20": 20, "turnover": 20},
+  "minBreadthCoverage": 0.7,
+  "breadthUniverse": 30,
+  "quadrant": {"strengthTurnoverRatio": 1.2, "broadAdvanceRatio": 0.5},
+  "pool": {"focusTotalScore": 70, "focusPersistenceScore": 60, "watchTotalScore": 50},
+  "confidenceCoverage": {"high": 0.9, "medium": 0.7, "low": 0.5},
+  "confirmation": {"horizonDays": 1, "closeMultiplier": 1.005, "closeChange": 0.005, "turnoverMultiplier": 1.0},
+  "invalidation": {"horizonDays": 1, "closeMultiplier": 0.97, "closeChange": -0.03, "turnoverMultiplier": 0.8}
+}
+```
+
+### 确认 / 失效谓词
+
+`directions[].confirmation` 与 `[].invalidation` 是对象，不是字符串：
+
+```json
+{
+  "text": "次日收盘不低于 1765.32（当日收盘 1756.53 的 +0.5%） 且成交额不低于 13428120460（20 日均额）",
+  "horizonDays": 1,
+  "all": [
+    {"field": "close", "op": ">=", "value": 1765.32, "basis": "referenceClose*1.005"},
+    {"field": "turnover", "op": ">=", "value": 13428120460.0, "basis": "mean(turnover,20)*1.0"}
+  ]
+}
+```
+
+- `field` 限定 `close` / `turnover` / `pctChange`；`op` 限定 `>=` / `>` / `<=` / `<`。
+- `horizonDays` 表示报告日之后第几个交易日；`all` 内各条是与关系。
+- `basis` 记录阈值的推导式，`value` 与 `text` 使用同一舍入（收盘两位小数、成交额取整），两者不会分叉。
+- `horizonDays` 只支持单窗口单次求值；5 日累计口径需多次调用求值器（已知限制）。
+
+求值入口 `predicate.evaluate(predicate, bars)`：`bars` 传入报告日之后的交易日（升序，`Bar` 或 `{date, close, turnover}`），返回 `met` / `unmet` / `unknown`。目标交易日缺行情、字段缺失或不支持的 `field`/`op` 一律 `unknown`，不抛异常，也不当作 `unmet`。
+
+### 事实骨架与文章
+
+`report.py` 的 `render_markdown()` 仍是纯函数，但定位已降级为**事实骨架**：agent 撰文底稿、`--format markdown` 的无模型兜底、校验器的参照物。它不再是对外主报告，也不承诺与文章逐字同源；文章是 JSON 的一个视图，回测只读 JSON。
+
+骨架渲染规则：
 
 - 缺失的 `score` / `percentile` 渲染为 `—`，不渲染为 0。
 - `normalizedWeight` 为 `null`（该指标未计分）时权重列渲染 `—`，避免权重列合计超过 100%。
 - 短历史指标聚合成一句「全部 N 项指标均为短历史（观测 a—b）」，不逐条重复。
-- `status=insufficient` 时报告改为「一、结论 / 二、数据质量 / 三、口径与边界」三节，并列出全部原因。
-- 报告固定包含免责声明与 `calibration needs-backtest`，不出现 `validated`。
+- `status=insufficient` 时改为「一、结论 / 二、数据质量 / 三、口径与边界」三节，并列出全部原因。
+- 标题为「板块层定向事实骨架」，首段声明它不是对外主报告；头部带 `契约 <schemaVersion> ｜ reportId <reportId>`。
+- 固定包含免责声明与 `calibration needs-backtest`，不出现 `validated`。
+
+### 机械校验
+
+`scripts/check_report.py` 是确定性、离线的报告门禁：
+
+```bash
+.venv/bin/python scripts/check_report.py --result result.json --article article.md
+```
+
+- 退出码：`0` PASS / `1` FAIL / `2` 输入不可读或 JSON 非法。
+- 输出 JSON：`status`、`checks`（`schemaVersion` / `numberProvenance` / `forbiddenWording` / `requiredItems`）、`issues`（含 `line` / `column`）、`report`（回显 `reportId` / `asOf` / `status`）。
+- 检查一：**数字溯源**。抽取带单位 token（`%`、`×`、`亿`、`万`、`N 分`、`总分 N`）与无单位大数，归一后在 JSON 的全部数值中匹配，允许展示精度（半 ULP）加 1% 相对误差。日期、`QTS-04-01-*` 规则 ID、`881101.TI` 类代码与 `MA20` 类标识在校验前被屏蔽；无单位整数 ≤12 白名单（方向序号、小计数）。
+- 检查二：**禁用措辞**。`买入` / `加仓` / `仓位` / `必涨` / `已验证` / `目标价` 逐处报行列。
+- 检查三：**必备项**。免责声明（「不构成…建议」或「不是买点」）、`needs-backtest`、数据状态、每个方向的置信度（按 `confidence` 映射高/中/低/不足）。`insufficient` 时不要求方向小节，但必须写「本次不产出方向」并说明原因。
+- 校验器不调用模型、不联网；同一 JSON 与同一文章重复校验结论一致。
+
+呈现规则：PASS 才可贴文章；FAIL 时调用 `report.render_fallback(result, issues)`，它在首行标注「文章未通过校验，以下为事实骨架」，附失败项与行列位置后再拼接骨架。
 
 ## 降级语义
 

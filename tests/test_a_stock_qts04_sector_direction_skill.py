@@ -21,7 +21,10 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import cache as cache_module  # noqa: E402
+import check_report  # noqa: E402
+import sector_contract as contract  # noqa: E402
 import fuyao_client  # noqa: E402
+import predicate  # noqa: E402
 import scoring  # noqa: E402
 import report  # noqa: E402
 import sector_pipeline  # noqa: E402
@@ -482,7 +485,8 @@ def test_pipeline_e2e_from_fixture_produces_bounded_directions() -> None:
     assert result["directions"], "fixture should yield at least one direction"
     for direction in result["directions"]:
         assert direction["calibration"] == "needs-backtest"
-        assert direction["confirmation"] and direction["invalidation"]
+        assert direction["confirmation"]["all"] and direction["invalidation"]["all"]
+        assert direction["confirmation"]["text"] and direction["invalidation"]["text"]
         assert len(direction["metrics"]) == 5
         assert {metric["ruleId"] for metric in direction["metrics"]} == {
             "QTS-04-01-01",
@@ -615,7 +619,7 @@ def _e2e_result() -> dict:
 
 def test_report_has_title_and_all_sections() -> None:
     text = report.render_markdown(_e2e_result())
-    assert text.startswith("# 板块层定向报告 · 2026-11-13")
+    assert text.startswith("# 板块层定向事实骨架 · 2026-11-13")
     for heading in ("## 一、结论速览", "## 二、方向明细", "## 三、数据质量", "## 四、口径与边界"):
         assert heading in text
 
@@ -626,8 +630,8 @@ def test_report_lists_every_direction_with_both_levels() -> None:
     for direction in result["directions"]:
         assert direction["thscode"] in text
         assert direction["name"] in text
-        assert direction["confirmation"] in text
-        assert direction["invalidation"] in text
+        assert direction["confirmation"]["text"] in text
+        assert direction["invalidation"]["text"] in text
 
 
 def test_report_tables_cover_all_five_rules_per_direction() -> None:
@@ -703,7 +707,7 @@ def test_cli_writes_markdown_report_next_to_json(tmp_path: Path) -> None:
     report_path = output.with_suffix(".md")
     assert report_path.is_file()
     text = report_path.read_text(encoding="utf-8")
-    assert text.startswith("# 板块层定向报告")
+    assert text.startswith("# 板块层定向事实骨架")
 
 
 def test_cli_explicit_report_path_wins(tmp_path: Path) -> None:
@@ -734,7 +738,7 @@ def test_cli_markdown_format_prints_report(
         ]
     )
     captured = capsys.readouterr().out
-    assert captured.startswith("# 板块层定向报告")
+    assert captured.startswith("# 板块层定向事实骨架")
     with pytest.raises(json.JSONDecodeError):
         json.loads(captured)
 
@@ -755,3 +759,348 @@ def test_cli_json_format_stays_machine_readable(capsys: pytest.CaptureFixture[st
 def test_default_report_path_replaces_suffix() -> None:
     assert str(report.default_report_path("a/b/result.json")) == "a/b/result.md"
     assert str(report.default_report_path("result")) == "result.md"
+
+# ---------------------------------------------------------------- contract
+
+
+def test_pipeline_declares_schema_version_and_frozen_config() -> None:
+    result = _e2e_result()
+    assert result["schemaVersion"] == contract.SCHEMA_VERSION == "1.0"
+    config = result["config"]
+    assert config["breadthUniverse"] == 4
+    assert config["weights"] == {
+        "QTS-04-01-01": 0.25,
+        "QTS-04-01-02": 0.15,
+        "QTS-04-01-03": 0.20,
+        "QTS-04-01-04": 0.20,
+        "QTS-04-01-05": 0.20,
+    }
+    assert config["percentileTiers"]["boundaries"] == [0.2, 0.4, 0.6, 0.8]
+    assert config["percentileTiers"]["scores"] == [0, 25, 50, 75, 100]
+    assert config["minObservations"] == 60
+    assert config["fullWindow"] == 250
+    assert config["minBreadthCoverage"] == 0.70
+    assert config["confirmation"]["closeMultiplier"] == 1.005
+    assert config["confirmation"]["closeChange"] == 0.005
+    assert config["invalidation"]["closeMultiplier"] == 0.97
+    assert config["invalidation"]["closeChange"] == -0.03
+    assert config["invalidation"]["turnoverMultiplier"] == 0.8
+
+
+def test_config_breadth_universe_follows_the_flag() -> None:
+    narrow = sector_pipeline.run_pipeline(
+        as_of=date(2026, 11, 13),
+        breadth_universe=2,
+        fixture=FIXTURES / "e2e.json",
+    )
+    wide = sector_pipeline.run_pipeline(
+        as_of=date(2026, 11, 13),
+        breadth_universe=4,
+        fixture=FIXTURES / "e2e.json",
+    )
+    assert narrow["config"]["breadthUniverse"] == 2
+    assert wide["config"]["breadthUniverse"] == 4
+    assert narrow["reportId"] != wide["reportId"]
+
+
+def test_report_id_is_stable_across_identical_runs() -> None:
+    first = _e2e_result()
+    second = _e2e_result()
+    assert first["reportId"] == second["reportId"]
+    assert len(first["reportId"]) == 16
+
+
+def test_report_id_ignores_volatile_fields() -> None:
+    result = _e2e_result()
+    identity = result["reportId"]
+    result["generatedAt"] = "2030-01-01T00:00:00+08:00"
+    result["providerCalls"] = 999
+    result["cacheState"] = "warm"
+    result["credentialSource"] = "env:OTHER"
+    assert contract.compute_report_id(result) == identity
+
+
+def test_report_id_changes_when_thresholds_change() -> None:
+    result = _e2e_result()
+    identity = result["reportId"]
+    result["config"]["minBreadthCoverage"] = 0.75
+    assert contract.compute_report_id(result) != identity
+
+
+def test_insufficient_result_carries_interface_fields() -> None:
+    result = sector_pipeline.run_pipeline(
+        as_of=date(2026, 11, 13),
+        fixture=FIXTURES / "missing-benchmark.json",
+    )
+    assert result["status"] == "insufficient"
+    assert result["schemaVersion"] == "1.0"
+    assert result["config"]["breadthUniverse"] == sector_pipeline.DEFAULT_BREADTH_UNIVERSE
+    assert len(result["reportId"]) == 16
+    assert result["directions"] == []
+
+
+def test_require_schema_version_refuses_old_payloads() -> None:
+    with pytest.raises(ValueError, match="schemaVersion"):
+        contract.require_schema_version({"asOf": "2026-11-13"})
+    with pytest.raises(ValueError, match="不支持"):
+        contract.require_schema_version({"schemaVersion": "0.9"})
+    assert contract.require_schema_version({"schemaVersion": "1.0"}) == "1.0"
+
+
+# ---------------------------------------------------------------- predicate
+
+
+def test_confirmation_builder_shares_numbers_with_prose() -> None:
+    built = predicate.build_confirmation(100.0, 2_000_000_000)
+    assert built is not None
+    assert built["horizonDays"] == 1
+    assert [clause["field"] for clause in built["all"]] == ["close", "turnover"]
+    assert built["all"][0]["value"] == 100.50
+    assert built["all"][0]["op"] == ">="
+    assert built["all"][1]["value"] == 2_000_000_000.0
+    assert f"{built['all'][0]['value']:.2f}" in built["text"]
+    assert f"{built['all'][1]['value']:.0f}" in built["text"]
+    assert "+0.5%" in built["text"]
+    assert all(clause["basis"] for clause in built["all"])
+
+
+def test_invalidation_builder_shares_numbers_with_prose() -> None:
+    built = predicate.build_invalidation(100.0, 2_000_000_000)
+    assert built is not None
+    assert built["all"][0] == {
+        "field": "close",
+        "op": "<",
+        "value": 97.0,
+        "basis": "referenceClose*0.97",
+    }
+    assert built["all"][1]["value"] == 1_600_000_000.0
+    assert f"{built['all'][0]['value']:.2f}" in built["text"]
+    assert f"{built['all'][1]['value']:.0f}" in built["text"]
+    assert "-3%" in built["text"]
+
+
+def test_predicate_builders_drop_turnover_clause_without_mean() -> None:
+    assert len(predicate.build_confirmation(100.0, None)["all"]) == 1
+    assert len(predicate.build_invalidation(100.0, 0)["all"]) == 1
+    assert predicate.build_confirmation(None, 1e9) is None
+    assert predicate.build_invalidation(None, 1e9) is None
+
+
+def test_evaluate_returns_met_unmet_unknown() -> None:
+    built = predicate.build_confirmation(100.0, 1_000_000_000)
+    met = [{"date": "2026-11-16", "close": 101.0, "turnover": 1_100_000_000}]
+    assert predicate.evaluate(built, met) == "met"
+    weak_close = [{"date": "2026-11-16", "close": 99.0, "turnover": 1_100_000_000}]
+    assert predicate.evaluate(built, weak_close) == "unmet"
+    weak_turnover = [{"date": "2026-11-16", "close": 101.0, "turnover": 900_000_000}]
+    assert predicate.evaluate(built, weak_turnover) == "unmet"
+    missing_turnover = [{"date": "2026-11-16", "close": 101.0}]
+    assert predicate.evaluate(built, missing_turnover) == "unknown"
+
+
+def test_evaluate_missing_target_session_is_unknown_not_error() -> None:
+    built = predicate.build_confirmation(100.0, 1_000_000_000)
+    assert predicate.evaluate(built, []) == "unknown"
+    assert predicate.evaluate(built, None) == "unknown"
+    assert predicate.evaluate(None, []) == "unknown"
+    delayed = {
+        "text": "two sessions later",
+        "horizonDays": 2,
+        "all": [{"field": "close", "op": ">=", "value": 100.0, "basis": "test"}],
+    }
+    assert predicate.evaluate(delayed, [{"date": "2026-11-16", "close": 200.0}]) == "unknown"
+    assert predicate.evaluate(delayed, [{"date": "2026-11-16", "close": 1.0}, {"date": "2026-11-17", "close": 200.0}]) == "met"
+
+
+def test_evaluate_supports_pct_change_against_previous_bar() -> None:
+    built = {
+        "text": "pct",
+        "horizonDays": 2,
+        "all": [{"field": "pctChange", "op": ">=", "value": 0.01, "basis": "test"}],
+    }
+    bars = [{"date": "2026-11-16", "close": 100.0}, {"date": "2026-11-17", "close": 102.0}]
+    assert predicate.evaluate(built, bars) == "met"
+    assert predicate.evaluate(built, bars[:1]) == "unknown"
+    assert predicate.evaluate(built, [{"date": "2026-11-16"}, {"date": "2026-11-17", "close": 102.0}]) == "unknown"
+
+
+# ---------------------------------------------------------------- checker
+
+
+def _compliant_article(result: dict) -> str:
+    labels = {"high": "高", "medium": "中", "low": "低", "insufficient": "不足"}
+    lines = [
+        f"# {result['asOf']} 板块层定向",
+        "",
+        f"数据状态 {result['status']}。本次共 {len(result['directions'])} 个方向。",
+        "",
+    ]
+    for index, direction in enumerate(result["directions"], 1):
+        lines += [
+            f"## {index}. {direction['name']} {direction['thscode']}",
+            "",
+            f"总分 {direction['totalScore']:.1f} ｜ 置信 {labels[direction['confidence']]} ｜ {direction['pool']}。",
+            f"确认：{direction['confirmation']['text']}",
+            f"失效：{direction['invalidation']['text']}",
+            "",
+        ]
+    lines.append("> 数据来源 fuyao，不是买点，不构成买卖建议；所有阈值 needs-backtest。")
+    return "\n".join(lines)
+
+
+def _insufficient_article(result: dict) -> str:
+    return "\n".join(
+        [
+            f"# {result['asOf']} 板块层定向",
+            "",
+            "数据状态 insufficient（数据不足）。本次不产出方向。",
+            "原因：基准 000001.SH 当日没有日线，无法计算相对强度。",
+            "",
+            "> 不构成投资建议；所有阈值 needs-backtest。",
+        ]
+    )
+
+
+def test_checker_passes_a_compliant_article() -> None:
+    result = _e2e_result()
+    verdict = check_report.validate(result, _compliant_article(result))
+    assert verdict["status"] == "PASS", verdict["issues"]
+    assert all(check["status"] == "pass" for check in verdict["checks"])
+
+
+def test_checker_rejects_numbers_without_json_provenance() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result) + "\n宽度 73.21%，量能 2.34×，成交额 1.23 亿。\n"
+    verdict = check_report.validate(result, article)
+    assert verdict["status"] == "FAIL"
+    details = " ".join(issue["detail"] for issue in verdict["issues"])
+    for token in ("73.21", "2.34", "1.23"):
+        assert token in details
+    assert all(issue["line"] for issue in verdict["issues"])
+
+
+def test_checker_whitelists_small_integers() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result).replace(
+        "本次共",
+        "按 3 个方向口径核对，观测 5 项指标；本次共",
+    )
+    verdict = check_report.validate(result, article)
+    assert verdict["status"] == "PASS", verdict["issues"]
+
+
+@pytest.mark.parametrize("word", ["买入", "加仓", "仓位", "必涨", "已验证", "目标价"])
+def test_checker_rejects_each_forbidden_word(word: str) -> None:
+    result = _e2e_result()
+    verdict = check_report.validate(result, _compliant_article(result) + f"\n{word}\n")
+    assert verdict["status"] == "FAIL"
+    hits = [issue for issue in verdict["issues"] if issue["check"] == "forbiddenWording"]
+    assert hits and word in hits[0]["detail"]
+    assert hits[0]["line"] is not None and hits[0]["column"] is not None
+
+
+def test_checker_requires_disclaimer() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result).replace(
+        "> 数据来源 fuyao，不是买点，不构成买卖建议；所有阈值 needs-backtest。",
+        "> 数据来源 fuyao；所有阈值 needs-backtest。",
+    )
+    verdict = check_report.validate(result, article)
+    assert verdict["status"] == "FAIL"
+    assert any(issue["check"] == "requiredDisclaimer" for issue in verdict["issues"])
+
+
+def test_checker_requires_backtest_marker() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result).replace("needs-backtest", "待回测")
+    verdict = check_report.validate(result, article)
+    assert any(issue["detail"].startswith("缺少 needs-backtest") for issue in verdict["issues"])
+
+
+def test_checker_requires_data_status() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result).replace("数据状态 degraded", "数据状态正常")
+    verdict = check_report.validate(result, article)
+    assert any(issue["check"] == "requiredDataStatus" for issue in verdict["issues"])
+
+
+def test_checker_requires_each_direction_confidence() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result).replace("置信 中", "置信 高")
+    verdict = check_report.validate(result, article)
+    assert any(issue["check"] == "requiredConfidence" for issue in verdict["issues"])
+
+
+def test_checker_insufficient_does_not_require_directions() -> None:
+    result = sector_pipeline.run_pipeline(
+        as_of=date(2026, 11, 13),
+        fixture=FIXTURES / "missing-benchmark.json",
+    )
+    verdict = check_report.validate(result, _insufficient_article(result))
+    assert verdict["status"] == "PASS", verdict["issues"]
+
+
+def test_checker_insufficient_requires_reason() -> None:
+    result = sector_pipeline.run_pipeline(
+        as_of=date(2026, 11, 13),
+        fixture=FIXTURES / "missing-benchmark.json",
+    )
+    article = _insufficient_article(result).replace("原因：基准 000001.SH 当日没有日线，无法计算相对强度。", "")
+    verdict = check_report.validate(result, article)
+    assert verdict["status"] == "FAIL"
+    assert any(issue["check"] == "requiredNoDirectionReason" for issue in verdict["issues"])
+
+
+def test_checker_rejects_result_without_schema_version() -> None:
+    result = _e2e_result()
+    result.pop("schemaVersion")
+    verdict = check_report.validate(result, _compliant_article(result))
+    assert verdict["status"] == "FAIL"
+    assert any(issue["check"] == "schemaVersion" for issue in verdict["issues"])
+
+
+def test_checker_is_deterministic_and_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    def explode(*args, **kwargs):
+        raise AssertionError("checker must not touch the network")
+
+    monkeypatch.setattr(socket, "socket", explode)
+    monkeypatch.setattr(socket, "create_connection", explode)
+    result = _e2e_result()
+    article = _compliant_article(result)
+    first = check_report.validate(result, article)
+    second = check_report.validate(result, article)
+    assert first == second
+
+
+def test_checker_cli_exit_codes(tmp_path: Path) -> None:
+    result = _e2e_result()
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    article_path = tmp_path / "article.md"
+    article_path.write_text(_compliant_article(result), encoding="utf-8")
+    assert check_report.main(["--result", str(result_path), "--article", str(article_path)]) == 0
+
+    article_path.write_text(_compliant_article(result) + "\n宽度 73.21%。\n", encoding="utf-8")
+    assert check_report.main(["--result", str(result_path), "--article", str(article_path)]) == 1
+
+    assert check_report.main(["--result", str(tmp_path / "missing.json"), "--article", str(article_path)]) == 2
+
+
+def test_report_is_positioned_as_fact_skeleton() -> None:
+    text = report.render_markdown(_e2e_result())
+    assert "事实骨架" in text
+    assert "不是对外主报告" in text
+    assert "reportId" in text
+
+
+def test_report_fallback_triggers_on_failed_article() -> None:
+    result = _e2e_result()
+    article = _compliant_article(result) + "\n宽度 73.21%。\n"
+    verdict = check_report.validate(result, article)
+    assert verdict["status"] == "FAIL"
+    fallback = report.render_fallback(result, verdict["issues"])
+    assert fallback.startswith("> 文章未通过校验，以下为事实骨架")
+    assert "# 板块层定向事实骨架" in fallback
+    assert "73.21" in fallback
