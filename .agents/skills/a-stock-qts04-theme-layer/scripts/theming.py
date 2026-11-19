@@ -608,7 +608,13 @@ def build_theme(
     ]
     observed = len(observed_rows)
     lift = compute_lift(observed, len(members), limit_up_count, universe)
-    shared_tokens = build_shared_tokens(observed_rows, attribute_tokens=attribute_tokens)
+    # A token that *is* the concept name is the theme's own label, never an
+    # attribute: with 4+ concepts in one chain (算力租赁 / 东数西算 / 数据中心 ...)
+    # the cross-concept detector would otherwise block the defining token and
+    # report a false noCoreTheme.
+    own_tokens = {name} | set(split_reason(name))
+    blocked_tokens = {token for token in attribute_tokens if token not in own_tokens}
+    shared_tokens = build_shared_tokens(observed_rows, attribute_tokens=blocked_tokens)
     ladder_candidates = [
         int(row.get("continueDay") or 0)
         for row in observed_rows

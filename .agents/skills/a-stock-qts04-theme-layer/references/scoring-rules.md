@@ -23,6 +23,7 @@
 
 - 内置停用表见 `theming.STOP_TOKENS`，覆盖回购/增减持/业绩/公告/政策/连板/ST/次新等事件或状态词。
 - 跨概念检测：一个 token 同时出现在 ≥4 个概念的涨停成员原因里，判为属性词，不产生共享催化。
+- 自身名称豁免：某概念的名称及其拆分 token（`{name} ∪ split_reason(name)`）不参与属性词屏蔽，否则「算力租赁」这类跨概念产业链词会把题材自己的定义 token 剔除，产生假的 `noCoreTheme`。
 - 停用词与属性词仍保留在原始 `limitUp.reason`，只是不进入 `sharedTokens` 与催化来源。
 
 ## 4. lift

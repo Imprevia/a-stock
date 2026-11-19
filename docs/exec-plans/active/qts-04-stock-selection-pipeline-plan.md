@@ -609,6 +609,7 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - 任务 9.4：`git status --porcelain` 不含 `trading-rules/`、`src/`、`coverage.yaml`、生产集群与数据库路径。
 - 任务 9.5：`add-qts04-sector-report-contract` 的 delta 仅覆盖 `qts04-sector-direction-skill`，与本变更的 `qts04-theme-layer-skill` 不重叠；归档顺序不阻塞。
 - 归档：主 spec `openspec/specs/qts04-theme-layer-skill/spec.md` 已创建（9 requirements / 21 scenarios），变更移动到 `openspec/changes/archive/2026-11-14-add-qts04-theme-layer-skill/`。
+- 归档后缺陷修复（2026-11-19）：2026-11-18 首次运行输出 `noCoreTheme=true` 且全部题材 `sharedTokens=[]`。定位为跨概念属性词检测把「概念自身名称 token」也屏蔽了——`算力租赁` 同时出现在 算力租赁/东数西算/数据中心/华为昇腾 等多个概念的涨停成员原因里，命中 `concept_threshold=4`，于是该题材自己的定义 token 被当成属性词剔除，产生假空结果。修复：`build_theme` 以 `{name} ∪ split_reason(name)` 作为 `own_tokens`，从 `attribute_tokens` 中豁免后再统计共享 token。修复后 2026-11-18 的 算力租赁 恢复 `sharedTokens=[(算力租赁, 9)]`、`lift 10.2041`、`tier=diffuse`、`reportId 5a9cc1e9ad4a1ece`；2026-11-13 的 `reportId` 仍为 `4662180ce0dbceb4`，逐字节不变。新增回归用例 `test_concept_name_token_is_never_treated_as_attribute`，STEP 2 测试 32 passed、STEP 1+2 合并 122 passed。
 
 ## Remaining Gaps（剩余缺口）
 
@@ -620,6 +621,7 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - 涨停池与涨停统计存在口径差（2026-11-13 38 vs 37、2026-06-12 98 vs 88），当前只告警不修正。
 - 第 04 章 45 条规则仍全部 `documented-only`，本流水线以 Skill 形态先行，未进入 `trading-rules/`。
 - `add-qts04-sector-report-contract` 尚未归档；本变更归档需确认顺序。
+- 2026-11-18 出现「lift 10.2、共享 token 9 只、梯队 2 板齐备，但 5/20 日相对强度为负导致分数 48.75 差 1.25 分未进核心」的边界样本；分数闸门是否应允许单项拖累，仍需样本外验证。
 
 ## Next Step（下一步）
 

@@ -467,3 +467,40 @@ def test_missing_all_price_bars_yields_null_score_and_insufficient() -> None:
     assert result["themes"]
     assert all(theme["score"] is None for theme in result["themes"])
     assert all(theme["status"] == "insufficient" for theme in result["themes"])
+
+
+def test_concept_name_token_is_never_treated_as_attribute() -> None:
+    """A token equal to the concept name defines the theme, not an attribute.
+
+    Regression: on 2026-11-18 ``算力租赁`` appeared in 4+ concepts' limit-up
+    members, so the global attribute detector blocked it and the pipeline
+    reported a false ``noCoreTheme``.
+    """
+
+    from datetime import date as _date
+
+    concept = {
+        "thscode": "886050.TI",
+        "name": "算力租赁",
+        "members": [f"00010{i}.SZ" for i in range(1, 6)],
+        "bars": [],
+    }
+    limit_ups = [
+        {"thscode": f"00010{i}.SZ", "reason": "算力租赁+推理算力", "continueDay": 2}
+        for i in range(1, 4)
+    ]
+    theme = theming.build_theme(
+        as_of=_date(2026, 11, 18),
+        concept=concept,
+        limit_ups=limit_ups,
+        limit_up_tokens=theming.tokenize_limit_ups(limit_ups),
+        benchmark_bars=[],
+        member_changes={},
+        anomalies=[],
+        limit_up_count=len(limit_ups),
+        universe=5400,
+        attribute_tokens={"算力租赁", "推理算力", "数据中心"},
+    )
+    assert [item["token"] for item in theme["members"]["sharedTokens"]] == ["算力租赁"]
+    # The genuinely cross-concept token stays blocked.
+    assert all(item["token"] != "推理算力" for item in theme["members"]["sharedTokens"])
