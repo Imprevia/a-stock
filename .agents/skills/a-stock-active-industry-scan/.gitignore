@@ -1,0 +1,5 @@
+# Rebuildable runtime cache for the active-industry-scan skill.
+# Never commit cached market data.
+.cache/
+__pycache__/
+*.pyc

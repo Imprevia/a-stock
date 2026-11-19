@@ -1,0 +1,21 @@
+[Unit]
+Description=a-stock k3s 开机网络修复（补齐 kube-router 策略路由）
+Documentation=file:/usr/local/libexec/a-stock/k3s-network-repair.sh
+# TrueNAS 的 CNI 清单与 kube-router 由 middlewared 在 post_start 阶段拉起，
+# k3s.service 同属 multi-user.target 并行启动；必须等三者都进入启动状态后再修复。
+Wants=network-online.target
+After=network-online.target k3s.service kube-router.service middlewared.service
+# 开机竞态下 kube-bridge 可能晚于本单元出现；用非零退出触发有限次重试。
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/a-stock/k3s-network-repair.sh sync
+RemainAfterExit=yes
+TimeoutStartSec=15min
+Restart=on-failure
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target

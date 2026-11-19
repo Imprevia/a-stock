@@ -76,6 +76,8 @@
 | `add-a-stock-daily-tier-summary-skill` | Codex | completed（16/16） | 2026-10-26 |
 | `start-deepseek-harness-nginx-20261022` | Codex | completed-with-user-systemd-and-existing-nginx | 2026-10-22 |
 | `remove-nested-a-stock-clone-20261114` | DeepSeek | completed-local-cleanup | 2026-11-14 |
+| `add-k3s-boot-network-repair-20261117` | DeepSeek | installed-and-self-heal-verified / pending-reboot-regression | 2026-11-17 |
+| `active-industry-scan-skill-plan` | Codex | complete（33/33） | 2026-11-19 |
 
 ## 说明
 

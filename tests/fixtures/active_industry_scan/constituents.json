@@ -1,0 +1,300 @@
+{
+ "881101.TI": {
+  "name": "半导体",
+  "members": [
+   {
+    "thscode": "600000.SH"
+   },
+   {
+    "thscode": "600001.SH"
+   },
+   {
+    "thscode": "600002.SH"
+   },
+   {
+    "thscode": "600003.SH"
+   },
+   {
+    "thscode": "600004.SH"
+   },
+   {
+    "thscode": "600005.SH"
+   },
+   {
+    "thscode": "600006.SH"
+   },
+   {
+    "thscode": "600007.SH"
+   },
+   {
+    "thscode": "600008.SH"
+   },
+   {
+    "thscode": "600009.SH"
+   },
+   {
+    "thscode": "600010.SH"
+   },
+   {
+    "thscode": "600011.SH"
+   },
+   {
+    "thscode": "600012.SH"
+   },
+   {
+    "thscode": "600013.SH"
+   },
+   {
+    "thscode": "600014.SH"
+   },
+   {
+    "thscode": "600015.SH"
+   },
+   {
+    "thscode": "600016.SH"
+   },
+   {
+    "thscode": "600017.SH"
+   },
+   {
+    "thscode": "600018.SH"
+   },
+   {
+    "thscode": "600019.SH"
+   },
+   {
+    "thscode": "600020.SH"
+   },
+   {
+    "thscode": "600021.SH"
+   },
+   {
+    "thscode": "600022.SH"
+   },
+   {
+    "thscode": "600023.SH"
+   },
+   {
+    "thscode": "600024.SH"
+   },
+   {
+    "thscode": "600025.SH"
+   },
+   {
+    "thscode": "600026.SH"
+   },
+   {
+    "thscode": "600027.SH"
+   },
+   {
+    "thscode": "600028.SH"
+   },
+   {
+    "thscode": "600029.SH"
+   },
+   {
+    "thscode": "600030.SH"
+   },
+   {
+    "thscode": "600031.SH"
+   },
+   {
+    "thscode": "600032.SH"
+   },
+   {
+    "thscode": "600033.SH"
+   },
+   {
+    "thscode": "600034.SH"
+   },
+   {
+    "thscode": "600035.SH"
+   },
+   {
+    "thscode": "600036.SH"
+   },
+   {
+    "thscode": "600037.SH"
+   },
+   {
+    "thscode": "600038.SH"
+   },
+   {
+    "thscode": "600039.SH"
+   },
+   {
+    "thscode": "600040.SH"
+   },
+   {
+    "thscode": "600041.SH"
+   },
+   {
+    "thscode": "600042.SH"
+   },
+   {
+    "thscode": "600043.SH"
+   },
+   {
+    "thscode": "600044.SH"
+   },
+   {
+    "thscode": "600045.SH"
+   },
+   {
+    "thscode": "600046.SH"
+   },
+   {
+    "thscode": "600047.SH"
+   },
+   {
+    "thscode": "600048.SH"
+   },
+   {
+    "thscode": "600049.SH"
+   },
+   {
+    "thscode": "600050.SH"
+   },
+   {
+    "thscode": "600051.SH"
+   },
+   {
+    "thscode": "600052.SH"
+   },
+   {
+    "thscode": "600053.SH"
+   },
+   {
+    "thscode": "600054.SH"
+   },
+   {
+    "thscode": "600055.SH"
+   },
+   {
+    "thscode": "600056.SH"
+   },
+   {
+    "thscode": "600057.SH"
+   },
+   {
+    "thscode": "600058.SH"
+   },
+   {
+    "thscode": "600059.SH"
+   }
+  ]
+ },
+ "881102.TI": {
+  "name": "IT服务",
+  "members": [
+   {
+    "thscode": "600050.SH"
+   },
+   {
+    "thscode": "600051.SH"
+   },
+   {
+    "thscode": "600052.SH"
+   },
+   {
+    "thscode": "600053.SH"
+   },
+   {
+    "thscode": "600054.SH"
+   },
+   {
+    "thscode": "600055.SH"
+   },
+   {
+    "thscode": "600056.SH"
+   },
+   {
+    "thscode": "600057.SH"
+   },
+   {
+    "thscode": "600058.SH"
+   },
+   {
+    "thscode": "600059.SH"
+   },
+   {
+    "thscode": "600060.SH"
+   },
+   {
+    "thscode": "600061.SH"
+   },
+   {
+    "thscode": "600062.SH"
+   },
+   {
+    "thscode": "600063.SH"
+   },
+   {
+    "thscode": "600064.SH"
+   },
+   {
+    "thscode": "600065.SH"
+   },
+   {
+    "thscode": "600066.SH"
+   },
+   {
+    "thscode": "600067.SH"
+   },
+   {
+    "thscode": "600068.SH"
+   },
+   {
+    "thscode": "600069.SH"
+   },
+   {
+    "thscode": "600070.SH"
+   },
+   {
+    "thscode": "600071.SH"
+   },
+   {
+    "thscode": "600072.SH"
+   },
+   {
+    "thscode": "600073.SH"
+   },
+   {
+    "thscode": "600074.SH"
+   },
+   {
+    "thscode": "600075.SH"
+   },
+   {
+    "thscode": "600076.SH"
+   },
+   {
+    "thscode": "600077.SH"
+   },
+   {
+    "thscode": "600078.SH"
+   },
+   {
+    "thscode": "600079.SH"
+   }
+  ]
+ },
+ "881103.TI": {
+  "name": "环保设备",
+  "members": [
+   {
+    "thscode": "600010.SH"
+   },
+   {
+    "thscode": "600011.SH"
+   },
+   {
+    "thscode": "600012.SH"
+   }
+  ]
+ },
+ "881104.TI": {
+  "name": "空行业",
+  "members": []
+ }
+}

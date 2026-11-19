@@ -1,0 +1,348 @@
+{
+ "now": "2026-11-19T10:30:00+08:00",
+ "byAmount": [
+  {
+   "code": "600000",
+   "symbol": "sh600000",
+   "name": "个股600000",
+   "amount": 6000000000.0,
+   "turnoverratio": 30.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "个股600001",
+   "amount": 5900000000.0,
+   "turnoverratio": 31.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "个股600002",
+   "amount": 5800000000.0,
+   "turnoverratio": 32.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600003",
+   "symbol": "sh600003",
+   "name": "个股600003",
+   "amount": 5700000000.0,
+   "turnoverratio": 33.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600004",
+   "symbol": "sh600004",
+   "name": "个股600004",
+   "amount": 5600000000.0,
+   "turnoverratio": 34.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "个股600005",
+   "amount": 5500000000.0,
+   "turnoverratio": 35.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600100",
+   "symbol": "sh600100",
+   "name": "个股600100",
+   "amount": 5000000000.0,
+   "turnoverratio": 2.0,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600101",
+   "symbol": "sh600101",
+   "name": "个股600101",
+   "amount": 4900000000.0,
+   "turnoverratio": 2.1,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600102",
+   "symbol": "sh600102",
+   "name": "个股600102",
+   "amount": 4800000000.0,
+   "turnoverratio": 2.2,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600103",
+   "symbol": "sh600103",
+   "name": "个股600103",
+   "amount": 4700000000.0,
+   "turnoverratio": 2.3,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600104",
+   "symbol": "sh600104",
+   "name": "个股600104",
+   "amount": 4600000000.0,
+   "turnoverratio": 2.4,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600105",
+   "symbol": "sh600105",
+   "name": "个股600105",
+   "amount": 4500000000.0,
+   "turnoverratio": 2.5,
+   "trade": 10.0,
+   "nmc": 30000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600300",
+   "symbol": "sh600300",
+   "name": "个股600300",
+   "amount": 100000000.0,
+   "turnoverratio": 0.5,
+   "trade": 10.0,
+   "nmc": 5000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600301",
+   "symbol": "sh600301",
+   "name": "个股600301",
+   "amount": 100000000.0,
+   "turnoverratio": 0.5,
+   "trade": 10.0,
+   "nmc": 5000000,
+   "changepercent": 1.5
+  }
+ ],
+ "byTurnover": [
+  {
+   "code": "600200",
+   "symbol": "sh600200",
+   "name": "个股600200",
+   "amount": 300000000.0,
+   "turnoverratio": 45.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600201",
+   "symbol": "sh600201",
+   "name": "个股600201",
+   "amount": 300000000.0,
+   "turnoverratio": 44.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600202",
+   "symbol": "sh600202",
+   "name": "个股600202",
+   "amount": 300000000.0,
+   "turnoverratio": 43.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600203",
+   "symbol": "sh600203",
+   "name": "个股600203",
+   "amount": 300000000.0,
+   "turnoverratio": 42.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600204",
+   "symbol": "sh600204",
+   "name": "个股600204",
+   "amount": 300000000.0,
+   "turnoverratio": 41.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600205",
+   "symbol": "sh600205",
+   "name": "个股600205",
+   "amount": 300000000.0,
+   "turnoverratio": 40.0,
+   "trade": 10.0,
+   "nmc": 200000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "个股600005",
+   "amount": 5500000000.0,
+   "turnoverratio": 35.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600004",
+   "symbol": "sh600004",
+   "name": "个股600004",
+   "amount": 5600000000.0,
+   "turnoverratio": 34.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600003",
+   "symbol": "sh600003",
+   "name": "个股600003",
+   "amount": 5700000000.0,
+   "turnoverratio": 33.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "个股600002",
+   "amount": 5800000000.0,
+   "turnoverratio": 32.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "个股600001",
+   "amount": 5900000000.0,
+   "turnoverratio": 31.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600000",
+   "symbol": "sh600000",
+   "name": "个股600000",
+   "amount": 6000000000.0,
+   "turnoverratio": 30.0,
+   "trade": 10.0,
+   "nmc": 8000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600300",
+   "symbol": "sh600300",
+   "name": "个股600300",
+   "amount": 100000000.0,
+   "turnoverratio": 0.5,
+   "trade": 10.0,
+   "nmc": 5000000,
+   "changepercent": 1.5
+  },
+  {
+   "code": "600301",
+   "symbol": "sh600301",
+   "name": "个股600301",
+   "amount": 100000000.0,
+   "turnoverratio": 0.5,
+   "trade": 10.0,
+   "nmc": 5000000,
+   "changepercent": 1.5
+  }
+ ],
+ "boards": [
+  {
+   "thscode": "881101.TI",
+   "name": "半导体",
+   "level": 1,
+   "members": [
+    "600000.SH",
+    "600001.SH",
+    "600002.SH",
+    "600003.SH",
+    "600004.SH",
+    "600005.SH"
+   ]
+  },
+  {
+   "thscode": "881102.TI",
+   "name": "元件",
+   "level": 1,
+   "members": [
+    "600100.SH",
+    "600101.SH",
+    "600102.SH",
+    "600103.SH",
+    "600104.SH",
+    "600105.SH"
+   ]
+  },
+  {
+   "thscode": "881103.TI",
+   "name": "环保设备",
+   "level": 1,
+   "members": [
+    "600200.SH",
+    "600201.SH",
+    "600202.SH",
+    "600203.SH",
+    "600204.SH",
+    "600205.SH"
+   ]
+  },
+  {
+   "thscode": "884101.TI",
+   "name": "半导体(二级)",
+   "level": 2,
+   "members": [
+    "600000.SH",
+    "600001.SH",
+    "600002.SH"
+   ]
+  },
+  {
+   "thscode": "881104.TI",
+   "name": "空行业",
+   "level": 1,
+   "members": []
+  }
+ ],
+ "options": {
+  "top": 14,
+  "topSectors": 6
+ }
+}

@@ -1,0 +1,2407 @@
+{
+ "asOf": "2026-11-19",
+ "byAmount": [
+  {
+   "code": "600049",
+   "symbol": "sh600049",
+   "name": "样本049",
+   "amount": 15507463086.85,
+   "turnoverratio": 4.9156,
+   "trade": 11.8,
+   "nmc": 1992488.6368,
+   "changepercent": 5.45
+  },
+  {
+   "code": "600033",
+   "symbol": "sh600033",
+   "name": "样本033",
+   "amount": 15374962212.47,
+   "turnoverratio": 1.9816,
+   "trade": 10.79,
+   "nmc": 1814633.7709,
+   "changepercent": -5.43
+  },
+  {
+   "code": "600035",
+   "symbol": "sh600035",
+   "name": "样本035",
+   "amount": 14786558251.48,
+   "turnoverratio": 4.275,
+   "trade": 12.4,
+   "nmc": 2916173.0974,
+   "changepercent": 8.89
+  },
+  {
+   "code": "600021",
+   "symbol": "sh600021",
+   "name": "样本021",
+   "amount": 14765474829.62,
+   "turnoverratio": 0.9693,
+   "trade": 14.25,
+   "nmc": 1270482.8887,
+   "changepercent": -7.23
+  },
+  {
+   "code": "600029",
+   "symbol": "sh600029",
+   "name": "样本029",
+   "amount": 14213867375.76,
+   "turnoverratio": 2.5956,
+   "trade": 11.92,
+   "nmc": 2156315.3007,
+   "changepercent": -4.4
+  },
+  {
+   "code": "600024",
+   "symbol": "sh600024",
+   "name": "样本024",
+   "amount": 14198629907.89,
+   "turnoverratio": 3.6128,
+   "trade": 11.18,
+   "nmc": 2171875.3239,
+   "changepercent": 4.46
+  },
+  {
+   "code": "600058",
+   "symbol": "sh600058",
+   "name": "样本058",
+   "amount": 14057347974.57,
+   "turnoverratio": 4.9387,
+   "trade": 12.27,
+   "nmc": 2689187.8845,
+   "changepercent": -0.95
+  },
+  {
+   "code": "600004",
+   "symbol": "sh600004",
+   "name": "样本004",
+   "amount": 13793081001.64,
+   "turnoverratio": 2.4281,
+   "trade": 11.32,
+   "nmc": 2063680.785,
+   "changepercent": 6.28
+  },
+  {
+   "code": "600032",
+   "symbol": "sh600032",
+   "name": "样本032",
+   "amount": 13478491191.04,
+   "turnoverratio": 2.7145,
+   "trade": 10.61,
+   "nmc": 1137229.8703,
+   "changepercent": -4.75
+  },
+  {
+   "code": "600018",
+   "symbol": "sh600018",
+   "name": "样本018",
+   "amount": 13192490557.5,
+   "turnoverratio": 4.7546,
+   "trade": 10.14,
+   "nmc": 1639389.3043,
+   "changepercent": -0.45
+  },
+  {
+   "code": "600027",
+   "symbol": "sh600027",
+   "name": "样本027",
+   "amount": 12771892106.34,
+   "turnoverratio": 3.4563,
+   "trade": 13.81,
+   "nmc": 1592599.3014,
+   "changepercent": -1.99
+  },
+  {
+   "code": "600012",
+   "symbol": "sh600012",
+   "name": "样本012",
+   "amount": 12757987888.35,
+   "turnoverratio": 2.5164,
+   "trade": 12.05,
+   "nmc": 2731789.2751,
+   "changepercent": 8.95
+  },
+  {
+   "code": "600059",
+   "symbol": "sh600059",
+   "name": "样本059",
+   "amount": 12710689811.25,
+   "turnoverratio": 4.9978,
+   "trade": 13.55,
+   "nmc": 2202068.9828,
+   "changepercent": -7.01
+  },
+  {
+   "code": "600055",
+   "symbol": "sh600055",
+   "name": "样本055",
+   "amount": 12676486234.8,
+   "turnoverratio": 4.3759,
+   "trade": 14.35,
+   "nmc": 2817813.759,
+   "changepercent": -1.98
+  },
+  {
+   "code": "600050",
+   "symbol": "sh600050",
+   "name": "样本050",
+   "amount": 12633211908.1,
+   "turnoverratio": 3.3721,
+   "trade": 11.71,
+   "nmc": 2469496.6285,
+   "changepercent": 7.27
+  },
+  {
+   "code": "600014",
+   "symbol": "sh600014",
+   "name": "样本014",
+   "amount": 12603712761.45,
+   "turnoverratio": 2.8191,
+   "trade": 13.12,
+   "nmc": 1497154.4198,
+   "changepercent": 6.67
+  },
+  {
+   "code": "600000",
+   "symbol": "sh600000",
+   "name": "样本000",
+   "amount": 12142747610.52,
+   "turnoverratio": 3.4968,
+   "trade": 10.25,
+   "nmc": 1404594.1423,
+   "changepercent": -8.51
+  },
+  {
+   "code": "600036",
+   "symbol": "sh600036",
+   "name": "样本036",
+   "amount": 12075633011.97,
+   "turnoverratio": 4.0597,
+   "trade": 10.3,
+   "nmc": 2507874.8265,
+   "changepercent": -2.22
+  },
+  {
+   "code": "600046",
+   "symbol": "sh600046",
+   "name": "样本046",
+   "amount": 12021166165.59,
+   "turnoverratio": 3.7184,
+   "trade": 14.46,
+   "nmc": 2435145.7713,
+   "changepercent": 3.15
+  },
+  {
+   "code": "600010",
+   "symbol": "sh600010",
+   "name": "样本010",
+   "amount": 11677462350.77,
+   "turnoverratio": 2.6728,
+   "trade": 10.32,
+   "nmc": 828913.4156,
+   "changepercent": 6.51
+  },
+  {
+   "code": "600057",
+   "symbol": "sh600057",
+   "name": "样本057",
+   "amount": 11640494372.8,
+   "turnoverratio": 4.1391,
+   "trade": 12.25,
+   "nmc": 2545021.0272,
+   "changepercent": -3.75
+  },
+  {
+   "code": "600022",
+   "symbol": "sh600022",
+   "name": "样本022",
+   "amount": 11609682506.07,
+   "turnoverratio": 4.3563,
+   "trade": 13.65,
+   "nmc": 1502149.2099,
+   "changepercent": -2.14
+  },
+  {
+   "code": "600026",
+   "symbol": "sh600026",
+   "name": "样本026",
+   "amount": 11322158356.77,
+   "turnoverratio": 3.0609,
+   "trade": 11.52,
+   "nmc": 1867527.2251,
+   "changepercent": 2.54
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "样本005",
+   "amount": 10546908710.9,
+   "turnoverratio": 3.7749,
+   "trade": 11.51,
+   "nmc": 1291211.4959,
+   "changepercent": 6.5
+  },
+  {
+   "code": "600043",
+   "symbol": "sh600043",
+   "name": "样本043",
+   "amount": 10438016518.56,
+   "turnoverratio": 4.5724,
+   "trade": 10.79,
+   "nmc": 2967702.3128,
+   "changepercent": -2.05
+  },
+  {
+   "code": "600016",
+   "symbol": "sh600016",
+   "name": "样本016",
+   "amount": 10391192534.2,
+   "turnoverratio": 3.3013,
+   "trade": 11.42,
+   "nmc": 1899827.7983,
+   "changepercent": -8.21
+  },
+  {
+   "code": "600007",
+   "symbol": "sh600007",
+   "name": "样本007",
+   "amount": 10017875105.9,
+   "turnoverratio": 4.6756,
+   "trade": 12.43,
+   "nmc": 1686142.0223,
+   "changepercent": 3.96
+  },
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "样本001",
+   "amount": 9724582799.03,
+   "turnoverratio": 4.1472,
+   "trade": 11.65,
+   "nmc": 1870402.8362,
+   "changepercent": -7.95
+  },
+  {
+   "code": "600045",
+   "symbol": "sh600045",
+   "name": "样本045",
+   "amount": 9677939074.76,
+   "turnoverratio": 3.8154,
+   "trade": 11.73,
+   "nmc": 2668512.3288,
+   "changepercent": -4.24
+  },
+  {
+   "code": "600003",
+   "symbol": "sh600003",
+   "name": "样本003",
+   "amount": 9490829128.0,
+   "turnoverratio": 1.1277,
+   "trade": 14.01,
+   "nmc": 2329019.1454,
+   "changepercent": -5.19
+  },
+  {
+   "code": "600020",
+   "symbol": "sh600020",
+   "name": "样本020",
+   "amount": 9300775575.17,
+   "turnoverratio": 2.2058,
+   "trade": 13.4,
+   "nmc": 1879409.8931,
+   "changepercent": -3.18
+  },
+  {
+   "code": "600040",
+   "symbol": "sh600040",
+   "name": "样本040",
+   "amount": 9257374529.65,
+   "turnoverratio": 4.7109,
+   "trade": 10.12,
+   "nmc": 1895343.76,
+   "changepercent": 1.89
+  },
+  {
+   "code": "600044",
+   "symbol": "sh600044",
+   "name": "样本044",
+   "amount": 9075226995.24,
+   "turnoverratio": 2.1358,
+   "trade": 10.54,
+   "nmc": 2835677.5957,
+   "changepercent": -0.98
+  },
+  {
+   "code": "600009",
+   "symbol": "sh600009",
+   "name": "样本009",
+   "amount": 8947883294.84,
+   "turnoverratio": 1.5079,
+   "trade": 14.93,
+   "nmc": 1857883.8663,
+   "changepercent": 5.13
+  },
+  {
+   "code": "600037",
+   "symbol": "sh600037",
+   "name": "样本037",
+   "amount": 8847957655.71,
+   "turnoverratio": 4.8421,
+   "trade": 14.26,
+   "nmc": 1310980.1984,
+   "changepercent": 0.46
+  },
+  {
+   "code": "600006",
+   "symbol": "sh600006",
+   "name": "样本006",
+   "amount": 8561805639.23,
+   "turnoverratio": 4.603,
+   "trade": 10.12,
+   "nmc": 1574523.684,
+   "changepercent": -1.57
+  },
+  {
+   "code": "600051",
+   "symbol": "sh600051",
+   "name": "样本051",
+   "amount": 8406905077.58,
+   "turnoverratio": 0.6469,
+   "trade": 11.54,
+   "nmc": 2963652.0566,
+   "changepercent": -5.37
+  },
+  {
+   "code": "600011",
+   "symbol": "sh600011",
+   "name": "样本011",
+   "amount": 7944809573.88,
+   "turnoverratio": 2.8347,
+   "trade": 13.09,
+   "nmc": 1142141.0206,
+   "changepercent": 2.97
+  },
+  {
+   "code": "600038",
+   "symbol": "sh600038",
+   "name": "样本038",
+   "amount": 7020456618.68,
+   "turnoverratio": 1.8651,
+   "trade": 12.72,
+   "nmc": 933990.0857,
+   "changepercent": -5.73
+  },
+  {
+   "code": "600039",
+   "symbol": "sh600039",
+   "name": "样本039",
+   "amount": 6576025904.77,
+   "turnoverratio": 4.5583,
+   "trade": 10.73,
+   "nmc": 841215.0572,
+   "changepercent": -2.21
+  },
+  {
+   "code": "600015",
+   "symbol": "sh600015",
+   "name": "样本015",
+   "amount": 6383085033.43,
+   "turnoverratio": 4.6912,
+   "trade": 14.8,
+   "nmc": 1526908.0003,
+   "changepercent": -8.26
+  },
+  {
+   "code": "600013",
+   "symbol": "sh600013",
+   "name": "样本013",
+   "amount": 6338050782.63,
+   "turnoverratio": 3.7013,
+   "trade": 14.11,
+   "nmc": 2741979.3462,
+   "changepercent": 1.92
+  },
+  {
+   "code": "600056",
+   "symbol": "sh600056",
+   "name": "样本056",
+   "amount": 5951080629.83,
+   "turnoverratio": 3.0039,
+   "trade": 10.74,
+   "nmc": 1447792.1715,
+   "changepercent": -0.07
+  },
+  {
+   "code": "600034",
+   "symbol": "sh600034",
+   "name": "样本034",
+   "amount": 5554919066.27,
+   "turnoverratio": 4.8326,
+   "trade": 10.37,
+   "nmc": 2986676.6563,
+   "changepercent": -1.09
+  },
+  {
+   "code": "600028",
+   "symbol": "sh600028",
+   "name": "样本028",
+   "amount": 5455513338.81,
+   "turnoverratio": 4.5151,
+   "trade": 10.67,
+   "nmc": 2695371.2664,
+   "changepercent": 0.03
+  },
+  {
+   "code": "600031",
+   "symbol": "sh600031",
+   "name": "样本031",
+   "amount": 5403710592.22,
+   "turnoverratio": 2.7197,
+   "trade": 13.67,
+   "nmc": 1341857.6083,
+   "changepercent": -3.77
+  },
+  {
+   "code": "600025",
+   "symbol": "sh600025",
+   "name": "样本025",
+   "amount": 5089174508.09,
+   "turnoverratio": 2.4478,
+   "trade": 10.05,
+   "nmc": 2510368.8434,
+   "changepercent": -8.1
+  },
+  {
+   "code": "600042",
+   "symbol": "sh600042",
+   "name": "样本042",
+   "amount": 4954331863.88,
+   "turnoverratio": 4.0381,
+   "trade": 12.23,
+   "nmc": 1377758.7614,
+   "changepercent": 7.42
+  },
+  {
+   "code": "600091",
+   "symbol": "sh600091",
+   "name": "样本091",
+   "amount": 4851540774.4,
+   "turnoverratio": 9.2173,
+   "trade": 10.0,
+   "nmc": 241985.8897,
+   "changepercent": 1.31
+  },
+  {
+   "code": "600085",
+   "symbol": "sh600085",
+   "name": "样本085",
+   "amount": 4833896957.13,
+   "turnoverratio": 11.8129,
+   "trade": 13.52,
+   "nmc": 149771.8445,
+   "changepercent": -8.56
+  },
+  {
+   "code": "600030",
+   "symbol": "sh600030",
+   "name": "样本030",
+   "amount": 4751229495.77,
+   "turnoverratio": 4.0013,
+   "trade": 12.91,
+   "nmc": 2030257.1417,
+   "changepercent": 3.2
+  },
+  {
+   "code": "600068",
+   "symbol": "sh600068",
+   "name": "样本068",
+   "amount": 4712671549.81,
+   "turnoverratio": 37.7116,
+   "trade": 12.1,
+   "nmc": 143244.1621,
+   "changepercent": -3.29
+  },
+  {
+   "code": "600092",
+   "symbol": "sh600092",
+   "name": "样本092",
+   "amount": 4617671931.39,
+   "turnoverratio": 19.7187,
+   "trade": 10.9,
+   "nmc": 202545.1944,
+   "changepercent": -1.5
+  },
+  {
+   "code": "600048",
+   "symbol": "sh600048",
+   "name": "样本048",
+   "amount": 4613340596.62,
+   "turnoverratio": 2.1324,
+   "trade": 10.4,
+   "nmc": 2044547.1031,
+   "changepercent": -1.26
+  },
+  {
+   "code": "600105",
+   "symbol": "sh600105",
+   "name": "样本105",
+   "amount": 4527436367.91,
+   "turnoverratio": 29.0109,
+   "trade": 11.85,
+   "nmc": 142644.5535,
+   "changepercent": 1.59
+  },
+  {
+   "code": "600008",
+   "symbol": "sh600008",
+   "name": "样本008",
+   "amount": 4518599312.27,
+   "turnoverratio": 3.176,
+   "trade": 12.94,
+   "nmc": 1397873.5787,
+   "changepercent": 8.16
+  },
+  {
+   "code": "600099",
+   "symbol": "sh600099",
+   "name": "样本099",
+   "amount": 4461637460.33,
+   "turnoverratio": 39.0337,
+   "trade": 11.64,
+   "nmc": 65145.5126,
+   "changepercent": -0.04
+  },
+  {
+   "code": "600114",
+   "symbol": "sh600114",
+   "name": "样本114",
+   "amount": 4445964114.4,
+   "turnoverratio": 18.1963,
+   "trade": 10.38,
+   "nmc": 276459.4626,
+   "changepercent": 7.13
+  },
+  {
+   "code": "600081",
+   "symbol": "sh600081",
+   "name": "样本081",
+   "amount": 4419558827.56,
+   "turnoverratio": 40.2832,
+   "trade": 10.24,
+   "nmc": 282158.0121,
+   "changepercent": -2.2
+  },
+  {
+   "code": "600076",
+   "symbol": "sh600076",
+   "name": "样本076",
+   "amount": 4360950807.41,
+   "turnoverratio": 30.7511,
+   "trade": 11.82,
+   "nmc": 287665.4819,
+   "changepercent": -4.61
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "样本002",
+   "amount": 4337736281.94,
+   "turnoverratio": 4.683,
+   "trade": 12.39,
+   "nmc": 1309747.8129,
+   "changepercent": -2.03
+  },
+  {
+   "code": "600113",
+   "symbol": "sh600113",
+   "name": "样本113",
+   "amount": 4276478349.75,
+   "turnoverratio": 30.1331,
+   "trade": 12.4,
+   "nmc": 60101.5245,
+   "changepercent": -4.4
+  },
+  {
+   "code": "600117",
+   "symbol": "sh600117",
+   "name": "样本117",
+   "amount": 4265312943.34,
+   "turnoverratio": 28.5879,
+   "trade": 10.51,
+   "nmc": 236460.5863,
+   "changepercent": -6.13
+  },
+  {
+   "code": "600080",
+   "symbol": "sh600080",
+   "name": "样本080",
+   "amount": 4249365957.66,
+   "turnoverratio": 30.0131,
+   "trade": 10.86,
+   "nmc": 159796.6487,
+   "changepercent": 1.86
+  },
+  {
+   "code": "600093",
+   "symbol": "sh600093",
+   "name": "样本093",
+   "amount": 4243618219.12,
+   "turnoverratio": 28.2142,
+   "trade": 13.2,
+   "nmc": 189500.1379,
+   "changepercent": -1.84
+  },
+  {
+   "code": "600017",
+   "symbol": "sh600017",
+   "name": "样本017",
+   "amount": 4221501643.28,
+   "turnoverratio": 4.4763,
+   "trade": 12.77,
+   "nmc": 930988.4861,
+   "changepercent": 5.35
+  },
+  {
+   "code": "600083",
+   "symbol": "sh600083",
+   "name": "样本083",
+   "amount": 4201156914.69,
+   "turnoverratio": 8.1196,
+   "trade": 13.66,
+   "nmc": 186975.1702,
+   "changepercent": 1.9
+  },
+  {
+   "code": "600041",
+   "symbol": "sh600041",
+   "name": "样本041",
+   "amount": 4181696587.39,
+   "turnoverratio": 3.1477,
+   "trade": 11.63,
+   "nmc": 2443608.5327,
+   "changepercent": 0.11
+  },
+  {
+   "code": "600090",
+   "symbol": "sh600090",
+   "name": "样本090",
+   "amount": 4142569839.49,
+   "turnoverratio": 23.3527,
+   "trade": 10.39,
+   "nmc": 217433.8445,
+   "changepercent": -3.37
+  },
+  {
+   "code": "600053",
+   "symbol": "sh600053",
+   "name": "样本053",
+   "amount": 4076550084.46,
+   "turnoverratio": 1.1497,
+   "trade": 10.19,
+   "nmc": 1204290.1652,
+   "changepercent": 7.33
+  },
+  {
+   "code": "600062",
+   "symbol": "sh600062",
+   "name": "样本062",
+   "amount": 4041369896.84,
+   "turnoverratio": 32.0181,
+   "trade": 11.93,
+   "nmc": 130808.7241,
+   "changepercent": -7.63
+  },
+  {
+   "code": "600101",
+   "symbol": "sh600101",
+   "name": "样本101",
+   "amount": 3952158339.08,
+   "turnoverratio": 21.6984,
+   "trade": 14.83,
+   "nmc": 141047.9369,
+   "changepercent": -3.32
+  },
+  {
+   "code": "600097",
+   "symbol": "sh600097",
+   "name": "样本097",
+   "amount": 3821906666.5,
+   "turnoverratio": 34.4608,
+   "trade": 14.37,
+   "nmc": 158186.0239,
+   "changepercent": 6.57
+  },
+  {
+   "code": "600108",
+   "symbol": "sh600108",
+   "name": "样本108",
+   "amount": 3729455721.48,
+   "turnoverratio": 27.5443,
+   "trade": 10.62,
+   "nmc": 155413.4702,
+   "changepercent": 3.53
+  },
+  {
+   "code": "600067",
+   "symbol": "sh600067",
+   "name": "样本067",
+   "amount": 3616220431.8,
+   "turnoverratio": 14.182,
+   "trade": 13.84,
+   "nmc": 69142.1321,
+   "changepercent": 8.85
+  },
+  {
+   "code": "600107",
+   "symbol": "sh600107",
+   "name": "样本107",
+   "amount": 3575521386.76,
+   "turnoverratio": 27.6101,
+   "trade": 12.23,
+   "nmc": 32562.8762,
+   "changepercent": -2.58
+  },
+  {
+   "code": "600109",
+   "symbol": "sh600109",
+   "name": "样本109",
+   "amount": 3574469160.4,
+   "turnoverratio": 22.9235,
+   "trade": 10.46,
+   "nmc": 43708.3914,
+   "changepercent": 2.85
+  },
+  {
+   "code": "600061",
+   "symbol": "sh600061",
+   "name": "样本061",
+   "amount": 3442742214.92,
+   "turnoverratio": 17.374,
+   "trade": 11.33,
+   "nmc": 215532.5251,
+   "changepercent": 2.35
+  },
+  {
+   "code": "600095",
+   "symbol": "sh600095",
+   "name": "样本095",
+   "amount": 3435586497.12,
+   "turnoverratio": 43.4115,
+   "trade": 11.92,
+   "nmc": 297456.5709,
+   "changepercent": -7.28
+  },
+  {
+   "code": "600110",
+   "symbol": "sh600110",
+   "name": "样本110",
+   "amount": 3289167478.74,
+   "turnoverratio": 11.553,
+   "trade": 10.87,
+   "nmc": 105662.506,
+   "changepercent": 8.07
+  },
+  {
+   "code": "600054",
+   "symbol": "sh600054",
+   "name": "样本054",
+   "amount": 3203093287.54,
+   "turnoverratio": 4.6847,
+   "trade": 13.71,
+   "nmc": 1249320.6988,
+   "changepercent": -1.12
+  },
+  {
+   "code": "600100",
+   "symbol": "sh600100",
+   "name": "样本100",
+   "amount": 3048312249.62,
+   "turnoverratio": 16.8446,
+   "trade": 14.07,
+   "nmc": 133009.9532,
+   "changepercent": 8.24
+  },
+  {
+   "code": "600019",
+   "symbol": "sh600019",
+   "name": "样本019",
+   "amount": 3000072377.84,
+   "turnoverratio": 1.5693,
+   "trade": 14.44,
+   "nmc": 1551959.4091,
+   "changepercent": -7.78
+  },
+  {
+   "code": "600065",
+   "symbol": "sh600065",
+   "name": "样本065",
+   "amount": 2967150197.35,
+   "turnoverratio": 22.5408,
+   "trade": 12.23,
+   "nmc": 150244.7497,
+   "changepercent": -1.17
+  },
+  {
+   "code": "600115",
+   "symbol": "sh600115",
+   "name": "样本115",
+   "amount": 2947371929.45,
+   "turnoverratio": 20.7379,
+   "trade": 14.84,
+   "nmc": 70562.5085,
+   "changepercent": 5.55
+  },
+  {
+   "code": "600077",
+   "symbol": "sh600077",
+   "name": "样本077",
+   "amount": 2914157971.01,
+   "turnoverratio": 23.7188,
+   "trade": 10.47,
+   "nmc": 287467.4738,
+   "changepercent": 7.5
+  },
+  {
+   "code": "600075",
+   "symbol": "sh600075",
+   "name": "样本075",
+   "amount": 2773864478.48,
+   "turnoverratio": 41.2638,
+   "trade": 11.24,
+   "nmc": 180466.9064,
+   "changepercent": -2.95
+  },
+  {
+   "code": "600116",
+   "symbol": "sh600116",
+   "name": "样本116",
+   "amount": 2726930179.51,
+   "turnoverratio": 19.2506,
+   "trade": 13.75,
+   "nmc": 82666.3015,
+   "changepercent": -2.82
+  },
+  {
+   "code": "600096",
+   "symbol": "sh600096",
+   "name": "样本096",
+   "amount": 2711089820.98,
+   "turnoverratio": 25.1169,
+   "trade": 12.35,
+   "nmc": 217566.2497,
+   "changepercent": 8.31
+  },
+  {
+   "code": "600060",
+   "symbol": "sh600060",
+   "name": "样本060",
+   "amount": 2596146506.99,
+   "turnoverratio": 11.5414,
+   "trade": 11.99,
+   "nmc": 291114.8236,
+   "changepercent": -7.2
+  },
+  {
+   "code": "600102",
+   "symbol": "sh600102",
+   "name": "样本102",
+   "amount": 2573336041.46,
+   "turnoverratio": 17.232,
+   "trade": 14.67,
+   "nmc": 222708.2293,
+   "changepercent": -4.84
+  },
+  {
+   "code": "600069",
+   "symbol": "sh600069",
+   "name": "样本069",
+   "amount": 2465504082.46,
+   "turnoverratio": 40.5571,
+   "trade": 11.64,
+   "nmc": 159626.4222,
+   "changepercent": -2.17
+  },
+  {
+   "code": "600086",
+   "symbol": "sh600086",
+   "name": "样本086",
+   "amount": 2417366582.03,
+   "turnoverratio": 27.5601,
+   "trade": 10.3,
+   "nmc": 45579.9695,
+   "changepercent": 5.59
+  },
+  {
+   "code": "600023",
+   "symbol": "sh600023",
+   "name": "样本023",
+   "amount": 2365164807.38,
+   "turnoverratio": 3.6254,
+   "trade": 10.07,
+   "nmc": 1955648.2355,
+   "changepercent": -0.34
+  },
+  {
+   "code": "600052",
+   "symbol": "sh600052",
+   "name": "样本052",
+   "amount": 2335428380.93,
+   "turnoverratio": 2.6415,
+   "trade": 11.75,
+   "nmc": 1195204.3871,
+   "changepercent": 2.97
+  },
+  {
+   "code": "600047",
+   "symbol": "sh600047",
+   "name": "样本047",
+   "amount": 2296785956.22,
+   "turnoverratio": 1.2843,
+   "trade": 11.91,
+   "nmc": 1882808.7241,
+   "changepercent": -7.43
+  },
+  {
+   "code": "600118",
+   "symbol": "sh600118",
+   "name": "样本118",
+   "amount": 2231597848.56,
+   "turnoverratio": 25.2195,
+   "trade": 14.51,
+   "nmc": 245846.3948,
+   "changepercent": -0.6
+  },
+  {
+   "code": "600094",
+   "symbol": "sh600094",
+   "name": "样本094",
+   "amount": 2104332168.08,
+   "turnoverratio": 37.9414,
+   "trade": 13.07,
+   "nmc": 246069.1657,
+   "changepercent": 6.77
+  },
+  {
+   "code": "600064",
+   "symbol": "sh600064",
+   "name": "样本064",
+   "amount": 1994360982.72,
+   "turnoverratio": 15.6885,
+   "trade": 10.21,
+   "nmc": 220560.0234,
+   "changepercent": -4.11
+  },
+  {
+   "code": "600072",
+   "symbol": "sh600072",
+   "name": "样本072",
+   "amount": 1916865216.92,
+   "turnoverratio": 29.9269,
+   "trade": 11.59,
+   "nmc": 286562.1464,
+   "changepercent": -5.91
+  },
+  {
+   "code": "600084",
+   "symbol": "sh600084",
+   "name": "样本084",
+   "amount": 1822106047.3,
+   "turnoverratio": 13.8117,
+   "trade": 14.6,
+   "nmc": 208026.4012,
+   "changepercent": 7.01
+  },
+  {
+   "code": "600106",
+   "symbol": "sh600106",
+   "name": "样本106",
+   "amount": 1702454740.67,
+   "turnoverratio": 18.2571,
+   "trade": 13.86,
+   "nmc": 222115.3637,
+   "changepercent": 3.88
+  },
+  {
+   "code": "600088",
+   "symbol": "sh600088",
+   "name": "样本088",
+   "amount": 1669441169.27,
+   "turnoverratio": 12.7596,
+   "trade": 12.05,
+   "nmc": 234507.8647,
+   "changepercent": 5.39
+  },
+  {
+   "code": "600082",
+   "symbol": "sh600082",
+   "name": "样本082",
+   "amount": 1631016646.87,
+   "turnoverratio": 27.9228,
+   "trade": 11.61,
+   "nmc": 168867.6576,
+   "changepercent": -1.29
+  },
+  {
+   "code": "600104",
+   "symbol": "sh600104",
+   "name": "样本104",
+   "amount": 1292705970.11,
+   "turnoverratio": 35.9293,
+   "trade": 11.78,
+   "nmc": 188928.6855,
+   "changepercent": 0.16
+  },
+  {
+   "code": "600119",
+   "symbol": "sh600119",
+   "name": "样本119",
+   "amount": 1256419992.44,
+   "turnoverratio": 20.8002,
+   "trade": 12.26,
+   "nmc": 211297.6626,
+   "changepercent": 1.75
+  },
+  {
+   "code": "600066",
+   "symbol": "sh600066",
+   "name": "样本066",
+   "amount": 1188429128.01,
+   "turnoverratio": 30.624,
+   "trade": 13.4,
+   "nmc": 72722.4907,
+   "changepercent": 5.71
+  },
+  {
+   "code": "600073",
+   "symbol": "sh600073",
+   "name": "样本073",
+   "amount": 1070777050.41,
+   "turnoverratio": 42.1456,
+   "trade": 13.43,
+   "nmc": 267584.989,
+   "changepercent": -0.98
+  },
+  {
+   "code": "600071",
+   "symbol": "sh600071",
+   "name": "样本071",
+   "amount": 935086000.41,
+   "turnoverratio": 41.2831,
+   "trade": 13.42,
+   "nmc": 82848.5643,
+   "changepercent": -4.35
+  },
+  {
+   "code": "600103",
+   "symbol": "sh600103",
+   "name": "样本103",
+   "amount": 846518874.12,
+   "turnoverratio": 44.64,
+   "trade": 13.82,
+   "nmc": 210353.2951,
+   "changepercent": 8.17
+  },
+  {
+   "code": "600070",
+   "symbol": "sh600070",
+   "name": "样本070",
+   "amount": 772248052.57,
+   "turnoverratio": 10.2814,
+   "trade": 13.62,
+   "nmc": 293300.1846,
+   "changepercent": -2.38
+  },
+  {
+   "code": "600098",
+   "symbol": "sh600098",
+   "name": "样本098",
+   "amount": 660830569.89,
+   "turnoverratio": 24.984,
+   "trade": 13.29,
+   "nmc": 256063.2305,
+   "changepercent": -1.3
+  },
+  {
+   "code": "600078",
+   "symbol": "sh600078",
+   "name": "样本078",
+   "amount": 628692058.22,
+   "turnoverratio": 39.9358,
+   "trade": 10.66,
+   "nmc": 141737.4959,
+   "changepercent": -8.26
+  },
+  {
+   "code": "600111",
+   "symbol": "sh600111",
+   "name": "样本111",
+   "amount": 627028883.74,
+   "turnoverratio": 43.9803,
+   "trade": 14.47,
+   "nmc": 235678.7154,
+   "changepercent": -3.03
+  },
+  {
+   "code": "600087",
+   "symbol": "sh600087",
+   "name": "样本087",
+   "amount": 606338105.98,
+   "turnoverratio": 22.1737,
+   "trade": 10.59,
+   "nmc": 244697.6528,
+   "changepercent": 6.15
+  },
+  {
+   "code": "600089",
+   "symbol": "sh600089",
+   "name": "样本089",
+   "amount": 459556794.05,
+   "turnoverratio": 14.9953,
+   "trade": 12.45,
+   "nmc": 272891.5034,
+   "changepercent": 5.21
+  },
+  {
+   "code": "600074",
+   "symbol": "sh600074",
+   "name": "样本074",
+   "amount": 406760809.38,
+   "turnoverratio": 36.544,
+   "trade": 11.81,
+   "nmc": 166175.531,
+   "changepercent": 6.74
+  },
+  {
+   "code": "600063",
+   "symbol": "sh600063",
+   "name": "样本063",
+   "amount": 338795013.07,
+   "turnoverratio": 10.787,
+   "trade": 11.07,
+   "nmc": 35642.6895,
+   "changepercent": 8.39
+  },
+  {
+   "code": "600079",
+   "symbol": "sh600079",
+   "name": "样本079",
+   "amount": 237997505.03,
+   "turnoverratio": 32.4432,
+   "trade": 11.43,
+   "nmc": 34121.2005,
+   "changepercent": -2.17
+  },
+  {
+   "code": "600112",
+   "symbol": "sh600112",
+   "name": "样本112",
+   "amount": 123500579.73,
+   "turnoverratio": 38.298,
+   "trade": 12.0,
+   "nmc": 295029.5297,
+   "changepercent": -0.51
+  }
+ ],
+ "byTurnover": [
+  {
+   "code": "600109",
+   "symbol": "sh600109",
+   "name": "样本109",
+   "amount": 619620468.07,
+   "turnoverratio": 44.7468,
+   "trade": 13.03,
+   "nmc": 255788.8612,
+   "changepercent": 3.38
+  },
+  {
+   "code": "600088",
+   "symbol": "sh600088",
+   "name": "样本088",
+   "amount": 2386890267.86,
+   "turnoverratio": 43.8315,
+   "trade": 12.41,
+   "nmc": 202680.6099,
+   "changepercent": -4.05
+  },
+  {
+   "code": "600085",
+   "symbol": "sh600085",
+   "name": "样本085",
+   "amount": 3468480385.9,
+   "turnoverratio": 43.6302,
+   "trade": 10.46,
+   "nmc": 261264.1199,
+   "changepercent": -2.85
+  },
+  {
+   "code": "600077",
+   "symbol": "sh600077",
+   "name": "样本077",
+   "amount": 2412566600.55,
+   "turnoverratio": 43.3701,
+   "trade": 12.82,
+   "nmc": 207525.1828,
+   "changepercent": 3.05
+  },
+  {
+   "code": "600117",
+   "symbol": "sh600117",
+   "name": "样本117",
+   "amount": 4786098232.41,
+   "turnoverratio": 42.1316,
+   "trade": 12.9,
+   "nmc": 182267.6905,
+   "changepercent": 4.89
+  },
+  {
+   "code": "600078",
+   "symbol": "sh600078",
+   "name": "样本078",
+   "amount": 263192705.56,
+   "turnoverratio": 41.252,
+   "trade": 12.69,
+   "nmc": 199563.2483,
+   "changepercent": -3.14
+  },
+  {
+   "code": "600100",
+   "symbol": "sh600100",
+   "name": "样本100",
+   "amount": 1847234366.69,
+   "turnoverratio": 41.2129,
+   "trade": 13.59,
+   "nmc": 239326.4443,
+   "changepercent": -7.25
+  },
+  {
+   "code": "600062",
+   "symbol": "sh600062",
+   "name": "样本062",
+   "amount": 709031620.37,
+   "turnoverratio": 40.8936,
+   "trade": 13.63,
+   "nmc": 242817.5567,
+   "changepercent": 0.91
+  },
+  {
+   "code": "600076",
+   "symbol": "sh600076",
+   "name": "样本076",
+   "amount": 637260247.26,
+   "turnoverratio": 40.2655,
+   "trade": 14.0,
+   "nmc": 181144.237,
+   "changepercent": -7.77
+  },
+  {
+   "code": "600082",
+   "symbol": "sh600082",
+   "name": "样本082",
+   "amount": 2618178872.52,
+   "turnoverratio": 39.5996,
+   "trade": 13.88,
+   "nmc": 277073.7868,
+   "changepercent": -3.55
+  },
+  {
+   "code": "600097",
+   "symbol": "sh600097",
+   "name": "样本097",
+   "amount": 3475240221.32,
+   "turnoverratio": 39.1,
+   "trade": 10.75,
+   "nmc": 101929.8534,
+   "changepercent": 8.01
+  },
+  {
+   "code": "600118",
+   "symbol": "sh600118",
+   "name": "样本118",
+   "amount": 1901713200.66,
+   "turnoverratio": 38.2689,
+   "trade": 11.7,
+   "nmc": 281569.0496,
+   "changepercent": -1.38
+  },
+  {
+   "code": "600063",
+   "symbol": "sh600063",
+   "name": "样本063",
+   "amount": 1931409718.92,
+   "turnoverratio": 38.045,
+   "trade": 13.2,
+   "nmc": 138568.8322,
+   "changepercent": -4.84
+  },
+  {
+   "code": "600099",
+   "symbol": "sh600099",
+   "name": "样本099",
+   "amount": 2512001212.96,
+   "turnoverratio": 37.4944,
+   "trade": 10.76,
+   "nmc": 179045.9763,
+   "changepercent": -2.62
+  },
+  {
+   "code": "600080",
+   "symbol": "sh600080",
+   "name": "样本080",
+   "amount": 313508429.22,
+   "turnoverratio": 37.4838,
+   "trade": 11.1,
+   "nmc": 34527.1999,
+   "changepercent": 4.24
+  },
+  {
+   "code": "600090",
+   "symbol": "sh600090",
+   "name": "样本090",
+   "amount": 2120314936.68,
+   "turnoverratio": 36.5101,
+   "trade": 12.77,
+   "nmc": 64510.06,
+   "changepercent": -7.4
+  },
+  {
+   "code": "600086",
+   "symbol": "sh600086",
+   "name": "样本086",
+   "amount": 3326398251.68,
+   "turnoverratio": 36.2868,
+   "trade": 13.29,
+   "nmc": 181002.7953,
+   "changepercent": 1.48
+  },
+  {
+   "code": "600092",
+   "symbol": "sh600092",
+   "name": "样本092",
+   "amount": 4820988423.92,
+   "turnoverratio": 36.2615,
+   "trade": 10.82,
+   "nmc": 90281.9206,
+   "changepercent": 5.62
+  },
+  {
+   "code": "600098",
+   "symbol": "sh600098",
+   "name": "样本098",
+   "amount": 1498099054.98,
+   "turnoverratio": 33.9527,
+   "trade": 13.47,
+   "nmc": 264879.0742,
+   "changepercent": 7.7
+  },
+  {
+   "code": "600084",
+   "symbol": "sh600084",
+   "name": "样本084",
+   "amount": 2737918405.58,
+   "turnoverratio": 32.6197,
+   "trade": 11.24,
+   "nmc": 41387.6258,
+   "changepercent": 8.37
+  },
+  {
+   "code": "600067",
+   "symbol": "sh600067",
+   "name": "样本067",
+   "amount": 2648043259.52,
+   "turnoverratio": 31.6746,
+   "trade": 10.72,
+   "nmc": 50322.9613,
+   "changepercent": -8.77
+  },
+  {
+   "code": "600115",
+   "symbol": "sh600115",
+   "name": "样本115",
+   "amount": 1247341744.64,
+   "turnoverratio": 31.2312,
+   "trade": 14.73,
+   "nmc": 47871.0174,
+   "changepercent": -4.91
+  },
+  {
+   "code": "600102",
+   "symbol": "sh600102",
+   "name": "样本102",
+   "amount": 2648528054.88,
+   "turnoverratio": 31.1028,
+   "trade": 12.59,
+   "nmc": 75294.1128,
+   "changepercent": 7.47
+  },
+  {
+   "code": "600112",
+   "symbol": "sh600112",
+   "name": "样本112",
+   "amount": 4492166213.78,
+   "turnoverratio": 30.5249,
+   "trade": 14.41,
+   "nmc": 150779.9199,
+   "changepercent": 0.07
+  },
+  {
+   "code": "600113",
+   "symbol": "sh600113",
+   "name": "样本113",
+   "amount": 1644975722.89,
+   "turnoverratio": 29.9159,
+   "trade": 10.15,
+   "nmc": 100345.2581,
+   "changepercent": -6.73
+  },
+  {
+   "code": "600070",
+   "symbol": "sh600070",
+   "name": "样本070",
+   "amount": 1422600255.04,
+   "turnoverratio": 29.3522,
+   "trade": 11.17,
+   "nmc": 225058.1152,
+   "changepercent": 7.49
+  },
+  {
+   "code": "600069",
+   "symbol": "sh600069",
+   "name": "样本069",
+   "amount": 2746881955.02,
+   "turnoverratio": 28.1362,
+   "trade": 14.79,
+   "nmc": 263579.3224,
+   "changepercent": -5.41
+  },
+  {
+   "code": "600072",
+   "symbol": "sh600072",
+   "name": "样本072",
+   "amount": 4400872540.54,
+   "turnoverratio": 27.1177,
+   "trade": 14.06,
+   "nmc": 66032.2149,
+   "changepercent": -2.02
+  },
+  {
+   "code": "600108",
+   "symbol": "sh600108",
+   "name": "样本108",
+   "amount": 3271712053.97,
+   "turnoverratio": 27.0131,
+   "trade": 14.87,
+   "nmc": 148379.8584,
+   "changepercent": -2.54
+  },
+  {
+   "code": "600104",
+   "symbol": "sh600104",
+   "name": "样本104",
+   "amount": 949032528.14,
+   "turnoverratio": 26.4936,
+   "trade": 14.52,
+   "nmc": 77037.0995,
+   "changepercent": -8.14
+  },
+  {
+   "code": "600093",
+   "symbol": "sh600093",
+   "name": "样本093",
+   "amount": 4942921197.39,
+   "turnoverratio": 26.3537,
+   "trade": 10.51,
+   "nmc": 110607.208,
+   "changepercent": -3.63
+  },
+  {
+   "code": "600060",
+   "symbol": "sh600060",
+   "name": "样本060",
+   "amount": 955141414.13,
+   "turnoverratio": 25.9008,
+   "trade": 14.12,
+   "nmc": 283881.5056,
+   "changepercent": -1.04
+  },
+  {
+   "code": "600116",
+   "symbol": "sh600116",
+   "name": "样本116",
+   "amount": 1008145716.25,
+   "turnoverratio": 25.8691,
+   "trade": 11.31,
+   "nmc": 293510.3071,
+   "changepercent": 8.01
+  },
+  {
+   "code": "600074",
+   "symbol": "sh600074",
+   "name": "样本074",
+   "amount": 4923602248.59,
+   "turnoverratio": 23.6786,
+   "trade": 12.92,
+   "nmc": 281954.8413,
+   "changepercent": -0.11
+  },
+  {
+   "code": "600105",
+   "symbol": "sh600105",
+   "name": "样本105",
+   "amount": 2722553411.17,
+   "turnoverratio": 23.2802,
+   "trade": 14.63,
+   "nmc": 225890.7113,
+   "changepercent": 6.25
+  },
+  {
+   "code": "600095",
+   "symbol": "sh600095",
+   "name": "样本095",
+   "amount": 4271491395.32,
+   "turnoverratio": 22.9616,
+   "trade": 12.34,
+   "nmc": 201822.3337,
+   "changepercent": -7.96
+  },
+  {
+   "code": "600107",
+   "symbol": "sh600107",
+   "name": "样本107",
+   "amount": 580320607.03,
+   "turnoverratio": 22.816,
+   "trade": 14.53,
+   "nmc": 264602.284,
+   "changepercent": -1.69
+  },
+  {
+   "code": "600101",
+   "symbol": "sh600101",
+   "name": "样本101",
+   "amount": 3925141905.25,
+   "turnoverratio": 22.1851,
+   "trade": 13.34,
+   "nmc": 110881.0835,
+   "changepercent": 8.07
+  },
+  {
+   "code": "600064",
+   "symbol": "sh600064",
+   "name": "样本064",
+   "amount": 2719171683.34,
+   "turnoverratio": 21.7819,
+   "trade": 12.25,
+   "nmc": 139775.1406,
+   "changepercent": 6.68
+  },
+  {
+   "code": "600075",
+   "symbol": "sh600075",
+   "name": "样本075",
+   "amount": 1150750934.37,
+   "turnoverratio": 21.5347,
+   "trade": 11.03,
+   "nmc": 59388.4195,
+   "changepercent": 3.48
+  },
+  {
+   "code": "600091",
+   "symbol": "sh600091",
+   "name": "样本091",
+   "amount": 3570209603.47,
+   "turnoverratio": 21.3487,
+   "trade": 13.64,
+   "nmc": 278111.6607,
+   "changepercent": 2.58
+  },
+  {
+   "code": "600110",
+   "symbol": "sh600110",
+   "name": "样本110",
+   "amount": 4663840075.31,
+   "turnoverratio": 20.5405,
+   "trade": 12.04,
+   "nmc": 32132.9899,
+   "changepercent": -8.78
+  },
+  {
+   "code": "600096",
+   "symbol": "sh600096",
+   "name": "样本096",
+   "amount": 726249819.6,
+   "turnoverratio": 19.3589,
+   "trade": 14.65,
+   "nmc": 167169.7315,
+   "changepercent": 3.1
+  },
+  {
+   "code": "600066",
+   "symbol": "sh600066",
+   "name": "样本066",
+   "amount": 4071258874.48,
+   "turnoverratio": 18.4188,
+   "trade": 12.46,
+   "nmc": 144459.5877,
+   "changepercent": 2.75
+  },
+  {
+   "code": "600103",
+   "symbol": "sh600103",
+   "name": "样本103",
+   "amount": 1956366902.11,
+   "turnoverratio": 18.0517,
+   "trade": 13.57,
+   "nmc": 240931.1255,
+   "changepercent": -1.97
+  },
+  {
+   "code": "600111",
+   "symbol": "sh600111",
+   "name": "样本111",
+   "amount": 1835240462.4,
+   "turnoverratio": 17.8686,
+   "trade": 12.13,
+   "nmc": 129628.6993,
+   "changepercent": -8.55
+  },
+  {
+   "code": "600079",
+   "symbol": "sh600079",
+   "name": "样本079",
+   "amount": 2875160978.55,
+   "turnoverratio": 17.6027,
+   "trade": 12.22,
+   "nmc": 147405.9094,
+   "changepercent": -2.07
+  },
+  {
+   "code": "600073",
+   "symbol": "sh600073",
+   "name": "样本073",
+   "amount": 4473359644.27,
+   "turnoverratio": 17.5794,
+   "trade": 10.24,
+   "nmc": 242359.6682,
+   "changepercent": 3.79
+  },
+  {
+   "code": "600068",
+   "symbol": "sh600068",
+   "name": "样本068",
+   "amount": 1976665551.65,
+   "turnoverratio": 17.0775,
+   "trade": 10.03,
+   "nmc": 192302.0226,
+   "changepercent": 2.88
+  },
+  {
+   "code": "600087",
+   "symbol": "sh600087",
+   "name": "样本087",
+   "amount": 4099152794.52,
+   "turnoverratio": 16.9749,
+   "trade": 13.06,
+   "nmc": 298466.201,
+   "changepercent": -8.78
+  },
+  {
+   "code": "600114",
+   "symbol": "sh600114",
+   "name": "样本114",
+   "amount": 1727051711.09,
+   "turnoverratio": 16.7828,
+   "trade": 11.02,
+   "nmc": 70427.3042,
+   "changepercent": 5.59
+  },
+  {
+   "code": "600071",
+   "symbol": "sh600071",
+   "name": "样本071",
+   "amount": 378260076.12,
+   "turnoverratio": 13.7414,
+   "trade": 13.63,
+   "nmc": 213261.656,
+   "changepercent": -8.42
+  },
+  {
+   "code": "600094",
+   "symbol": "sh600094",
+   "name": "样本094",
+   "amount": 4570095332.95,
+   "turnoverratio": 13.6134,
+   "trade": 13.41,
+   "nmc": 114744.8816,
+   "changepercent": 7.27
+  },
+  {
+   "code": "600065",
+   "symbol": "sh600065",
+   "name": "样本065",
+   "amount": 1033430267.98,
+   "turnoverratio": 13.3568,
+   "trade": 11.65,
+   "nmc": 78745.2014,
+   "changepercent": -1.27
+  },
+  {
+   "code": "600119",
+   "symbol": "sh600119",
+   "name": "样本119",
+   "amount": 2303898286.18,
+   "turnoverratio": 13.1722,
+   "trade": 10.5,
+   "nmc": 278654.3046,
+   "changepercent": 7.51
+  },
+  {
+   "code": "600061",
+   "symbol": "sh600061",
+   "name": "样本061",
+   "amount": 1601303272.84,
+   "turnoverratio": 13.043,
+   "trade": 13.52,
+   "nmc": 76440.2858,
+   "changepercent": 7.73
+  },
+  {
+   "code": "600081",
+   "symbol": "sh600081",
+   "name": "样本081",
+   "amount": 789666251.4,
+   "turnoverratio": 11.3405,
+   "trade": 14.02,
+   "nmc": 253594.5658,
+   "changepercent": 6.14
+  },
+  {
+   "code": "600089",
+   "symbol": "sh600089",
+   "name": "样本089",
+   "amount": 3375203631.6,
+   "turnoverratio": 9.8763,
+   "trade": 10.36,
+   "nmc": 274406.5702,
+   "changepercent": 3.15
+  },
+  {
+   "code": "600106",
+   "symbol": "sh600106",
+   "name": "样本106",
+   "amount": 2649518655.47,
+   "turnoverratio": 9.628,
+   "trade": 10.31,
+   "nmc": 95681.3976,
+   "changepercent": -0.02
+  },
+  {
+   "code": "600083",
+   "symbol": "sh600083",
+   "name": "样本083",
+   "amount": 3499012802.89,
+   "turnoverratio": 9.1509,
+   "trade": 13.6,
+   "nmc": 246566.8939,
+   "changepercent": 2.0
+  },
+  {
+   "code": "600039",
+   "symbol": "sh600039",
+   "name": "样本039",
+   "amount": 13089633503.62,
+   "turnoverratio": 4.7235,
+   "trade": 13.32,
+   "nmc": 830904.0771,
+   "changepercent": 2.64
+  },
+  {
+   "code": "600044",
+   "symbol": "sh600044",
+   "name": "样本044",
+   "amount": 6334754632.41,
+   "turnoverratio": 4.6892,
+   "trade": 13.8,
+   "nmc": 2620356.9369,
+   "changepercent": 2.79
+  },
+  {
+   "code": "600028",
+   "symbol": "sh600028",
+   "name": "样本028",
+   "amount": 11219426976.67,
+   "turnoverratio": 4.6652,
+   "trade": 11.93,
+   "nmc": 1422716.1695,
+   "changepercent": 8.15
+  },
+  {
+   "code": "600042",
+   "symbol": "sh600042",
+   "name": "样本042",
+   "amount": 7059289335.65,
+   "turnoverratio": 4.644,
+   "trade": 14.65,
+   "nmc": 967127.4094,
+   "changepercent": 8.09
+  },
+  {
+   "code": "600011",
+   "symbol": "sh600011",
+   "name": "样本011",
+   "amount": 14832872501.31,
+   "turnoverratio": 4.5974,
+   "trade": 13.42,
+   "nmc": 2734064.3596,
+   "changepercent": 2.58
+  },
+  {
+   "code": "600008",
+   "symbol": "sh600008",
+   "name": "样本008",
+   "amount": 2799384376.69,
+   "turnoverratio": 4.5763,
+   "trade": 13.11,
+   "nmc": 1850676.293,
+   "changepercent": -3.31
+  },
+  {
+   "code": "600017",
+   "symbol": "sh600017",
+   "name": "样本017",
+   "amount": 15420277055.23,
+   "turnoverratio": 4.4891,
+   "trade": 10.87,
+   "nmc": 1904205.9785,
+   "changepercent": -6.64
+  },
+  {
+   "code": "600054",
+   "symbol": "sh600054",
+   "name": "样本054",
+   "amount": 12175649344.77,
+   "turnoverratio": 4.4826,
+   "trade": 14.97,
+   "nmc": 1166737.5742,
+   "changepercent": -4.21
+  },
+  {
+   "code": "600057",
+   "symbol": "sh600057",
+   "name": "样本057",
+   "amount": 2525297541.86,
+   "turnoverratio": 4.2332,
+   "trade": 14.52,
+   "nmc": 2923873.8024,
+   "changepercent": -4.49
+  },
+  {
+   "code": "600035",
+   "symbol": "sh600035",
+   "name": "样本035",
+   "amount": 3474079998.53,
+   "turnoverratio": 4.0139,
+   "trade": 10.89,
+   "nmc": 2013540.3425,
+   "changepercent": -2.5
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "样本005",
+   "amount": 3118412782.65,
+   "turnoverratio": 3.9743,
+   "trade": 12.03,
+   "nmc": 1271583.9252,
+   "changepercent": 5.42
+  },
+  {
+   "code": "600037",
+   "symbol": "sh600037",
+   "name": "样本037",
+   "amount": 15248172355.98,
+   "turnoverratio": 3.8971,
+   "trade": 10.17,
+   "nmc": 881373.6668,
+   "changepercent": -2.55
+  },
+  {
+   "code": "600026",
+   "symbol": "sh600026",
+   "name": "样本026",
+   "amount": 3634871800.05,
+   "turnoverratio": 3.856,
+   "trade": 12.11,
+   "nmc": 1015289.8382,
+   "changepercent": -1.79
+  },
+  {
+   "code": "600047",
+   "symbol": "sh600047",
+   "name": "样本047",
+   "amount": 9681961858.66,
+   "turnoverratio": 3.8229,
+   "trade": 10.51,
+   "nmc": 2613427.3065,
+   "changepercent": 1.73
+  },
+  {
+   "code": "600010",
+   "symbol": "sh600010",
+   "name": "样本010",
+   "amount": 2252686859.11,
+   "turnoverratio": 3.8068,
+   "trade": 10.91,
+   "nmc": 1365789.1069,
+   "changepercent": -7.13
+  },
+  {
+   "code": "600006",
+   "symbol": "sh600006",
+   "name": "样本006",
+   "amount": 3397957654.54,
+   "turnoverratio": 3.7869,
+   "trade": 13.11,
+   "nmc": 1345013.436,
+   "changepercent": -4.15
+  },
+  {
+   "code": "600027",
+   "symbol": "sh600027",
+   "name": "样本027",
+   "amount": 6669503852.17,
+   "turnoverratio": 3.6556,
+   "trade": 13.92,
+   "nmc": 1078796.3921,
+   "changepercent": -7.66
+  },
+  {
+   "code": "600043",
+   "symbol": "sh600043",
+   "name": "样本043",
+   "amount": 10516079818.5,
+   "turnoverratio": 3.599,
+   "trade": 12.26,
+   "nmc": 1029517.7496,
+   "changepercent": -5.66
+  },
+  {
+   "code": "600056",
+   "symbol": "sh600056",
+   "name": "样本056",
+   "amount": 10356230490.48,
+   "turnoverratio": 3.476,
+   "trade": 12.75,
+   "nmc": 2939209.2249,
+   "changepercent": -8.96
+  },
+  {
+   "code": "600058",
+   "symbol": "sh600058",
+   "name": "样本058",
+   "amount": 12919209258.19,
+   "turnoverratio": 3.3734,
+   "trade": 12.87,
+   "nmc": 2252802.794,
+   "changepercent": 5.27
+  },
+  {
+   "code": "600013",
+   "symbol": "sh600013",
+   "name": "样本013",
+   "amount": 4175620686.82,
+   "turnoverratio": 3.2298,
+   "trade": 10.9,
+   "nmc": 2396167.0636,
+   "changepercent": -8.62
+  },
+  {
+   "code": "600022",
+   "symbol": "sh600022",
+   "name": "样本022",
+   "amount": 11684791780.53,
+   "turnoverratio": 3.2096,
+   "trade": 11.75,
+   "nmc": 2025419.2861,
+   "changepercent": -2.46
+  },
+  {
+   "code": "600031",
+   "symbol": "sh600031",
+   "name": "样本031",
+   "amount": 13677918576.02,
+   "turnoverratio": 3.1879,
+   "trade": 13.29,
+   "nmc": 2900124.0751,
+   "changepercent": -4.24
+  },
+  {
+   "code": "600012",
+   "symbol": "sh600012",
+   "name": "样本012",
+   "amount": 6692226770.44,
+   "turnoverratio": 3.1313,
+   "trade": 11.95,
+   "nmc": 1566020.1023,
+   "changepercent": -7.62
+  },
+  {
+   "code": "600033",
+   "symbol": "sh600033",
+   "name": "样本033",
+   "amount": 4241062123.0,
+   "turnoverratio": 2.7817,
+   "trade": 11.4,
+   "nmc": 1716265.5018,
+   "changepercent": -1.37
+  },
+  {
+   "code": "600021",
+   "symbol": "sh600021",
+   "name": "样本021",
+   "amount": 4401888209.45,
+   "turnoverratio": 2.7693,
+   "trade": 13.82,
+   "nmc": 2716755.8991,
+   "changepercent": -6.15
+  },
+  {
+   "code": "600049",
+   "symbol": "sh600049",
+   "name": "样本049",
+   "amount": 14679091083.42,
+   "turnoverratio": 2.7296,
+   "trade": 13.97,
+   "nmc": 2366019.7352,
+   "changepercent": 5.89
+  },
+  {
+   "code": "600014",
+   "symbol": "sh600014",
+   "name": "样本014",
+   "amount": 12913592904.85,
+   "turnoverratio": 2.6015,
+   "trade": 14.24,
+   "nmc": 813984.8167,
+   "changepercent": 3.88
+  },
+  {
+   "code": "600032",
+   "symbol": "sh600032",
+   "name": "样本032",
+   "amount": 2967731323.06,
+   "turnoverratio": 2.5403,
+   "trade": 12.97,
+   "nmc": 2314011.5325,
+   "changepercent": 6.3
+  },
+  {
+   "code": "600018",
+   "symbol": "sh600018",
+   "name": "样本018",
+   "amount": 9712203531.31,
+   "turnoverratio": 2.3907,
+   "trade": 11.22,
+   "nmc": 2036022.7203,
+   "changepercent": 4.25
+  },
+  {
+   "code": "600053",
+   "symbol": "sh600053",
+   "name": "样本053",
+   "amount": 5128834422.28,
+   "turnoverratio": 2.3216,
+   "trade": 11.61,
+   "nmc": 2955630.9886,
+   "changepercent": -3.33
+  },
+  {
+   "code": "600041",
+   "symbol": "sh600041",
+   "name": "样本041",
+   "amount": 14796912442.18,
+   "turnoverratio": 2.2681,
+   "trade": 10.06,
+   "nmc": 1585216.107,
+   "changepercent": 2.94
+  },
+  {
+   "code": "600051",
+   "symbol": "sh600051",
+   "name": "样本051",
+   "amount": 4604824210.96,
+   "turnoverratio": 2.2541,
+   "trade": 12.99,
+   "nmc": 1765093.4469,
+   "changepercent": 4.91
+  },
+  {
+   "code": "600029",
+   "symbol": "sh600029",
+   "name": "样本029",
+   "amount": 14619431444.0,
+   "turnoverratio": 2.2517,
+   "trade": 14.46,
+   "nmc": 2714492.7255,
+   "changepercent": -8.64
+  },
+  {
+   "code": "600045",
+   "symbol": "sh600045",
+   "name": "样本045",
+   "amount": 15874572918.18,
+   "turnoverratio": 2.2442,
+   "trade": 13.8,
+   "nmc": 881604.3257,
+   "changepercent": -4.62
+  },
+  {
+   "code": "600024",
+   "symbol": "sh600024",
+   "name": "样本024",
+   "amount": 7362803058.26,
+   "turnoverratio": 2.0915,
+   "trade": 11.12,
+   "nmc": 2157805.0326,
+   "changepercent": -5.31
+  },
+  {
+   "code": "600016",
+   "symbol": "sh600016",
+   "name": "样本016",
+   "amount": 6061138634.93,
+   "turnoverratio": 2.0443,
+   "trade": 12.82,
+   "nmc": 2920331.7223,
+   "changepercent": -0.94
+  },
+  {
+   "code": "600048",
+   "symbol": "sh600048",
+   "name": "样本048",
+   "amount": 5617194001.17,
+   "turnoverratio": 2.0324,
+   "trade": 10.05,
+   "nmc": 2175115.3675,
+   "changepercent": -0.82
+  },
+  {
+   "code": "600003",
+   "symbol": "sh600003",
+   "name": "样本003",
+   "amount": 5466439326.14,
+   "turnoverratio": 2.0067,
+   "trade": 12.41,
+   "nmc": 890723.2033,
+   "changepercent": -4.19
+  },
+  {
+   "code": "600036",
+   "symbol": "sh600036",
+   "name": "样本036",
+   "amount": 8333428965.96,
+   "turnoverratio": 1.6625,
+   "trade": 12.06,
+   "nmc": 1189591.2359,
+   "changepercent": 6.74
+  },
+  {
+   "code": "600023",
+   "symbol": "sh600023",
+   "name": "样本023",
+   "amount": 13180069683.64,
+   "turnoverratio": 1.5734,
+   "trade": 10.55,
+   "nmc": 1134399.552,
+   "changepercent": 4.77
+  },
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "样本001",
+   "amount": 7410588528.48,
+   "turnoverratio": 1.55,
+   "trade": 12.95,
+   "nmc": 1374965.8379,
+   "changepercent": -6.34
+  },
+  {
+   "code": "600007",
+   "symbol": "sh600007",
+   "name": "样本007",
+   "amount": 6541382174.69,
+   "turnoverratio": 1.5398,
+   "trade": 10.04,
+   "nmc": 807514.6871,
+   "changepercent": -2.13
+  },
+  {
+   "code": "600019",
+   "symbol": "sh600019",
+   "name": "样本019",
+   "amount": 3935109420.65,
+   "turnoverratio": 1.5235,
+   "trade": 14.34,
+   "nmc": 1359758.1616,
+   "changepercent": -5.66
+  },
+  {
+   "code": "600034",
+   "symbol": "sh600034",
+   "name": "样本034",
+   "amount": 9624936297.16,
+   "turnoverratio": 1.4884,
+   "trade": 13.77,
+   "nmc": 2306078.2539,
+   "changepercent": -6.45
+  },
+  {
+   "code": "600020",
+   "symbol": "sh600020",
+   "name": "样本020",
+   "amount": 3389493050.98,
+   "turnoverratio": 1.3437,
+   "trade": 14.12,
+   "nmc": 2307426.5156,
+   "changepercent": -3.36
+  },
+  {
+   "code": "600052",
+   "symbol": "sh600052",
+   "name": "样本052",
+   "amount": 7328313624.42,
+   "turnoverratio": 1.3066,
+   "trade": 14.52,
+   "nmc": 1107156.6707,
+   "changepercent": -2.79
+  },
+  {
+   "code": "600025",
+   "symbol": "sh600025",
+   "name": "样本025",
+   "amount": 8383924894.58,
+   "turnoverratio": 1.3013,
+   "trade": 11.87,
+   "nmc": 2244732.3069,
+   "changepercent": -5.36
+  },
+  {
+   "code": "600059",
+   "symbol": "sh600059",
+   "name": "样本059",
+   "amount": 3594981768.86,
+   "turnoverratio": 1.2741,
+   "trade": 12.98,
+   "nmc": 2025808.7199,
+   "changepercent": 6.13
+  },
+  {
+   "code": "600000",
+   "symbol": "sh600000",
+   "name": "样本000",
+   "amount": 10413836011.41,
+   "turnoverratio": 1.2565,
+   "trade": 13.73,
+   "nmc": 2281589.4632,
+   "changepercent": 2.47
+  },
+  {
+   "code": "600038",
+   "symbol": "sh600038",
+   "name": "样本038",
+   "amount": 2710174672.65,
+   "turnoverratio": 1.0577,
+   "trade": 13.66,
+   "nmc": 1118850.931,
+   "changepercent": -6.99
+  },
+  {
+   "code": "600009",
+   "symbol": "sh600009",
+   "name": "样本009",
+   "amount": 15078358629.6,
+   "turnoverratio": 0.9882,
+   "trade": 12.19,
+   "nmc": 1277797.5184,
+   "changepercent": 0.59
+  },
+  {
+   "code": "600050",
+   "symbol": "sh600050",
+   "name": "样本050",
+   "amount": 4320922927.3,
+   "turnoverratio": 0.9736,
+   "trade": 14.95,
+   "nmc": 1480647.83,
+   "changepercent": -7.27
+  },
+  {
+   "code": "600046",
+   "symbol": "sh600046",
+   "name": "样本046",
+   "amount": 6333287537.02,
+   "turnoverratio": 0.9118,
+   "trade": 10.95,
+   "nmc": 1827412.3422,
+   "changepercent": 1.43
+  },
+  {
+   "code": "600004",
+   "symbol": "sh600004",
+   "name": "样本004",
+   "amount": 2222403230.37,
+   "turnoverratio": 0.9096,
+   "trade": 13.95,
+   "nmc": 2602068.909,
+   "changepercent": -5.26
+  },
+  {
+   "code": "600055",
+   "symbol": "sh600055",
+   "name": "样本055",
+   "amount": 10853896550.76,
+   "turnoverratio": 0.9008,
+   "trade": 14.51,
+   "nmc": 2521539.7053,
+   "changepercent": -8.8
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "样本002",
+   "amount": 4173017521.93,
+   "turnoverratio": 0.8895,
+   "trade": 14.53,
+   "nmc": 1384555.446,
+   "changepercent": -7.38
+  },
+  {
+   "code": "600040",
+   "symbol": "sh600040",
+   "name": "样本040",
+   "amount": 6385732016.65,
+   "turnoverratio": 0.7395,
+   "trade": 11.85,
+   "nmc": 880263.9198,
+   "changepercent": -8.49
+  },
+  {
+   "code": "600030",
+   "symbol": "sh600030",
+   "name": "样本030",
+   "amount": 12074640401.85,
+   "turnoverratio": 0.7111,
+   "trade": 14.79,
+   "nmc": 2048956.4938,
+   "changepercent": 3.42
+  },
+  {
+   "code": "600015",
+   "symbol": "sh600015",
+   "name": "样本015",
+   "amount": 9122088494.58,
+   "turnoverratio": 0.5212,
+   "trade": 14.87,
+   "nmc": 1086612.2154,
+   "changepercent": -0.48
+  }
+ ]
+}

@@ -836,7 +836,54 @@ ssh admin@<truenas-host> 'systemctl is-enabled k3s && systemctl is-active k3s'
 ```
 
 若节点显示 `NotReady` 且原因为 `NetworkPluginNotReady: cni plugin not initialized`，不要继续
-发布或重试 Helm rollout；先恢复 TrueNAS 管理的 CNI/Multus 清单和网络服务，再重新执行部署。
+发布或重试 Helm rollout。该状态通常是开机竞态：TrueNAS 的 CNI 清单由 `middlewared` 在
+`post_start` 阶段生成，而 `k3s.service` 与 `middlewared` 同属 `multi-user.target` 并行启动，
+k3s 在大约 15 秒的 CNI 检测窗口内看不到 `/etc/cni/net.d` 就会永久停在 NotReady，直到人工重启。
+处理顺序是：先用 `sudo bash deploy/truenas/install-k3s-network-repair.sh --check` 只读核查，
+再按下面的受管单元小节修复，不要手工执行 `systemctl restart k3s` 后就算完成。
+
+#### TrueNAS k3s 开机网络修复受管单元
+
+`deploy/truenas/systemd/` 提供两个受版本控制的资产：`k3s-network-repair.sh`（执行体）与
+`a-stock-k3s-network-repair.service`（`Type=oneshot` 单元）。安装到主机的路径分别是
+`/usr/local/libexec/a-stock/k3s-network-repair.sh` 和 `/etc/systemd/system/a-stock-k3s-network-repair.service`，
+单元由 `multi-user.target` 拉起，并在 `k3s.service`、`kube-router.service`、`middlewared.service` 之后执行。
+
+它只做两件事，都是幂等的：
+
+- 在 `kube-router` 策略路由表补齐 `cluster-cidr` 指向 `kube-bridge` 的直连路由，以及缺失时的
+  `32764 from <cluster-cidr> lookup kube-router` 规则。TrueNAS 的 `add_routes_to_kube_router_table()`
+  只在 middleware `post_start` 时执行一次且不重试，错过 `kube-bridge` 上线窗口后表里只剩默认路由，
+  宿主机发往 Pod 的流量会被送到管理网桥丢弃，表现为 Pod 探针超时、NodePort 返回空响应。
+- 节点未 Ready 且 kubelet 明确报出 `cni plugin not initialized` 时重启一次 `k3s.service`。
+  每次开机最多重启一次（预算记录在 `/run/a-stock-k3s-network-repair/k3s-restarts`，重启即清零）；
+  其它原因的 NotReady 一律不重启，只以非零退出留下证据。
+
+它不接管 CNI 清单、不修改 `kube-router` 单元、不触碰 Helm release、PVC 或任何业务对象。
+
+安装与核查：
+
+```bash
+ssh admin@<truenas-host> 'sudo bash /home/gyt/a-stock/deploy/truenas/install-k3s-network-repair.sh'
+ssh admin@<truenas-host> 'sudo bash /home/gyt/a-stock/deploy/truenas/install-k3s-network-repair.sh --check'
+ssh admin@<truenas-host> 'sudo /usr/local/libexec/a-stock/k3s-network-repair.sh check'
+ssh admin@<truenas-host> 'systemctl status a-stock-k3s-network-repair.service --no-pager'
+```
+
+`install` 会 `daemon-reload`、`enable`、`restart` 并在最后执行一次只读核查；`--check` 只比较两个主机文件与
+单元启用状态，`k3s-network-repair.sh check` 只读核对 CNI 清单、网桥、路由、策略规则与节点 Ready。
+两者都以非零退出表示存在漂移或需要修复，都不写入任何状态。
+
+单元设置 `RemainAfterExit=yes`（成功后保持 active 以便检索），因此对已 active 的单元执行
+`systemctl start` 不会重跑修复动作；需要立即补一次路由时应执行
+`sudo systemctl restart a-stock-k3s-network-repair.service`，安装入口已按此实现。
+安装后应安排一次维护窗口重启节点，确认开机后无需人工介入即可 Ready，再回填对应 active plan 的完成证据。
+
+故障排查时按顺序核对：`journalctl -u a-stock-k3s-network-repair.service -b` 看单元日志；
+`ip route show table kube-router` 应同时包含 `default via <网关> dev br0` 与
+`<cluster-cidr> dev kube-bridge scope link`；`ip rule show` 应包含 `32764: from <cluster-cidr> lookup kube-router`。
+`kube-router.service` 在 TrueNAS 上是 `disabled`，由 middleware 按需启动，这属于上游默认行为，
+修复单元不改变该状态；若确实需要它随开机自启，属于另一次需要显式确认的变更。
 
 当项目已经 clone 到 1.21 的 `/home/gyt/a-stock`，可使用 `scripts/deploy-truenas-k3s.sh` 完成构建、镜像传输、containerd 导入和 Helm 发布。该脚本假设 1.21 上有 Podman、Helm、kubectl、SSH、SCP 和 netcat，且 SSH 用户在 1.20 具有无需交互密码的受控 `sudo` 权限；它不会修改 1.21 的 NGINX/Tailscale 配置。默认 `K3S_API_SSH_TUNNEL=true`，脚本把临时 kubeconfig 指向 1.21 回环端口，并经 SSH 转发到 TrueNAS `127.0.0.1:6443`；SSH 服务必须允许该目标的 TCP forwarding。脚本退出时自动关闭隧道，不要求也不建议向局域网开放 `6443/tcp`。
 

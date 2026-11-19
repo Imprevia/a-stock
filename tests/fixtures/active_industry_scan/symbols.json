@@ -1,0 +1,605 @@
+{
+ "asOf": "2026-11-19",
+ "items": [
+  {
+   "thscode": "600000.SH",
+   "name": "样本000",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600001.SH",
+   "name": "样本001",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600002.SH",
+   "name": "样本002",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600003.SH",
+   "name": "样本003",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600004.SH",
+   "name": "样本004",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600005.SH",
+   "name": "样本005",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600006.SH",
+   "name": "样本006",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600007.SH",
+   "name": "样本007",
+   "list_date": null
+  },
+  {
+   "thscode": "600008.SH",
+   "name": "样本008",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600009.SH",
+   "name": "样本009",
+   "list_date": "2026-10-01"
+  },
+  {
+   "thscode": "600010.SH",
+   "name": "样本010",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600011.SH",
+   "name": "样本011",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600012.SH",
+   "name": "样本012",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600013.SH",
+   "name": "样本013",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600014.SH",
+   "name": "样本014",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600015.SH",
+   "name": "样本015",
+   "list_date": "2026-03-01"
+  },
+  {
+   "thscode": "600016.SH",
+   "name": "样本016",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600017.SH",
+   "name": "样本017",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600018.SH",
+   "name": "样本018",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600019.SH",
+   "name": "样本019",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600020.SH",
+   "name": "样本020",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600021.SH",
+   "name": "样本021",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600022.SH",
+   "name": "样本022",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600023.SH",
+   "name": "样本023",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600024.SH",
+   "name": "样本024",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600025.SH",
+   "name": "样本025",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600026.SH",
+   "name": "样本026",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600027.SH",
+   "name": "样本027",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600028.SH",
+   "name": "样本028",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600029.SH",
+   "name": "样本029",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600030.SH",
+   "name": "样本030",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600031.SH",
+   "name": "样本031",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600032.SH",
+   "name": "样本032",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600033.SH",
+   "name": "样本033",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600034.SH",
+   "name": "样本034",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600035.SH",
+   "name": "样本035",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600036.SH",
+   "name": "样本036",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600037.SH",
+   "name": "样本037",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600038.SH",
+   "name": "样本038",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600039.SH",
+   "name": "样本039",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600040.SH",
+   "name": "样本040",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600041.SH",
+   "name": "样本041",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600042.SH",
+   "name": "样本042",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600043.SH",
+   "name": "样本043",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600044.SH",
+   "name": "样本044",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600045.SH",
+   "name": "样本045",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600046.SH",
+   "name": "样本046",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600047.SH",
+   "name": "样本047",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600048.SH",
+   "name": "样本048",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600049.SH",
+   "name": "样本049",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600050.SH",
+   "name": "样本050",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600051.SH",
+   "name": "样本051",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600052.SH",
+   "name": "样本052",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600053.SH",
+   "name": "样本053",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600054.SH",
+   "name": "样本054",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600055.SH",
+   "name": "样本055",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600056.SH",
+   "name": "样本056",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600057.SH",
+   "name": "样本057",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600058.SH",
+   "name": "样本058",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600059.SH",
+   "name": "样本059",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600060.SH",
+   "name": "样本060",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600061.SH",
+   "name": "样本061",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600062.SH",
+   "name": "样本062",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600063.SH",
+   "name": "样本063",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600064.SH",
+   "name": "样本064",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600065.SH",
+   "name": "样本065",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600066.SH",
+   "name": "样本066",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600067.SH",
+   "name": "样本067",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600068.SH",
+   "name": "样本068",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600069.SH",
+   "name": "样本069",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600070.SH",
+   "name": "样本070",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600071.SH",
+   "name": "样本071",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600072.SH",
+   "name": "样本072",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600073.SH",
+   "name": "样本073",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600074.SH",
+   "name": "样本074",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600075.SH",
+   "name": "样本075",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600076.SH",
+   "name": "样本076",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600077.SH",
+   "name": "样本077",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600078.SH",
+   "name": "样本078",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600079.SH",
+   "name": "样本079",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600080.SH",
+   "name": "样本080",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600081.SH",
+   "name": "样本081",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600082.SH",
+   "name": "样本082",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600083.SH",
+   "name": "样本083",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600084.SH",
+   "name": "样本084",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600085.SH",
+   "name": "样本085",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600086.SH",
+   "name": "样本086",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600087.SH",
+   "name": "样本087",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600088.SH",
+   "name": "样本088",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600089.SH",
+   "name": "样本089",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600090.SH",
+   "name": "样本090",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600091.SH",
+   "name": "样本091",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600092.SH",
+   "name": "样本092",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600093.SH",
+   "name": "样本093",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600094.SH",
+   "name": "样本094",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600095.SH",
+   "name": "样本095",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600096.SH",
+   "name": "样本096",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600097.SH",
+   "name": "样本097",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600098.SH",
+   "name": "样本098",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600099.SH",
+   "name": "样本099",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600100.SH",
+   "name": "样本100",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600101.SH",
+   "name": "样本101",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600102.SH",
+   "name": "样本102",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600103.SH",
+   "name": "样本103",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600104.SH",
+   "name": "样本104",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600105.SH",
+   "name": "样本105",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600106.SH",
+   "name": "样本106",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600107.SH",
+   "name": "样本107",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600108.SH",
+   "name": "样本108",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600109.SH",
+   "name": "样本109",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600110.SH",
+   "name": "样本110",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600111.SH",
+   "name": "样本111",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600112.SH",
+   "name": "样本112",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600113.SH",
+   "name": "样本113",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600114.SH",
+   "name": "样本114",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600115.SH",
+   "name": "样本115",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600116.SH",
+   "name": "样本116",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600117.SH",
+   "name": "样本117",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600118.SH",
+   "name": "样本118",
+   "list_date": "2020-01-01"
+  },
+  {
+   "thscode": "600119.SH",
+   "name": "样本119",
+   "list_date": "2020-01-01"
+  }
+ ]
+}

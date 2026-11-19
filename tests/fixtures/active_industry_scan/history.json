@@ -1,0 +1,2012 @@
+{
+ "600000.SH": [
+  {
+   "date_ms": 1780000000000,
+   "volume": 19641024,
+   "turnover": 1972589445.6091106,
+   "close_price": 29.99
+  },
+  {
+   "date_ms": 1780086400000,
+   "volume": 39919223,
+   "turnover": 684816598.4083823,
+   "close_price": 10.52
+  },
+  {
+   "date_ms": 1780172800000,
+   "volume": 36180191,
+   "turnover": 136517887.3509204,
+   "close_price": 15.38
+  },
+  {
+   "date_ms": 1780259200000,
+   "volume": 10699969,
+   "turnover": 1317427727.6024406,
+   "close_price": 10.68
+  },
+  {
+   "date_ms": 1780345600000,
+   "volume": 36868283,
+   "turnover": 1798504146.377796,
+   "close_price": 25.19
+  },
+  {
+   "date_ms": 1780432000000,
+   "volume": 41616642,
+   "turnover": 733670060.1052512,
+   "close_price": 11.19
+  },
+  {
+   "date_ms": 1780518400000,
+   "volume": 47185521,
+   "turnover": 1162409212.9871411,
+   "close_price": 8.68
+  },
+  {
+   "date_ms": 1780604800000,
+   "volume": 41724370,
+   "turnover": 1281135632.717329,
+   "close_price": 25.15
+  },
+  {
+   "date_ms": 1780691200000,
+   "volume": 23632721,
+   "turnover": 1070191383.553546,
+   "close_price": 12.74
+  },
+  {
+   "date_ms": 1780777600000,
+   "volume": 46627251,
+   "turnover": 543206017.8303473,
+   "close_price": 25.64
+  },
+  {
+   "date_ms": 1780864000000,
+   "volume": 42627730,
+   "turnover": 1299931777.35243,
+   "close_price": 17.03
+  },
+  {
+   "date_ms": 1780950400000,
+   "volume": 25228347,
+   "turnover": 1967433197.322213,
+   "close_price": 9.19
+  },
+  {
+   "date_ms": 1781036800000,
+   "volume": 35649814,
+   "turnover": 1860578400.6244807,
+   "close_price": 20.02
+  },
+  {
+   "date_ms": 1781123200000,
+   "volume": 41672391,
+   "turnover": 1895376932.47291,
+   "close_price": 28.87
+  },
+  {
+   "date_ms": 1781209600000,
+   "volume": 36632578,
+   "turnover": 812416274.9510334,
+   "close_price": 26.15
+  },
+  {
+   "date_ms": 1781296000000,
+   "volume": 48588150,
+   "turnover": 1505633314.4764485,
+   "close_price": 9.06
+  },
+  {
+   "date_ms": 1781382400000,
+   "volume": 40684288,
+   "turnover": 909804504.5224503,
+   "close_price": 23.3
+  },
+  {
+   "date_ms": 1781468800000,
+   "volume": 31775716,
+   "turnover": 1146181212.3871624,
+   "close_price": 18.46
+  },
+  {
+   "date_ms": 1781555200000,
+   "volume": 44638169,
+   "turnover": 1517629883.7261937,
+   "close_price": 19.38
+  },
+  {
+   "date_ms": 1781641600000,
+   "volume": 23925092,
+   "turnover": 663430334.019797,
+   "close_price": 10.92
+  },
+  {
+   "date_ms": 1781728000000,
+   "volume": 31966198,
+   "turnover": 776196736.5320143,
+   "close_price": 8.47
+  },
+  {
+   "date_ms": 1781814400000,
+   "volume": 8286100,
+   "turnover": 1414516247.7180328,
+   "close_price": 18.86
+  },
+  {
+   "date_ms": 1781900800000,
+   "volume": 6081736,
+   "turnover": 1026904888.5619633,
+   "close_price": 16.17
+  },
+  {
+   "date_ms": 1781987200000,
+   "volume": 21220601,
+   "turnover": 1780894422.2348351,
+   "close_price": 8.8
+  },
+  {
+   "date_ms": 1782073600000,
+   "volume": 43269971,
+   "turnover": 569270052.5858543,
+   "close_price": 22.95
+  },
+  {
+   "date_ms": 1782160000000,
+   "volume": 38509145,
+   "turnover": 246340781.55852237,
+   "close_price": 13.46
+  },
+  {
+   "date_ms": 1782246400000,
+   "volume": 12876476,
+   "turnover": 1239127756.4337277,
+   "close_price": 19.49
+  },
+  {
+   "date_ms": 1782332800000,
+   "volume": 43739268,
+   "turnover": 1283850200.9481997,
+   "close_price": 21.5
+  },
+  {
+   "date_ms": 1782419200000,
+   "volume": 45409271,
+   "turnover": 1127072712.6917834,
+   "close_price": 14.9
+  },
+  {
+   "date_ms": 1782505600000,
+   "volume": 5020225,
+   "turnover": 199031346.16107744,
+   "close_price": 28.27
+  },
+  {
+   "date_ms": 1782592000000,
+   "volume": 49392429,
+   "turnover": 998600604.3438044,
+   "close_price": 26.96
+  },
+  {
+   "date_ms": 1782678400000,
+   "volume": 31141829,
+   "turnover": 1625846589.4060817,
+   "close_price": 20.47
+  },
+  {
+   "date_ms": 1782764800000,
+   "volume": 12141890,
+   "turnover": 1206914972.7581172,
+   "close_price": 10.92
+  },
+  {
+   "date_ms": 1782851200000,
+   "volume": 5949308,
+   "turnover": 560431514.3223569,
+   "close_price": 17.01
+  },
+  {
+   "date_ms": 1782937600000,
+   "volume": 37078848,
+   "turnover": 1913046036.897991,
+   "close_price": 21.75
+  },
+  {
+   "date_ms": 1783024000000,
+   "volume": 48244822,
+   "turnover": 833140096.6716862,
+   "close_price": 21.02
+  },
+  {
+   "date_ms": 1783110400000,
+   "volume": 38444477,
+   "turnover": 1628061006.8164034,
+   "close_price": 17.92
+  },
+  {
+   "date_ms": 1783196800000,
+   "volume": 29713555,
+   "turnover": 193512991.0007186,
+   "close_price": 8.37
+  },
+  {
+   "date_ms": 1783283200000,
+   "volume": 5896213,
+   "turnover": 1164695931.557218,
+   "close_price": 8.67
+  },
+  {
+   "date_ms": 1783369600000,
+   "volume": 42942125,
+   "turnover": 396260067.4820933,
+   "close_price": 25.35
+  },
+  {
+   "date_ms": 1783456000000,
+   "volume": 46667049,
+   "turnover": 1155458049.0351896,
+   "close_price": 26.39
+  },
+  {
+   "date_ms": 1783542400000,
+   "volume": 20670689,
+   "turnover": 869726443.1716111,
+   "close_price": 24.22
+  },
+  {
+   "date_ms": 1783628800000,
+   "volume": 29408769,
+   "turnover": 182662777.45625722,
+   "close_price": 18.22
+  },
+  {
+   "date_ms": 1783715200000,
+   "volume": 26753641,
+   "turnover": 1700821643.4244819,
+   "close_price": 27.15
+  },
+  {
+   "date_ms": 1783801600000,
+   "volume": 17919175,
+   "turnover": 943398086.541761,
+   "close_price": 27.89
+  },
+  {
+   "date_ms": 1783888000000,
+   "volume": 43447178,
+   "turnover": 1969013667.5557613,
+   "close_price": 8.7
+  },
+  {
+   "date_ms": 1783974400000,
+   "volume": 7710590,
+   "turnover": 282675199.40021837,
+   "close_price": 13.37
+  },
+  {
+   "date_ms": 1784060800000,
+   "volume": 24234976,
+   "turnover": 108654652.48240146,
+   "close_price": 8.19
+  },
+  {
+   "date_ms": 1784147200000,
+   "volume": 13048759,
+   "turnover": 1574477549.7076633,
+   "close_price": 10.72
+  },
+  {
+   "date_ms": 1784233600000,
+   "volume": 20117615,
+   "turnover": 1986885686.6676116,
+   "close_price": 22.3
+  },
+  {
+   "date_ms": 1784320000000,
+   "volume": 32033173,
+   "turnover": 224693574.8869326,
+   "close_price": 11.88
+  },
+  {
+   "date_ms": 1784406400000,
+   "volume": 18691353,
+   "turnover": 1304915445.9811175,
+   "close_price": 19.15
+  },
+  {
+   "date_ms": 1784492800000,
+   "volume": 13130688,
+   "turnover": 744575737.7280573,
+   "close_price": 14.63
+  },
+  {
+   "date_ms": 1784579200000,
+   "volume": 38172726,
+   "turnover": 262367645.12225005,
+   "close_price": 13.88
+  },
+  {
+   "date_ms": 1784665600000,
+   "volume": 21818521,
+   "turnover": 1841926547.0390456,
+   "close_price": 8.82
+  },
+  {
+   "date_ms": 1784752000000,
+   "volume": 10912828,
+   "turnover": 1099839122.5266647,
+   "close_price": 14.8
+  },
+  {
+   "date_ms": 1784838400000,
+   "volume": 9047730,
+   "turnover": 1195149486.3759122,
+   "close_price": 25.42
+  },
+  {
+   "date_ms": 1784924800000,
+   "volume": 15478713,
+   "turnover": 1834585544.5367172,
+   "close_price": 17.64
+  },
+  {
+   "date_ms": 1785011200000,
+   "volume": 32369689,
+   "turnover": 202062721.99377728,
+   "close_price": 28.01
+  },
+  {
+   "date_ms": 1785097600000,
+   "volume": 9711398,
+   "turnover": 1006720368.8631061,
+   "close_price": 12.84
+  },
+  {
+   "date_ms": 1785184000000,
+   "volume": 10516994,
+   "turnover": 1787225390.4856558,
+   "close_price": 25.4
+  },
+  {
+   "date_ms": 1785270400000,
+   "volume": 12003340,
+   "turnover": 1872215994.461326,
+   "close_price": 26.95
+  },
+  {
+   "date_ms": 1785356800000,
+   "volume": 20480800,
+   "turnover": 1518353658.0083964,
+   "close_price": 15.78
+  },
+  {
+   "date_ms": 1785443200000,
+   "volume": 17257995,
+   "turnover": 1617872452.6865747,
+   "close_price": 18.68
+  },
+  {
+   "date_ms": 1785529600000,
+   "volume": 42129516,
+   "turnover": 1224271515.0685165,
+   "close_price": 13.13
+  },
+  {
+   "date_ms": 1785616000000,
+   "volume": 34740006,
+   "turnover": 501716968.0124015,
+   "close_price": 17.1
+  },
+  {
+   "date_ms": 1785702400000,
+   "volume": 16581388,
+   "turnover": 737571405.4940459,
+   "close_price": 28.64
+  },
+  {
+   "date_ms": 1785788800000,
+   "volume": 6865241,
+   "turnover": 1788063633.5301056,
+   "close_price": 18.28
+  },
+  {
+   "date_ms": 1785875200000,
+   "volume": 21673733,
+   "turnover": 969356654.7722293,
+   "close_price": 18.66
+  },
+  {
+   "date_ms": 1785961600000,
+   "volume": 34554360,
+   "turnover": 525395460.9224102,
+   "close_price": 28.83
+  },
+  {
+   "date_ms": 1786048000000,
+   "volume": 38260606,
+   "turnover": 1508951813.4885123,
+   "close_price": 21.32
+  },
+  {
+   "date_ms": 1786134400000,
+   "volume": 48871717,
+   "turnover": 763910736.0642648,
+   "close_price": 12.53
+  },
+  {
+   "date_ms": 1786220800000,
+   "volume": 11161017,
+   "turnover": 1241572643.309356,
+   "close_price": 8.46
+  },
+  {
+   "date_ms": 1786307200000,
+   "volume": 15310560,
+   "turnover": 527821747.7474633,
+   "close_price": 28.16
+  },
+  {
+   "date_ms": 1786393600000,
+   "volume": 20753544,
+   "turnover": 1939452380.2479205,
+   "close_price": 11.37
+  },
+  {
+   "date_ms": 1786480000000,
+   "volume": 41901501,
+   "turnover": 355236769.5751082,
+   "close_price": 23.63
+  },
+  {
+   "date_ms": 1786566400000,
+   "volume": 25798996,
+   "turnover": 578849777.9197586,
+   "close_price": 26.92
+  },
+  {
+   "date_ms": 1786652800000,
+   "volume": 39693133,
+   "turnover": 1342208154.6855605,
+   "close_price": 29.35
+  },
+  {
+   "date_ms": 1786739200000,
+   "volume": 31925345,
+   "turnover": 963564862.6186593,
+   "close_price": 26.34
+  },
+  {
+   "date_ms": 1786825600000,
+   "volume": 26316596,
+   "turnover": 1189372411.9305108,
+   "close_price": 29.61
+  },
+  {
+   "date_ms": 1786912000000,
+   "volume": 15249841,
+   "turnover": 828339836.7388033,
+   "close_price": 27.4
+  },
+  {
+   "date_ms": 1786998400000,
+   "volume": 17966997,
+   "turnover": 733213348.477056,
+   "close_price": 22.74
+  },
+  {
+   "date_ms": 1787084800000,
+   "volume": 41476146,
+   "turnover": 1166433445.9771943,
+   "close_price": 8.6
+  },
+  {
+   "date_ms": 1787171200000,
+   "volume": 31371567,
+   "turnover": 567177274.4884076,
+   "close_price": 21.07
+  },
+  {
+   "date_ms": 1787257600000,
+   "volume": 15289074,
+   "turnover": 1900637228.158886,
+   "close_price": 18.05
+  },
+  {
+   "date_ms": 1787344000000,
+   "volume": 45875757,
+   "turnover": 1603534734.3547423,
+   "close_price": 13.91
+  },
+  {
+   "date_ms": 1787430400000,
+   "volume": 26041375,
+   "turnover": 1772686746.7674644,
+   "close_price": 23.04
+  },
+  {
+   "date_ms": 1787516800000,
+   "volume": 31087624,
+   "turnover": 1926306761.5952585,
+   "close_price": 14.72
+  },
+  {
+   "date_ms": 1787603200000,
+   "volume": 17722003,
+   "turnover": 312892831.8131324,
+   "close_price": 19.09
+  },
+  {
+   "date_ms": 1787689600000,
+   "volume": 8658216,
+   "turnover": 1244456860.7321906,
+   "close_price": 19.83
+  },
+  {
+   "date_ms": 1787776000000,
+   "volume": 26815973,
+   "turnover": 1703303532.947998,
+   "close_price": 23.53
+  },
+  {
+   "date_ms": 1787862400000,
+   "volume": 11226832,
+   "turnover": 1309633279.5776963,
+   "close_price": 16.52
+  },
+  {
+   "date_ms": 1787948800000,
+   "volume": 39144471,
+   "turnover": 1004903574.6022005,
+   "close_price": 15.22
+  },
+  {
+   "date_ms": 1788035200000,
+   "volume": 9154724,
+   "turnover": 1603238186.5212119,
+   "close_price": 26.36
+  },
+  {
+   "date_ms": 1788121600000,
+   "volume": 12000977,
+   "turnover": 1921105654.3233004,
+   "close_price": 28.01
+  },
+  {
+   "date_ms": 1788208000000,
+   "volume": 32738292,
+   "turnover": 196341343.30087596,
+   "close_price": 12.49
+  },
+  {
+   "date_ms": 1788294400000,
+   "volume": 19965825,
+   "turnover": 859068792.885653,
+   "close_price": 29.44
+  },
+  {
+   "date_ms": 1788380800000,
+   "volume": 31700820,
+   "turnover": 974565964.526624,
+   "close_price": 10.12
+  },
+  {
+   "date_ms": 1788467200000,
+   "volume": 22872775,
+   "turnover": 1852338457.0691292,
+   "close_price": 14.87
+  },
+  {
+   "date_ms": 1788553600000,
+   "volume": 18381980,
+   "turnover": 304723496.9773232,
+   "close_price": 21.81
+  },
+  {
+   "date_ms": 1788640000000,
+   "volume": 26047098,
+   "turnover": 362594298.60227495,
+   "close_price": 13.91
+  },
+  {
+   "date_ms": 1788726400000,
+   "volume": 23213888,
+   "turnover": 1108245988.3898668,
+   "close_price": 16.94
+  },
+  {
+   "date_ms": 1788812800000,
+   "volume": 33618021,
+   "turnover": 429104466.08430594,
+   "close_price": 22.17
+  },
+  {
+   "date_ms": 1788899200000,
+   "volume": 25524200,
+   "turnover": 1358382105.8477497,
+   "close_price": 26.03
+  },
+  {
+   "date_ms": 1788985600000,
+   "volume": 45014859,
+   "turnover": 1632510950.038928,
+   "close_price": 15.08
+  },
+  {
+   "date_ms": 1789072000000,
+   "volume": 10486135,
+   "turnover": 399630861.67332315,
+   "close_price": 8.35
+  },
+  {
+   "date_ms": 1789158400000,
+   "volume": 42904265,
+   "turnover": 1470759883.4472609,
+   "close_price": 19.13
+  },
+  {
+   "date_ms": 1789244800000,
+   "volume": 45259769,
+   "turnover": 457196173.82934105,
+   "close_price": 23.61
+  },
+  {
+   "date_ms": 1789331200000,
+   "volume": 31437008,
+   "turnover": 986428563.5606236,
+   "close_price": 25.22
+  },
+  {
+   "date_ms": 1789417600000,
+   "volume": 18429398,
+   "turnover": 161736837.45931572,
+   "close_price": 17.89
+  },
+  {
+   "date_ms": 1789504000000,
+   "volume": 28008136,
+   "turnover": 1974879894.5750744,
+   "close_price": 10.16
+  },
+  {
+   "date_ms": 1789590400000,
+   "volume": 35819263,
+   "turnover": 843603152.5412084,
+   "close_price": 10.12
+  },
+  {
+   "date_ms": 1789676800000,
+   "volume": 38348331,
+   "turnover": 1680621591.1663532,
+   "close_price": 16.0
+  },
+  {
+   "date_ms": 1789763200000,
+   "volume": 11342136,
+   "turnover": 172719432.453226,
+   "close_price": 14.11
+  },
+  {
+   "date_ms": 1789849600000,
+   "volume": 25464281,
+   "turnover": 1099040563.7117188,
+   "close_price": 11.9
+  },
+  {
+   "date_ms": 1789936000000,
+   "volume": 38912670,
+   "turnover": 240409123.3388634,
+   "close_price": 15.58
+  },
+  {
+   "date_ms": 1790022400000,
+   "volume": 21194328,
+   "turnover": 939973914.8379338,
+   "close_price": 11.65
+  },
+  {
+   "date_ms": 1790108800000,
+   "volume": 25627400,
+   "turnover": 750488413.6434304,
+   "close_price": 29.05
+  },
+  {
+   "date_ms": 1790195200000,
+   "volume": 37169118,
+   "turnover": 242928609.32606456,
+   "close_price": 15.0
+  },
+  {
+   "date_ms": 1790281600000,
+   "volume": 49812261,
+   "turnover": 341457970.71818286,
+   "close_price": 23.36
+  },
+  {
+   "date_ms": 1790368000000,
+   "volume": 19062669,
+   "turnover": 1847054385.9285092,
+   "close_price": 23.35
+  },
+  {
+   "date_ms": 1790454400000,
+   "volume": 17596761,
+   "turnover": 1269123223.7192323,
+   "close_price": 19.36
+  },
+  {
+   "date_ms": 1790540800000,
+   "volume": 24401644,
+   "turnover": 144102699.7246094,
+   "close_price": 15.16
+  },
+  {
+   "date_ms": 1790627200000,
+   "volume": 36131051,
+   "turnover": 404734984.49816877,
+   "close_price": 14.73
+  },
+  {
+   "date_ms": 1790713600000,
+   "volume": 6867326,
+   "turnover": 133844241.1259057,
+   "close_price": 10.83
+  },
+  {
+   "date_ms": 1790800000000,
+   "volume": 29683576,
+   "turnover": 1742860770.8258374,
+   "close_price": 27.5
+  },
+  {
+   "date_ms": 1790886400000,
+   "volume": 6509950,
+   "turnover": 1511415416.8998914,
+   "close_price": 21.03
+  },
+  {
+   "date_ms": 1790972800000,
+   "volume": 37733100,
+   "turnover": 642237041.0180236,
+   "close_price": 21.06
+  },
+  {
+   "date_ms": 1791059200000,
+   "volume": 14220700,
+   "turnover": 102373665.00514594,
+   "close_price": 20.69
+  },
+  {
+   "date_ms": 1791145600000,
+   "volume": 7766839,
+   "turnover": 669370911.3657016,
+   "close_price": 21.34
+  },
+  {
+   "date_ms": 1791232000000,
+   "volume": 13760532,
+   "turnover": 575135098.077138,
+   "close_price": 28.28
+  },
+  {
+   "date_ms": 1791318400000,
+   "volume": 28516245,
+   "turnover": 1878075876.2192988,
+   "close_price": 27.92
+  },
+  {
+   "date_ms": 1791404800000,
+   "volume": 11187403,
+   "turnover": 1995977333.2737055,
+   "close_price": 29.05
+  },
+  {
+   "date_ms": 1791491200000,
+   "volume": 24981795,
+   "turnover": 840778307.6484969,
+   "close_price": 9.12
+  },
+  {
+   "date_ms": 1791577600000,
+   "volume": 14430729,
+   "turnover": 1362761331.1219847,
+   "close_price": 29.39
+  },
+  {
+   "date_ms": 1791664000000,
+   "volume": 22649057,
+   "turnover": 1099152213.983832,
+   "close_price": 8.58
+  },
+  {
+   "date_ms": 1791750400000,
+   "volume": 21657299,
+   "turnover": 726990879.5014154,
+   "close_price": 24.27
+  },
+  {
+   "date_ms": 1791836800000,
+   "volume": 48275968,
+   "turnover": 1322148803.4059393,
+   "close_price": 14.63
+  },
+  {
+   "date_ms": 1791923200000,
+   "volume": 33650857,
+   "turnover": 1797951487.8377924,
+   "close_price": 14.59
+  },
+  {
+   "date_ms": 1792009600000,
+   "volume": 40189799,
+   "turnover": 1468577378.430753,
+   "close_price": 28.07
+  },
+  {
+   "date_ms": 1792096000000,
+   "volume": 6140463,
+   "turnover": 1644358233.9354162,
+   "close_price": 27.49
+  },
+  {
+   "date_ms": 1792182400000,
+   "volume": 24045405,
+   "turnover": 1118401871.0066342,
+   "close_price": 15.2
+  },
+  {
+   "date_ms": 1792268800000,
+   "volume": 29935379,
+   "turnover": 1402816393.546378,
+   "close_price": 11.52
+  },
+  {
+   "date_ms": 1792355200000,
+   "volume": 10313448,
+   "turnover": 866263566.6198405,
+   "close_price": 8.68
+  },
+  {
+   "date_ms": 1792441600000,
+   "volume": 21401023,
+   "turnover": 855962203.2571968,
+   "close_price": 13.13
+  },
+  {
+   "date_ms": 1792528000000,
+   "volume": 5583711,
+   "turnover": 1614570609.8706737,
+   "close_price": 24.55
+  },
+  {
+   "date_ms": 1792614400000,
+   "volume": 11290109,
+   "turnover": 1002102588.2822918,
+   "close_price": 23.67
+  },
+  {
+   "date_ms": 1792700800000,
+   "volume": 11706576,
+   "turnover": 205443443.29734653,
+   "close_price": 25.57
+  },
+  {
+   "date_ms": 1792787200000,
+   "volume": 19461477,
+   "turnover": 863198824.6852485,
+   "close_price": 20.97
+  },
+  {
+   "date_ms": 1792873600000,
+   "volume": 42487194,
+   "turnover": 192825508.6842742,
+   "close_price": 24.97
+  },
+  {
+   "date_ms": 1792960000000,
+   "volume": 28006225,
+   "turnover": 579672741.5668147,
+   "close_price": 12.65
+  },
+  {
+   "date_ms": 1793046400000,
+   "volume": 38494836,
+   "turnover": 1236146077.6922522,
+   "close_price": 22.46
+  },
+  {
+   "date_ms": 1793132800000,
+   "volume": 28054525,
+   "turnover": 1886375668.9754226,
+   "close_price": 20.64
+  },
+  {
+   "date_ms": 1793219200000,
+   "volume": 11191896,
+   "turnover": 1114268815.0768127,
+   "close_price": 12.08
+  },
+  {
+   "date_ms": 1793305600000,
+   "volume": 19555309,
+   "turnover": 1713800926.0782719,
+   "close_price": 9.48
+  },
+  {
+   "date_ms": 1793392000000,
+   "volume": 49440539,
+   "turnover": 1230299172.952373,
+   "close_price": 18.01
+  },
+  {
+   "date_ms": 1793478400000,
+   "volume": 6100310,
+   "turnover": 1002959806.719996,
+   "close_price": 22.59
+  },
+  {
+   "date_ms": 1793564800000,
+   "volume": 5572849,
+   "turnover": 522121266.56513053,
+   "close_price": 10.12
+  },
+  {
+   "date_ms": 1793651200000,
+   "volume": 16355064,
+   "turnover": 795889337.1201707,
+   "close_price": 11.19
+  },
+  {
+   "date_ms": 1793737600000,
+   "volume": 31217318,
+   "turnover": 1666081777.533481,
+   "close_price": 18.0
+  },
+  {
+   "date_ms": 1793824000000,
+   "volume": 19474422,
+   "turnover": 407728337.07613313,
+   "close_price": 20.53
+  },
+  {
+   "date_ms": 1793910400000,
+   "volume": 8591994,
+   "turnover": 1548727013.3684497,
+   "close_price": 14.04
+  },
+  {
+   "date_ms": 1793996800000,
+   "volume": 25420304,
+   "turnover": 1235009241.1512754,
+   "close_price": 12.44
+  },
+  {
+   "date_ms": 1794083200000,
+   "volume": 32586668,
+   "turnover": 1338768952.6468039,
+   "close_price": 23.33
+  },
+  {
+   "date_ms": 1794169600000,
+   "volume": 39814322,
+   "turnover": 1116421506.85047,
+   "close_price": 18.15
+  },
+  {
+   "date_ms": 1794256000000,
+   "volume": 15697563,
+   "turnover": 1600030320.9044445,
+   "close_price": 10.77
+  },
+  {
+   "date_ms": 1794342400000,
+   "volume": 32933726,
+   "turnover": 810536776.7128861,
+   "close_price": 9.76
+  },
+  {
+   "date_ms": 1794428800000,
+   "volume": 31413019,
+   "turnover": 920885663.1112821,
+   "close_price": 14.9
+  },
+  {
+   "date_ms": 1794515200000,
+   "volume": 5061718,
+   "turnover": 716932513.7629948,
+   "close_price": 14.11
+  },
+  {
+   "date_ms": 1794601600000,
+   "volume": 37587538,
+   "turnover": 699238550.0076673,
+   "close_price": 24.94
+  },
+  {
+   "date_ms": 1794688000000,
+   "volume": 44720080,
+   "turnover": 1505655322.662025,
+   "close_price": 17.04
+  },
+  {
+   "date_ms": 1794774400000,
+   "volume": 25406328,
+   "turnover": 1791901788.0482953,
+   "close_price": 14.17
+  },
+  {
+   "date_ms": 1794860800000,
+   "volume": 43504176,
+   "turnover": 1973888796.84052,
+   "close_price": 20.88
+  },
+  {
+   "date_ms": 1794947200000,
+   "volume": 38848553,
+   "turnover": 1592159871.8644528,
+   "close_price": 26.32
+  },
+  {
+   "date_ms": 1795033600000,
+   "volume": 42315927,
+   "turnover": 201107161.29500777,
+   "close_price": 11.93
+  },
+  {
+   "date_ms": 1795120000000,
+   "volume": 31164894,
+   "turnover": 928195611.0494096,
+   "close_price": 18.69
+  },
+  {
+   "date_ms": 1795206400000,
+   "volume": 19410613,
+   "turnover": 1358510285.780827,
+   "close_price": 12.56
+  },
+  {
+   "date_ms": 1795292800000,
+   "volume": 35032156,
+   "turnover": 492360266.90655196,
+   "close_price": 20.49
+  },
+  {
+   "date_ms": 1795379200000,
+   "volume": 5440487,
+   "turnover": 1423594719.2816675,
+   "close_price": 17.7
+  },
+  {
+   "date_ms": 1795465600000,
+   "volume": 28073481,
+   "turnover": 646811273.2920496,
+   "close_price": 16.0
+  },
+  {
+   "date_ms": 1795552000000,
+   "volume": 7391699,
+   "turnover": 1564357703.3877656,
+   "close_price": 21.03
+  },
+  {
+   "date_ms": 1795638400000,
+   "volume": 28692310,
+   "turnover": 1335056135.9475331,
+   "close_price": 22.83
+  },
+  {
+   "date_ms": 1795724800000,
+   "volume": 12551858,
+   "turnover": 151605593.0333764,
+   "close_price": 18.3
+  },
+  {
+   "date_ms": 1795811200000,
+   "volume": 35385438,
+   "turnover": 773971658.6506449,
+   "close_price": 9.35
+  },
+  {
+   "date_ms": 1795897600000,
+   "volume": 48258682,
+   "turnover": 1774061929.1145759,
+   "close_price": 21.91
+  },
+  {
+   "date_ms": 1795984000000,
+   "volume": 25471623,
+   "turnover": 310050019.54172516,
+   "close_price": 22.18
+  },
+  {
+   "date_ms": 1796070400000,
+   "volume": 40420931,
+   "turnover": 1944000107.6338704,
+   "close_price": 27.38
+  },
+  {
+   "date_ms": 1796156800000,
+   "volume": 6661288,
+   "turnover": 632648544.691333,
+   "close_price": 25.78
+  },
+  {
+   "date_ms": 1796243200000,
+   "volume": 27610493,
+   "turnover": 425814094.0225925,
+   "close_price": 25.62
+  },
+  {
+   "date_ms": 1796329600000,
+   "volume": 8618021,
+   "turnover": 1437501761.9396808,
+   "close_price": 10.2
+  },
+  {
+   "date_ms": 1796416000000,
+   "volume": 47799233,
+   "turnover": 894024842.3755862,
+   "close_price": 22.41
+  },
+  {
+   "date_ms": 1796502400000,
+   "volume": 48975915,
+   "turnover": 964064464.0063765,
+   "close_price": 26.23
+  },
+  {
+   "date_ms": 1796588800000,
+   "volume": 41798565,
+   "turnover": 1110446285.869468,
+   "close_price": 11.01
+  },
+  {
+   "date_ms": 1796675200000,
+   "volume": 35818003,
+   "turnover": 764760403.4451114,
+   "close_price": 21.21
+  },
+  {
+   "date_ms": 1796761600000,
+   "volume": 22706912,
+   "turnover": 210644015.9758026,
+   "close_price": 8.49
+  },
+  {
+   "date_ms": 1796848000000,
+   "volume": 46414886,
+   "turnover": 1631745798.9424906,
+   "close_price": 19.36
+  },
+  {
+   "date_ms": 1796934400000,
+   "volume": 19594820,
+   "turnover": 1329812876.4980094,
+   "close_price": 27.46
+  },
+  {
+   "date_ms": 1797020800000,
+   "volume": 49169283,
+   "turnover": 1105804927.6453047,
+   "close_price": 14.02
+  },
+  {
+   "date_ms": 1797107200000,
+   "volume": 9967153,
+   "turnover": 381646750.84614563,
+   "close_price": 29.16
+  },
+  {
+   "date_ms": 1797193600000,
+   "volume": 33266896,
+   "turnover": 673357069.1709123,
+   "close_price": 13.82
+  },
+  {
+   "date_ms": 1797280000000,
+   "volume": 14028452,
+   "turnover": 1485191700.1036217,
+   "close_price": 13.14
+  },
+  {
+   "date_ms": 1797366400000,
+   "volume": 15270053,
+   "turnover": 596604969.1788223,
+   "close_price": 19.78
+  },
+  {
+   "date_ms": 1797452800000,
+   "volume": 11671483,
+   "turnover": 1707524514.3076975,
+   "close_price": 21.91
+  },
+  {
+   "date_ms": 1797539200000,
+   "volume": 29215103,
+   "turnover": 1955846625.175398,
+   "close_price": 23.19
+  },
+  {
+   "date_ms": 1797625600000,
+   "volume": 9254711,
+   "turnover": 1323135712.018403,
+   "close_price": 20.87
+  },
+  {
+   "date_ms": 1797712000000,
+   "volume": 16594542,
+   "turnover": 1507143074.7640398,
+   "close_price": 18.06
+  },
+  {
+   "date_ms": 1797798400000,
+   "volume": 40739793,
+   "turnover": 1100638551.439343,
+   "close_price": 29.92
+  },
+  {
+   "date_ms": 1797884800000,
+   "volume": 47969501,
+   "turnover": 1436778701.2669547,
+   "close_price": 23.98
+  },
+  {
+   "date_ms": 1797971200000,
+   "volume": 33893362,
+   "turnover": 1359953802.460822,
+   "close_price": 9.66
+  },
+  {
+   "date_ms": 1798057600000,
+   "volume": 20323213,
+   "turnover": 744986004.940049,
+   "close_price": 29.66
+  },
+  {
+   "date_ms": 1798144000000,
+   "volume": 37597369,
+   "turnover": 580335778.3777337,
+   "close_price": 26.11
+  },
+  {
+   "date_ms": 1798230400000,
+   "volume": 31095327,
+   "turnover": 838109400.8325881,
+   "close_price": 15.33
+  },
+  {
+   "date_ms": 1798316800000,
+   "volume": 27620564,
+   "turnover": 1014554323.5935998,
+   "close_price": 14.15
+  },
+  {
+   "date_ms": 1798403200000,
+   "volume": 21317503,
+   "turnover": 1081651213.3115246,
+   "close_price": 15.63
+  },
+  {
+   "date_ms": 1798489600000,
+   "volume": 29067214,
+   "turnover": 1598338636.6629133,
+   "close_price": 14.11
+  },
+  {
+   "date_ms": 1798576000000,
+   "volume": 31476459,
+   "turnover": 941362578.9999863,
+   "close_price": 22.83
+  },
+  {
+   "date_ms": 1798662400000,
+   "volume": 36488675,
+   "turnover": 1699000739.5253031,
+   "close_price": 28.54
+  },
+  {
+   "date_ms": 1798748800000,
+   "volume": 6923726,
+   "turnover": 727601477.9973751,
+   "close_price": 8.41
+  },
+  {
+   "date_ms": 1798835200000,
+   "volume": 39483501,
+   "turnover": 747416326.6746649,
+   "close_price": 19.05
+  },
+  {
+   "date_ms": 1798921600000,
+   "volume": 12452564,
+   "turnover": 1563517637.1025927,
+   "close_price": 18.7
+  },
+  {
+   "date_ms": 1799008000000,
+   "volume": 31487822,
+   "turnover": 496101316.6768592,
+   "close_price": 19.02
+  },
+  {
+   "date_ms": 1799094400000,
+   "volume": 9849810,
+   "turnover": 282206919.88651466,
+   "close_price": 14.67
+  },
+  {
+   "date_ms": 1799180800000,
+   "volume": 11475444,
+   "turnover": 984719173.1043279,
+   "close_price": 21.63
+  },
+  {
+   "date_ms": 1799267200000,
+   "volume": 7644998,
+   "turnover": 899523571.0229391,
+   "close_price": 11.42
+  },
+  {
+   "date_ms": 1799353600000,
+   "volume": 44841252,
+   "turnover": 833087339.3272247,
+   "close_price": 17.06
+  },
+  {
+   "date_ms": 1799440000000,
+   "volume": 41385037,
+   "turnover": 1734676314.8215454,
+   "close_price": 22.99
+  },
+  {
+   "date_ms": 1799526400000,
+   "volume": 20840097,
+   "turnover": 1429061164.2106164,
+   "close_price": 9.99
+  },
+  {
+   "date_ms": 1799612800000,
+   "volume": 22991388,
+   "turnover": 411230548.5744792,
+   "close_price": 9.77
+  },
+  {
+   "date_ms": 1799699200000,
+   "volume": 14466863,
+   "turnover": 1115610837.4393547,
+   "close_price": 8.84
+  },
+  {
+   "date_ms": 1799785600000,
+   "volume": 46272102,
+   "turnover": 581220740.1599852,
+   "close_price": 26.05
+  },
+  {
+   "date_ms": 1799872000000,
+   "volume": 41462279,
+   "turnover": 1148873875.4020808,
+   "close_price": 29.99
+  },
+  {
+   "date_ms": 1799958400000,
+   "volume": 8761487,
+   "turnover": 695996693.7652909,
+   "close_price": 12.09
+  },
+  {
+   "date_ms": 1800044800000,
+   "volume": 39770538,
+   "turnover": 1457573013.7511635,
+   "close_price": 18.77
+  },
+  {
+   "date_ms": 1800131200000,
+   "volume": 47366479,
+   "turnover": 709776134.6256087,
+   "close_price": 23.59
+  },
+  {
+   "date_ms": 1800217600000,
+   "volume": 43712654,
+   "turnover": 1628837899.0580158,
+   "close_price": 16.07
+  },
+  {
+   "date_ms": 1800304000000,
+   "volume": 35798667,
+   "turnover": 1555207932.3976827,
+   "close_price": 20.06
+  },
+  {
+   "date_ms": 1800390400000,
+   "volume": 33019513,
+   "turnover": 241685959.46577463,
+   "close_price": 13.34
+  },
+  {
+   "date_ms": 1800476800000,
+   "volume": 48202276,
+   "turnover": 1017296596.4302046,
+   "close_price": 25.38
+  },
+  {
+   "date_ms": 1800563200000,
+   "volume": 28143382,
+   "turnover": 1754379702.0008833,
+   "close_price": 29.99
+  },
+  {
+   "date_ms": 1800649600000,
+   "volume": 21208433,
+   "turnover": 208066346.96117538,
+   "close_price": 27.91
+  },
+  {
+   "date_ms": 1800736000000,
+   "volume": 28380562,
+   "turnover": 566861793.1737916,
+   "close_price": 20.88
+  },
+  {
+   "date_ms": 1800822400000,
+   "volume": 42934132,
+   "turnover": 966319023.4444569,
+   "close_price": 9.39
+  },
+  {
+   "date_ms": 1800908800000,
+   "volume": 18937050,
+   "turnover": 971601368.3034391,
+   "close_price": 8.48
+  },
+  {
+   "date_ms": 1800995200000,
+   "volume": 33360017,
+   "turnover": 1466765502.2066245,
+   "close_price": 20.15
+  },
+  {
+   "date_ms": 1801081600000,
+   "volume": 49300482,
+   "turnover": 646745356.4714946,
+   "close_price": 9.75
+  },
+  {
+   "date_ms": 1801168000000,
+   "volume": 27668626,
+   "turnover": 840269886.4525173,
+   "close_price": 17.6
+  },
+  {
+   "date_ms": 1801254400000,
+   "volume": 38222880,
+   "turnover": 108284692.75422531,
+   "close_price": 18.1
+  },
+  {
+   "date_ms": 1801340800000,
+   "volume": 16669233,
+   "turnover": 1424583772.6097486,
+   "close_price": 14.9
+  },
+  {
+   "date_ms": 1801427200000,
+   "volume": 30837131,
+   "turnover": 785737992.8446567,
+   "close_price": 23.28
+  },
+  {
+   "date_ms": 1801513600000,
+   "volume": 46386802,
+   "turnover": 1707923642.1923122,
+   "close_price": 14.71
+  },
+  {
+   "date_ms": 1801600000000,
+   "volume": 47345667,
+   "turnover": 1884422881.5442088,
+   "close_price": 15.11
+  },
+  {
+   "date_ms": 1801686400000,
+   "volume": 23570610,
+   "turnover": 1838471755.3327801,
+   "close_price": 15.54
+  },
+  {
+   "date_ms": 1801772800000,
+   "volume": 30087991,
+   "turnover": 845124124.710846,
+   "close_price": 18.65
+  },
+  {
+   "date_ms": 1801859200000,
+   "volume": 6406207,
+   "turnover": 1280540173.502823,
+   "close_price": 27.31
+  },
+  {
+   "date_ms": 1801945600000,
+   "volume": 5265257,
+   "turnover": 1044646015.7459589,
+   "close_price": 23.65
+  },
+  {
+   "date_ms": 1802032000000,
+   "volume": 29327163,
+   "turnover": 1407955843.4101093,
+   "close_price": 11.65
+  },
+  {
+   "date_ms": 1802118400000,
+   "volume": 15413664,
+   "turnover": 299228594.4530913,
+   "close_price": 27.17
+  },
+  {
+   "date_ms": 1802204800000,
+   "volume": 11887223,
+   "turnover": 938760060.2380403,
+   "close_price": 28.04
+  },
+  {
+   "date_ms": 1802291200000,
+   "volume": 13391031,
+   "turnover": 1352330021.4077423,
+   "close_price": 26.4
+  },
+  {
+   "date_ms": 1802377600000,
+   "volume": 30794032,
+   "turnover": 237906786.01823223,
+   "close_price": 28.68
+  },
+  {
+   "date_ms": 1802464000000,
+   "volume": 15286071,
+   "turnover": 1768746209.0367594,
+   "close_price": 13.94
+  },
+  {
+   "date_ms": 1802550400000,
+   "volume": 28911789,
+   "turnover": 527387607.7285066,
+   "close_price": 16.53
+  },
+  {
+   "date_ms": 1802636800000,
+   "volume": 48011836,
+   "turnover": 671106598.6904076,
+   "close_price": 13.88
+  },
+  {
+   "date_ms": 1802723200000,
+   "volume": 41758002,
+   "turnover": 745627813.4003026,
+   "close_price": 28.68
+  },
+  {
+   "date_ms": 1802809600000,
+   "volume": 5722328,
+   "turnover": 1991323457.2100234,
+   "close_price": 22.04
+  },
+  {
+   "date_ms": 1802896000000,
+   "volume": 21665206,
+   "turnover": 514196565.2639271,
+   "close_price": 25.34
+  },
+  {
+   "date_ms": 1802982400000,
+   "volume": 40614949,
+   "turnover": 117007171.74403548,
+   "close_price": 11.25
+  },
+  {
+   "date_ms": 1803068800000,
+   "volume": 38057110,
+   "turnover": 1195783118.3620281,
+   "close_price": 12.7
+  },
+  {
+   "date_ms": 1803155200000,
+   "volume": 7280561,
+   "turnover": 336017815.1839254,
+   "close_price": 24.14
+  },
+  {
+   "date_ms": 1803241600000,
+   "volume": 34372536,
+   "turnover": 1364826738.0895746,
+   "close_price": 10.08
+  },
+  {
+   "date_ms": 1803328000000,
+   "volume": 25450685,
+   "turnover": 1666994569.1152318,
+   "close_price": 14.8
+  },
+  {
+   "date_ms": 1803414400000,
+   "volume": 9037630,
+   "turnover": 1001715123.3056989,
+   "close_price": 17.42
+  }
+ ],
+ "600001.SH": [
+  {
+   "date_ms": 1780000000000,
+   "volume": 44954483,
+   "turnover": 1861456293.6998646,
+   "close_price": 17.26
+  },
+  {
+   "date_ms": 1780086400000,
+   "volume": 41502065,
+   "turnover": 469946963.8377538,
+   "close_price": 26.45
+  },
+  {
+   "date_ms": 1780172800000,
+   "volume": 27568500,
+   "turnover": 1423437155.5478027,
+   "close_price": 26.26
+  },
+  {
+   "date_ms": 1780259200000,
+   "volume": 21060682,
+   "turnover": 969990792.2289655,
+   "close_price": 8.91
+  },
+  {
+   "date_ms": 1780345600000,
+   "volume": 38448137,
+   "turnover": 236804678.28118137,
+   "close_price": 29.99
+  },
+  {
+   "date_ms": 1780432000000,
+   "volume": 14298480,
+   "turnover": 1552113986.2892675,
+   "close_price": 11.86
+  },
+  {
+   "date_ms": 1780518400000,
+   "volume": 31795829,
+   "turnover": 1718097946.8260524,
+   "close_price": 23.08
+  },
+  {
+   "date_ms": 1780604800000,
+   "volume": 22886640,
+   "turnover": 1797418869.7731032,
+   "close_price": 26.67
+  },
+  {
+   "date_ms": 1780691200000,
+   "volume": 19615278,
+   "turnover": 177823006.14321542,
+   "close_price": 29.36
+  },
+  {
+   "date_ms": 1780777600000,
+   "volume": 40575576,
+   "turnover": 328428945.36772096,
+   "close_price": 18.94
+  },
+  {
+   "date_ms": 1780864000000,
+   "volume": 41739873,
+   "turnover": 1377309051.7247715,
+   "close_price": 12.75
+  },
+  {
+   "date_ms": 1780950400000,
+   "volume": 42425440,
+   "turnover": 1719317464.169778,
+   "close_price": 28.48
+  },
+  {
+   "date_ms": 1781036800000,
+   "volume": 42851075,
+   "turnover": 1925851634.4950745,
+   "close_price": 25.81
+  },
+  {
+   "date_ms": 1781123200000,
+   "volume": 49598999,
+   "turnover": 356735646.03102154,
+   "close_price": 27.63
+  },
+  {
+   "date_ms": 1781209600000,
+   "volume": 40968587,
+   "turnover": 1991881923.00991,
+   "close_price": 27.68
+  },
+  {
+   "date_ms": 1781296000000,
+   "volume": 39191877,
+   "turnover": 430353502.5826068,
+   "close_price": 27.61
+  },
+  {
+   "date_ms": 1781382400000,
+   "volume": 11512104,
+   "turnover": 1957094117.483183,
+   "close_price": 22.81
+  },
+  {
+   "date_ms": 1781468800000,
+   "volume": 31390682,
+   "turnover": 704504873.1398315,
+   "close_price": 14.03
+  },
+  {
+   "date_ms": 1781555200000,
+   "volume": 33565871,
+   "turnover": 253268877.83169514,
+   "close_price": 10.33
+  },
+  {
+   "date_ms": 1781641600000,
+   "volume": 13179841,
+   "turnover": 1963258341.6984677,
+   "close_price": 21.93
+  },
+  {
+   "date_ms": 1781728000000,
+   "volume": 17745432,
+   "turnover": 1294849973.8901863,
+   "close_price": 13.51
+  },
+  {
+   "date_ms": 1781814400000,
+   "volume": 39738173,
+   "turnover": 766561384.6412919,
+   "close_price": 10.48
+  },
+  {
+   "date_ms": 1781900800000,
+   "volume": 38555187,
+   "turnover": 880514387.0262854,
+   "close_price": 11.83
+  },
+  {
+   "date_ms": 1781987200000,
+   "volume": 46302214,
+   "turnover": 910226246.4821156,
+   "close_price": 29.2
+  },
+  {
+   "date_ms": 1782073600000,
+   "volume": 29725326,
+   "turnover": 1630501413.5073524,
+   "close_price": 16.66
+  },
+  {
+   "date_ms": 1782160000000,
+   "volume": 10039278,
+   "turnover": 375909227.34989035,
+   "close_price": 10.63
+  },
+  {
+   "date_ms": 1782246400000,
+   "volume": 16413104,
+   "turnover": 577584732.1889503,
+   "close_price": 22.39
+  },
+  {
+   "date_ms": 1782332800000,
+   "volume": 35852541,
+   "turnover": 359714295.5665247,
+   "close_price": 17.69
+  },
+  {
+   "date_ms": 1782419200000,
+   "volume": 45005638,
+   "turnover": 267289175.34007946,
+   "close_price": 25.84
+  },
+  {
+   "date_ms": 1782505600000,
+   "volume": 21328667,
+   "turnover": 1011530141.956193,
+   "close_price": 18.72
+  },
+  {
+   "date_ms": 1782592000000,
+   "volume": 25503498,
+   "turnover": 168343020.37549174,
+   "close_price": 10.87
+  },
+  {
+   "date_ms": 1782678400000,
+   "volume": 43840553,
+   "turnover": 394078537.7124382,
+   "close_price": 29.8
+  },
+  {
+   "date_ms": 1782764800000,
+   "volume": 42210900,
+   "turnover": 632934849.9491489,
+   "close_price": 14.38
+  },
+  {
+   "date_ms": 1782851200000,
+   "volume": 34153163,
+   "turnover": 1094675451.2382312,
+   "close_price": 19.95
+  },
+  {
+   "date_ms": 1782937600000,
+   "volume": 26831713,
+   "turnover": 548250443.1778803,
+   "close_price": 9.68
+  },
+  {
+   "date_ms": 1783024000000,
+   "volume": 39610985,
+   "turnover": 1675565682.6563,
+   "close_price": 25.6
+  },
+  {
+   "date_ms": 1783110400000,
+   "volume": 34206981,
+   "turnover": 1964212612.1190255,
+   "close_price": 16.51
+  },
+  {
+   "date_ms": 1783196800000,
+   "volume": 33994337,
+   "turnover": 1389260071.4648938,
+   "close_price": 17.76
+  },
+  {
+   "date_ms": 1783283200000,
+   "volume": 24954305,
+   "turnover": 1292495608.4737012,
+   "close_price": 19.01
+  },
+  {
+   "date_ms": 1783369600000,
+   "volume": 18830899,
+   "turnover": 1640428097.5928848,
+   "close_price": 10.83
+  },
+  {
+   "date_ms": 1783456000000,
+   "volume": 44262771,
+   "turnover": 1628973731.5053406,
+   "close_price": 15.18
+  },
+  {
+   "date_ms": 1783542400000,
+   "volume": 13656981,
+   "turnover": 688786040.3824892,
+   "close_price": 12.48
+  },
+  {
+   "date_ms": 1783628800000,
+   "volume": 31244241,
+   "turnover": 704937026.2146055,
+   "close_price": 28.59
+  },
+  {
+   "date_ms": 1783715200000,
+   "volume": 40119706,
+   "turnover": 268836971.69201374,
+   "close_price": 12.16
+  },
+  {
+   "date_ms": 1783801600000,
+   "volume": 29007284,
+   "turnover": 1963773760.0966172,
+   "close_price": 16.35
+  },
+  {
+   "date_ms": 1783888000000,
+   "volume": 30627751,
+   "turnover": 1767187763.9296691,
+   "close_price": 27.45
+  },
+  {
+   "date_ms": 1783974400000,
+   "volume": 20781073,
+   "turnover": 687333293.7736287,
+   "close_price": 17.66
+  },
+  {
+   "date_ms": 1784060800000,
+   "volume": 12941025,
+   "turnover": 1022163206.754051,
+   "close_price": 20.16
+  },
+  {
+   "date_ms": 1784147200000,
+   "volume": 43054740,
+   "turnover": 690104231.6912662,
+   "close_price": 15.69
+  },
+  {
+   "date_ms": 1784233600000,
+   "volume": 8508826,
+   "turnover": 1541606318.9840996,
+   "close_price": 11.29
+  },
+  {
+   "date_ms": 1784320000000,
+   "volume": 9801527,
+   "turnover": 1204721480.382181,
+   "close_price": 11.05
+  },
+  {
+   "date_ms": 1784406400000,
+   "volume": 12261575,
+   "turnover": 751570988.2876918,
+   "close_price": 28.67
+  },
+  {
+   "date_ms": 1784492800000,
+   "volume": 44265118,
+   "turnover": 1052213907.0710093,
+   "close_price": 20.78
+  },
+  {
+   "date_ms": 1784579200000,
+   "volume": 12952247,
+   "turnover": 1724674929.066324,
+   "close_price": 14.41
+  },
+  {
+   "date_ms": 1784665600000,
+   "volume": 18954396,
+   "turnover": 421202771.4574921,
+   "close_price": 18.26
+  },
+  {
+   "date_ms": 1784752000000,
+   "volume": 19774860,
+   "turnover": 1397576170.0080698,
+   "close_price": 14.91
+  },
+  {
+   "date_ms": 1784838400000,
+   "volume": 24767987,
+   "turnover": 1623105218.9442317,
+   "close_price": 25.01
+  },
+  {
+   "date_ms": 1784924800000,
+   "volume": 30781827,
+   "turnover": 1706159313.7308817,
+   "close_price": 16.5
+  },
+  {
+   "date_ms": 1785011200000,
+   "volume": 17692659,
+   "turnover": 1884761625.0029087,
+   "close_price": 27.58
+  }
+ ],
+ "600002.SH": [
+  {
+   "date_ms": 1780000000000,
+   "volume": 48095679,
+   "turnover": 984204370.6226499,
+   "close_price": 15.7
+  },
+  {
+   "date_ms": 1780086400000,
+   "volume": 24901715,
+   "turnover": 581361697.4649158,
+   "close_price": 23.73
+  },
+  {
+   "date_ms": 1780172800000,
+   "volume": 30545727,
+   "turnover": 688849039.0162265,
+   "close_price": 28.04
+  }
+ ]
+}

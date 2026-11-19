@@ -28,7 +28,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `apps/market-environment-dashboard/` | Vue 3 + Vite + ECharts 第 01 章市场环境分析看板 | 修改页面结构、接口字段或运行命令时同步产品规格、`docs/architecture.md` 与 `docs/runbooks.md`；构建验证必需 |
 | `deploy/k3s/` | 市场环境看板的 Dashboard-only k3s Kustomize base；不得包含 application-owned market-data CronJob | 修改镜像、端口、探针、存储、资源或入口时同步 `docs/architecture.md` 与 `docs/runbooks.md` |
 | `deploy/helm/a-stock/` | k3s 部署的可参数化 Helm Chart；`component` 只控制 database/service/all 资源集合，不提供 schedule values 或 CronJob template | 修改 values、模板、探针、存储或入口时同步 `README.md`、`docs/architecture.md` 与 `docs/runbooks.md` |
-| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数、PostgreSQL Secret/Service 合同及旧 SQLite 迁移输入边界；不再包含 Helm scheduling overlay | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` 与 `docs/architecture.md` |
+| `deploy/truenas/` | TrueNAS 1.20 与 VM 1.21 的发布参数、PostgreSQL Secret/Service 合同、旧 SQLite 迁移输入边界与主机级受管单元；不再包含 Helm scheduling overlay | 不提交真实 SSH、存储路径或证书信息；参数变更同步 `docs/runbooks.md` 与 `docs/architecture.md`；`systemd/` 下的单元与安装入口是主机级补位资产，不得改写 CNI 清单或 `kube-router` 单元 |
 | `openspec/` | OpenSpec 规格目录（并发产生，归属待确认） | 勿移动/覆盖；与 docs/exec-plans 的关系待定 |
 | `.codex/`、`.opencode/` | agent 工具会话目录 | 是否入库待确认 |
 
@@ -49,6 +49,7 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 - QTS-04 共享底座：`.agents/skills/qts04-core/scripts/qts04/`；`client.py` 封装 `hithink-finance` 调用与凭据，`cache.py` 管理日线缓存，`contract.py` 负责 `schemaVersion`/`reportId`，`model.py` 统一 Bar 归一化，`predicate.py` 与 `check.py` 提供结构化谓词和文章校验；STEP 1/STEP 2 通过同名 shim 复用。
 - QTS-04 STEP 1 板块层定向：`.agents/skills/a-stock-qts04-sector-direction/`；由 `scripts/sector_pipeline.py` 编排共享底座与 `scoring.py`，`contract.py` 负责 STEP 1 的 `config`/`reportId`，`predicate.py` 负责结构化确认/失效条件，`check_report.py` 负责呈现前的机械校验；数据契约与规则口径分别位于 `references/data-contract.md` 和 `references/scoring-rules.md`。
 - QTS-04 STEP 2 题材层定向：`.agents/skills/a-stock-qts04-theme-layer/`；由 `scripts/theme_pipeline.py` 编排概念成员 ∩ 涨停池、lift、共享 token、四级题材与催化，`theming.py` 承载纯函数，`theme_report.py` 渲染事实骨架，`theme_check_report.py` 强制标签溯源；`references/` 记录数据合同与评分规则。
+- 盘中活跃行业扫描：`.agents/skills/a-stock-active-industry-scan/`；由 `scripts/scan_pipeline.py` 编排新浪双榜（成交额 / 换手率），`fuyao_client.py` 取上市日期与历史日线、`industry_map.py` 做行业聚合，`quadrant.py` 判定四象限、`percentile.py` 计算相对分位、`session.py` 给出时点状态，`report.py` 由 JSON 纯渲染 Markdown。该 Skill **只做发现层**：输出双榜、行业命中数、双榜交集与候选行业代码清单；行业评分与方向数量由 `a-stock-qts04-sector-direction` 按 `QTS-04-01-01` 至 `-05` 承担，本 Skill 不评分。参考 `references/data-contract.md` 与 `references/metric-definitions.md`。
 
 ### 仓库级 Agent Skill 边界
 
@@ -63,6 +64,9 @@ a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产�
 | `.agents/skills/a-stock-qts04-theme-layer/scripts/` | QTS-04 STEP 2 题材层定向：概念成分股 ∩ 涨停池、共享 token、lift、四级题材/催化、`noCoreTheme`、point-in-time 快照与一年统计回放；`check_report.py` 额外校验分级/催化标签溯源 | 只读调用 `hithink-finance`；历史日期不得用最新概念快照冒充当时快照；成分股不可回溯时必须标 `pointInTime=false`、`backtestGrade=D`；`confirmed` 催化不可达；失败输出 `degraded`/`insufficient`，不得补 0 或借相邻日期 |
 | `.agents/skills/a-stock-qts04-sector-direction/references/` | fuyao 命令契约、缓存与降级口径、报告接口与谓词结构，以及 `QTS-04-01-01`~`-05` 的公式/窗口/权重/分位边界与冻结系数 | 规则状态保持 `needs-backtest`；不得输出买卖点、仓位、个股推荐或 `validated`；`config` 与代码常量不一致视为文档缺陷 |
 | `.agents/skills/a-stock-qts04-theme-layer/references/` | 概念/涨停池/异动解读/成分股的数据窗口与降级语义、lift 公式、六项指标、四级闸门、催化四档与停用表 | 规则状态保持 `needs-backtest`；阈值变更必须同步 `theming.py`、`design.md` 与测试；不得把 `partial` 写成 `confirmed`，不得输出买卖点 |
+| `.agents/skills/a-stock-active-industry-scan/scripts/` | 盘中双榜扫描：成交额/换手率候选池排序取数、上市不足 250 日过滤、行业命中的一级/二级聚合、四象限判定、双榜交集、时点状态机与分位延迟；输出带 `schemaVersion`/`ruleVersion`/`reportId` 的 JSON 与纯渲染 Markdown | 只读新浪公开行情与 `hithink-finance`；凭据只进子进程环境，不落 argv/日志/输出；分位在结算前必须 `deferred`，不得按固定比例缩放估算；交集为空不得放宽阈值；失败输出 `degraded`/`insufficient`，不得用他日数据顶替 |
+| `.agents/skills/a-stock-active-industry-scan/references/` | 双榜与降级顺序、成分股仅当前快照的限制、缓存策略、换手率口径与分位等价性证明、四象限阈值与 lift 禁用理由 | 规则状态保持 `needs-backtest`；不得输出买卖点、仓位或个股推荐；口径变更必须同步 `percentile.py`/`quadrant.py` 与测试 |
+| `tests/test_a_stock_active_industry_scan_skill.py`、`tests/fixtures/active_industry_scan/` | 纯函数边界（bar 数 3/59/60/239/272、四象限四组合、分位与成交量等价）、新股过滤、行业聚合与缓存回退、时点状态九个时刻、交集为空、单源失败降级矩阵与 Markdown/JSON 一致性 | 禁止网络、真实行情快照、凭据和运行时产物；fixture 为合成数据；必须断言 fixture 模式不发起网络请求 |
 | `tests/test_a_stock_qts04_sector_direction_skill.py`、`tests/fixtures/a_stock_qts04_sector_direction/` | Skill 脚本的离线行为、合成板块/个股样本与失败路径验证，含 `reportId` 稳定性、谓词求值与文章校验正反例 | 禁止网络、真实行情快照、凭据和运行时产物；必须断言未调用真实 `hithink-finance` 子进程；校验器用例必须覆盖禁词与伪造数字 |
 | `tests/test_a_stock_qts04_theme_layer_skill.py`、`tests/fixtures/a_stock_qts04_theme_layer/` | STEP 2 强/弱/宽概念/缺成员/缺基准/缺 STEP 1 schema 等 fixture，覆盖 token 拆分、共享 token、lift、四级分级、空结果、缓存、日期校验与标签溯源正反例 | 禁止网络与运行时产物；fixture 为合成数据；必须验证历史日期不拉快照、无凭据不发起请求、`confirmed` 不可达 |
 
@@ -214,6 +218,7 @@ THS 目录同步和回填不得进入申万 continuity backfill、普通 GET、�
 | `docs/product-specs/**` 引用的代码路径 | 对应 spec | fail |
 | `scripts/**` | `docs/runbooks.md`, `docs/architecture.md`（涉及部署边界时） | warn |
 | `requirements*.txt` / `pyproject.toml` / `Dockerfile*` / enhanced profile | `docs/runbooks.md`, `README.md`, `docs/architecture.md`；部署 profile 同步离线渲染证据 | fail |
+| `deploy/truenas/systemd/**` | `docs/architecture.md`（开机网络与主机级受管单元边界）、`docs/runbooks.md`、active plan | fail |
 
 ## 文档映射规则
 

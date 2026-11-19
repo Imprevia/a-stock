@@ -269,6 +269,33 @@ Hermes job 共同控制。普通部署对旧 CronJob 的检查只能读取和拒
 
 部署文档的可执行命令属于发布边界。CommonMark/Bash AST 审计对 brace/glob、`eval`、stdin-fed `bash`/`sh`/`dash`/`zsh`、`source`/`.`、`alias`/`hash -p` 命令解析变更、动态 executable/action 与未知 Helm plugin/action 全部 fail closed；解析不确定不能视为只读。
 
+### TrueNAS k3s 开机网络与主机级受管单元
+
+TrueNAS 的 Kubernetes 网络由 `middlewared` 拥有：CNI 清单在 middleware `post_start` 阶段写入
+`/etc/cni/net.d`，`kube-router` 由 middleware 按需启动，集群网段的策略路由表 `kube-router` 由
+`add_routes_to_kube_router_table()` 填充。该函数只在 `post_start` 执行一次且不重试，`k3s.service`
+又与 `middlewared` 同属 `multi-user.target` 并行启动，因此存在两类开机竞态：k3s 在约 15 秒的 CNI
+检测窗口内看不到清单会停在 `NetworkPluginNotReady`；middleware 错过 `kube-bridge` 上线窗口会让策略路由表
+只剩默认路由，宿主机发往 Pod 的流量被送往管理网桥丢弃。
+
+`deploy/truenas/systemd/` 因此提供唯一的主机级受管单元 `a-stock-k3s-network-repair.service`
+（`Type=oneshot`，`WantedBy=multi-user.target`，在 `k3s.service`、`kube-router.service`、
+`middlewared.service` 之后执行）。它的边界是补位而不是接管：
+
+- 只补齐 `cluster-cidr dev kube-bridge table kube-router` 路由与缺失的
+  `32764 from <cluster-cidr> lookup kube-router` 规则；`cluster-cidr` 以
+  `/etc/rancher/k3s/config.yaml` 为准，缺失时回退节点 `podCIDR` 与内置默认值，并与默认路由接口的
+  管理网段做重叠检查，重叠即 fail closed。
+- 只在 kubelet 明确报出 `cni plugin not initialized` 时重启 `k3s.service`，且每次开机至多一次；
+  其它原因的 NotReady 只记录并以非零退出，不制造控制面抖动。
+- 不改写 CNI 清单、`kube-router` 单元或 k3s 配置；`kube-router.service` 保持 TrueNAS 默认的
+  `disabled`，随开机自启属于另一次需显式确认的变更。
+- 安装入口 `install-k3s-network-repair.sh` 只写入 `/usr/local/libexec/a-stock/k3s-network-repair.sh`
+  与 `/etc/systemd/system/a-stock-k3s-network-repair.service`，并提供 `--check` 只读漂移核查。
+
+Helm、Kustomize 与 `deploy/truenas/values-*.yaml` 仍然是应用层事实源；主机级网络自愈不得成为发布路径的
+替代品，也不得用于绕过 `scripts/deploy-truenas-k3s.sh` 的组件门禁。
+
 `.github/workflows/trading-rules-after-market.yml` 是独立的交易规则证据流水线：它在 GitHub runner 创建临时 snapshot/evidence Artifact，不挂载部署 PVC，也不向市场环境 PostgreSQL 写入数据。它不能替代 Hermes 触发的市场环境采集，两者的产物和运维边界必须保持区分。
 
 服务层默认请求 280 个交易日，先按 `as_of` 截断到最近交易日，再计算 MA5/10/20/60、20/60 日高低价区间位置、成交额比值、趋势状态、量价状态、MA20 斜率 250 日滚动分位和量价推进效率 250 日滚动分位；60–249 个有效观测降置信，少于 60 个输出 `insufficient-history`。五指数同步性按同步上涨、普遍走弱、权重护盘、成长占优、分化未定型五态输出，深证成指只参与同步多数。五态是仅由指数涨跌得出的观察事实，服务层另以市场广度、指数相对 MA20 的多数位置和指数成交额形成 `synchronizationAssessment`，分别输出确认、反驳、中性或不足证据，再映射为市场层确认状态与稳定结论码；确认结果不得反写五态。系统性下降必须同时具备弱广度、至少三个指数位于 MA20 下方和至少三个指数放量下跌，权重护盘和成长占优也必须通过各自的广度与量能门槛。服务层进一步计算五指数均线多头比例、六类组合、四问结论和盘后收束句；缺失指标附 `insufficient-history`、`missing-today`、`provider-failed` 或 `not-computable`。量价状态与六类组合仍不使用通用兜底。返回给前端的 60 日历史点保留真实 OHLC、成交额和均线；前端仅负责渲染、矩阵聚合与选中行交互，不补算阈值。单指数失败保留其他指数并写入 warning；全部失败返回 503。
