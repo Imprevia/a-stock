@@ -1,0 +1,157 @@
+{
+  "asOf": "2026-11-13",
+  "tradingDays": [
+    "2026-11-09",
+    "2026-11-10",
+    "2026-11-11",
+    "2026-11-12",
+    "2026-11-13"
+  ],
+  "anomalies": [
+    {
+      "thscode": "002115.SZ",
+      "tagName": "涨停",
+      "keyWords": [
+        "商业航天",
+        "存储芯片"
+      ],
+      "content": "公司公告股东拟减持不超过2%股份，商业航天订单增长",
+      "url": "https://example.test/stock?thsHqCode=002115.SZ&date=2026-11-12"
+    },
+    {
+      "thscode": "002115.SZ",
+      "tagName": "风险",
+      "keyWords": [
+        "退市风险"
+      ],
+      "content": "公司收到退市风险警示，股票可能被实施退市风险警示",
+      "url": "https://example.test/stock?thsHqCode=002115.SZ&date=2026-11-13"
+    },
+    {
+      "thscode": "300001.SZ",
+      "tagName": "业绩",
+      "keyWords": [
+        "业绩预增",
+        "商业航天"
+      ],
+      "content": "公司预计2026年净利润增长，商业航天业务放量",
+      "url": "https://example.test/stock?date=2026-11-13"
+    },
+    {
+      "thscode": "300001.SZ",
+      "tagName": "业绩",
+      "keyWords": [
+        "业绩预增"
+      ],
+      "content": "公司预计2026年净利润增长，商业航天业务放量",
+      "url": "https://example.test/stock?date=2026-11-13"
+    },
+    {
+      "thscode": "600000.SH",
+      "tagName": "板块",
+      "keyWords": [
+        "板块回调"
+      ],
+      "content": "银行板块回调，公司经营正常",
+      "url": "https://example.test/stock?date=2026-11-13"
+    },
+    {
+      "thscode": "000001.SZ",
+      "tagName": "公告",
+      "keyWords": [
+        "澄清公告"
+      ],
+      "content": "公司发布澄清公告，未涉及应披露而未披露事项",
+      "url": "https://example.test/stock?date=2026-11-13"
+    },
+    {
+      "thscode": "",
+      "tagName": "板块",
+      "keyWords": [
+        "板块回调"
+      ],
+      "content": "板块回调，无法归属到个股",
+      "url": "https://example.test/board"
+    }
+  ],
+  "limitUps": [
+    {
+      "thscode": "002115.SZ",
+      "name": "样本A",
+      "reason": "商业航天+存储芯片"
+    },
+    {
+      "thscode": "300001.SZ",
+      "name": "样本B",
+      "reason": "业绩预增+商业航天"
+    }
+  ],
+  "timelines": {},
+  "constituents": {
+    "881101.TI": [
+      "002115.SZ",
+      "300001.SZ"
+    ]
+  },
+  "step1": {
+    "schemaVersion": "1.0",
+    "reportId": "step1-fixture-0001",
+    "asOf": "2026-11-13",
+    "status": "ok",
+    "directions": [
+      {
+        "thscode": "881101.TI",
+        "name": "半导体",
+        "pool": "A",
+        "confirmation": {
+          "text": "示例确认",
+          "horizonDays": 1
+        },
+        "invalidation": {
+          "text": "示例失效",
+          "horizonDays": 1
+        }
+      }
+    ]
+  },
+  "step2": {
+    "schemaVersion": "1.0",
+    "reportId": "step2-fixture-0001",
+    "asOf": "2026-11-13",
+    "status": "ok",
+    "themes": [
+      {
+        "themeId": "T1",
+        "name": "商业航天",
+        "tier": "core",
+        "concept": {
+          "thscode": "886060.TI",
+          "name": "商业航天"
+        },
+        "members": {
+          "count": 4,
+          "codes": [
+            "002115.SZ",
+            "300001.SZ",
+            "600000.SH",
+            "000001.SZ"
+          ]
+        }
+      },
+      {
+        "themeId": "T2",
+        "name": "无成员题材",
+        "tier": "pseudo",
+        "concept": {
+          "thscode": "886061.TI",
+          "name": "无成员题材"
+        },
+        "members": {
+          "count": 0,
+          "codes": []
+        }
+      }
+    ]
+  },
+  "timelineError": "FUYAO_5003"
+}

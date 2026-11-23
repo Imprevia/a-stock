@@ -1,6 +1,6 @@
 # QTS-04 板块、题材与个股筛选流水线 — 探索与实施方案
 
-> 文档状态：**planning-complete-for-step2**（阶段 1 已交付；STEP 2 完整版探索固化，待实施）
+> 文档状态：**step2.5-archived**（阶段 1/1.5 已交付；STEP 2.5 消息面极性已实现并归档，待校准）
 > 来源：对 `搭建交易系统/04-板块、题材与个股筛选/` 与 `搭建交易系统-量化版/04-板块、题材与个股筛选/` 全部 9 份文档的系统性梳理，叠加对仓库代码与数据底座的只读核查；2026-11-14 追加对 fuyao 官方 CLI 的只读能力复核（见 6.3、6.4）。
 > 本文只固化方案，不包含任何代码改动；后续实现须另起 OpenSpec change 与本 plan 的分期任务。
 
@@ -58,6 +58,7 @@
 STEP 0  前置风险预算 ........ 第 03 章环境决定候选数量与优先级
 STEP 1  板块层 .............. 涨幅/覆盖/成交额增量/涨停梯队/持续性/催化 -> 1-3个方向
 STEP 2  题材层 .............. 共同催化 + 共同资金 + 共同价格反馈 -> 每板块1-2条题材
+STEP 2.5 消息面极性 .......... 利好/利空/中性/无法判定 + 个股硬否决/降级/观察/未覆盖
 STEP 3  资金层 .............. 成交额榜找新进榜/增量榜/连续进榜 -> 验证"钱来了"
 STEP 4  角色层 .............. 龙头/容量中军/情绪先锋/补涨/高位兑现核心
 STEP 5  核心确认 ............ 龙头六特征逐项打分 -> 趋势龙/连板龙/套利龙
@@ -482,6 +483,7 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 | STEP | 卡点 | 需要什么 |
 |---|---|---|
 | STEP 2 题材 | 已可用涨停原因 + 异动解读支撑 `partial`，但**主源原文不可枚举**，`confirmed` 档不可达 | 是否接受 `confirmed = unavailable` 并永久以 `partial` 封顶；若否，需指定公告/政策源 |
+| STEP 2.5 消息面 | 公告详情需 opaque `seq`，无法枚举；个股新闻 `stock-timeline-list` 当前返回 `FUYAO_5003` | 接受 `partial` 封顶与探测式降级；若需个股全覆盖，另指定可枚举的新闻列表源 |
 | STEP 2 题材 | 概念成分股只有当前快照 | 是否接受"仅从上线日起 point-in-time 可回测"，或另建历史成分数据集 |
 | STEP 7 形态B「一进二」 | 竞价数据可回溯 1 年（`auction-opportunities --date`），但 `auction-snapshot` 仅当日 | 确认竞价层只用 1 年窗口，还是接受"仅当日可跑、历史不可回测" |
 | STEP 5 抗跌/独立 | 需要板块指数与个股对齐的时间序列，以及"前一日低点、涨停日最低价、5/10 日线"锚点 | 确认基准固定沿用 STEP 1 的 `000001.SH` |
@@ -568,13 +570,13 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 
 ## Stage（阶段）
 
-- 当前阶段：**Stage 1.5 — STEP 2 题材层（完整版）已实现并归档**
-- 阶段序列：探索固化 → 阶段 1（STEP 1 板块层，已完成）→ **阶段 1.5（STEP 2 题材层）** → 阶段 2（02/04 成交额榜与异动）→ 阶段 3（03/05/06/07/08 角色形态基本面合成）→ 阶段 4（回测校准）
+- 当前阶段：**Stage 2.5 — STEP 2.5 消息面极性已实现并归档，待校准**
+- 阶段序列：探索固化 → 阶段 1（STEP 1 板块层，已完成）→ 阶段 1.5（STEP 2 题材层，已归档）→ **阶段 2.5（消息面极性）** → 阶段 2（02/04 成交额榜与异动）→ 阶段 3（03/05/06/07/08 角色形态基本面合成）→ 阶段 4（回测校准）
 - 本轮边界：抽取 `qts04-core` 共享底座，新增 `a-stock-qts04-theme-layer` Skill；未修改 `trading-rules/`、`src/`、`coverage.yaml`、生产集群与数据库。
 
 ## Status（状态）
 
-`step2-skill-complete` — 45/45 任务已实现并验证；门禁通过，OpenSpec 变更已归档到 `openspec/changes/archive/2026-11-14-add-qts04-theme-layer-skill/`。
+`step2.5-archived` — 新增 `a-stock-qts04-news-catalyst` 与规则族 `QTS-04-09`；离线测试 48 passed，规则覆盖 335；OpenSpec 变更已归档到 `openspec/changes/archive/2026-11-23-add-qts04-news-catalyst-polarity/`，主规格 `qts04-news-catalyst-skill` 已建立。
 
 ## Acceptance（验收）
 
@@ -585,6 +587,9 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - [x] lift 硬闸门与共享 token 判据有 fixture 测试；弱题材日输出 `noCoreTheme=true` 而非编造核心题材
 - [x] 阶段 1 与阶段 1.5 可离线回放，输出 `degraded` / `insufficient` 而非伪造成功
 - [x] 校准状态保持 `needs-backtest`，未被提前升级为 `validated`
+- [x] 阶段 2.5 交付 `a-stock-qts04-news-catalyst` Skill：异动解读/涨停原因/个股新闻按 `thscode` 归属，五档极性 + 五档个股风险，`primarySourceAvailable=false`
+- [x] 词表否定/不确定作用域、覆盖率闸门、`unknown ≠ neutral`、`uncovered ≠ none` 均有离线测试
+- [x] 个股新闻 `FUYAO_5003` 降级为 `unavailable`，整体 `degraded`，不伪造“无新闻”
 
 ## Completion Evidence（完成证据）
 
@@ -609,6 +614,9 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - 任务 9.4：`git status --porcelain` 不含 `trading-rules/`、`src/`、`coverage.yaml`、生产集群与数据库路径。
 - 任务 9.5：`add-qts04-sector-report-contract` 的 delta 仅覆盖 `qts04-sector-direction-skill`，与本变更的 `qts04-theme-layer-skill` 不重叠；归档顺序不阻塞。
 - 归档：主 spec `openspec/specs/qts04-theme-layer-skill/spec.md` 已创建（9 requirements / 21 scenarios），变更移动到 `openspec/changes/archive/2026-11-14-add-qts04-theme-layer-skill/`。
+- 2026-11-19 真实链路（同一份数据跑两次：默认 `maxThemes 5` → `reportId f55a23976c6de864`；全量 `maxThemes 20` → `reportId 94b6eb0d73bd3383`，两次前 5 名分数完全一致）。结果 `status degraded`、`noCoreTheme=true`：扩散题材 1 个（光刻胶，lift 12.98，分数 45.0，部分证实）；事件题材 7 个（先进封装 32.5 / 存储芯片 27.5 部分证实；算力租赁 28.1、液冷服务器 23.44、东数西算(算力) 23.44、华为海思概念股 28.1、环氧丙烷 15.62 原因不明）；伪题材 4 个（跨境电商 1.19、华为汽车 1.19、华为概念 0.82、智慧城市 0.50）。默认前 5 会截掉全部 4 个伪题材，故对外文章以全量 JSON 为准。agent 文章经 `theme_check_report.py` **PASS**（169 个数字溯源、禁用措辞 0、labelProvenance 0）。降级原因：历史日期无概念快照（候选仅靠原因词，16 候选 / 12 个与涨停池有交集）、涨停池 26 行 vs 统计 23 只（池内 3 只 ST）。
+- 阶段 2.5（2026-11-23）：`a-stock-qts04-news-catalyst` Skill 与 `QTS-04-09` 五条规则；离线测试 **48 passed**，`rules coverage` 输出 `{"documentedRules": 335, "executableRules": 49}`；混合 fixture `reportId 897bd751a2ec80e8`、`status degraded`、主题材 `mixed`、硬风险个股 `block`，fallback 校验 PASS；词表 83 条事件规则、SHA-256 冻结进 `config`，词表版本变化即换 `reportId`。
+- 阶段 2.5 数据实测：2026-01-20 单日异动解读 773 条、关键词 1264 个，事件/题材/语境三类混杂，验证了“不能统一打分为个股利空”的分层设计；`stock-timeline-list` 在 2026-11-13 返回 `FUYAO_5003`，因此 v1 只做探测式降级，不把不可用当“无新闻”。
 - 归档后缺陷修复（2026-11-19）：2026-11-18 首次运行输出 `noCoreTheme=true` 且全部题材 `sharedTokens=[]`。定位为跨概念属性词检测把「概念自身名称 token」也屏蔽了——`算力租赁` 同时出现在 算力租赁/东数西算/数据中心/华为昇腾 等多个概念的涨停成员原因里，命中 `concept_threshold=4`，于是该题材自己的定义 token 被当成属性词剔除，产生假空结果。修复：`build_theme` 以 `{name} ∪ split_reason(name)` 作为 `own_tokens`，从 `attribute_tokens` 中豁免后再统计共享 token。修复后 2026-11-18 的 算力租赁 恢复 `sharedTokens=[(算力租赁, 9)]`、`lift 10.2041`、`tier=diffuse`、`reportId 5a9cc1e9ad4a1ece`；2026-11-13 的 `reportId` 仍为 `4662180ce0dbceb4`，逐字节不变。新增回归用例 `test_concept_name_token_is_never_treated_as_attribute`，STEP 2 测试 32 passed、STEP 1+2 合并 122 passed。
 
 ## Remaining Gaps（剩余缺口）
@@ -619,7 +627,10 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - 历史成分股版本缺失，`pointInTime=false`、`backtestGrade=D`；题材归属的事后偏差无法消除。
 - 核心/扩散阈值（lift 3.0/1.5、分数 50/35）是按 2026-11-13 单日校准的，尚未样本外验证。
 - 涨停池与涨停统计存在口径差（2026-11-13 38 vs 37、2026-06-12 98 vs 88），当前只告警不修正。
-- 第 04 章 45 条规则仍全部 `documented-only`，本流水线以 Skill 形态先行，未进入 `trading-rules/`。
+- STEP 2.5 词表尚未用人工标注样本校准；`block` 只是提示，未自动排除。
+- STEP 2.5 个股覆盖只到异动池；`stock-timeline-list` 当前不可用，全市场补覆盖需要 `news flash-list`（v2）。
+- STEP 2.5 板块成分股只有当前快照，`pointInTime=false`、`backtestGrade=C`，板块极性不可历史回测。
+- 第 04 章 45 条规则仍全部 `documented-only`，本流水线以 Skill 形态先行，未进入 `trading-rules/`；新增 `QTS-04-09` 五条同为 `documented-only`/`needs-backtest`。
 - `add-qts04-sector-report-contract` 尚未归档；本变更归档需确认顺序。
 - 2026-11-18 出现「lift 10.2、共享 token 9 只、梯队 2 板齐备，但 5/20 日相对强度为负导致分数 48.75 差 1.25 分未进核心」的边界样本；分数闸门是否应允许单项拖累，仍需样本外验证。
 

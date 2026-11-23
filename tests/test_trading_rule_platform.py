@@ -49,7 +49,7 @@ def copy_registry(tmp_path: Path) -> Path:
 
 def test_registry_and_document_coverage_are_complete() -> None:
     assert validate_registry(ROOT) == {"ruleSets": 1, "rules": 49}
-    assert validate_coverage(ROOT) == {"documentedRules": 330, "executableRules": 49}
+    assert validate_coverage(ROOT) == {"documentedRules": 335, "executableRules": 49}
 
 
 def test_document_scanner_allows_same_file_references_but_rejects_cross_file_duplicates(tmp_path: Path) -> None:

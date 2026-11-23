@@ -1,0 +1,35 @@
+{
+  "asOf": "2026-11-13",
+  "tradingDays": [
+    "2026-11-13"
+  ],
+  "anomalies": [],
+  "limitUps": [],
+  "timelines": {},
+  "constituents": {},
+  "step1": {
+    "schemaVersion": "1.0",
+    "reportId": "step1-empty",
+    "directions": [
+      {
+        "thscode": "881101.TI",
+        "name": "半导体"
+      }
+    ]
+  },
+  "step2": {
+    "schemaVersion": "1.0",
+    "reportId": "step2-empty",
+    "themes": [
+      {
+        "themeId": "T0",
+        "name": "空题材",
+        "members": {
+          "codes": [
+            "002115.SZ"
+          ]
+        }
+      }
+    ]
+  }
+}

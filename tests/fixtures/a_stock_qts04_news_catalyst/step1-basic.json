@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "reportId": "step1-fixture-0001",
+  "asOf": "2026-11-13",
+  "status": "ok",
+  "directions": [
+    {
+      "thscode": "881101.TI",
+      "name": "半导体",
+      "pool": "A",
+      "confirmation": {
+        "text": "示例确认",
+        "horizonDays": 1
+      },
+      "invalidation": {
+        "text": "示例失效",
+        "horizonDays": 1
+      }
+    }
+  ]
+}

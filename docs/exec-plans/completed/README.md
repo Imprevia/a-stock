@@ -6,3 +6,4 @@
 - `precompute-market-data-snapshots.md` — 市场广度/容量方向 SQLite 快照、盘后预计算、SWR 和刷新 CLI
 - `complete-limit-ecosystem-dashboard-parity.md` — 涨跌停生态严格事实、晋级、分层、历史和第 03 页基线
 - `market-environment-multipage-rework.md` — 01–09 多页路由、市场级句式和下一交易日只读对照
+- `add-qts04-news-catalyst-polarity.md` — QTS-04 STEP 2.5 消息面极性 Skill、`QTS-04-09` 规则族与主规格归档

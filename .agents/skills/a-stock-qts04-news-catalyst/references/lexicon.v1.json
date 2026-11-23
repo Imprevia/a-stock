@@ -1,0 +1,1930 @@
+{
+  "version": "1.0",
+  "description": "QTS-04-09 消息面极性词表 v1",
+  "rules": [
+    {
+      "id": "neg.hard.delisting_warning",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "退市风险",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "退市风险警示",
+        "退市风险"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.terminate_listing",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "终止上市",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "终止上市",
+        "强制退市",
+        "面值退市",
+        "市值退市",
+        "暂停上市"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.net_asset_negative",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "净资产为负",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "净资产为负",
+        "净资产为负数"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.revenue_below",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "营收不达标",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "营业收入低于3亿",
+        "营收低于3亿",
+        "营业收入低于三亿"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.audit_disclaimer",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "审计非标",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "无法表示意见",
+        "否定意见",
+        "保留意见",
+        "内控否定意见"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.investigation",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "立案调查",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "立案调查",
+        "立案告知书",
+        "证监会立案",
+        "被立案"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.penalty",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "行政处罚",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "行政处罚",
+        "市场禁入",
+        "监管处罚"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.fraud",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "财务造假",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "财务造假",
+        "虚增利润",
+        "虚假记载",
+        "重大遗漏",
+        "欺诈发行"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.fund_occupation",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "资金占用",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "资金占用",
+        "违规担保",
+        "非经营性占用",
+        "挪用资金"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.default",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "债务违约",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "债务违约",
+        "债券违约",
+        "无法兑付",
+        "逾期未偿还"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.bankruptcy",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "破产重整",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "破产重整",
+        "破产清算",
+        "被申请重整"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.shutdown",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "全面停产",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "全面停产",
+        "主要产线停产",
+        "生产经营活动受到严重影响"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.accident",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "重大事故",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "重大安全事故",
+        "爆炸事故",
+        "重大伤亡"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.detention",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "实控人被留置",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "被留置",
+        "刑事拘留",
+        "被逮捕",
+        "监视居住"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.account_freeze",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "账户冻结",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "主要银行账户被冻结",
+        "银行账户被冻结"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.hard.control_hijack",
+      "ruleId": "QTS-04-09-04",
+      "class": "event",
+      "eventType": "控制权风险",
+      "polarity": "negative",
+      "severity": "hard",
+      "weight": 1.0,
+      "patterns": [
+        "控制权存在不稳定",
+        "股权高度分散"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.med.loss",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "业绩预亏",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "业绩预亏",
+        "预亏",
+        "亏损扩大",
+        "由盈转亏",
+        "预计亏损"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.decline",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "业绩下滑",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "业绩下滑",
+        "净利润下降",
+        "营收下降",
+        "业绩变脸"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.impairment",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "商誉减值",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "商誉减值",
+        "计提减值",
+        "资产减值",
+        "大额计提"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.reduce",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股东减持",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "减持",
+        "减持计划",
+        "大宗减持",
+        "协议转让"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.unlock",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "限售解禁",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "解禁",
+        "限售股解禁",
+        "限售解禁"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.pledge",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股权质押",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "质押平仓",
+        "股权质押",
+        "质押风险"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.litigation",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "重大诉讼",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "重大诉讼",
+        "被起诉",
+        "仲裁",
+        "诉讼事项"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.order_cancel",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "订单取消",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "订单取消",
+        "合同解除",
+        "终止合同",
+        "合同终止"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.price_cut",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "产品降价",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "产品降价",
+        "降价",
+        "价格下调"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.recall",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "产品召回",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "召回",
+        "产品召回"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.curtail",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "限产停产",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "限产",
+        "停产",
+        "减产"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.restructure_stop",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "重组终止",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "终止重组",
+        "终止重大资产重组",
+        "终止收购",
+        "终止筹划"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.placement_stop",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "定增终止",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "终止定增",
+        "终止非公开发行",
+        "终止向特定对象发行"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.rating_cut",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "评级下调",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "评级下调",
+        "下调评级",
+        "下调信用等级"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.target_cut",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "目标价下调",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "下调目标价",
+        "下调盈利预测",
+        "下调业绩预期"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.share_freeze",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股份冻结",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "股份冻结",
+        "股权冻结"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.dividend_cancel",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "分红取消",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "取消分红",
+        "不进行利润分配"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.project_stop",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "募投终止",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "终止募投",
+        "募投项目终止"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.regulator_letter",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "监管函件",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "监管函",
+        "关注函"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.goodwill_risk",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "商誉风险",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "商誉占比较高",
+        "商誉减值风险"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.inquiry",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "问询函",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "问询函",
+        "半年报问询"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.risk_note",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "风险提示",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "风险提示",
+        "股价异动",
+        "交易风险"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.valuation",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "估值偏高",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "估值偏高",
+        "市盈率偏高"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.holder_sell",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股东户数变化",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "股东户数增加",
+        "筹码分散"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.institution_cut",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "机构减仓",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "机构减仓",
+        "基金减持"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.profit_up",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "业绩预增",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "业绩预增",
+        "预增",
+        "净利润增长",
+        "扭亏为盈",
+        "扭亏"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.bid_win",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "中标",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "中标",
+        "中标通知书",
+        "中标金额"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.contract",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "重大合同",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "重大合同",
+        "签订合同",
+        "战略合作",
+        "框架协议"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.orders",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "订单增长",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "订单增长",
+        "订单饱满",
+        "大额订单",
+        "新签订单"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.price_up",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "产品涨价",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "产品涨价",
+        "提价",
+        "涨价",
+        "价格上涨"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.capacity",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "产能投产",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "投产",
+        "达产",
+        "扩产",
+        "新增产能"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.buyback",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股份回购",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "股份回购",
+        "回购股份",
+        "回购注销"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.increase",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股东增持",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "增持",
+        "增持计划"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.incentive",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股权激励",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "股权激励",
+        "员工持股计划"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.dividend",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "高分红",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "高分红",
+        "现金分红",
+        "分红方案"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.policy",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "政策支持",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "政策支持",
+        "补贴",
+        "税收优惠",
+        "纳入试点"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.license",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "牌照获批",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "获批",
+        "许可证",
+        "牌照",
+        "经营资质"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.product_approval",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "产品获批",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "获批上市",
+        "注册证",
+        "临床试验"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.tech_break",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "技术突破",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "技术突破",
+        "量产",
+        "首台套",
+        "国产替代"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.cap_removal",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "撤销风险警示",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "摘帽",
+        "撤销退市风险警示",
+        "撤销其他风险警示"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.overseas",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "海外订单",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "海外订单",
+        "出口订单",
+        "海外中标"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.rating_up",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "评级上调",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "评级上调",
+        "上调评级",
+        "上调目标价"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.research",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "机构调研",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "机构调研",
+        "投资者调研"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.index_inclusion",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "指数纳入",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "纳入指数",
+        "指数纳入",
+        "msci"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.patent",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "专利",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "专利",
+        "发明专利"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.spinoff",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "分拆上市",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "分拆上市",
+        "分拆"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.weak.repurchase_done",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "回购完成",
+      "polarity": "positive",
+      "severity": "weak",
+      "weight": 0.4,
+      "patterns": [
+        "回购完成",
+        "增持完成"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "amb.control_change",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "控制权变更",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "控制权变更",
+        "实控人变更",
+        "实际控制人变更"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.restructure",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "重大资产重组",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "重大资产重组",
+        "资产重组",
+        "借壳"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.acquisition",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "收购",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "收购",
+        "要约收购"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.equity_transfer",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股权转让",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "股权转让",
+        "股份转让"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.strategic_investor",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "引入战投",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "引入战投",
+        "战略投资者"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.restructuring_investor",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "重整投资人",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "重整投资人",
+        "重整计划"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.suspension",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "停复牌",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "停牌",
+        "复牌"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "amb.name_change",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "更名",
+      "polarity": "ambiguous",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "更名",
+        "证券简称变更"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.071",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "存储芯片",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "存储芯片"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.072",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "商业航天",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "商业航天"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.073",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "人形机器人",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "人形机器人"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.074",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "算力租赁",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "算力租赁"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.075",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "算力",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "算力"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.076",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "短剧游戏",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "短剧游戏"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.077",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "固态电池",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "固态电池"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.078",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "创新药",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "创新药"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.079",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "半导体",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "半导体"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.080",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "芯片",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "芯片"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.081",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "光伏",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "光伏"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.082",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "锂电",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "锂电"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.083",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "储能",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "储能"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.084",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "电网设备",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "电网设备"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.085",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "特高压",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "特高压"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.086",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "军工",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "军工"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.087",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "大消费",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "大消费"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.088",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "预制菜",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "预制菜"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.089",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "减速器",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "减速器"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.090",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "稀土",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "稀土"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.091",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "黄金",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "黄金"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.092",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "白银",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "白银"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.093",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "比特币",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "比特币"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.094",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "CPO",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "cpo"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.095",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "PCB",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "pcb"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.096",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "AI应用",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "ai应用"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "topic.097",
+      "ruleId": "QTS-04-09-01",
+      "class": "topic",
+      "eventType": "机器人",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "机器人"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.098",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "板块回调",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "板块回调"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.099",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "板块下跌",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "板块下跌"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.100",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "板块普跌",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "板块普跌"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.101",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "板块拖累",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "板块拖累"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.102",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "大盘下跌",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "大盘下跌",
+        "指数下跌"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.103",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "资金流出",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "资金流出",
+        "主力资金净流出"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.104",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "此前涨幅较大",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "此前涨幅较大",
+        "前期涨幅较大"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.105",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "超涨回调",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "超涨回调"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.106",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "短线回调",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "短线回调"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.107",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "获利回吐",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "获利回吐"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.108",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "加息预期",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "加息",
+        "美联储"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.109",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "避险情绪",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "避险情绪"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.110",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "需求淡季",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "需求淡季"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.111",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "供应增加",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "供应大幅增加",
+        "供应增加"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.112",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "库存高位",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "库存历史高位",
+        "高库存"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "context.113",
+      "ruleId": "QTS-04-09-01",
+      "class": "context",
+      "eventType": "地产下行",
+      "polarity": "neutral",
+      "severity": "weak",
+      "weight": 0.0,
+      "patterns": [
+        "房地产开发持续下行",
+        "地产下行"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": false
+    },
+    {
+      "id": "neg.med.customer_loss",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "客户流失",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "客户流失",
+        "大客户流失"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.raw_material",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "成本上升",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "原材料涨价",
+        "成本上升"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.fx_loss",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "汇兑损失",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "汇兑损失"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.inventory",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "存货跌价",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "存货跌价",
+        "存货减值"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.receivable",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "坏账风险",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "应收账款坏账",
+        "坏账准备"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.guarantee",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "对外担保",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "对外担保",
+        "担保余额"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.med.reg_measure",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "监管措施",
+      "polarity": "negative",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "监管措施",
+        "责令整改"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "neg.weak.insider",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "高管减持",
+      "polarity": "negative",
+      "severity": "weak",
+      "weight": 0.5,
+      "patterns": [
+        "高管减持",
+        "董监高减持"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.asset_injection",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "资产注入",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.8,
+      "patterns": [
+        "资产注入",
+        "注入资产"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.subsidy",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "政府补助",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "政府补助",
+        "补助资金"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.full_production",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "满产",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "满产",
+        "产能利用率提升"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    },
+    {
+      "id": "pos.med.shareholder_return",
+      "ruleId": "QTS-04-09-02",
+      "class": "event",
+      "eventType": "股东回报",
+      "polarity": "positive",
+      "severity": "medium",
+      "weight": 0.7,
+      "patterns": [
+        "股东回报规划",
+        "提高分红比例"
+      ],
+      "negation": "drop",
+      "uncertaintySensitive": true
+    }
+  ]
+}

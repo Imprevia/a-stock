@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.0",
+  "reportId": "step2-fixture-0001",
+  "asOf": "2026-11-13",
+  "status": "ok",
+  "themes": [
+    {
+      "themeId": "T1",
+      "name": "商业航天",
+      "tier": "core",
+      "concept": {
+        "thscode": "886060.TI",
+        "name": "商业航天"
+      },
+      "members": {
+        "count": 4,
+        "codes": [
+          "002115.SZ",
+          "300001.SZ",
+          "600000.SH",
+          "000001.SZ"
+        ]
+      }
+    },
+    {
+      "themeId": "T2",
+      "name": "无成员题材",
+      "tier": "pseudo",
+      "concept": {
+        "thscode": "886061.TI",
+        "name": "无成员题材"
+      },
+      "members": {
+        "count": 0,
+        "codes": []
+      }
+    }
+  ]
+}

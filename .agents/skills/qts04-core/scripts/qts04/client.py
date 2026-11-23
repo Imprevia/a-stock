@@ -553,15 +553,26 @@ class FuyaoClient:
         }
 
     def anomaly_analysis(self, as_of: date) -> list[dict[str, Any]]:
+        """Anomaly interpretations for a single trading day."""
+
+        return self.anomaly_analysis_range(as_of, as_of)
+
+    def anomaly_analysis_range(self, start: date, end: date) -> list[dict[str, Any]]:
+        """Anomaly interpretations over an inclusive date range.
+
+        The upstream command accepts ``--begin-date``/``--end-date``; a
+        single-day caller delegates here so both paths share one parser.
+        """
+
         data = self.call(
             "news.anomaly-analysis",
             [
                 "news",
                 "anomaly-analysis",
                 "--begin-date",
-                as_of.isoformat(),
+                start.isoformat(),
                 "--end-date",
-                as_of.isoformat(),
+                end.isoformat(),
                 "--format",
                 "json",
             ],
@@ -586,6 +597,88 @@ class FuyaoClient:
                     "url": link,
                 }
             )
+        return result
+
+    def stock_timeline(
+        self,
+        thscode: str,
+        *,
+        size: int = 50,
+        max_pages: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Per-stock news timeline, paged by the upstream cursor.
+
+        The endpoint is probe-gated: when the provider reports the data source
+        as unavailable (``FUYAO_5003``/``FUYAO_1002``) the caller must be able
+        to degrade instead of treating it as "no news".  Unknown response
+        fields are preserved under ``raw`` so a schema change cannot silently
+        drop evidence.
+        """
+
+        code = str(thscode or "").strip().upper()
+        if not code:
+            raise FuyaoInsufficient("stock-timeline 需要完整 thscode")
+        result: list[dict[str, Any]] = []
+        offset = "first"
+        seen: set[str] = set()
+        for _ in range(max(1, int(max_pages))):
+            args = [
+                "news",
+                "stock-timeline-list",
+                "--thscode",
+                code,
+                "--offset",
+                offset,
+                "--format",
+                "json",
+            ]
+            if size:
+                args.extend(["--size", str(int(size))])
+            try:
+                data = self.call("news.stock-timeline-list", args)
+            except FuyaoDegraded as error:
+                if str(error.code).upper() in {"FUYAO_5003", "FUYAO_1002"}:
+                    raise FuyaoInsufficient(
+                        f"{code} 个股新闻源不可用 code={error.code}：{error}",
+                        code=error.code,
+                    ) from error
+                raise
+            rows = data.get("item") or data.get("items") or data.get("list") or []
+            if not isinstance(rows, list):
+                rows = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                content = str(
+                    row.get("content") or row.get("summary") or row.get("digest") or ""
+                )
+                url = str(row.get("url") or row.get("link_url") or "")
+                key = f"{content}\u0001{url}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(
+                    {
+                        "thscode": code,
+                        "title": str(row.get("title") or ""),
+                        "content": content,
+                        "publishedAt": str(
+                            row.get("publish_time")
+                            or row.get("publishTime")
+                            or row.get("time")
+                            or row.get("date")
+                            or ""
+                        ),
+                        "seq": str(row.get("seq") or row.get("notice_seq") or row.get("id") or ""),
+                        "url": url,
+                        "raw": dict(row),
+                    }
+                )
+            next_offset = str(data.get("offset") or "").strip()
+            has_more = data.get("has_more")
+            if has_more is False or not next_offset or next_offset == offset:
+                break
+            offset = next_offset
         return result
 
     def market_calendar(self) -> list[str]:

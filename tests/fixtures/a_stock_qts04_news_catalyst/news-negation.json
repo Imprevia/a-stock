@@ -1,0 +1,29 @@
+{
+  "asOf": "2026-11-13",
+  "tradingDays": [
+    "2026-11-13"
+  ],
+  "anomalies": [
+    {
+      "thscode": "600519.SH",
+      "tagName": "公告",
+      "keyWords": [
+        "减持"
+      ],
+      "content": "公司终止减持计划，未实施减持，不存在退市风险",
+      "url": "https://example.test/stock?date=2026-11-13"
+    },
+    {
+      "thscode": "600520.SH",
+      "tagName": "公告",
+      "keyWords": [
+        "减持"
+      ],
+      "content": "股东拟减持不超过1%股份",
+      "url": "https://example.test/stock?date=2026-11-13"
+    }
+  ],
+  "limitUps": [],
+  "timelines": {},
+  "constituents": {}
+}

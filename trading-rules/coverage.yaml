@@ -1,5 +1,5 @@
 version: 1
-documentedRules: 330
+documentedRules: 335
 executableRules: 49
 entries:
 - ruleId: QTS-00-00-01
@@ -785,6 +785,36 @@ entries:
   evidenceRefs: []
 - ruleId: QTS-04-08-04
   documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/08.如何通过前七项数据筛选板块、题材与个股.md
+  implementation: documented-only
+  evaluator: null
+  tests: []
+  evidenceRefs: []
+- ruleId: QTS-04-09-01
+  documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/09.消息面极性规则.md
+  implementation: documented-only
+  evaluator: null
+  tests: []
+  evidenceRefs: []
+- ruleId: QTS-04-09-02
+  documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/09.消息面极性规则.md
+  implementation: documented-only
+  evaluator: null
+  tests: []
+  evidenceRefs: []
+- ruleId: QTS-04-09-03
+  documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/09.消息面极性规则.md
+  implementation: documented-only
+  evaluator: null
+  tests: []
+  evidenceRefs: []
+- ruleId: QTS-04-09-04
+  documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/09.消息面极性规则.md
+  implementation: documented-only
+  evaluator: null
+  tests: []
+  evidenceRefs: []
+- ruleId: QTS-04-09-05
+  documentRef: 搭建交易系统-量化版/04-板块、题材与个股筛选/09.消息面极性规则.md
   implementation: documented-only
   evaluator: null
   tests: []
