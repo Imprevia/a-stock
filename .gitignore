@@ -12,6 +12,8 @@ venv/
 midscene_run/
 apps/*/dist/
 mobile-dashboard*.png
+# Skill 在仓库根目录运行时落下的可重建行情缓存
+.cache/
 
 # 仓库根目录下的嵌套克隆（2026-11-14 已清理，禁止恢复）
 /a-stock/

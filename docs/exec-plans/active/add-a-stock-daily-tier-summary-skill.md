@@ -4,9 +4,13 @@
 
 仓库级 Skill、确定性分析脚本、参考合同、合成 fixture、离线测试和全部门禁已完成。
 
+2026-11-20 追加复盘卡输出优化，范围为 Skill 入口和判断方法。
+
 ## Status（状态）
 
 `completed`（OpenSpec implementation 16/16）
+
+复盘卡输出优化 `completed`。
 
 ## Scope（范围）
 
@@ -23,8 +27,9 @@
 - 证券按交易所加代码去重；冲突行确定性拒绝或降级；本地 `streak_days` 优先、东方财富仅使用 `lbc`，禁止以 `zttj.days` 划分高/中/低位。
 - 使用上一交易日冻结样本计算高位、中位、低位的继续涨停、炸板、跌停和脱离三池结果，并以可空分母计算失败样本修复率。
 - 对会话或结构化输入中的上一验证条件输出 `confirmed`、`invalidated`、`inconclusive`、`conflicting` 或 `unavailable`，不得事后改阈值。
-- 结构标签最多一个，只能为 `扩散`、`抱团`、`低位试错`、`修复` 或 `混合`，保持 `needs-backtest`，并输出固定中文四段总结与唯一下一交易日验证层。
+- 结构标签最多一个，只能为 `扩散`、`抱团`、`低位试错`、`修复` 或 `混合`，保持 `needs-backtest`，并按固定顺序输出中文复盘卡与唯一下一交易日验证层。
 - Skill 快速校验、聚焦 pytest、OpenSpec strict validation、`git diff --check` 和 docs-contract full gate 全部通过。
+- 复盘卡用短段落和项目符号，五指数保留方向和 MA20 位置，方向行省略括号和涨跌幅。分层和环境分别按原条件验证，次日环境只根据当日收盘证据提出一个有明确确认与证伪条件的假设。
 
 ## Completion Evidence（完成证据）
 
@@ -39,11 +44,13 @@
 - 2026-10-26：最终 Skill quick validator 输出 `Skill is valid!`；聚焦 pytest 为 `18 passed in 0.08s`；`openspec validate add-a-stock-daily-tier-summary-skill --strict` 通过；全工作区 `git diff --check` 通过。
 - 2026-10-26：`.venv/bin/python scripts/check-docs-contract.py --mode=full` 通过（代码 7 / 文档 20 / plan 10）。
 - 2026-10-26：范围核对确认本 change 只新增 Skill package、合成测试/fixture、OpenSpec 制品并修改仓库指南与 active plan；未执行或修改生产采集、数据库写入、部署、调度、凭据或真实市场快照。
+- 2026-11-20：`SKILL.md` 已明确无表格、指数方向行格式和两项历史验证的呈现方式。`references/methodology.md` 已从固定顺序改为依据当日证据选择次日假设，脚本的默认环境建议可作为候选。Skill 快速校验、参考链接检查、`git diff --check` 和 docs-contract full 通过。聚焦 pytest 为 28 通过、2 跳过。
 
 ## Remaining Gaps（剩余缺口）
 
 - 无实现或离线验收缺口。
 - 外部 provider 的真实联网 smoke 未执行，且不属于本 change 的离线验收；未来如需执行，仍须明确请求已完成交易日并遵守只读边界。
+- 2026-11-20：缺少隔离 PostgreSQL 测试库，2 项真实三池 SQL 测试跳过。本次验收覆盖技能复盘卡规范和离线回归。
 
 ## Next Step（下一步）
 

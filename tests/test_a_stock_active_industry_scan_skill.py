@@ -23,10 +23,12 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import contract  # noqa: E402
+import direction  # noqa: E402
 import percentile  # noqa: E402
 import fuyao_client  # noqa: E402
 import industry_map  # noqa: E402
 import sina_client  # noqa: E402
+import history  # noqa: E402
 import report  # noqa: E402
 import scan_pipeline  # noqa: E402
 import quadrant  # noqa: E402
@@ -125,6 +127,177 @@ def test_quadrant_thresholds_reject_zero():
 
 
 # --------------------------------------------------------------------------
+# direction.py
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("change", "volume", "expected"),
+    [
+        (-17.26, 1e6, direction.DIRECTION_DOWN),
+        (-0.004, 1e6, direction.DIRECTION_FLAT),
+        (0.0, 1e6, direction.DIRECTION_FLAT),
+        (0.004, 1e6, direction.DIRECTION_FLAT),
+        (10.0, 1e6, direction.DIRECTION_UP),
+        (-0.006, 1e6, direction.DIRECTION_DOWN),
+        (0.006, 1e6, direction.DIRECTION_UP),
+        (None, 1e6, direction.DIRECTION_SUSPENDED),
+        (0.0, 0, direction.DIRECTION_SUSPENDED),
+    ],
+)
+def test_classify_direction_covers_every_branch(change, volume, expected):
+    assert direction.classify_direction(change, volume=volume) == expected
+
+
+def test_classify_direction_absent_change_is_suspended_not_flat():
+    """A missing previous close is an absent measurement, never "unchanged"."""
+
+    assert direction.classify_direction(None) == direction.DIRECTION_SUSPENDED
+    assert direction.classify_direction(None) != direction.DIRECTION_FLAT
+
+
+def test_classify_direction_volume_zero_overrides_stale_zero_change():
+    """A suspended stock can carry a stale 0.0 change; volume disambiguates."""
+
+    assert direction.classify_direction(0.0, volume=0) == direction.DIRECTION_SUSPENDED
+
+
+def test_market_median_ignores_none_and_orders_by_value():
+    assert direction.market_median([3.0, None, -1.0, 1.0]) == 1.0
+
+
+def test_market_median_is_none_when_nothing_usable():
+    assert direction.market_median([]) is None
+    assert direction.market_median([None, None]) is None
+
+
+def test_market_median_of_single_sample_is_that_sample():
+    assert direction.market_median([-5.08]) == -5.08
+
+
+def test_relative_to_market_subtracts_and_propagates_none():
+    assert direction.relative_to_market(-6.85, -5.08) == pytest.approx(-1.77)
+    assert direction.relative_to_market(0.22, -5.08) == pytest.approx(5.30)
+    assert direction.relative_to_market(None, -5.08) is None
+    assert direction.relative_to_market(1.0, None) is None
+
+
+def test_breadth_counts_directions_and_excludes_suspended_from_denominator():
+    members = ["A", "B", "C", "D"]
+    changes = {"A": 2.0, "B": -3.0, "C": 0.0, "D": None}
+    breadth = direction.aggregate_breadth(members, changes)
+    assert breadth.up_count == 1
+    assert breadth.down_count == 1
+    assert breadth.flat_count == 1
+    assert breadth.suspended_count == 1
+    # The suspended member is excluded from the usable count, not counted flat.
+    assert breadth.valid_count == 3
+    assert breadth.valid_count == breadth.up_count + breadth.down_count + breadth.flat_count
+
+
+def test_breadth_median_uses_only_usable_members():
+    """A suspended member must not drag the median toward zero."""
+
+    members = ["A", "B", "C", "D"]
+    changes = {"A": 1.0, "B": 3.0, "C": 5.0, "D": None}
+    breadth = direction.aggregate_breadth(members, changes)
+    assert breadth.status == direction.BREADTH_OK
+    # Treating D as 0.0 would give 2.0 instead of 3.0.
+    assert breadth.median_change_pct == pytest.approx(3.0)
+
+
+def test_breadth_denominator_is_declared_members_not_fetched_rows():
+    """Missing member data must reduce coverage, not fake a full board."""
+
+    members = ["A", "B", "C", "D", "E"]
+    breadth = direction.aggregate_breadth(members, {"A": 1.0})
+    assert breadth.member_count == 5
+    assert breadth.valid_count == 1
+    assert breadth.coverage == pytest.approx(0.2)
+
+
+def test_breadth_status_threshold_boundaries():
+    assert direction.breadth_status(0.699) == direction.BREADTH_INSUFFICIENT
+    assert direction.breadth_status(0.70) == direction.BREADTH_OK
+    assert direction.breadth_status(0.95) == direction.BREADTH_OK
+    assert direction.breadth_status(None) == direction.BREADTH_INSUFFICIENT
+
+
+def test_breadth_withholding_median_when_coverage_insufficient():
+    members = [f"M{i}" for i in range(10)]
+    changes = {"M0": 1.0, "M1": 2.0, "M2": 3.0}
+    breadth = direction.aggregate_breadth(members, changes)
+    assert breadth.status == direction.BREADTH_INSUFFICIENT
+    assert breadth.median_change_pct is None
+    # Counts stay visible even when the median is withheld.
+    assert breadth.up_count == 3
+    assert breadth.member_count == 10
+
+
+def test_breadth_uses_volumes_to_spot_suspended_members():
+    members = ["A", "B"]
+    breadth = direction.aggregate_breadth(
+        members, {"A": 1.0, "B": 0.0}, volumes={"A": 1e6, "B": 0}
+    )
+    assert breadth.up_count == 1
+    assert breadth.suspended_count == 1
+    assert breadth.flat_count == 0
+
+
+@pytest.mark.parametrize(
+    "quadrant_label",
+    [quadrant.QUADRANT_ACTIVE, quadrant.QUADRANT_WEIGHT,
+     quadrant.QUADRANT_RETAIL, quadrant.QUADRANT_COLD],
+)
+def test_composite_tag_appends_direction_to_every_quadrant(quadrant_label):
+    assert direction.composite_tag(quadrant_label, direction.DIRECTION_UP) == f"{quadrant_label}·上涨"
+    assert direction.composite_tag(quadrant_label, direction.DIRECTION_DOWN) == f"{quadrant_label}·下跌"
+
+
+def test_composite_tag_leaves_quadrant_alone_without_direction():
+    assert direction.composite_tag(quadrant.QUADRANT_ACTIVE, None) == quadrant.QUADRANT_ACTIVE
+    assert direction.composite_tag(quadrant.QUADRANT_ACTIVE, direction.DIRECTION_FLAT) == quadrant.QUADRANT_ACTIVE
+    assert direction.composite_tag(quadrant.QUADRANT_ACTIVE, direction.DIRECTION_SUSPENDED) == quadrant.QUADRANT_ACTIVE
+
+
+def test_summarize_direction_counts_and_up_amount_share():
+    rows = [
+        {"direction": "up", "amountYi": 30.0},
+        {"direction": "down", "amountYi": 70.0},
+        {"direction": "flat", "amountYi": 0.0},
+    ]
+    summary = direction.summarize_direction(rows)
+    assert summary["up"] == 1
+    assert summary["down"] == 1
+    assert summary["flat"] == 1
+    assert summary["up"] + summary["down"] + summary["flat"] == summary["total"]
+    assert summary["upAmountShare"] == pytest.approx(0.30)
+
+
+def test_summarize_direction_share_is_none_without_turnover():
+    assert direction.summarize_direction([])["upAmountShare"] is None
+
+
+def test_group_by_direction_keeps_only_up_and_down():
+    items = [
+        {"name": "a", "direction": "up"},
+        {"name": "b", "direction": "down"},
+        {"name": "c", "direction": "flat"},
+        {"name": "d", "direction": "suspended"},
+    ]
+    groups = direction.group_by_direction(items)
+    assert [i["name"] for i in groups["up"]] == ["a"]
+    assert [i["name"] for i in groups["down"]] == ["b"]
+    assert sum(len(v) for v in groups.values()) == 2
+
+
+def test_group_by_direction_never_pads_an_empty_group():
+    groups = direction.group_by_direction([{"name": "a", "direction": "up"}])
+    assert groups["down"] == []
+    assert groups["up"]
+
+
+# --------------------------------------------------------------------------
 # percentile.py
 # --------------------------------------------------------------------------
 
@@ -218,8 +391,11 @@ def test_report_id_differs_across_runs():
 
 def test_contract_versions_are_fixed():
     built = contract.build_contract(datetime(2026, 11, 19, 10, 30, tzinfo=SHANGHAI))
-    assert built.rule_version == "active-industry-scan-v1"
-    assert built.schema_version == "1.0"
+    assert built.rule_version == "active-industry-scan-v2"
+    assert built.schema_version == "1.1"
+    # The constants and the built identity must never drift apart.
+    assert built.rule_version == contract.RULE_VERSION
+    assert built.schema_version == contract.SCHEMA_VERSION
 
 
 def test_contract_normalizes_naive_datetime_to_shanghai():
@@ -473,6 +649,126 @@ def test_filter_by_listing_age_keeps_all_when_pool_is_old():
     assert len(kept) == 5
     assert excluded == []
     assert missing == []
+
+
+def test_index_snapshot_parses_board_changes_and_keeps_missing_as_none():
+    def runner(args):
+        assert args[:2] == ["index", "snapshot"]
+        codes = args[args.index("--thscodes") + 1]
+        assert len(codes.split(",")) == 90
+        return 0, json.dumps({"ok": True, "data": {"item": [
+            {"thscode": "881121.TI", "price_change_ratio_pct": -6.847481},
+            {"thscode": "881101.TI", "price_change_ratio_pct": None},
+            {"name": "无代码"},
+        ]}}), ""
+
+    changes = fuyao_client.FuyaoClient(runner=runner).index_snapshot(
+        [f"8811{i:02d}.TI" for i in range(90)]
+    )
+    assert changes["881121.TI"] == pytest.approx(-6.847481)
+    assert changes["881101.TI"] is None
+    assert len(changes) == 2
+
+
+def test_index_snapshot_supports_a_full_level_two_catalogue():
+    def runner(args):
+        codes = args[args.index("--thscodes") + 1]
+        assert len(codes.split(",")) == 230
+        return 0, json.dumps({"ok": True, "data": {"item": [
+            {"thscode": "884101.TI", "price_change_ratio_pct": -2.699863},
+        ]}}), ""
+
+    changes = fuyao_client.FuyaoClient(runner=runner).index_snapshot(
+        [f"8841{i:02d}.TI" for i in range(230)]
+    )
+    assert changes == {"884101.TI": pytest.approx(-2.699863)}
+
+
+def test_index_snapshot_empty_input_makes_no_call():
+    def runner(args):  # pragma: no cover - must not be reached
+        raise AssertionError("should not call the CLI for an empty list")
+
+    assert fuyao_client.FuyaoClient(runner=runner).index_snapshot([]) == {}
+
+
+def test_index_snapshot_failure_raises_for_caller_to_degrade():
+    def runner(args):
+        return 1, "", "boom"
+
+    with pytest.raises(fuyao_client.FuyaoError):
+        fuyao_client.FuyaoClient(runner=runner).index_snapshot(["881121.TI"])
+
+
+def test_market_snapshot_pages_concurrently_and_dedupes_by_thscode():
+    calls: list[int] = []
+
+    def runner(args):
+        assert args[:2] == ["market", "snapshot"]
+        offset = int(args[args.index("--offset") + 1])
+        calls.append(offset)
+        # Page 0 and page 1 overlap on 000002.SZ on purpose.
+        if offset == 0:
+            rows = [
+                {"thscode": "000001.SZ", "price_change_ratio_pct": 1.495017, "volume": 2.1e8},
+                {"thscode": "000002.SZ", "price_change_ratio_pct": -3.424658, "volume": 1.5e8},
+            ]
+        elif offset == 1000:
+            rows = [
+                {"thscode": "000002.SZ", "price_change_ratio_pct": -3.5, "volume": 1.5e8},
+                {"thscode": "000006.SZ", "price_change_ratio_pct": None, "volume": 0},
+            ]
+        else:
+            rows = []
+        return 0, json.dumps({"ok": True, "data": {"item": rows}}), ""
+
+    snapshot = fuyao_client.FuyaoClient(runner=runner).market_snapshot(max_pages=3)
+    assert len(calls) == 3
+    assert set(snapshot.changes) == {"000001.SZ", "000002.SZ", "000006.SZ"}
+    # The later page wins on overlap, and keeps the last observed value.
+    assert snapshot.changes["000002.SZ"] == pytest.approx(-3.5)
+    # A missing change stays None; the volume hint is preserved.
+    assert snapshot.changes["000006.SZ"] is None
+    assert snapshot.volumes["000006.SZ"] == 0
+    assert snapshot.source == "fuyao-market-snapshot"
+
+
+def test_market_change_map_uses_primary_path_without_touching_fallback():
+    def fallback():  # pragma: no cover - must not be reached
+        raise AssertionError("fallback must not run when the primary succeeds")
+
+    client = fuyao_client.FuyaoClient(
+        runner=lambda args: (0, json.dumps({"ok": True, "data": {"item": [
+            {"thscode": "600000.SH", "price_change_ratio_pct": 1.5, "volume": 1e6},
+        ]}}), "")
+    )
+    snapshot = fuyao_client.market_change_map(client, fallback=fallback)
+    assert snapshot.source == "fuyao-market-snapshot"
+    assert snapshot.changes == {"600000.SH": 1.5}
+
+
+def test_market_change_map_falls_back_when_primary_fails():
+    client = fuyao_client.FuyaoClient(runner=lambda args: (1, "", "boom"))
+    recovered = fuyao_client.MarketSnapshot(
+        changes={"600000.SH": 2.0}, volumes={"600000.SH": 1e6},
+        source="sina-full-snapshot",
+    )
+    snapshot = fuyao_client.market_change_map(client, fallback=lambda: recovered)
+    assert snapshot.source == "sina-full-snapshot"
+    assert snapshot.changes == {"600000.SH": 2.0}
+
+
+def test_market_change_map_returns_empty_snapshot_when_everything_fails():
+    """Losing the benchmark degrades the run; it must not raise."""
+
+    client = fuyao_client.FuyaoClient(runner=lambda args: (1, "", "boom"))
+
+    def fallback():
+        raise fuyao_client.FuyaoError("fallback down")
+
+    snapshot = fuyao_client.market_change_map(client, fallback=fallback)
+    assert snapshot.changes == {}
+    assert snapshot.source == "unavailable"
+    assert not snapshot
 
 
 # --------------------------------------------------------------------------
@@ -875,6 +1171,251 @@ def test_handoff_candidates_are_usable_thscodes(tmp_path):
         assert code.endswith(".TI")
 
 
+# --------------------------------------------------------------------------
+# direction layer through the full pipeline (fixture direction.json)
+# --------------------------------------------------------------------------
+
+
+def _direction_result(tmp_path, fixture="direction.json", *extra):
+    out = tmp_path / "out.json"
+    completed = _run_cli("--fixture", str(FIXTURES / fixture), "--output", str(out), *extra)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _industry(result, name):
+    return next(item for item in result["industries"] if item["name"] == name)
+
+
+def test_market_baseline_is_published_and_recomputable(tmp_path):
+    result = _direction_result(tmp_path)
+    market = result["direction"]["market"]
+    assert market["status"] == "ok"
+    assert market["medianChangePct"] == pytest.approx(-2.2)
+    assert market["upCount"] + market["downCount"] + market["flatCount"] == market["validCount"]
+    assert market["validCount"] + market["suspendedCount"] == market["universe"]
+    assert result["direction"]["relativeBasis"] == "equal-weight-vs-market-median"
+
+
+def test_industry_directions_differ_while_quadrant_stays_active(tmp_path):
+    """The whole point: heavy trading is not the same as rising."""
+
+    result = _direction_result(tmp_path)
+    semis = _industry(result, "半导体")
+    bank = _industry(result, "银行")
+
+    assert semis["quadrant"] == "真实活跃"
+    assert semis["direction"] == "down"
+    assert semis["tag"] == "真实活跃·下跌"
+
+    assert bank["direction"] == "up"
+    assert bank["tag"] == "权重拉升·上涨"
+
+    # Opposite directions, opposite relative excess.
+    assert semis["relativeToMarketPct"] < 0 < bank["relativeToMarketPct"]
+
+
+def test_industry_reports_all_three_evidence_sets(tmp_path):
+    result = _direction_result(tmp_path)
+    semis = _industry(result, "半导体")
+    # board index, ranking hits, member breadth — all present at once.
+    assert semis["boardChangePct"] == pytest.approx(-6.8475)
+    assert semis["hitDownCount"] == 4 and semis["hitUpCount"] == 0
+    assert semis["memberDownCount"] == 4 and semis["memberUpCount"] == 0
+    assert semis["directionBasis"] == "member-median"
+
+
+def test_low_coverage_withholds_breadth_but_keeps_other_evidence(tmp_path):
+    result = _direction_result(tmp_path)
+    thin = _industry(result, "低覆盖行业")
+    assert thin["memberBreadthStatus"] == "insufficient"
+    assert thin["memberMedianChangePct"] is None
+    assert thin["relativeToMarketPct"] is None
+    # Board index and hit counts survive, and the basis says which one decided.
+    assert thin["boardChangePct"] == pytest.approx(-3.1)
+    assert thin["hitUpCount"] == 4 and thin["hitDownCount"] == 4
+    assert thin["directionBasis"] == "board-index"
+
+
+def test_suspended_members_are_excluded_not_counted_flat(tmp_path):
+    result = _direction_result(tmp_path)
+    semis = _industry(result, "半导体")
+    # 600099.SH has no measurement at all; that is "unknown", not "flat".
+    assert semis["memberUnknownCount"] == 1
+    assert semis["memberFlatCount"] == 0
+    assert semis["memberCoverage"] == pytest.approx(0.8)
+
+
+def test_direction_summary_counts_match_ranking_rows(tmp_path):
+    result = _direction_result(tmp_path)
+    for key in ("byAmount", "byTurnover"):
+        rows = result["rankings"][key]
+        summary = result["directionSummary"][key]
+        assert summary["up"] == sum(1 for r in rows if r["direction"] == "up")
+        assert summary["down"] == sum(1 for r in rows if r["direction"] == "down")
+        assert summary["suspended"] == sum(
+            1 for r in rows if r["direction"] == "suspended"
+        )
+        assert (summary["up"] + summary["down"] + summary["flat"]
+                + summary["suspended"] == summary["total"])
+        amount_total = sum(r["amountYi"] for r in rows)
+        if amount_total:
+            expected = sum(r["amountYi"] for r in rows if r["direction"] == "up") / amount_total
+            assert summary["upAmountShare"] == pytest.approx(expected, abs=1e-4)
+
+
+def test_ranking_rows_carry_direction_and_relative(tmp_path):
+    result = _direction_result(tmp_path)
+    market = result["direction"]["market"]["medianChangePct"]
+    seen = set()
+    for row in result["rankings"]["byAmount"]:
+        seen.add(row["direction"])
+        if row["relativeToMarketPct"] is not None:
+            assert row["relativeToMarketPct"] == pytest.approx(
+                row["changePct"] - market, abs=1e-2
+            )
+    assert "up" in seen and "down" in seen
+
+
+def test_intersection_groups_by_direction_without_losing_members(tmp_path):
+    result = _direction_result(tmp_path)
+    items = result["intersection"]
+    groups = direction.group_by_direction(items)
+    assert len(groups["up"]) == 1
+    assert len(groups["down"]) == 2
+    # Grouping is a view: nobody is dropped.
+    assert len(groups["up"]) + len(groups["down"]) == len(items)
+    assert {i["direction"] for i in items} == {"up", "down"}
+
+
+def test_handoff_list_is_unaffected_by_direction(tmp_path):
+    """Candidates are chosen by activity; direction only annotates them."""
+
+    result = _direction_result(tmp_path)
+    candidates = result["handoff"]["candidateThscodes"]
+    assert len(candidates) == len(result["handoff"]["candidates"])
+    tags = {c["thscode"]: c["tag"] for c in result["handoff"]["candidates"]}
+    # A falling industry stays in the list, carrying its direction.
+    assert "881121.TI" in candidates
+    assert tags["881121.TI"] == "真实活跃·下跌"
+
+
+def test_direction_does_not_reorder_industries(tmp_path):
+    """Decorating must not disturb the activity ordering."""
+
+    result = _direction_result(tmp_path)
+    flags = [
+        int(i["amountTopCount"] >= 2 and i["turnoverTopCount"] >= 2)
+        for i in result["industries"]
+    ]
+    # Two-ranking industries still come before every one-sided one.
+    assert flags == sorted(flags, reverse=True)
+
+
+def test_preopen_labels_direction_as_previous_session(tmp_path):
+    payload = _fixture("direction.json")
+    payload["now"] = "2026-11-20T09:00:00+08:00"
+    fixture = tmp_path / "preopen.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "out.json"
+    completed = _run_cli("--fixture", str(fixture), "--output", str(out))
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["sessionState"] == "preopen"
+    assert "前一交易日" in result["direction"]["basisNote"]
+
+
+def test_absence_of_market_data_nulls_relatives_without_guessing(tmp_path):
+    """scan.json has no market block: absolute direction still works."""
+
+    result = _direction_result(tmp_path, "scan.json")
+    market = result["direction"]["market"]
+    assert market["status"] == "insufficient"
+    assert market["medianChangePct"] is None
+    assert market["upCount"] == 0
+    for item in result["industries"]:
+        assert item["relativeToMarketPct"] is None
+        assert item["boardRelativeToMarketPct"] is None
+    # Absolute direction is still derived from each stock's own change.
+    assert {r["direction"] for r in result["rankings"]["byAmount"]} == {"up"}
+
+
+def test_fixture_without_direction_keys_defaults_to_none_not_zero():
+    """A fixture lacking direction evidence must not imply a zero move."""
+
+    inputs, _ = scan_pipeline.load_fixture(FIXTURES / "scan.json")
+    assert inputs.market is None
+    assert inputs.board_changes == {}
+
+
+def test_build_result_survives_missing_direction_inputs():
+    inputs, options = scan_pipeline.load_fixture(FIXTURES / "scan.json")
+    result = scan_pipeline.build_result(
+        inputs, top=8, candidate_pool=50, min_listing_days=250,
+        level=1, top_sectors=6, quality=scan_pipeline.Quality(),
+    )
+    assert result["direction"]["market"]["medianChangePct"] is None
+    assert result["directionSummary"]["byAmount"]["total"] == 8
+    assert all(i["direction"] in {None, "up", "down", "flat", "suspended"}
+               for i in result["industries"])
+
+
+def test_zero_amount_ranking_row_is_suspended_not_flat(tmp_path):
+    """A row with no traded value cannot have a real move, so it is not flat."""
+
+    result = _direction_result(tmp_path)
+    rows = {r["name"]: r for r in result["rankings"]["byTurnover"]}
+    assert rows["停牌股"]["direction"] == "suspended"
+    assert rows["平盘股"]["direction"] == "flat"
+    summary = result["directionSummary"]["byTurnover"]
+    assert summary["suspended"] == 1
+    assert summary["flat"] == 1
+
+
+def test_level_both_annotates_second_level_boards(tmp_path):
+    payload = _fixture("direction.json")
+    payload["boards"].append(
+        {"thscode": "884001.TI", "name": "半导体(二级)", "level": 2,
+         "members": ["600001.SH", "600002.SH", "600003.SH", "600004.SH"]}
+    )
+    payload["boardChanges"]["884001.TI"] = -7.4
+    payload["options"] = {"top": 8, "topSectors": 6, "level": "both"}
+    fixture = tmp_path / "both.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "out.json"
+    completed = _run_cli("--fixture", str(fixture), "--level", "both",
+                         "--output", str(out))
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(out.read_text(encoding="utf-8"))
+    second = next(i for i in result["industries"] if i["level"] == 2)
+    assert second["boardChangePct"] == pytest.approx(-7.4)
+    assert second["direction"] == "down"
+    assert second["tag"].endswith("下跌")
+
+
+def test_empty_intersection_still_carries_direction_blocks(tmp_path):
+    payload = _fixture("direction.json")
+    # Make the two rankings disjoint.
+    payload["byTurnover"] = [
+        dict(row, code=f"6011{i:02d}", symbol=f"sh6011{i:02d}")
+        for i, row in enumerate(payload["byTurnover"])
+    ]
+    fixture = tmp_path / "disjoint.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    out, md = tmp_path / "out.json", tmp_path / "out.md"
+    completed = _run_cli("--fixture", str(fixture),
+                         "--output", str(out), "--markdown", str(md))
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["intersection"] == []
+    # Direction sections are unaffected by an empty intersection.
+    assert result["direction"]["market"]["status"] == "ok"
+    assert result["directionSummary"]["byAmount"]["total"] > 0
+    text = md.read_text(encoding="utf-8")
+    assert "本次无交集" in text
+    assert "活跃下跌" in text
+
+
 def test_markdown_numbers_match_json(tmp_path):
     out = tmp_path / "out.json"
     md = tmp_path / "out.md"
@@ -888,6 +1429,109 @@ def test_markdown_numbers_match_json(tmp_path):
         assert str(item["turnoverTopCount"]) in text
     assert result["reportId"] in text
     assert result["ruleVersion"] in text
+
+
+def _direction_markdown(tmp_path):
+    out = tmp_path / "out.json"
+    md = tmp_path / "out.md"
+    completed = _run_cli("--fixture", str(FIXTURES / "direction.json"),
+                         "--output", str(out), "--markdown", str(md))
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(out.read_text(encoding="utf-8")), md.read_text(encoding="utf-8")
+
+
+def test_markdown_industry_table_carries_direction_columns(tmp_path):
+    result, text = _direction_markdown(tmp_path)
+    header = next(line for line in text.splitlines() if line.startswith("| 行业 |"))
+    for column in ("板块涨跌", "上榜涨跌", "相对市场", "方向标签"):
+        assert column in header
+    # A withheld value renders as a dash, never as 0.
+    thin = _industry(result, "低覆盖行业")
+    assert thin["relativeToMarketPct"] is None
+    row = next(line for line in text.splitlines() if line.startswith("| 低覆盖行业 |"))
+    assert "—" in row
+
+
+def test_markdown_direction_groups_match_json_membership(tmp_path):
+    """Group membership and labels must be a pure render of the JSON."""
+
+    result, text = _direction_markdown(tmp_path)
+    groups = direction.group_by_direction(result["industries"])
+    up_block = text.split("### 活跃上涨")[1].split("### ")[0]
+    down_block = text.split("### 活跃下跌")[1].split("\n- ")[0]
+
+    assert f"（{len(groups['up'])} 个）" in text
+    assert f"（{len(groups['down'])} 个）" in text
+    for item in groups["up"]:
+        assert item["name"] in up_block
+        assert item["tag"] in up_block
+    for item in groups["down"]:
+        assert item["name"] in down_block
+    # The rising and falling blocks never swap members.
+    for item in groups["down"]:
+        assert item["name"] not in up_block
+
+
+def test_markdown_group_lists_strongest_relative_first(tmp_path):
+    result, text = _direction_markdown(tmp_path)
+    down_block = text.split("### 活跃下跌")[1].split("\n- ")[0]
+    names = [i["name"] for i in direction.group_by_direction(
+        result["industries"], order_by_relative=True)["down"]]
+    positions = [down_block.index(n) for n in names]
+    assert positions == sorted(positions)
+
+
+def test_direction_groups_partition_the_industry_table(tmp_path):
+    """No industry may vanish from the grouping: it is a full split, not a top-N."""
+
+    result, text = _direction_markdown(tmp_path)
+    grouped = direction.group_by_direction(result["industries"])
+    directional = [i for i in result["industries"] if i["direction"] in {"up", "down"}]
+    assert len(grouped["up"]) + len(grouped["down"]) == len(directional)
+    for item in directional:
+        assert item["name"] in text.split("## 三")[0]
+
+    # The limit constant must not quietly recut the already-capped table.
+    assert report.DIRECTION_GROUP_LIMIT is None
+
+
+def test_markdown_states_empty_group_explicitly(tmp_path):
+    """An all-one-way day must say so rather than padding the empty side."""
+
+    payload = _fixture("direction.json")
+    for board in payload["boards"]:
+        board["members"] = [m for m in board["members"] if m.startswith("60000")
+                            and m in {"600001.SH", "600002.SH", "600003.SH", "600004.SH"}]
+    payload["boards"] = [b for b in payload["boards"] if b["members"]]
+    payload["byTurnover"] = [r for r in payload["byTurnover"] if r["changepercent"] < 0]
+    fixture = tmp_path / "oneway.json"
+    fixture.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    out, md = tmp_path / "out.json", tmp_path / "out.md"
+    completed = _run_cli("--fixture", str(fixture), "--output", str(out), "--markdown", str(md))
+    assert completed.returncode == 0, completed.stderr
+    text = md.read_text(encoding="utf-8")
+    assert "活跃上涨（0 个）" in text
+    assert "本次该分组为空" in text
+
+
+def test_markdown_direction_footer_declares_thresholds_and_disclaimer(tmp_path):
+    _, text = _direction_markdown(tmp_path)
+    assert "needs-backtest" in text
+    assert "不构成买卖信号" in text
+    assert "停牌与无昨收样本剔出分母" in text
+
+
+def test_markdown_direction_section_reports_market_baseline(tmp_path):
+    result, text = _direction_markdown(tmp_path)
+    market = result["direction"]["market"]
+    assert f"{market['medianChangePct']:.2f}%" in text
+    assert f"涨 {market['upCount']} / 跌 {market['downCount']}" in text
+
+
+def test_markdown_rendering_is_deterministic_with_direction(tmp_path):
+    _, first = _direction_markdown(tmp_path)
+    _, second = _direction_markdown(tmp_path)
+    assert first == second
 
 
 def test_markdown_contains_intersection_and_excluded_sections(tmp_path):
@@ -999,8 +1643,10 @@ def test_original_rank_is_recorded_when_filtering():
 
 
 def _live_inputs(monkeypatch, *, amount_fail=False, turnover_fail=False,
-                 full_fail=False, symbols_fail=False, bars_missing=0,
+                 full_fail=False, symbols_fail=False, symbols_undated=False,
+                 bars_missing=0,
                  boards_cached=None, boards_ok=True,
+                 board_snapshot_fail=False, market_snapshot_fail=False,
                  now="2026-11-19T10:30:00+08:00"):
     """Drive collect_live with every external call stubbed."""
 
@@ -1024,6 +1670,9 @@ def _live_inputs(monkeypatch, *, amount_fail=False, turnover_fail=False,
     def fake_symbols(self):
         if symbols_fail:
             raise fuyao_client.FuyaoError("stub symbols failure")
+        if symbols_undated:
+            # 2026-11-20 upstream regression: rows present, list_date absent.
+            return [fuyao_client.SymbolInfo(r.thscode, r.name, None) for r in rows]
         return [fuyao_client.SymbolInfo(r.thscode, r.name, date(2015, 1, 1)) for r in rows]
 
     def fake_klines(symbols, **kwargs):
@@ -1034,6 +1683,25 @@ def _live_inputs(monkeypatch, *, amount_fail=False, turnover_fail=False,
     monkeypatch.setattr(sina_client, "fetch_full_snapshot", fake_full)
     monkeypatch.setattr(sina_client, "fetch_klines", fake_klines)
     monkeypatch.setattr(fuyao_client.FuyaoClient, "list_symbols", fake_symbols)
+
+    def fake_index_snapshot(self, codes):
+        if board_snapshot_fail:
+            raise fuyao_client.FuyaoError("stub board snapshot failure")
+        return {code: -6.85 for code in codes}
+
+    def fake_market_snapshot(self, **kwargs):
+        if market_snapshot_fail:
+            raise fuyao_client.FuyaoError("stub market snapshot failure")
+        changes = {r.thscode: r.change_pct for r in rows}
+        return fuyao_client.MarketSnapshot(
+            changes=changes,
+            volumes={r.thscode: r.amount for r in rows},
+            source="fuyao-market-snapshot",
+            total=len(rows),
+        )
+
+    monkeypatch.setattr(fuyao_client.FuyaoClient, "index_snapshot", fake_index_snapshot)
+    monkeypatch.setattr(fuyao_client.FuyaoClient, "market_snapshot", fake_market_snapshot)
 
     if boards_cached is not None:
         monkeypatch.setattr(industry_map, "load_boards", lambda *a, **k: boards_cached)
@@ -1083,11 +1751,123 @@ def test_degradation_full_snapshot_failure_is_insufficient(monkeypatch):
     assert inputs.amount_rows == []
 
 
+def test_board_index_failure_keeps_hit_and_breadth_evidence(monkeypatch):
+    inputs, quality = _live_inputs(monkeypatch, board_snapshot_fail=True)
+    assert quality.status == "degraded"
+    assert any("板块指数快照不可用" in d for d in quality.degradations)
+    assert inputs.board_changes == {}
+    # The market map still arrived, so width and relative stay available.
+    assert inputs.market and inputs.market.changes
+
+    result = scan_pipeline.build_result(
+        inputs, top=5, candidate_pool=50, min_listing_days=250,
+        level=1, top_sectors=5, quality=quality,
+    )
+    for item in result["industries"]:
+        assert item["boardChangePct"] is None
+        assert item["boardDirection"] is None
+        assert item["hitCount"] >= 0
+        assert item["memberBreadthStatus"] in {"ok", "insufficient"}
+
+
+def test_market_failure_falls_back_to_sina_snapshot(monkeypatch):
+    inputs, quality = _live_inputs(monkeypatch, market_snapshot_fail=True)
+    assert inputs.market is not None
+    assert inputs.market.source == "sina-full-snapshot"
+    assert inputs.market.changes
+    assert any("新浪全量快照兜底" in d for d in quality.degradations)
+
+
+def test_both_direction_sources_failing_degrades_without_aborting(monkeypatch):
+    """Losing every direction source must still yield a complete scan."""
+
+    inputs, quality = _live_inputs(
+        monkeypatch, board_snapshot_fail=True, market_snapshot_fail=True,
+        full_fail=True,
+    )
+    assert quality.status in {"degraded", "insufficient"}
+    # Rankings still arrive from the sorted-pool path.
+    assert inputs.amount_rows and inputs.turnover_rows
+    assert inputs.market is not None
+    assert inputs.market.source == "unavailable"
+
+    result = scan_pipeline.build_result(
+        inputs, top=5, candidate_pool=50, min_listing_days=250,
+        level=1, top_sectors=5, quality=quality,
+    )
+    assert result["direction"]["market"]["status"] == "insufficient"
+    assert result["direction"]["market"]["medianChangePct"] is None
+    # Absolute direction survives; nothing pretends to know the benchmark.
+    assert result["rankings"]["byAmount"]
+    for item in result["industries"]:
+        assert item["relativeToMarketPct"] is None
+        assert item["boardRelativeToMarketPct"] is None
+
+
+def test_direction_degrades_independently_of_ranking_failures(monkeypatch):
+    """A direction failure must not be reported as a ranking failure."""
+
+    inputs, quality = _live_inputs(monkeypatch, board_snapshot_fail=True)
+    assert not any("排序接口失败" in d for d in quality.degradations)
+
+
 def test_degradation_symbols_failure_skips_filtering(monkeypatch):
     inputs, quality = _live_inputs(monkeypatch, symbols_fail=True)
     assert quality.status == "degraded"
     assert any("新股过滤降级" in d for d in quality.degradations)
     assert inputs.amount_rows, "上市日期缺失时不应让榜单为空"
+
+
+def test_undated_symbol_field_wholesale_gap_fails_open(monkeypatch):
+    """2026-11-20: every row had list_date null; that must not empty the run."""
+
+    inputs, quality = _live_inputs(monkeypatch, symbols_undated=True)
+    assert quality.status == "degraded"
+    assert any("整体缺失" in d and "未执行新股过滤" in d for d in quality.degradations)
+    assert inputs.amount_rows, "整体缺上市日期时榜单不得为空"
+    assert inputs.turnover_rows, "换手率榜同样不得为空"
+    # Nothing was excluded on age grounds, because age could not be measured.
+    assert inputs.excluded_by_amount == []
+    assert inputs.excluded_by_turnover == []
+
+
+def test_undated_symbols_still_produce_a_full_result_document(monkeypatch):
+    inputs, quality = _live_inputs(monkeypatch, symbols_undated=True)
+    result = scan_pipeline.build_result(
+        inputs, top=5, candidate_pool=50, min_listing_days=250,
+        level=1, top_sectors=5, quality=quality,
+    )
+    assert result["quality"]["status"] == "degraded"
+    assert result["rankings"]["byAmount"]
+    assert any("整体缺失" in d for d in result["quality"]["degradations"])
+
+
+def test_symbol_lookup_fails_open_only_when_every_date_is_absent():
+    """A single undated stock keeps the old exclude-that-stock behaviour."""
+
+    class PartiallyDated:
+        def list_symbols(self):
+            return [
+                fuyao_client.SymbolInfo("600000.SH", "老股", date(2015, 1, 1)),
+                fuyao_client.SymbolInfo("688845.SH", "缺日期", None),
+            ]
+
+    quality = scan_pipeline.Quality()
+    symbols = scan_pipeline._symbol_lookup(PartiallyDated(), quality)
+    assert set(symbols) == {"600000.SH", "688845.SH"}
+    assert quality.status == "ok"
+    assert quality.degradations == []
+
+
+def test_symbol_lookup_fails_open_when_all_dates_absent():
+    class WhollyUndated:
+        def list_symbols(self):
+            return [fuyao_client.SymbolInfo("600000.SH", "老股", None)]
+
+    quality = scan_pipeline.Quality()
+    assert scan_pipeline._symbol_lookup(WhollyUndated(), quality) == {}
+    assert quality.status == "degraded"
+    assert any("整体缺失" in d for d in quality.degradations)
 
 
 def test_degradation_missing_bars_is_recorded(monkeypatch):
@@ -1254,12 +2034,285 @@ def test_documented_keys_match_output(tmp_path):
         "sessionState", "elapsedBars", "dataCutoff", "earlySnapshot", "settled",
         "turnoverBasis", "filter", "rankings", "industries", "intersection",
         "percentile", "handoff", "quality", "disclaimer", "excluded",
+        "direction", "directionSummary",
     ):
         assert key in result, f"输出缺字段 {key}"
     assert set(result["intersection"][0]) == {
-        "code", "name", "amountRank", "turnoverRank", "industries"
+        "code", "name", "amountRank", "turnoverRank", "industries",
+        "changePct", "direction", "relativeToMarketPct",
     }
     assert set(result["industries"][0]) == {
         "code", "name", "level", "amountTopCount", "turnoverTopCount",
         "memberCount", "hitRateAmount", "hitRateTurnover", "quadrant",
+        # direction layer (schemaVersion 1.1)
+        "direction", "directionBasis", "tag", "boardChangePct", "boardDirection",
+        "hitUpCount", "hitDownCount", "hitFlatCount", "hitSuspendedCount",
+        "hitUnknownCount", "hitCount",
+        "memberUpCount", "memberDownCount", "memberFlatCount",
+        "memberSuspendedCount", "memberUnknownCount",
+        "memberMedianChangePct", "memberCoverage",
+        "memberBreadthStatus", "relativeToMarketPct", "boardRelativeToMarketPct",
     }
+    assert set(result["direction"]["market"]) >= {
+        "status", "source", "universe", "validCount", "suspendedCount",
+        "upCount", "downCount", "flatCount", "medianChangePct",
+    }
+    assert set(result["rankings"]["byAmount"][0]) >= {
+        "rank", "code", "name", "amountYi", "turnoverPct", "floatMvYi",
+        "changePct", "direction", "relativeToMarketPct",
+    }
+
+
+# --------------------------------------------------------------------------
+# report.render_answer (fixed session answer format)
+# --------------------------------------------------------------------------
+
+
+def _answer_markdown(tmp_path):
+    out = tmp_path / "out.json"
+    md = tmp_path / "out.md"
+    answer = tmp_path / "answer.md"
+    completed = _run_cli(
+        "--fixture", str(FIXTURES / "direction.json"),
+        "--output", str(out), "--markdown", str(md), "--answer", str(answer),
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(out.read_text(encoding="utf-8")), answer.read_text(encoding="utf-8")
+
+
+def test_answer_heading_and_highlight_are_fixed(tmp_path):
+    """The opening block is exactly one heading plus five bullets."""
+
+    result, text = _answer_markdown(tmp_path)
+    lines = text.splitlines()
+    assert lines[0] == report.ANSWER_HEADING == "# 最活跃的行业"
+    assert lines[1] == ""
+    bullets = [line for line in lines[2:8] if line.startswith("- ")]
+    assert len(bullets) == report.ANSWER_HIGHLIGHT_BULLETS
+    for prefix in ("- 时点：", "- 全市场：", "- 最活跃行业：", "- 方向：", "- 双榜交集："):
+        assert any(line.startswith(prefix) for line in bullets), prefix
+    # The two dashboards are distinct objects: the answer is not the report.
+    assert "# A 股活跃行业扫描" not in text
+    assert result["reportId"] in text
+
+
+def test_answer_sections_have_fixed_names_and_order(tmp_path):
+    """Sections never get renamed, duplicated or reordered."""
+
+    _, text = _answer_markdown(tmp_path)
+    headings = [line for line in text.splitlines() if line.startswith("## ")]
+    assert headings == [
+        "## 一、行业活跃度与方向",
+        "## 二、方向分组",
+        "## 三、双榜交集",
+        "## 四、扫描变化轨迹",
+        "## 五、双榜明细",
+        "## 六、数据质量",
+    ]
+
+
+def test_answer_is_deterministic_and_matches_cli(tmp_path):
+    """Same JSON renders the same text; the file is the renderer's output."""
+
+    result, text = _answer_markdown(tmp_path)
+    assert report.render_answer(result) == report.render_answer(result)
+    again = tmp_path / "again.md"
+    again.write_text(report.render_answer(result), encoding="utf-8")
+    body = text.split("\n- JSON：")[0]
+    assert body == again.read_text(encoding="utf-8").rstrip()
+
+
+def test_answer_uses_signed_change_percent():
+    """A change always carries its sign; a rate never does."""
+
+    document = {
+        "industries": [
+            {
+                "code": "881121.TI", "name": "半导体", "level": 1,
+                "amountTopCount": 4, "turnoverTopCount": 2, "memberCount": 5,
+                "hitRateAmount": 0.8, "hitRateTurnover": 0.4, "quadrant": "真实活跃",
+                "hitCount": 6, "hitUpCount": 1, "hitDownCount": 5,
+                "boardChangePct": 1.2, "relativeToMarketPct": -2.5,
+                "direction": "down", "tag": "真实活跃·上涨",
+            }
+        ],
+        "rankings": {
+            "byAmount": [
+                {"rank": 1, "name": "A", "code": "600001.SH", "amountYi": 10.0,
+                 "turnoverPct": 8.0, "floatMvYi": 10.0, "changePct": 1.5,
+                 "direction": "up", "relativeToMarketPct": 2.5},
+            ],
+        },
+        "intersection": [],
+        "direction": {
+            "market": {"medianChangePct": 1.92, "upCount": 4, "downCount": 1,
+                       "flatCount": 0, "suspendedCount": 0},
+            "flatEpsilon": 0.005, "minBreadthCoverage": 0.7,
+            "basisNote": "已收盘",
+        },
+        "handoff": {"candidateThscodes": ["881121.TI"]},
+        "quality": {"status": "ok", "degradations": [], "warnings": []},
+    }
+    text = report.render_answer(document)
+    assert "+1.20%" in text      # board change keeps its plus
+    assert "-2.50%" in text      # relative change keeps its minus
+    assert "+1.92%" in text      # market median keeps its plus
+    assert "8.00%" in text       # turnover is a rate: no sign
+    assert "+8.00%" not in text
+
+
+def test_skill_md_requires_verbatim_answer():
+    """Guard the hard rule: sessions paste the file, they do not re-typeset."""
+
+    text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    section = text.split("## 回复格式（硬要求）", 1)[1].split("\n## ", 1)[0]
+    assert "--answer" in section
+    assert "逐字复制" in section
+    assert "# 最活跃的行业" in section
+    assert "## 备注" in section
+
+
+# --------------------------------------------------------------------------
+# history.py + 扫描变化轨迹
+# --------------------------------------------------------------------------
+
+
+def _doc(at: str, median: float, up: int, down: int, *, hits=4, board=-6.85):
+    return {
+        "reportId": f"ais-{at.replace(':', '').replace('-', '')}-00000000",
+        "asOf": f"2026-11-24T{at}:00+08:00",
+        "dataCutoff": f"2026-11-24T{at}:00+08:00",
+        "sessionState": "intraday",
+        "elapsedBars": 8,
+        "quality": {"status": "ok", "degradations": [], "warnings": []},
+        "direction": {
+            "market": {"medianChangePct": median, "upCount": up, "downCount": down,
+                       "flatCount": 0, "suspendedCount": 0},
+        },
+        "directionSummary": {
+            "byAmount": {"up": 45, "down": 5},
+            "byTurnover": {"up": 40, "down": 10},
+        },
+        "industries": [
+            {"code": "881121.TI", "name": "半导体", "level": 1,
+             "amountTopCount": hits, "turnoverTopCount": 4, "hitCount": hits + 4,
+             "boardChangePct": board, "relativeToMarketPct": 2.0,
+             "direction": "up", "tag": "真实活跃·上涨"},
+        ],
+        "intersection": [
+            {"code": "688836.SH", "name": "宇树科技", "amountRank": 1,
+             "turnoverRank": 2, "industries": ["自动化设备"], "changePct": 4.0,
+             "direction": "up", "relativeToMarketPct": 2.0},
+        ],
+        "handoff": {"candidateThscodes": ["881121.TI"]},
+        "rankings": {},
+    }
+
+
+def test_history_snapshot_keeps_only_what_a_trajectory_needs():
+    row = history.snapshot(_doc("10:00", 1.5, 4000, 900))
+    assert row["market"]["medianChangePct"] == 1.5
+    assert row["industries"][0]["amountTopCount"] == 4
+    assert row["intersection"]["count"] == 1
+    assert "rankings" not in row
+
+
+def test_history_append_is_idempotent_per_report_id(tmp_path):
+    first = _doc("10:00", 1.5, 4000, 900)
+    history.append_run(tmp_path, first)
+    history.append_run(tmp_path, first)
+    rows = history.load_recent(tmp_path, first["asOf"])
+    assert len(rows) == 1
+
+
+def test_history_load_recent_excludes_the_current_run(tmp_path):
+    first = _doc("10:00", 1.5, 4000, 900)
+    second = _doc("10:30", 1.2, 3900, 1000)
+    history.append_run(tmp_path, first)
+    history.append_run(tmp_path, second)
+    rows = history.load_recent(tmp_path, second["asOf"],
+                               exclude_report_id=second["reportId"])
+    assert [row["reportId"] for row in rows] == [first["reportId"]]
+
+
+def test_history_highlight_reports_only_moves_above_threshold():
+    before = history.snapshot(_doc("10:00", 1.5, 4000, 900))
+    same = history.snapshot(_doc("10:30", 1.6, 4020, 900))
+    moved = history.snapshot(_doc("11:00", 0.4, 3000, 1800, hits=6, board=-3.0))
+    assert history.highlight_changes(same, before, top_codes=["881121.TI"]) == []
+    changes = history.highlight_changes(moved, before, top_codes=["881121.TI"])
+    text = "\n".join(changes)
+    assert "全市场中位" in text
+    assert "上涨家数" in text
+    assert "半导体 成交额榜命中" in text
+    assert "半导体 板块" in text
+
+
+def test_history_highlight_names_intersection_changes():
+    before = history.snapshot(_doc("10:00", 1.5, 4000, 900))
+    after_doc = _doc("10:30", 1.5, 4000, 900)
+    after_doc["intersection"] = []
+    after = history.snapshot(after_doc)
+    text = "\n".join(history.highlight_changes(after, before))
+    assert "双榜交集 1 → 0 只" in text
+    assert "掉出 宇树科技" in text
+
+
+def test_trajectory_section_renders_first_run_placeholder():
+    text = report.render_answer(_doc("10:00", 1.5, 4000, 900))
+    assert "## 四、扫描变化轨迹" in text
+    assert "本次为当日首次记录" in text
+
+
+def test_trajectory_section_renders_row_per_run(tmp_path):
+    first = _doc("10:00", 1.5, 4000, 900)
+    second = _doc("10:30", 0.6, 3200, 1500, hits=6, board=-4.0)
+    history.append_run(tmp_path, first)
+    earlier = history.load_recent(tmp_path, second["asOf"])
+    text = report.render_answer(second, history=earlier)
+    block = text.split("## 四、扫描变化轨迹")[1].split("## 五、")[0]
+    assert "| 时刻 | bar |" in block
+    assert "10:00" in block and "10:30" in block
+    assert "关键变化（相对上一次扫描）" in block
+    assert "全市场中位 +1.50% → +0.60%" in block
+
+
+def test_cli_history_dir_accumulates_and_is_isolated_from_cache(tmp_path):
+    history_dir = tmp_path / "hist"
+    first = tmp_path / "first.json"
+    payload = _fixture("direction.json")
+    first.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    answer_one = tmp_path / "a1.md"
+    completed = _run_cli("--fixture", str(first), "--history-dir", str(history_dir),
+                         "--output", str(tmp_path / "o1.json"), "--answer", str(answer_one))
+    assert completed.returncode == 0, completed.stderr
+    assert "本次为当日首次记录" in answer_one.read_text(encoding="utf-8")
+
+    payload["now"] = "2026-11-20T16:00:00+08:00"
+    payload["boardChanges"]["881121.TI"] = -3.0
+    second = tmp_path / "second.json"
+    second.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    answer_two = tmp_path / "a2.md"
+    completed = _run_cli("--fixture", str(second), "--history-dir", str(history_dir),
+                         "--output", str(tmp_path / "o2.json"), "--answer", str(answer_two))
+    assert completed.returncode == 0, completed.stderr
+    text = answer_two.read_text(encoding="utf-8")
+    assert "本次为当日首次记录" not in text
+    assert "关键变化（相对上一次扫描）" in text
+    assert sorted(p.name for p in history_dir.iterdir()) == ["2026-11-20.jsonl"]
+
+
+def test_history_store_is_off_for_fixtures_and_on_for_live_runs():
+    """A replay must not become the next live run's baseline."""
+
+    fixture = scan_pipeline.parse_args(["--fixture", "x.json"])
+    assert scan_pipeline._history_root(fixture) is None
+
+    live = scan_pipeline.parse_args([])
+    assert scan_pipeline._history_root(live) == scan_pipeline.CACHE_ROOT / "history"
+
+    explicit = scan_pipeline.parse_args(["--fixture", "x.json", "--history-dir", "/tmp/h"])
+    assert str(scan_pipeline._history_root(explicit)) == "/tmp/h"
+
+    disabled = scan_pipeline.parse_args(["--no-history-store"])
+    assert scan_pipeline._history_root(disabled) is None

@@ -78,6 +78,8 @@
 | `remove-nested-a-stock-clone-20261114` | DeepSeek | completed-local-cleanup | 2026-11-14 |
 | `add-k3s-boot-network-repair-20261117` | DeepSeek | installed-and-self-heal-verified / pending-reboot-regression | 2026-11-17 |
 | `active-industry-scan-skill-plan` | Codex | complete（33/33） | 2026-11-19 |
+| `active-industry-scan-direction-plan` | DeepSeek | done（30/30；方向层已实现并通过离线测试、真实盘后端到端与文档门禁；2026-11-24 已归档 OpenSpec 变更） | 2026-11-20 |
+| `active-industry-scan-answer-format-plan` | DeepSeek | done（固定会话回复格式与扫描轨迹段：`--answer` 渲染 + `history.py` + SKILL.md 硬约束 + 离线用例） | 2026-11-24 |
 
 ## 说明
 

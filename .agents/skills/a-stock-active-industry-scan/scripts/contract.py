@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
-SCHEMA_VERSION = "1.0"
-RULE_VERSION = "active-industry-scan-v1"
+SCHEMA_VERSION = "1.1"
+RULE_VERSION = "active-industry-scan-v2"
 REPORT_ID_PREFIX = "ais"
 
 

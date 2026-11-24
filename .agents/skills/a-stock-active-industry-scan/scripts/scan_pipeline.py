@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import contract
+import direction
 import fuyao_client
+import history
 import industry_map
 import percentile
 import quadrant
@@ -92,12 +94,31 @@ class ScanInputs:
     excluded_by_amount: list[dict[str, Any]] = field(default_factory=list)
     excluded_by_turnover: list[dict[str, Any]] = field(default_factory=list)
     missing_list_date: list[str] = field(default_factory=list)
+    # Direction evidence.  ``market`` carries per-stock changes and volumes for
+    # the whole market; ``board_changes`` carries one value per board.  Both
+    # default to empty so a fixture without them still builds a valid document
+    # with direction fields explicitly unavailable.
+    market: fuyao_client.MarketSnapshot | None = None
+    board_changes: dict[str, float | None] = field(default_factory=dict)
 
 
 def _symbol_lookup(
     client: fuyao_client.FuyaoClient,
     quality: Quality,
 ) -> dict[str, fuyao_client.SymbolInfo]:
+    """Listing dates keyed by thscode, or ``{}`` when filtering cannot run.
+
+    Two distinct failures collapse to the same "do not filter" outcome:
+
+    * the call failed, or returned nothing — nothing to filter on;
+    * the call succeeded but *every* record lacks ``list_date``.  On 2026-11-20
+      the upstream returned 5584 rows with ``list_date: null`` on all of them.
+      Treating each as "missing" would empty the candidate pool and exit 2 for
+      the whole Skill, so the capability is declared unavailable instead and
+      the run continues with an explicit warning.  A *single* missing date
+      still excludes just that stock; only a wholesale gap fails open.
+    """
+
     try:
         rows = client.list_symbols()
     except fuyao_client.FuyaoError as error:
@@ -106,6 +127,15 @@ def _symbol_lookup(
     if not rows:
         quality.degrade("上市日期返回为空，新股过滤降级为不过滤")
         return {}
+
+    dated = [row for row in rows if row.list_date is not None]
+    if not dated:
+        quality.degrade(
+            f"上市日期字段整体缺失（{len(rows)} 条记录均无 list_date），"
+            "本次未执行新股过滤"
+        )
+        return {}
+
     return {row.thscode: row for row in rows}
 
 
@@ -146,9 +176,19 @@ def _filtered_ranking(
 def _summarize_rows(
     rows: Sequence[sina_client.RankRow],
     sort_key: str,
+    market_median: float | None = None,
 ) -> list[dict[str, Any]]:
+    """Render one ranking with its per-stock direction.
+
+    Direction is appended, never used to reorder: the ranking still answers
+    "who traded the most", and the direction column answers "and did they rise
+    or fall".  Each row's own amount is used as the suspension hint: a row with
+    zero traded value cannot have a real move, so it must not be counted flat.
+    """
+
     out: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=1):
+        verdict = direction.classify_direction(row.change_pct, volume=row.amount)
         out.append(
             {
                 "rank": index,
@@ -158,6 +198,10 @@ def _summarize_rows(
                 "turnoverPct": round(row.turnover_pct, 4),
                 "floatMvYi": round(row.float_mv_yi, 2),
                 "changePct": round(row.change_pct, 2),
+                "direction": verdict,
+                "relativeToMarketPct": _round(
+                    direction.relative_to_market(row.change_pct, market_median)
+                ),
             }
         )
     return out
@@ -167,11 +211,13 @@ def _compute_intersection(
     amount_rows: Sequence[sina_client.RankRow],
     turnover_rows: Sequence[sina_client.RankRow],
     boards: Sequence[industry_map.IndustryBoard],
+    market_median: float | None = None,
 ) -> list[dict[str, Any]]:
     """Stocks present on both rankings.
 
     Deliberately no threshold relaxation: when the two rankings do not
-    overlap, the honest answer is an empty list.
+    overlap, the honest answer is an empty list.  Direction is appended for
+    reading convenience; it never adds or removes a member.
     """
 
     amount_rank = {row.thscode: i for i, row in enumerate(amount_rows, start=1)}
@@ -180,6 +226,8 @@ def _compute_intersection(
     if not shared:
         return []
 
+    change_by_code = {row.thscode: row.change_pct for row in amount_rows}
+    amount_by_code = {row.thscode: row.amount for row in amount_rows}
     name_by_code = {row.thscode: row.name for row in amount_rows}
     board_names: dict[str, str] = {}
     index = industry_map.build_member_index(boards)
@@ -189,6 +237,7 @@ def _compute_intersection(
     records: list[dict[str, Any]] = []
     for code in sorted(shared, key=lambda c: amount_rank[c]):
         codes = index.get(code) or []
+        change = change_by_code.get(code)
         records.append(
             {
                 "code": code,
@@ -196,6 +245,13 @@ def _compute_intersection(
                 "amountRank": amount_rank[code],
                 "turnoverRank": turnover_rank[code],
                 "industries": [board_names.get(c, c) for c in codes],
+                "changePct": None if change is None else round(change, 2),
+                "direction": direction.classify_direction(
+                    change, volume=amount_by_code.get(code)
+                ),
+                "relativeToMarketPct": _round(
+                    direction.relative_to_market(change, market_median)
+                ),
             }
         )
     return records
@@ -238,6 +294,168 @@ def _round(value: float | None) -> float | None:
     return None if value is None else round(value, 4)
 
 
+def _market_baseline(
+    market: fuyao_client.MarketSnapshot | None,
+) -> dict[str, Any]:
+    """Whole-market direction baseline, or an explicit unavailable block.
+
+    This is the denominator every relative field is measured against, so it is
+    published verbatim and labelled with its source.  When no market data was
+    obtained the block says so instead of reporting a zero median.
+    """
+
+    if market is None or not market.changes:
+        return {
+            "status": "insufficient",
+            "source": (market.source if market else "unavailable") or "unavailable",
+            "universe": 0,
+            "validCount": 0,
+            "suspendedCount": 0,
+            "upCount": 0,
+            "downCount": 0,
+            "flatCount": 0,
+            "medianChangePct": None,
+            "coverage": None,
+            "reason": "全市场快照不可用，相对方向无法计算",
+        }
+
+    breadth = direction.aggregate_breadth(
+        list(market.changes),
+        market.changes,
+        volumes=market.volumes,
+        declared_count=market.total or None,
+    )
+    return {
+        "status": breadth.status,
+        "source": market.source,
+        "universe": breadth.member_count,
+        "validCount": breadth.valid_count,
+        "suspendedCount": breadth.suspended_count,
+        "upCount": breadth.up_count,
+        "downCount": breadth.down_count,
+        "flatCount": breadth.flat_count,
+        "medianChangePct": _round(breadth.median_change_pct),
+        "coverage": _round(breadth.coverage),
+        "timestamp": market.timestamp,
+    }
+
+
+def _industry_direction(
+    *,
+    member_breadth: direction.Breadth,
+    board_change: float | None,
+    hit_counts: Mapping[str, int],
+) -> tuple[str | None, str]:
+    """Pick one direction for a board and say which evidence decided it.
+
+    Priority is member median (equal weight, the same basis as the market
+    benchmark), then the board index (capitalisation weighted), then the
+    majority of ranking hits.  Recording the basis keeps a width-based verdict
+    distinguishable from an index-based one instead of blending them into an
+    unexplained label.
+    """
+
+    if member_breadth.median_change_pct is not None:
+        return direction.classify_direction(member_breadth.median_change_pct), "member-median"
+    if board_change is not None:
+        return direction.classify_direction(board_change), "board-index"
+    majority = direction.majority_direction(hit_counts)
+    if majority is not None:
+        return majority, "hit-majority"
+    return None, "unavailable"
+
+
+def _decorate_industries(
+    industries: Sequence[dict[str, Any]],
+    inputs: ScanInputs,
+    amount_top: Sequence[sina_client.RankRow],
+    turnover_top: Sequence[sina_client.RankRow],
+    market_median: float | None,
+) -> list[dict[str, Any]]:
+    """Append the three direction evidence sets to every industry record.
+
+    Only fields are added; the incoming list order — which encodes the
+    activity ranking — is preserved exactly.
+    """
+
+    boards_by_code = {board.thscode: board for board in inputs.boards}
+    # The ranking rows carry their own change, so hit direction never depends
+    # on the market snapshot being available.  The market map is layered on top
+    # to cover members outside the two rankings.
+    changes: dict[str, float | None] = (
+        dict(inputs.market.changes) if inputs.market else {}
+    )
+    volumes: dict[str, float | None] = (
+        dict(inputs.market.volumes) if inputs.market else {}
+    )
+    for rows in (amount_top, turnover_top):
+        for row in rows:
+            changes[row.thscode] = row.change_pct
+    member_index = industry_map.build_member_index(inputs.boards)
+
+    # Union of both rankings per board, so a stock on both is counted once.
+    hit_codes_by_board: dict[str, set[str]] = {}
+    for rows in (amount_top, turnover_top):
+        for row in rows:
+            for board_code in member_index.get(row.thscode, ()):
+                hit_codes_by_board.setdefault(board_code, set()).add(row.thscode)
+
+    decorated: list[dict[str, Any]] = []
+    for item in industries:
+        board = boards_by_code.get(item["code"])
+        hit_codes = sorted(hit_codes_by_board.get(item["code"], set()))
+        hit_counts = direction.count_directions(hit_codes, changes, volumes=volumes)
+        members = board.members if board is not None else ()
+        member_breadth = direction.aggregate_breadth(members, changes, volumes=volumes)
+        board_change = inputs.board_changes.get(item["code"])
+        verdict, basis = _industry_direction(
+            member_breadth=member_breadth,
+            board_change=board_change,
+            hit_counts=hit_counts,
+        )
+
+        record = dict(item)
+        record.update(
+            {
+                "direction": verdict,
+                "directionBasis": basis,
+                "tag": direction.composite_tag(item["quadrant"], verdict),
+                "boardChangePct": _round(board_change),
+                "boardDirection": (
+                    None if board_change is None
+                    else direction.classify_direction(board_change)
+                ),
+                "hitUpCount": hit_counts["up"],
+                "hitDownCount": hit_counts["down"],
+                "hitFlatCount": hit_counts["flat"],
+                "hitSuspendedCount": hit_counts["suspended"],
+                "hitUnknownCount": hit_counts["unknown"],
+                "hitCount": hit_counts["total"],
+                "memberUpCount": member_breadth.up_count,
+                "memberDownCount": member_breadth.down_count,
+                "memberFlatCount": member_breadth.flat_count,
+                "memberSuspendedCount": member_breadth.suspended_count,
+                "memberUnknownCount": member_breadth.unknown_count,
+                "memberMedianChangePct": _round(member_breadth.median_change_pct),
+                "memberCoverage": _round(member_breadth.coverage),
+                "memberBreadthStatus": member_breadth.status,
+                # The official relative is equal-weight, matching the market
+                # benchmark.  The weighted variant is published under its own
+                # name so the two bases are never confused for one another.
+                "relativeToMarketPct": _round(
+                    direction.relative_to_market(
+                        member_breadth.median_change_pct, market_median
+                    )
+                ),
+                "boardRelativeToMarketPct": _round(
+                    direction.relative_to_market(board_change, market_median)
+                ),
+            }
+        )
+        decorated.append(record)
+    return decorated
+
+
 def build_result(
     inputs: ScanInputs,
     *,
@@ -254,6 +472,9 @@ def build_result(
     identity = contract.build_contract(inputs.now, nonce=nonce)
     report = session.describe(inputs.now)
 
+    market_block = _market_baseline(inputs.market)
+    market_median = market_block["medianChangePct"]
+
     amount_top = inputs.amount_rows[:top]
     turnover_top = inputs.turnover_rows[:top]
 
@@ -265,7 +486,15 @@ def build_result(
         )
         industries.extend(hit.as_dict() for hit in hits[:top_sectors])
 
-    intersection = _compute_intersection(amount_top, turnover_top, inputs.boards)
+    # Direction is decorated after truncation so the activity ordering — and
+    # therefore which industries appear at all — is untouched by direction.
+    industries = _decorate_industries(
+        industries, inputs, amount_top, turnover_top, market_median
+    )
+
+    intersection = _compute_intersection(
+        amount_top, turnover_top, inputs.boards, market_median
+    )
 
     percentiles = _percentile_block(
         turnover_top, inputs.history, settled=report.settled
@@ -274,6 +503,23 @@ def build_result(
     candidate_codes = [
         item["code"] for item in industries if item["amountTopCount"] >= 2
     ]
+    candidates = [
+        {
+            "thscode": item["code"],
+            "name": item["name"],
+            "tag": item["tag"],
+            "direction": item["direction"],
+        }
+        for item in industries
+        if item["amountTopCount"] >= 2
+    ]
+
+    amount_rows_out = _summarize_rows(
+        amount_top, sina_client.RANK_BY_AMOUNT, market_median
+    )
+    turnover_rows_out = _summarize_rows(
+        turnover_top, sina_client.RANK_BY_TURNOVER, market_median
+    )
 
     if report.early_snapshot:
         quality.warn(session.early_snapshot_warning())
@@ -290,11 +536,21 @@ def build_result(
             "candidatePool": candidate_pool,
             "top": top,
         },
+        "direction": {
+            "basis": "changePct-vs-prev-close",
+            "relativeBasis": "equal-weight-vs-market-median",
+            "flatEpsilon": direction.FLAT_EPSILON,
+            "minBreadthCoverage": direction.MIN_BREADTH_COVERAGE,
+            "basisNote": _direction_basis_note(report),
+            "market": market_block,
+        },
+        "directionSummary": {
+            "byAmount": direction.summarize_direction(amount_rows_out),
+            "byTurnover": direction.summarize_direction(turnover_rows_out),
+        },
         "rankings": {
-            "byAmount": _summarize_rows(amount_top, sina_client.RANK_BY_AMOUNT),
-            "byTurnover": _summarize_rows(
-                turnover_top, sina_client.RANK_BY_TURNOVER
-            ),
+            "byAmount": amount_rows_out,
+            "byTurnover": turnover_rows_out,
         },
         "industries": industries,
         "intersection": intersection,
@@ -302,13 +558,33 @@ def build_result(
         "handoff": {
             "target": "a-stock-qts04-sector-direction",
             "candidateThscodes": candidate_codes,
-            "note": "本 Skill 只做发现层，不评分；候选行业需由下游按 QTS-04-01-01 至 -05 打分",
+            "candidates": candidates,
+            "note": (
+                "本 Skill 只做发现层，不评分；候选行业需由下游按 QTS-04-01-01 至 -05 打分。"
+                "方向仅作标注，不参与候选筛选。"
+            ),
         },
         "quality": quality.as_dict(),
         "disclaimer": (
-            "四象限描述资金分布，不是买卖信号；全部规则状态 needs-backtest。"
+            "四象限描述资金分布、方向描述涨跌，两者都不是买卖信号；"
+            "全部规则状态 needs-backtest。"
         ),
     }
+
+
+def _direction_basis_note(report: session.SessionReport) -> str:
+    """Explain what instant the direction fields describe.
+
+    Before the open there is no session yet, so the only change available is
+    the previous close against the one before it.  Saying so prevents a
+    pre-open report from being read as a same-day direction.
+    """
+
+    if report.state == session.STATE_PREOPEN:
+        return "开盘前：方向反映前一交易日收盘涨跌幅，不是当日方向"
+    if report.state == session.STATE_CLOSED:
+        return "已收盘：方向为当日收盘涨跌幅"
+    return "盘中：方向为当前时点相对前一收盘价的涨跌幅"
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +657,9 @@ def collect_live(
             fuyao, today, level, quality, cache_root
         )
 
+    board_changes = _board_changes(fuyao, boards, quality)
+    market = _market_snapshot(fuyao, quality)
+
     bars: dict[str, list[dict[str, Any]]] = {}
     missing_bars: list[str] = []
     if enable_bars:
@@ -417,7 +696,66 @@ def collect_live(
         excluded_by_amount=amount_excluded,
         excluded_by_turnover=turnover_excluded,
         missing_list_date=sorted(set(amount_missing) | set(turnover_missing)),
+        market=market,
+        board_changes=board_changes,
     )
+
+
+def _board_changes(
+    client: fuyao_client.FuyaoClient,
+    boards: Sequence[industry_map.IndustryBoard],
+    quality: Quality,
+) -> dict[str, float | None]:
+    """One index-snapshot call covering every board of every loaded level."""
+
+    if not boards:
+        return {}
+    try:
+        changes = client.index_snapshot([board.thscode for board in boards])
+    except fuyao_client.FuyaoError as error:
+        quality.degrade(f"板块指数快照不可用，行业方向缺少板块涨跌: {error}")
+        return {}
+    if not changes:
+        quality.degrade("板块指数快照返回为空，行业方向缺少板块涨跌")
+    return changes
+
+
+def _sina_market_fallback(quality: Quality) -> fuyao_client.MarketSnapshot:
+    """Rebuild the whole-market map from the Sina full snapshot.
+
+    Same instant, same per-stock change basis, so it is a genuine substitute
+    rather than a different measure.  It is slower (~2.7s), which is why it is
+    only used when the fuyao endpoint fails.
+    """
+
+    rows = sina_client.fetch_full_snapshot()
+    changes = {row.thscode: row.change_pct for row in rows}
+    # Sina exposes amount rather than volume; a zero amount means the stock did
+    # not trade, which is the same suspension signal we need.
+    volumes = {row.thscode: row.amount for row in rows}
+    quality.degrade("全市场快照改用新浪全量快照兜底，相对方向仍可用")
+    return fuyao_client.MarketSnapshot(
+        changes=changes,
+        volumes=volumes,
+        source="sina-full-snapshot",
+        timestamp=None,
+        total=len(rows),
+    )
+
+
+def _market_snapshot(
+    client: fuyao_client.FuyaoClient,
+    quality: Quality,
+) -> fuyao_client.MarketSnapshot:
+    """Whole-market direction baseline, with an honest failure path."""
+
+    def fallback() -> fuyao_client.MarketSnapshot:
+        return _sina_market_fallback(quality)
+
+    snapshot = fuyao_client.market_change_map(client, fallback=fallback)
+    if snapshot.source == "unavailable":
+        quality.degrade("全市场快照不可用，相对方向与宽度不可用")
+    return snapshot
 
 
 def _history_start(today: date) -> date:
@@ -547,6 +885,29 @@ def load_fixture(path: Path) -> tuple[ScanInputs, dict[str, Any]]:
         if isinstance(bars, list):
             history[str(code)] = [b for b in bars if isinstance(b, Mapping)]
 
+    board_changes: dict[str, float | None] = {}
+    for code, value in (payload.get("boardChanges") or {}).items():
+        board_changes[str(code)] = fuyao_client._optional_float(value)
+
+    market_payload = payload.get("market")
+    market: fuyao_client.MarketSnapshot | None = None
+    if isinstance(market_payload, Mapping):
+        changes = {
+            str(code): fuyao_client._optional_float(value)
+            for code, value in (market_payload.get("changes") or {}).items()
+        }
+        volumes = {
+            str(code): fuyao_client._optional_float(value)
+            for code, value in (market_payload.get("volumes") or {}).items()
+        }
+        market = fuyao_client.MarketSnapshot(
+            changes=changes,
+            volumes=volumes,
+            source=str(market_payload.get("source") or "fixture"),
+            timestamp=market_payload.get("timestamp"),
+            total=fuyao_client._optional_int(market_payload.get("total")),
+        )
+
     options = payload.get("options") or {}
     inputs = ScanInputs(
         as_of=today,
@@ -555,6 +916,8 @@ def load_fixture(path: Path) -> tuple[ScanInputs, dict[str, Any]]:
         turnover_rows=rows("byTurnover"),
         boards=boards,
         history=history,
+        market=market,
+        board_changes=board_changes,
     )
     return inputs, dict(options) if isinstance(options, Mapping) else {}
 
@@ -581,12 +944,79 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top-sectors", type=int, default=DEFAULT_TOP_SECTORS)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--markdown", type=Path, default=None)
+    parser.add_argument(
+        "--answer",
+        type=Path,
+        default=None,
+        help="会话回复文件：固定标题与五段结构，回复内容须逐字复制该文件",
+    )
+    parser.add_argument(
+        "--history-dir",
+        type=Path,
+        default=None,
+        help="扫描轨迹记录目录；默认实时运行写到 Skill 缓存，fixture 模式不写",
+    )
+    parser.add_argument(
+        "--no-history-store",
+        action="store_true",
+        help="本次不读写扫描轨迹（仍会渲染“首次记录”占位）",
+    )
+    parser.add_argument(
+        "--import-history",
+        type=Path,
+        nargs="+",
+        default=None,
+        help="把既有 JSON 结果补录进扫描轨迹（同一 reportId 不重复）",
+    )
     parser.add_argument("--fixture", type=Path, default=None)
     parser.add_argument("--cache-dir", type=Path, default=None)
     parser.add_argument("--no-bars", action="store_true")
     parser.add_argument("--no-history", action="store_true")
     parser.add_argument("--now", type=str, default=None, help="覆盖当前时刻（测试用）")
     return parser.parse_args(argv)
+
+
+def _history_root(args: argparse.Namespace) -> Path | None:
+    """Where this run's trajectory rows live.
+
+    Live runs default to the Skill cache.  Fixture runs stay out of it: a test
+    replay must not become tomorrow's "previous scan".
+    """
+
+    if args.no_history_store:
+        return None
+    if args.history_dir is not None:
+        return args.history_dir
+    if args.fixture is not None:
+        return None
+    return CACHE_ROOT / history.HISTORY_SUBDIR
+
+
+def _import_history(
+    root: Path,
+    paths: Sequence[Path],
+    quality: "Quality",
+) -> None:
+    """Backfill the trajectory from result files that already exist.
+
+    Only files produced by this Skill are accepted, and rows are deduplicated
+    by ``reportId``, so importing the same file twice cannot inflate the
+    timeline.  Nothing is recalculated: the projection is read from the file.
+    """
+
+    for path in paths:
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            quality.warn(f"轨迹补录跳过 {path}: {error}")
+            continue
+        if not isinstance(payload, Mapping) or not payload.get("reportId"):
+            quality.warn(f"轨迹补录跳过 {path}: 不是本 Skill 的结果文件")
+            continue
+        try:
+            history.append_run(root, payload)
+        except OSError as error:
+            quality.warn(f"轨迹补录写入失败 {path}: {error}")
 
 
 def _level_value(raw: str) -> int | str:
@@ -683,11 +1113,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(text)
 
-    if args.markdown is not None:
+    history_root = _history_root(args)
+    if history_root is not None and args.import_history:
+        _import_history(history_root, args.import_history, quality)
+    earlier: list[dict[str, Any]] = []
+    if history_root is not None:
+        try:
+            earlier = history.load_recent(
+                history_root,
+                result.get("asOf") or "",
+                exclude_report_id=str(result.get("reportId") or ""),
+            )
+        except OSError as error:  # pragma: no cover - unreadable cache
+            quality.degrade(f"扫描轨迹历史不可读，本次按首次记录渲染: {error}")
+
+    if args.markdown is not None or args.answer is not None:
         import report as report_module
 
+    if args.markdown is not None:
         args.markdown.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown.write_text(report_module.render(result), encoding="utf-8")
+        args.markdown.write_text(
+            report_module.render(result, history=earlier), encoding="utf-8"
+        )
+
+    if args.answer is not None:
+        artifacts: dict[str, str] = {}
+        if args.output is not None:
+            artifacts["JSON"] = str(args.output)
+        if args.markdown is not None:
+            artifacts["Markdown"] = str(args.markdown)
+        args.answer.parent.mkdir(parents=True, exist_ok=True)
+        args.answer.write_text(
+            report_module.render_answer(result, artifacts=artifacts, history=earlier),
+            encoding="utf-8",
+        )
+
+    if history_root is not None:
+        try:
+            history.append_run(history_root, result)
+        except OSError as error:  # pragma: no cover - unwritable cache
+            quality.degrade(f"扫描轨迹写入失败，下次扫描将缺少本次基线: {error}")
 
     return 0
 

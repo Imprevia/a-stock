@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -33,6 +34,7 @@ ENV_FILE_RELATIVE = Path("deploy") / "truenas" / "deploy.env"
 
 DEFAULT_TIMEOUT = 120.0
 MAX_BATCH_CODES = 10
+MARKET_PAGE_SIZE = 1000
 
 CACHE_DIRNAME = Path(".cache") / "active-industry-scan"
 
@@ -122,6 +124,28 @@ class SymbolInfo:
         if self.list_date is None:
             return None
         return (today - self.list_date).days
+
+
+@dataclass(frozen=True)
+class MarketSnapshot:
+    """Whole-market change and volume maps plus their provenance.
+
+    ``source`` records which path produced the data (the fuyao endpoint or the
+    Sina full-snapshot fallback) so a degraded run stays auditable.  ``None``
+    means "not measured" everywhere in these maps, never 0.
+    """
+
+    changes: dict[str, float | None] = field(default_factory=dict)
+    volumes: dict[str, float | None] = field(default_factory=dict)
+    source: str = ""
+    timestamp: str | None = None
+    #: Declared universe size as reported by the provider.  Kept separate from
+    #: ``len(changes)`` so a partially successful pagination shows reduced
+    #: coverage instead of looking like a complete market.
+    total: int | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.changes)
 
 
 class FuyaoClient:
@@ -302,6 +326,93 @@ class FuyaoClient:
                 members.append(code)
         return members
 
+    # -- direction --------------------------------------------------------
+
+    def index_snapshot(self, thscodes: Sequence[str]) -> dict[str, float | None]:
+        """Per-board percentage change against the previous close.
+
+        One call covers an entire taxonomy level (90 boards at level 1, 230 at
+        level 2), so this stays cheap.  A board whose ``price_change_ratio_pct``
+        is missing maps to ``None`` rather than 0: "no measurement" must stay
+        distinct from "unchanged" downstream.
+        """
+
+        codes = [code for code in thscodes if code]
+        if not codes:
+            return {}
+        data = self.call(
+            ["index", "snapshot", "--thscodes", ",".join(codes)]
+        )
+        items = data.get("item")
+        if not isinstance(items, list):
+            return {}
+        changes: dict[str, float | None] = {}
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            thscode = str(item.get("thscode") or "").strip()
+            if not thscode:
+                continue
+            changes[thscode] = _optional_float(item.get("price_change_ratio_pct"))
+        return changes
+
+    def market_snapshot(
+        self,
+        *,
+        page_size: int = MARKET_PAGE_SIZE,
+        max_workers: int = 6,
+        max_pages: int = 8,
+    ) -> MarketSnapshot:
+        """Every A-share's change and volume for the current instant.
+
+        Pages are fetched concurrently because the endpoint is offset-based and
+        each page is independent.  Concatenating then keying by thscode keeps
+        the map honest if a page overlaps another during a fast-moving market.
+        """
+
+        def one(offset: int) -> tuple[list[Mapping[str, Any]], int | None]:
+            data = self.call(
+                [
+                    "market",
+                    "snapshot",
+                    "--limit",
+                    str(page_size),
+                    "--offset",
+                    str(offset),
+                ]
+            )
+            items = data.get("item")
+            rows = (
+                [item for item in items if isinstance(item, Mapping)]
+                if isinstance(items, list)
+                else []
+            )
+            return rows, _optional_int(data.get("total"))
+
+        offsets = [index * page_size for index in range(max_pages)]
+        changes: dict[str, float | None] = {}
+        volumes: dict[str, float | None] = {}
+        declared: int | None = None
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for batch, page_total in pool.map(one, offsets):
+                if page_total is not None:
+                    declared = max(declared or 0, page_total)
+                if not batch:
+                    continue
+                for item in batch:
+                    thscode = str(item.get("thscode") or "").strip()
+                    if not thscode:
+                        continue
+                    changes[thscode] = _optional_float(item.get("price_change_ratio_pct"))
+                    volumes[thscode] = _optional_float(item.get("volume"))
+        return MarketSnapshot(
+            changes=changes,
+            volumes=volumes,
+            source="fuyao-market-snapshot",
+            timestamp=None,
+            total=declared,
+        )
+
     # -- cache ------------------------------------------------------------
 
     def cache_root(self) -> Path | None:
@@ -318,6 +429,66 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+def _optional_int(value: Any) -> int | None:
+    """Parse an integer, preserving "missing" as ``None``."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _optional_float(value: Any) -> float | None:
+    """Parse a number, preserving "missing" as ``None`` instead of 0.0.
+
+    Coercing a missing change to 0 would fabricate a flat stock.  Non-finite
+    values are treated as missing for the same reason.
+    """
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def market_change_map(
+    client: "FuyaoClient",
+    *,
+    fallback: Callable[[], MarketSnapshot] | None = None,
+) -> MarketSnapshot:
+    """Whole-market change map, with an explicit fallback path.
+
+    The fuyao endpoint is the primary source.  ``fallback`` is injected by the
+    caller (the pipeline wires the Sina full-snapshot reader) so this module
+    stays unaware of which fallback exists.  When both paths fail the result is
+    an empty snapshot rather than an exception: the caller decides how to
+    degrade, because losing the benchmark must not abort the whole scan.
+    """
+
+    try:
+        snapshot = client.market_snapshot()
+        if snapshot:
+            return snapshot
+    except FuyaoError:
+        pass
+    if fallback is not None:
+        try:
+            recovered = fallback()
+            if recovered:
+                return recovered
+        except Exception:  # noqa: BLE001 - any fallback failure degrades alike
+            pass
+    return MarketSnapshot(source="unavailable")
 
 
 def _to_millis(value: date) -> int:

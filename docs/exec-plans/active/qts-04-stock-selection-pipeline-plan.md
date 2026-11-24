@@ -633,6 +633,7 @@ K=10 个题材时约 40—70 次/日：概念目录 1（可缓存数周）、概
 - 第 04 章 45 条规则仍全部 `documented-only`，本流水线以 Skill 形态先行，未进入 `trading-rules/`；新增 `QTS-04-09` 五条同为 `documented-only`/`needs-backtest`。
 - `add-qts04-sector-report-contract` 尚未归档；本变更归档需确认顺序。
 - 2026-11-18 出现「lift 10.2、共享 token 9 只、梯队 2 板齐备，但 5/20 日相对强度为负导致分数 48.75 差 1.25 分未进核心」的边界样本；分数闸门是否应允许单项拖累，仍需样本外验证。
+- `quality.conceptsWithLimitUps` 在 `maxThemes` 截断之后统计（`sum(observed>0 for themes)`），默认 `maxThemes=5` 时 2026-11-19 报 5，而截断前实际有 12 个候选概念与涨停池有交集；该字段名容易被读成"全部命中概念数"，建议改为截断前统计或改名。
 
 ## Next Step（下一步）
 

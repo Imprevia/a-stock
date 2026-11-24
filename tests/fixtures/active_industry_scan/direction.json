@@ -1,0 +1,226 @@
+{
+ "now": "2026-11-20T15:30:00+08:00",
+ "byAmount": [
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "半导体A",
+   "amount": 9000000000.0,
+   "turnoverratio": 8.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -3.5
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "半导体B",
+   "amount": 8000000000.0,
+   "turnoverratio": 7.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -6.2
+  },
+  {
+   "code": "600003",
+   "symbol": "sh600003",
+   "name": "半导体C",
+   "amount": 7000000000.0,
+   "turnoverratio": 6.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -2.2
+  },
+  {
+   "code": "600004",
+   "symbol": "sh600004",
+   "name": "半导体D",
+   "amount": 6500000000.0,
+   "turnoverratio": 5.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -5.9
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "银行A",
+   "amount": 6000000000.0,
+   "turnoverratio": 6.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 1.2
+  },
+  {
+   "code": "600006",
+   "symbol": "sh600006",
+   "name": "银行B",
+   "amount": 5500000000.0,
+   "turnoverratio": 5.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 0.4
+  },
+  {
+   "code": "600007",
+   "symbol": "sh600007",
+   "name": "银行C",
+   "amount": 5000000000.0,
+   "turnoverratio": 4.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 2.3
+  },
+  {
+   "code": "600008",
+   "symbol": "sh600008",
+   "name": "银行D",
+   "amount": 4800000000.0,
+   "turnoverratio": 3.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 0.1
+  }
+ ],
+ "byTurnover": [
+  {
+   "code": "600001",
+   "symbol": "sh600001",
+   "name": "半导体A",
+   "amount": 9000000000.0,
+   "turnoverratio": 58.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -3.5
+  },
+  {
+   "code": "600002",
+   "symbol": "sh600002",
+   "name": "半导体B",
+   "amount": 8000000000.0,
+   "turnoverratio": 52.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": -6.2
+  },
+  {
+   "code": "600005",
+   "symbol": "sh600005",
+   "name": "银行A",
+   "amount": 6000000000.0,
+   "turnoverratio": 48.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 1.2
+  },
+  {
+   "code": "600009",
+   "symbol": "sh600009",
+   "name": "平盘股",
+   "amount": 2000000000.0,
+   "turnoverratio": 45.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 0.0
+  },
+  {
+   "code": "600010",
+   "symbol": "sh600010",
+   "name": "停牌股",
+   "amount": 0.0,
+   "turnoverratio": 0.0,
+   "trade": 10.0,
+   "nmc": 100000,
+   "changepercent": 0.0
+  }
+ ],
+ "boards": [
+  {
+   "thscode": "881121.TI",
+   "name": "半导体",
+   "level": 1,
+   "members": [
+    "600001.SH",
+    "600002.SH",
+    "600003.SH",
+    "600004.SH",
+    "600099.SH"
+   ]
+  },
+  {
+   "thscode": "881150.TI",
+   "name": "银行",
+   "level": 1,
+   "members": [
+    "600005.SH",
+    "600006.SH",
+    "600007.SH",
+    "600008.SH"
+   ]
+  },
+  {
+   "thscode": "881199.TI",
+   "name": "低覆盖行业",
+   "level": 1,
+   "members": [
+    "600001.SH",
+    "600002.SH",
+    "600003.SH",
+    "600004.SH",
+    "600005.SH",
+    "600006.SH",
+    "600007.SH",
+    "600008.SH",
+    "600009.SH",
+    "600010.SH",
+    "600150.SH",
+    "600151.SH",
+    "600152.SH",
+    "600153.SH",
+    "600154.SH",
+    "600155.SH"
+   ]
+  }
+ ],
+ "boardChanges": {
+  "881121.TI": -6.847481,
+  "881150.TI": 0.22,
+  "881199.TI": -3.1
+ },
+ "market": {
+  "source": "fixture",
+  "total": 12,
+  "changes": {
+   "600001.SH": -3.5,
+   "600002.SH": -6.2,
+   "600003.SH": -2.2,
+   "600004.SH": -5.9,
+   "600005.SH": 1.2,
+   "600006.SH": 0.4,
+   "600007.SH": 2.3,
+   "600008.SH": 0.1,
+   "600009.SH": 0.0,
+   "600010.SH": null,
+   "600098.SH": -7.0,
+   "600097.SH": -8.0
+  },
+  "volumes": {
+   "600001.SH": 1000000.0,
+   "600002.SH": 1000000.0,
+   "600003.SH": 1000000.0,
+   "600004.SH": 1000000.0,
+   "600005.SH": 1000000.0,
+   "600006.SH": 1000000.0,
+   "600007.SH": 1000000.0,
+   "600008.SH": 1000000.0,
+   "600009.SH": 1000000.0,
+   "600010.SH": 0,
+   "600098.SH": 1000000.0,
+   "600097.SH": 1000000.0
+  }
+ },
+ "options": {
+  "top": 8,
+  "topSectors": 6
+ }
+}
