@@ -115,6 +115,7 @@ describe('盈亏日历', () => {
   it('只在提交补齐表单时请求 Fuyao，并列出仍待核对的日期', async () => {
     let finish: (() => void) | undefined
     const fetch = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url.includes('/days/')) return response({ ...day, date: '2026-01-23' })
       if (!url.endsWith('/evidence/fuyao')) return response(january)
       expect(options?.method).toBe('POST')
       expect(JSON.parse(String(options?.body))).toEqual({ start: date, end: '2026-01-23', revision: 7 })
@@ -122,7 +123,11 @@ describe('盈亏日历', () => {
       return response({
         status: 'partial', revision: 8, added: { sessions: 2, valuations: 1 },
         remaining: [{ date: '2026-01-23', issues: ['coverage-unconfirmed'] }],
-        missing_closes: [{ date: '2026-01-23', security: '603019.SH', reason: 'fuyao-history-unavailable' }],
+        missing_closes: [
+          { date, security: '603019.SH', reason: 'fuyao-close-missing' },
+          { date: '2026-01-22', security: '603019.SH', reason: 'fuyao-history-permission' },
+          { date: '2026-01-23', security: '603019.SH', reason: 'fuyao-history-rate-limited' },
+        ],
       })
     })
     vi.stubGlobal('fetch', fetch)
@@ -140,8 +145,12 @@ describe('盈亏日历', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('已补齐部分数据')
     expect(wrapper.text()).toContain('交易流水待确认')
-    expect(wrapper.text()).toContain('603019.SH · Fuyao 日线暂不可用')
-    expect(wrapper.get('a[href*="/day/2026-01-23"]').text()).toBe('2026-01-23')
+    expect(wrapper.text()).toContain('603019.SH · Fuyao 缺可用的不复权收盘价')
+    expect(wrapper.text()).toContain('603019.SH · Fuyao 日线凭据或权限有问题')
+    expect(wrapper.text()).toContain('603019.SH · Fuyao 日线请求受限，请稍后重试')
+    await wrapper.get('a[href*="/day/2026-01-23"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('h1').text()).toContain('2026-01-23')
     wrapper.unmount()
   })
 

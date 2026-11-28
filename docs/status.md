@@ -2,6 +2,10 @@
 
 ## 已实现
 
+- 2026-11-28 已将 Fuyao 日线补齐修复 `31ceee3` 部署到 TrueNAS k3s 的 `a-stock` release，Helm revision 161。健康、月历和历史明细在 LAN 和 Tailscale 均通过只读验收。详见 [发布执行计划](exec-plans/active/deploy-fuyao-pnl-history-fix-20261128.md)。
+
+- 2026-11-28 已将应用版本 `5303a36` 部署到 TrueNAS k3s 的 `a-stock` release，Helm revision 158。看板与 PostgreSQL 均 1/1 Ready，LAN 和 Tailscale HTTP 只读验收通过。盈亏日历已显示扶摇历史行情补齐入口，并通过隔离 PostgreSQL 测试。详见 [发布执行计划](exec-plans/active/deploy-5303a36-to-k3s-20261128.md)。
+
 - 2026-11-28 已将 `8f1ed87` 部署到 TrueNAS k3s 的 `a-stock` release，Helm revision 155。PostgreSQL 已升级到 `0009_trading_pnl`，应用和数据库 Pod 均 Ready。LAN NodePort 发布后 17 项只读检查通过，浏览器验证桌面和移动端盈亏日历，线上 Pod 合成截图 OCR 通过。详见 [发布执行计划](exec-plans/active/deploy-current-head-to-k3s-20261128.md)。
 
 - 2026-11-24 活跃行业扫描 Skill 新增方向层与固定会话回复：双榜、交集与行业段输出 `direction` / `relativeToMarketPct`，行业同时给出板块指数、上榜股涨跌与全成分宽度三类证据及 `真实活跃·下跌` 式复合标签；相对基准固定为全市场逐股中位（2026-11-20 上证 -1.23%、中位 -5.08%，90 个一级行业由相对上证 4 强 86 弱变为相对中位 53 强 37 弱）。方向只做标注与分组，不参与排序、不筛选 `handoff`；`schemaVersion` 1.1、`ruleVersion` `active-industry-scan-v2`，新增 `index snapshot` / `market snapshot` 取数与三级降级，`list_date` 整体缺失时 fail-open + `degraded` 而不再退出码 2。会话回复新增 `--answer` 纯渲染（标题、5 行结论块、六段固定）与 `history.py` 当日轨迹段，`SKILL.md` 要求逐字复制。离线测试 `tests/test_a_stock_active_industry_scan_skill.py` 205 passed；2026-11-20 真实盘后核对半导体 -6.85%（上榜 13 跌）、银行 +0.22%（上榜 4 涨）、交集 4 只 2 涨 2 跌一致。OpenSpec 变更已归档为 `2026-11-24-add-active-industry-scan-direction`，主规格 `active-industry-scan-skill` 已同步。方向阈值仍为 `needs-backtest`。详见 `docs/exec-plans/active/active-industry-scan-direction-plan.md`、`docs/exec-plans/active/active-industry-scan-answer-format-plan.md`。

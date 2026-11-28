@@ -125,7 +125,7 @@ class TradingPnlBackfill:
             if earlier_coverage_gap and "prior-holdings-unconfirmed" in day["issues"]:
                 day["issues"].append(f"coverage-blocked:{earlier_coverage_gap}")
         missing_closes = [
-            {"date": day, "security": security, "reason": failures.get(security, "fuyao-close-missing")}
+            {"date": day, "security": security, "reason": failures.get((day, security), "fuyao-close-missing")}
             for day, security in sorted(missing)
         ]
         remaining = [{"date": day["date"], "issues": day["issues"]} for day in days if day["issues"]]
@@ -147,17 +147,17 @@ class TradingPnlBackfill:
         deadline = monotonic() + HISTORY_PHASE_SECONDS
         for security, dates in dates_by_security.items():
             if len(pending) == MAX_VALUATIONS or monotonic() >= deadline:
-                failures[security] = "fuyao-batch-limit"
+                failures.update(((day, security), "fuyao-batch-limit") for day in dates)
                 continue
             try:
                 found = self.source.closes(security, dates[0], dates[-1])
             except PnlMarketEvidenceError as exc:
-                failures[security] = exc.reason
+                failures.update(((day, security), exc.reason) for day in dates)
                 continue
-            eligible = [row for row in found if (row.date, row.security) in missing and row.security == security]
+            eligible = [row for row in found.values if row.security == security and (row.date, security) in missing]
             room = MAX_VALUATIONS - len(pending)
-            if len(eligible) > room:
-                failures[security] = "fuyao-batch-limit"
+            failures.update(((row.date, security), "fuyao-batch-limit") for row in eligible[room:])
+            failures.update(((day, security), "fuyao-invalid-history") for day in found.invalid_dates)
             pending.extend(eligible[:room])
         return pending, failures
 

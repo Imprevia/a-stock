@@ -9,10 +9,12 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
+| `fix-trading-pnl-fuyao-history` | Codex | completed-with-production-write（7/7，OpenSpec 已归档） | 2026-11-28 |
+| `deploy-fuyao-pnl-history-fix-20261128` | Codex | completed-with-production-write | 2026-11-28 |
 | `add-fuyao-trading-pnl-backfill` | Codex | completed-local-only（10/10，OpenSpec 已归档） | 2026-11-28 |
 | `fix-dashboard-npm-audit-20261128` | Codex | completed-local-only | 2026-11-28 |
 | `deploy-current-head-to-k3s-20261128` | Codex | completed-with-production-write | 2026-11-28 |
-| `deploy-5303a36-to-k3s-20261128` | Codex | in-progress | 2026-11-28 |
+| `deploy-5303a36-to-k3s-20261128` | Codex | completed-with-production-write | 2026-11-28 |
 | `add-trading-pnl-calendar` | Codex | completed-local-only（14/14，OpenSpec 已归档） | 2026-11-28 |
 | `add-test-ratchet-and-commit-gate` | Codex | completed（31/31，OpenSpec 已归档） | 2026-10-27 |
 | `refactor-active-direction-research-workbench` | Codex | evidence-module-repair-complete-with-explicit-source-gaps（34/34） | 2026-10-21 |

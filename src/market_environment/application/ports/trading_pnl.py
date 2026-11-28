@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol
 
@@ -16,9 +17,15 @@ class PnlMarketEvidenceError(RuntimeError):
         self.reason = reason
 
 
+@dataclass(frozen=True)
+class PnlHistory:
+    values: Sequence[ValuationEvidence]
+    invalid_dates: frozenset[date] = frozenset()
+
+
 class PnlMarketEvidenceSource(Protocol):
     def trading_days(self) -> tuple[date, ...]: ...
-    def closes(self, security: str, start: date, end: date) -> Sequence[ValuationEvidence]: ...
+    def closes(self, security: str, start: date, end: date) -> PnlHistory: ...
 
 
 class RecognizedScreenshot(Protocol):

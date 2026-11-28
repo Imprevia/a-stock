@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from hashlib import sha256
 from statistics import median
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -50,8 +51,19 @@ _CODE_TO_IDENTITY = {
 }
 
 
+@dataclass(frozen=True)
+class FuyaoMarketDiagnostic:
+    http_status: int | None = None
+    business_code: int | None = None
+    request_id_digest: str | None = None
+
+
 class FuyaoMarketError(RuntimeError):
     """Base error with no request credential or response body in its message."""
+
+    def __init__(self, message: str, *, diagnostic: FuyaoMarketDiagnostic | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 class FuyaoMarketConfigurationError(FuyaoMarketError):
@@ -96,6 +108,7 @@ class FuyaoMarketResponse:
     data: dict[str, Any]
     status_code: int
     request_count: int
+    diagnostic: FuyaoMarketDiagnostic | None = None
 
 
 class FuyaoMarketClient:
@@ -215,37 +228,53 @@ class FuyaoMarketClient:
                 self._raise_transport_failure(exc)
             status = response.status_code
             if status < 200 or status >= 300:
-                detail = self._http_error_detail(response, status)
+                payload = self._error_payload(response)
+                detail = self._http_error_detail(payload, status)
+                diagnostic = self._diagnostic(status, payload)
                 if status in {401, 403}:
-                    raise FuyaoMarketPermissionError(f"Fuyao authentication or permission denied ({detail})")
-                raise FuyaoMarketTransportError(f"Fuyao {detail}")
+                    raise FuyaoMarketPermissionError(
+                        f"Fuyao authentication or permission denied ({detail})", diagnostic=diagnostic
+                    )
+                raise FuyaoMarketTransportError(f"Fuyao {detail}", diagnostic=diagnostic)
             try:
                 envelope = response.json()
             except (TypeError, ValueError) as exc:
-                raise FuyaoMarketContractError("Fuyao response is not valid JSON") from exc
+                raise FuyaoMarketContractError(
+                    "Fuyao response is not valid JSON", diagnostic=FuyaoMarketDiagnostic(status)
+                ) from exc
             if not isinstance(envelope, Mapping):
-                raise FuyaoMarketContractError("Fuyao response envelope is malformed")
+                raise FuyaoMarketContractError(
+                    "Fuyao response envelope is malformed", diagnostic=FuyaoMarketDiagnostic(status)
+                )
+            diagnostic = self._diagnostic(status, envelope)
             try:
                 code = int(envelope.get("code", envelope.get("status", 0)))
             except (TypeError, ValueError) as exc:
-                raise FuyaoMarketContractError("Fuyao response envelope has no valid code") from exc
+                raise FuyaoMarketContractError(
+                    "Fuyao response envelope has no valid code", diagnostic=diagnostic
+                ) from exc
             if code in self._RETRYABLE_CODES:
                 if attempt < self.max_retries:
                     self._backoff(attempt, slow=code in self._SLOW_RETRY_CODES)
                     continue
                 raise FuyaoMarketTransportError(
-                    f"Fuyao response {self._envelope_error_detail(envelope, code)} after retries"
+                    f"Fuyao response {self._envelope_error_detail(envelope, code)} after retries",
+                    diagnostic=diagnostic,
                 )
             if code in self._PERMISSION_CODES:
                 raise FuyaoMarketPermissionError(
-                    f"Fuyao authentication or permission denied ({self._envelope_error_detail(envelope, code)})"
+                    f"Fuyao authentication or permission denied ({self._envelope_error_detail(envelope, code)})",
+                    diagnostic=diagnostic,
                 )
             if code not in {0, 200}:
-                raise FuyaoMarketError(f"Fuyao request rejected ({self._envelope_error_detail(envelope, code)})")
+                raise FuyaoMarketError(
+                    f"Fuyao request rejected ({self._envelope_error_detail(envelope, code)})",
+                    diagnostic=diagnostic,
+                )
             data = envelope.get("data", envelope.get("result"))
             if not isinstance(data, Mapping):
-                raise FuyaoMarketContractError("Fuyao success envelope is missing data")
-            return FuyaoMarketResponse(dict(data), status, self._request_count)
+                raise FuyaoMarketContractError("Fuyao success envelope is missing data", diagnostic=diagnostic)
+            return FuyaoMarketResponse(dict(data), status, self._request_count, diagnostic)
         raise AssertionError("unreachable retry loop")
 
     def _gated_attempt(self, operation: Callable[[], Any]) -> Any:
@@ -255,10 +284,11 @@ class FuyaoMarketClient:
 
     def _raise_transport_failure(self, failure: TransportFailure) -> None:
         detail = self._transport_failure_detail(failure)
+        diagnostic = self._diagnostic(failure.status_code, failure.response_evidence)
         if failure.category is TransportFailureCategory.PERMISSION:
             suffix = f" ({detail})" if detail else ""
             raise FuyaoMarketPermissionError(
-                f"Fuyao authentication or permission denied{suffix}"
+                f"Fuyao authentication or permission denied{suffix}", diagnostic=diagnostic
             ) from failure
         if failure.category in {
             TransportFailureCategory.RATE_LIMIT,
@@ -266,17 +296,19 @@ class FuyaoMarketClient:
         }:
             suffix = f" ({detail})" if detail else ""
             raise FuyaoMarketRateLimitError(
-                f"Fuyao transport rate limit or request budget exceeded{suffix}"
+                f"Fuyao transport rate limit or request budget exceeded{suffix}", diagnostic=diagnostic
             ) from failure
         if failure.category in {
             TransportFailureCategory.CONTRACT,
             TransportFailureCategory.INVALID_RESPONSE,
             TransportFailureCategory.RESPONSE_TOO_LARGE,
         }:
-            raise FuyaoMarketContractError("Fuyao response is not valid JSON") from failure
+            raise FuyaoMarketContractError(
+                "Fuyao response is not valid JSON", diagnostic=diagnostic
+            ) from failure
         suffix = f" ({detail})" if detail else ""
         raise FuyaoMarketTransportError(
-            f"Fuyao network request failed after governed retries{suffix}"
+            f"Fuyao network request failed after governed retries{suffix}", diagnostic=diagnostic
         ) from failure
 
     def _transport_failure_detail(self, failure: TransportFailure) -> str | None:
@@ -314,13 +346,25 @@ class FuyaoMarketClient:
             parts.append(f"request_id={request_id}")
         return ", ".join(parts)
 
-    def _http_error_detail(self, response: Any, status: int) -> str:
+    @staticmethod
+    def _error_payload(response: Any) -> Mapping[str, Any]:
         try:
             payload = response.json()
         except (TypeError, ValueError):
-            return f"HTTP {status}"
-        if not isinstance(payload, Mapping):
-            return f"HTTP {status}"
+            return {}
+        return payload if isinstance(payload, Mapping) else {}
+
+    def _diagnostic(self, status: int | None, payload: Mapping[str, Any]) -> FuyaoMarketDiagnostic:
+        try:
+            code = int(payload.get("code", payload.get("status")))
+        except (TypeError, ValueError, OverflowError):
+            code = None
+        raw_id = payload.get("request_id")
+        request_id = self._safe_text(raw_id, max_length=80) if isinstance(raw_id, str) else None
+        digest = sha256(request_id.encode("utf-8", errors="replace")).hexdigest()[:16] if request_id else None
+        return FuyaoMarketDiagnostic(status, code, digest)
+
+    def _http_error_detail(self, payload: Mapping[str, Any], status: int) -> str:
         try:
             code = int(payload.get("code"))
         except (TypeError, ValueError):

@@ -93,16 +93,24 @@ def test_ledger_market_evidence_requires_unadjusted_exact_shanghai_dates():
     def timestamp(day):
         return int(datetime(day.year, day.month, day.day, tzinfo=shanghai).timestamp() * 1000)
     days = [date(2026, 1, 20), start, end]
+    middle = start + timedelta(days=1)
     raw_calendar = Session([Response({"code": 0, "data": {"item": [
         {"date": day.strftime("%Y%m%d"), "date_ms": timestamp(day)} for day in days
     ]}})])
     header = {"thscode": "603019.SH", "interval": "1d", "adjust": "none"}
     raw_history = Session([
-        Response({"code": 0, "data": {**header, "item": [
+        Response({"code": 0, "data": {"timestamp": timestamp(end), "item": [
             {"date_ms": timestamp(days[0]), "close_price": "98.00"},
             {"date_ms": timestamp(start), "close_price": "98.23"},
+                {"date_ms": timestamp(middle), "close_price": "91", "thscode": "000001.SZ"},
             {"date_ms": timestamp(end), "close_price": "0"},
         ]}}),
+            Response({"code": 0, "data": {"timestamp": timestamp(end), "item": [
+                {"date_ms": timestamp(start), "close_price": "98.23"},
+                {"date_ms": timestamp(start), "close_price": "99"},
+                {"date_ms": timestamp(middle), "close_price": float("inf")},
+                {"date_ms": timestamp(end), "close_price": "100"},
+            ]}}),
         Response({"code": 0, "data": {**header, "adjust": "forward", "item": []}}),
         Response({"code": 0, "data": {**header, "thscode": "000001.SZ", "item": []}}),
         Response({"code": 0, "data": {**header, "interval": "5m", "item": []}}),
@@ -113,17 +121,45 @@ def test_ledger_market_evidence_requires_unadjusted_exact_shanghai_dates():
         client(raw_history, max_retries=0),
     )
     assert adapter.trading_days() == tuple(days)
-    values = adapter.closes("603019.SH", start, end)
-    assert [(row.date, str(row.close)) for row in values] == [(start, "98.23")]
+    result = adapter.closes("603019.SH", start, end)
+    assert [(row.date, str(row.close)) for row in result.values] == [(start, "98.23")]
+    assert result.invalid_dates == {middle}
     assert raw_history.calls[0][1]["params"] == {
-        "thscode": "603019.SH", "adjust": "none",
+        "thscode": "603019.SH", "interval": "1d", "adjust": "none",
         "start": timestamp(start), "end": timestamp(end + timedelta(days=1)) - 1,
     }
+    result = adapter.closes("603019.SH", start, end)
+    assert [(row.date, str(row.close)) for row in result.values] == [(end, "100")]
+    assert not result.invalid_dates
     for _ in range(3):
         with pytest.raises(PnlMarketEvidenceError, match="fuyao-invalid-history"):
             adapter.closes("603019.SH", start, end)
-    with pytest.raises(PnlMarketEvidenceError, match="fuyao-history-unavailable"):
+    with pytest.raises(PnlMarketEvidenceError, match="fuyao-history-rate-limited"):
         adapter.closes("603019.SH", start, end)
+
+
+@pytest.mark.parametrize(("upstream", "reason", "http_status", "code"), [
+    (Response({"code": 1001, "request_id": "req-fixture-key"}), "fuyao-history-rejected", 200, 1001),
+    (Response({"code": 1003}, 400), "fuyao-history-rejected", 400, 1003),
+    (Response({"code": 2003}, 403), "fuyao-history-permission", 403, 2003),
+    (Response({}, 429), "fuyao-history-rate-limited", 429, None),
+    (Response({"code": 5003}), "fuyao-history-unavailable", 200, 5003),
+    (Response({"code": 0, "data": {"item": {}}}), "fuyao-invalid-history", 200, 0),
+    (requests.Timeout(), "fuyao-history-unavailable", None, None),
+])
+def test_ledger_history_failure_records_only_safe_diagnostics(upstream, reason, http_status, code, caplog):
+    day = date(2026, 1, 21)
+    adapter = FuyaoPnlMarketEvidence(
+        FuyaoClient("fixture", session=Session([])), client(Session([upstream]), max_retries=0)
+    )
+    with pytest.raises(PnlMarketEvidenceError) as error:
+        adapter.closes("603019.SH", day, day)
+    assert error.value.reason == reason
+    assert f"security=603019.SH start=2026-01-21 end=2026-01-21 reason={reason}" in caplog.text
+    assert f"http_status={http_status} business_code={code}" in caplog.text
+    if code == 1001:
+        assert "request_id_digest=None" not in caplog.text
+    assert "fixture-key" not in caplog.text
 
 
 def test_market_clients_share_an_injected_request_gate():

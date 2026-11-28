@@ -955,7 +955,7 @@ active/suspended CronJob 或无法确定状态即停止，不提供 mutation/cle
 
 后续更新只需在 1.21 检出审阅后的 clean commit 并重新执行同一命令；如需明确指定版本，可在环境文件设置新的唯一 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。应用回退检出受审 rollback commit，并使用新的不可变 rollback tag 运行同一普通入口；不直接恢复历史 Helm revision。若 stored/live 中存在任一历史 CronJob，必须停止并建立独立遗留资源处置计划。
 
-截至 2026-11-28，A 股看板通过 1.21 的 NGINX 对应 `gyt.tail0007b1.ts.net` 的 HTTP `80` 虚拟主机反代到 TrueNAS NodePort `192.168.1.20:32001`。已实测 [Tailscale 看板入口](http://gyt.tail0007b1.ts.net/) 及 `/api/health`、`/trading-pnl` 与月历读取接口返回 HTTP 200。局域网也可直接访问 [TrueNAS NodePort](http://192.168.1.20:32001/)。
+截至 2026-11-28，A 股看板运行在 TrueNAS k3s `a-stock` release revision 161（应用版本 `31ceee3`，PostgreSQL Alembic `0009_trading_pnl`）。1.21 的 NGINX 将 `gyt.tail0007b1.ts.net` 的 HTTP `80` 虚拟主机反代到 TrueNAS NodePort `192.168.1.20:32001`。两个入口均已通过首页、健康、盈亏日历与月历 API 只读验收。可使用 [Tailscale 看板入口](http://gyt.tail0007b1.ts.net/) 或 [TrueNAS NodePort](http://192.168.1.20:32001/)。发布证据见 [日线修复发布计划](exec-plans/active/deploy-fuyao-pnl-history-fix-20261128.md)。
 
 同一域名的 HTTPS `443` 由 Tailscale Serve 转发到 `127.0.0.1:80`，再由 NGINX 转发到 `127.0.0.1:3080` 上的 DeepSeek Harness Web UI。1.21 的 `443` 局域网监听也走同一后端。旧的 `8443` 入口仅为历史建议，当前没有监听。1.20 的 `6443` 只供集群本机访问，1.21 的 Helm/kubectl 默认经临时 SSH 回环隧道管理。
 
@@ -1752,3 +1752,5 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 已有行情的 `sector_security_daily_facts.original_close` 在证券、实际日期和质量匹配时优先使用。缺综合历史覆盖时用可核实的本地证据补齐。应用读取日历和明细时不抓取行情。合成截图、固定证据和隔离 PostgreSQL 的验收使用 `python -m pytest tests/test_trading_pnl.py -q`。设置 `TRADING_PNL_TEST_TESSERACT` 指向本地可执行文件，`TRADING_PNL_TEST_FONT` 可指定合成截图使用的中文字体。`MARKET_ENVIRONMENT_TEST_DATABASE_URL` 只指向独立测试数据库。
 
 使用月历的「从 Fuyao 补齐行情」选择期初之后已结算的日期范围，每次最多 366 个自然日。应用使用后端既有 Fuyao 凭据和共享请求预算，按上海日历匹配交易日和不复权收盘价。补齐结果列出已写入的证据与剩余缺项，若台账并发变更，刷新后可重试剩余数据。交易日历上游仅提供近一年，超出范围及缺少公司行动或停牌估值时使用可验证的本地证据。历史成交入账后可从结果打开对应交易日，核对并确认当日流水已录全。
+
+日线补齐结果分别提示请求被拒、凭据或权限问题、限流或请求预算耗尽、服务暂不可用、响应未通过校验，以及目标日缺少可用收盘价。排查失败时可查看后端的 `Fuyao ledger history failed` 日志，按证券、日期范围和原因筛选，核对可用的 HTTP 状态、Fuyao 业务码和请求标识摘要。限流后可稍后重试。仍缺的日期可导入有来源的当日不复权行情。

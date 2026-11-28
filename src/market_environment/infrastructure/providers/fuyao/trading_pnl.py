@@ -1,20 +1,64 @@
 """Normalize Fuyao trading dates and unadjusted daily stock closes."""
 
+import logging
 from collections import Counter
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
+from typing import Any
 
-from ....application.ports.trading_pnl import PnlMarketEvidenceError
+from ....application.ports.trading_pnl import PnlHistory, PnlMarketEvidenceError
 from ....domain.models.trading_pnl import ValuationEvidence
 from .limits_client import MARKET_TIME_ZONE, FuyaoClient, FuyaoContractError, FuyaoError
-from .market import FuyaoMarketClient, FuyaoMarketContractError, FuyaoMarketError
+from .market import (
+    FuyaoMarketClient,
+    FuyaoMarketConfigurationError,
+    FuyaoMarketContractError,
+    FuyaoMarketDiagnostic,
+    FuyaoMarketError,
+    FuyaoMarketPermissionError,
+    FuyaoMarketRateLimitError,
+    FuyaoMarketTransportError,
+)
 
 
 HISTORY_PATH = "/api/a-share/prices/historical"
+logger = logging.getLogger(__name__)
 
 
 def _midnight_ms(day: date) -> int:
     return int(datetime.combine(day, time.min, MARKET_TIME_ZONE).timestamp()) * 1000
+
+
+def _echo_conflicts(data: Mapping[str, Any], expected: Mapping[str, str]) -> bool:
+    return any(key in data and data[key] != value for key, value in expected.items())
+
+
+def _history_failure(exc: FuyaoMarketError) -> str:
+    diagnostic = exc.diagnostic or FuyaoMarketDiagnostic()
+    if isinstance(exc, FuyaoMarketContractError):
+        return "fuyao-invalid-history"
+    if (isinstance(exc, (FuyaoMarketConfigurationError, FuyaoMarketPermissionError))
+            or diagnostic.business_code in {2001, 2003}):
+        return "fuyao-history-permission"
+    if (isinstance(exc, FuyaoMarketRateLimitError) or diagnostic.business_code == 4001
+            or diagnostic.http_status == 429):
+        return "fuyao-history-rate-limited"
+    if isinstance(exc, FuyaoMarketTransportError):
+        status = diagnostic.http_status
+        if status is None or status == 408 or not 400 <= status < 500:
+            return "fuyao-history-unavailable"
+    return "fuyao-history-rejected"
+
+
+def _log_history_failure(
+    security: str, start: date, end: date, reason: str, diagnostic: FuyaoMarketDiagnostic | None
+) -> None:
+    diagnostic = diagnostic or FuyaoMarketDiagnostic()
+    logger.warning(
+        "Fuyao ledger history failed security=%s start=%s end=%s reason=%s "
+        "http_status=%s business_code=%s request_id_digest=%s",
+        security, start, end, reason, diagnostic.http_status, diagnostic.business_code, diagnostic.request_id_digest,
+    )
 
 
 class FuyaoPnlMarketEvidence:
@@ -33,20 +77,24 @@ class FuyaoPnlMarketEvidence:
         except FuyaoError as exc:
             raise PnlMarketEvidenceError("fuyao-calendar-unavailable") from exc
 
-    def closes(self, security: str, start: date, end: date) -> list[ValuationEvidence]:
+    def closes(self, security: str, start: date, end: date) -> PnlHistory:
+        expected = {"thscode": security, "interval": "1d", "adjust": "none"}
         try:
-            data = self.market.request(HISTORY_PATH, params={
-                "thscode": security, "start": _midnight_ms(start),
-                "end": _midnight_ms(end + timedelta(days=1)) - 1, "adjust": "none",
-            }, requested_date=end).data
-        except FuyaoMarketContractError as exc:
-            raise PnlMarketEvidenceError("fuyao-invalid-history") from exc
+            response = self.market.request(HISTORY_PATH, params={
+                **expected, "start": _midnight_ms(start),
+                "end": _midnight_ms(end + timedelta(days=1)) - 1,
+            }, requested_date=end)
         except FuyaoMarketError as exc:
-            raise PnlMarketEvidenceError("fuyao-history-unavailable") from exc
+            reason = _history_failure(exc)
+            _log_history_failure(security, start, end, reason, exc.diagnostic)
+            raise PnlMarketEvidenceError(reason) from exc
+        data = response.data
         items = data.get("item")
-        if (data.get("thscode"), data.get("interval"), data.get("adjust")) != (security, "1d", "none") or not isinstance(items, list):
+        if not isinstance(items, list) or _echo_conflicts(data, expected):
+            _log_history_failure(security, start, end, "fuyao-invalid-history", response.diagnostic)
             raise PnlMarketEvidenceError("fuyao-invalid-history")
         counts: Counter[date] = Counter()
+        invalid_dates: set[date] = set()
         values = []
         for row in items:
             if not isinstance(row, Mapping):
@@ -59,7 +107,10 @@ class FuyaoPnlMarketEvidence:
                 if not start <= day <= end:
                     continue
                 counts[day] += 1
-                if row.get("thscode", security) != security or row.get("close_price") is None:
+                if _echo_conflicts(row, expected):
+                    invalid_dates.add(day)
+                    continue
+                if row.get("close_price") is None:
                     continue
                 values.append(ValuationEvidence(
                     date=day, actual_date=day, security=security, close=row["close_price"],
@@ -67,4 +118,6 @@ class FuyaoPnlMarketEvidence:
                 ))
             except (KeyError, ValueError, OverflowError, OSError):
                 continue
-        return [value for value in values if counts[value.date] == 1]
+        if invalid_dates:
+            _log_history_failure(security, start, end, "fuyao-invalid-history", response.diagnostic)
+        return PnlHistory(tuple(value for value in values if counts[value.date] == 1), frozenset(invalid_dates))

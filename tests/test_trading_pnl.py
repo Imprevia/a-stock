@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic.migration import MigrationContext
@@ -20,10 +21,13 @@ from sqlalchemy.exc import IntegrityError
 from src.market_environment.application.queries.trading_pnl import LocalSessions, TradingPnlQueries
 from src.market_environment.application.commands.trading_pnl import TradingPnlCommands
 from src.market_environment.application.commands.trading_pnl_backfill import TradingPnlBackfill
-from src.market_environment.application.ports.trading_pnl import PnlMarketEvidenceError
+from src.market_environment.application.ports.trading_pnl import PnlHistory, PnlMarketEvidenceError
 from src.market_environment.domain.analysis.trading_pnl import aggregate_executions, project_holdings, simulated_commission
 from src.market_environment.domain.models.trading_pnl import EvidenceBatch, Trade, ValuationEvidence
 from src.market_environment.infrastructure.persistence.postgres.trading_pnl import trading_pnl_store
+from src.market_environment.infrastructure.providers.fuyao.limits_client import FuyaoClient
+from src.market_environment.infrastructure.providers.fuyao.market import FuyaoMarketClient
+from src.market_environment.infrastructure.providers.fuyao.trading_pnl import FuyaoPnlMarketEvidence
 from src.market_environment.infrastructure.trading_pnl_ocr import Screenshot, ScreenshotError, ScreenshotRecognizer, Word, image_digest, parse_trade_rows
 from src.market_environment.interfaces.http.routers.trading_pnl import router
 from src.market_environment.postgres_schema import create_schema
@@ -358,15 +362,83 @@ class FixtureMarketEvidence:
     def closes(self, security, start, end):
         self.calls.append((security, start.isoformat(), end.isoformat()))
         self.before_history()
-        return [ValuationEvidence(
+        return PnlHistory(tuple(ValuationEvidence(
             date=day, actual_date=day, security=security, close=price, price_kind="original-close", source="Fuyao fixture",
-        ) for day, price in self.prices.items() if start <= day <= end]
+        ) for day, price in self.prices.items() if start <= day <= end))
 
 
 def backfill(client, start, end=None, *, status=200, revision=None):
     if revision is None:
         revision = get(client, f"/days/{start}")["revision"]
     return post(client, "/evidence/fuyao", {"start": start, "end": end or start, "revision": revision}, status=status)
+
+
+def test_official_fuyao_history_backfills_exact_close_and_keeps_daily_reasons(ledger_db):
+    dates = [date(2026, 1, day) for day in (21, 22, 23, 26)]
+    first, existing, conflicting, missing = dates
+    shanghai = ZoneInfo("Asia/Shanghai")
+
+    def timestamp(day):
+        return int(datetime.combine(day, time(), shanghai).timestamp()) * 1000
+
+    requests = []
+
+    def history(url, *, params, **kwargs):
+        requests.append((url, params))
+        items = [
+            {"date_ms": timestamp(first), "close_price": "98.23"},
+            {"date_ms": timestamp(existing), "close_price": "1"},
+            {"date_ms": timestamp(conflicting), "close_price": "200", "adjust": "forward"},
+        ]
+        payload = {"code": 0, "data": {"timestamp": timestamp(conflicting), "item": items}}
+        return SimpleNamespace(status_code=200, json=lambda: payload)
+
+    market = FuyaoPnlMarketEvidence(
+        FuyaoClient("fixture", session=SimpleNamespace()),
+        FuyaoMarketClient("fixture", session=SimpleNamespace(get=history), max_retries=0),
+    )
+    client = ledger_client(ledger_db, source=market)
+    post(client, "/opening", {"date": PREVIOUS.isoformat(), "positions": {}})
+    post(client, "/evidence", {
+        "sessions": [session(PREVIOUS.isoformat(), "2026-01-19"), *(
+            session(current.isoformat(), prior.isoformat()) for prior, current in zip([PREVIOUS, *dates[:-1]], dates)
+        )],
+        "valuations": [
+            valuation(existing.isoformat(), "100"),
+            valuation(conflicting.isoformat(), None),
+            valuation(missing.isoformat(), None),
+        ],
+    })
+    draft = upload(client, b"two-records")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', confirmation(draft))
+    cover(client, first.isoformat(), confirmed["revision"], end=missing.isoformat())
+    before = get(client, f"/days/{first}")
+    assert before["coverage"] == "complete"
+    assert before["pnl"] is None
+    assert not requests
+
+    result = backfill(client, first.isoformat())
+    assert result["status"] == "complete" and result["added"] == {"sessions": 0, "valuations": 1}
+    detail = get(client, f"/days/{first}")
+    month = get(client, "/months/2026-01")
+    assert next(day for day in month["days"] if day["date"] == first.isoformat())["pnl"] == detail["pnl"] == "25.00"
+    assert detail["trades"] == before["trades"] and detail["coverage"] == "complete"
+    assert detail["closing"][0]["source"] == "Fuyao · 个股不复权日线"
+    assert Decimal(get(client, f"/days/{existing}")["closing"][0]["close"]) == Decimal("100")
+    repeated = backfill(client, first.isoformat())
+    assert repeated["revision"] == result["revision"] and repeated["added"] == {"sessions": 0, "valuations": 0}
+    assert requests == [("https://fuyao.aicubes.cn/api/a-share/prices/historical", {
+        "thscode": CODE, "interval": "1d", "adjust": "none",
+        "start": timestamp(first), "end": timestamp(existing) - 1,
+    })]
+
+    partial = backfill(client, first.isoformat(), missing.isoformat())
+    assert partial["added"]["valuations"] == 0 and len(requests) == 2
+    assert partial["missing_closes"] == [
+        {"date": conflicting.isoformat(), "security": CODE, "reason": "fuyao-invalid-history"},
+        {"date": missing.isoformat(), "security": CODE, "reason": "fuyao-close-missing"},
+    ]
+    assert get(client, f"/days/{existing}")["closing"][0]["source"] == "synthetic settlement"
 
 
 def test_fuyao_backfill_persists_calendar_and_recovers_price_in_isolated_postgres(ledger_db):

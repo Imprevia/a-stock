@@ -129,6 +129,9 @@ export function issueLabel(issue: string): string {
     'fuyao-invalid-calendar': 'Fuyao 交易日历未通过校验',
     'fuyao-close-missing': 'Fuyao 缺可用的不复权收盘价',
     'fuyao-history-unavailable': 'Fuyao 日线暂不可用',
+    'fuyao-history-rejected': 'Fuyao 拒绝日线请求',
+    'fuyao-history-permission': 'Fuyao 日线凭据或权限有问题',
+    'fuyao-history-rate-limited': 'Fuyao 日线请求受限，请稍后重试',
     'fuyao-invalid-history': 'Fuyao 日线未通过校验',
     'fuyao-batch-limit': '本轮补齐达到上限，剩余数据可重试',
   } as Record<string, string>)[key] ?? issue
