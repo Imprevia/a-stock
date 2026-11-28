@@ -955,20 +955,9 @@ active/suspended CronJob 或无法确定状态即停止，不提供 mutation/cle
 
 后续更新只需在 1.21 检出审阅后的 clean commit 并重新执行同一命令；如需明确指定版本，可在环境文件设置新的唯一 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。应用回退检出受审 rollback commit，并使用新的不可变 rollback tag 运行同一普通入口；不直接恢复历史 Helm revision。若 stored/live 中存在任一历史 CronJob，必须停止并建立独立遗留资源处置计划。
 
-一键发布完成后，1.21 NGINX 建议新增独立 TLS 端口，例如 `8443`，反代到 1.20 的 Traefik HTTP 入口（若 Traefik 是 NodePort，使用其实际 HTTP NodePort）：
+截至 2026-11-28，A 股看板通过 1.21 的 NGINX 对应 `gyt.tail0007b1.ts.net` 的 HTTP `80` 虚拟主机反代到 TrueNAS NodePort `192.168.1.20:32001`。已实测 [Tailscale 看板入口](http://gyt.tail0007b1.ts.net/) 及 `/api/health`、`/trading-pnl` 与月历读取接口返回 HTTP 200。局域网也可直接访问 [TrueNAS NodePort](http://192.168.1.20:32001/)。
 
-```nginx
-location / {
-    proxy_pass http://<1.20的IP>:<Traefik_HTTP端口>;
-    proxy_set_header Host a-stock.k3s.lan;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-}
-```
-
-当前 `gyt.tail0007b1.ts.net/` 根路径已用于 multica，本项目应访问 `https://gyt.tail0007b1.ts.net:8443/` 或使用另一个独立 hostname；不要未经前端 base path 改造就直接挂载 `/a-stock/`。1.20 的 `6443` 只供集群本机访问；1.21 的 Helm/kubectl 默认经临时 SSH 回环隧道管理，不应把该端口暴露给局域网、公网或普通 Tailnet 客户端。
+同一域名的 HTTPS `443` 由 Tailscale Serve 转发到 `127.0.0.1:80`，再由 NGINX 转发到 `127.0.0.1:3080` 上的 DeepSeek Harness Web UI。1.21 的 `443` 局域网监听也走同一后端。旧的 `8443` 入口仅为历史建议，当前没有监听。1.20 的 `6443` 只供集群本机访问，1.21 的 Helm/kubectl 默认经临时 SSH 回环隧道管理。
 
 ### TrueNAS NodePort 与采集写入口
 
