@@ -57,7 +57,7 @@ python -m src.market_environment.cli snapshots refresh \
 ## 环境要求
 
 - Python 3.11+（建议使用仓库 `.venv`）
-- Node.js 18+ 与 npm
+- Node.js 22（至少 22.12.0）与 npm，用于本地开发、CI 和镜像构建。
 - git
 - 可选：GitHub Actions（仓库 CI）
 - 可访问通达信 TCP 和腾讯/百度 HTTPS 行情接口的网络
@@ -72,6 +72,8 @@ npm install --prefix apps/market-environment-dashboard
 ```
 
 `requirements.txt` 同时安装部署文档安全测试使用的 CommonMark 与 Bash AST 解析器；不要在只安装部分依赖的环境中把命令审计结果作为发布证据。
+
+前端依赖更新后，在 `apps/market-environment-dashboard/` 从锁文件执行 `npm ci`、`npm run test` 和 `npm run build`。用 `npm audit --registry=https://registry.npmjs.org/` 复核完整依赖树，加 `--omit=dev` 复核生产依赖树。运行镜像只复制 Vite 的 `dist`，判断浏览器影响时还要核对构建产物使用的包。
 
 ## 启动命令
 

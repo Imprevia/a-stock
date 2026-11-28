@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "echarts": "^5.5.1",
+    "echarts": "^6.1.0",
     "lucide-vue-next": "^0.468.0",
     "pinia": "^2.2.0",
     "vue": "^3.5.13",
@@ -19,9 +19,15 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/test-utils": "^2.5.0",
-    "happy-dom": "^15.11.7",
+    "happy-dom": "^21.0.4",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5",
-    "vitest": "^2.1.8"
+    "vite": "^6.4.6",
+    "vitest": "^5.1.2"
+  },
+  "overrides": {
+    "js-beautify@2.0.3": {
+      "editorconfig": "^4.0.1",
+      "glob": "^14.0.6"
+    }
   }
 }
