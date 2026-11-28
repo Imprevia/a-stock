@@ -67,6 +67,70 @@ class PostgresTradingPnl:
                     VALUES (:key, :kind, :fingerprint, CAST(:result AS jsonb))""",
                     key=key, kind=kind, fingerprint=fingerprint, result=_json(result))
 
+    def record_calculation_batch(self, batch_id: str, start: date) -> None:
+        self._write("""INSERT INTO trading_pnl_calculations(batch_id, start_date) VALUES (:batch, :start)""",
+                    batch=batch_id, start=start)
+
+    def calculation(self, batch_id: str):
+        return self._one("""SELECT start_date, horizon, result, token,
+                           expires_at > clock_timestamp() AS active
+                           FROM trading_pnl_calculations WHERE batch_id=:batch""", batch=batch_id)
+
+    def calculation_horizon(self) -> date | None:
+        return self._one("SELECT max(horizon) AS day FROM trading_pnl_calculations")["day"]
+
+    def calculation_start(self) -> date | None:
+        return self._one("SELECT min(start_date) AS day FROM trading_pnl_calculations WHERE horizon IS NOT NULL")["day"]
+
+    def claim_calculation(self, batch_id: str, token: str, result: dict) -> None:
+        self._write("""UPDATE trading_pnl_calculations SET token=:token,
+                    expires_at=clock_timestamp() + interval '2 minutes', result=CAST(:result AS jsonb)
+                    WHERE batch_id=:batch""", batch=batch_id, token=token, result=_json(result))
+
+    def set_calculation_horizon(self, batch_id: str, end: date) -> None:
+        self._write("""UPDATE trading_pnl_calculations SET horizon=greatest(horizon, :end)
+                    WHERE batch_id=:batch""", batch=batch_id, end=end)
+
+    def finish_calculation(self, batch_id: str, result: dict) -> None:
+        self._write("""UPDATE trading_pnl_calculations SET token=NULL, expires_at=NULL,
+                    result=CAST(:result AS jsonb) WHERE batch_id=:batch""",
+                    batch=batch_id, result=_json(result))
+
+    def cached_action_window(self, security: str, start: date, end: date) -> bool:
+        return self._one("""SELECT 1 FROM trading_pnl_action_windows
+                          WHERE security=:security AND start_date<=:start AND end_date>=:end
+                          AND expires_at>clock_timestamp() LIMIT 1""", security=security, start=start, end=end) is not None
+
+    def save_action_events(self, actions) -> None:
+        self._write("DELETE FROM trading_pnl_action_windows WHERE expires_at<=clock_timestamp()")
+        self._write("""INSERT INTO trading_pnl_action_windows(security, start_date, end_date, expires_at)
+                    VALUES (:security, :start, :end, clock_timestamp() + interval '15 minutes')
+                    ON CONFLICT (security, start_date, end_date) DO UPDATE SET expires_at=EXCLUDED.expires_at""",
+                    security=actions.security, start=actions.start, end=actions.end)
+        metadata = {"source": actions.source, "start": actions.start.isoformat(), "end": actions.end.isoformat()}
+        for event in actions.events:
+            data = {**metadata, "dividend_per_share": str(event.dividend_per_share),
+                    "per_share_bonus": str(event.per_share_bonus)}
+            self._write("""INSERT INTO trading_pnl_action_events AS events(security, ex_date, data)
+                        VALUES (:security, :day, CAST(:data AS jsonb))
+                        ON CONFLICT (security, ex_date) DO UPDATE SET data=events.data || jsonb_build_object('conflict', TRUE)
+                        WHERE (events.data->>'dividend_per_share')::numeric IS DISTINCT FROM :dividend
+                           OR (events.data->>'per_share_bonus')::numeric IS DISTINCT FROM :bonus""",
+                        security=actions.security, day=event.date, data=_json(data),
+                        dividend=event.dividend_per_share, bonus=event.per_share_bonus)
+        for day in actions.conflicts:
+            self._write("""INSERT INTO trading_pnl_action_events AS events(security, ex_date, data)
+                        VALUES (:security, :day, CAST(:data AS jsonb))
+                        ON CONFLICT (security, ex_date) DO UPDATE SET data=events.data || jsonb_build_object('conflict', TRUE)""",
+                        security=actions.security, day=day, data=_json({**metadata, "conflict": True}))
+
+    def action_issue(self, day: date, security: str) -> str | None:
+        row = self._one("SELECT data FROM trading_pnl_action_events WHERE security=:security AND ex_date=:day",
+                        security=security, day=day)
+        if row is None:
+            return None
+        return "fuyao-conflicting-action" if row["data"].get("conflict") else "fuyao-action-entitlement-unverified"
+
     def audit(self, revision: int, data: dict) -> None:
         self._write("INSERT INTO trading_pnl_audit(revision, data) VALUES (:revision, CAST(:data AS jsonb))",
                     revision=revision, data=_json(data))

@@ -161,6 +161,8 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
         ("/api/trading-pnl/drafts/{identifier}/images/{digest}", "get"): ("200", None),
         ("/api/trading-pnl/drafts/{identifier}/preview", "post"): ("200", None),
         ("/api/trading-pnl/drafts/{identifier}/confirm", "post"): ("200", None),
+        ("/api/trading-pnl/calculations/{batch_id}", "post"): ("200", None),
+        ("/api/trading-pnl/calculations/{batch_id}", "get"): ("200", None),
         ("/api/trading-pnl/opening", "post"): ("200", None),
         ("/api/trading-pnl/coverage", "post"): ("200", None),
         ("/api/trading-pnl/trades/{identifier}/correction", "post"): ("200", None),

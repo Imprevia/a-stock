@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { CalendarDays, ChevronLeft, ChevronRight, Upload } from 'lucide-vue-next'
-import { currency, errorMessage, issueLabel, LedgerError, ledgerRequest, shanghaiDate, statusText, type LedgerMonth, type MarketBackfillResult } from '../../trading-pnl'
+import { calculationQuery, currency, dayIssueLabels, dayPnl, dayPnlLabel, errorMessage, issueLabel, LedgerError, ledgerRequest, shanghaiDate, statusText, type LedgerMonth, type MarketBackfillResult } from '../../trading-pnl'
+import CalculationRange from './CalculationRange.vue'
 import './trading-pnl.css'
 
 const route = useRoute()
@@ -14,9 +15,11 @@ const coverageKind = ref('complete')
 const evidence = ref<File | null>(null)
 const month = computed(() => typeof route.query.month === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(route.query.month)
   ? route.query.month : shanghaiDate().slice(0, 7))
+const resultQuery = computed(() => ({ ...calculationQuery(route.query), month: month.value }))
 const data = ref<LedgerMonth | null>(null)
 const error = ref('')
 const notice = ref('')
+const calculationRefresh = ref(0)
 const loading = ref(false)
 const saving = ref(false)
 const marketStart = ref('')
@@ -68,7 +71,7 @@ async function load(): Promise<void> {
 function move(offsetMonths: number): void {
   const target = new Date(`${month.value}-01T00:00:00Z`)
   target.setUTCMonth(target.getUTCMonth() + offsetMonths)
-  void router.push({ name: 'trading-pnl-calendar', query: { month: target.toISOString().slice(0, 7) } })
+  void router.push({ name: 'trading-pnl-calendar', query: { ...resultQuery.value, month: target.toISOString().slice(0, 7) } })
 }
 
 async function commit(action: () => Promise<void>): Promise<void> {
@@ -86,7 +89,7 @@ async function confirmOpening(): Promise<void> {
     next.setUTCDate(next.getUTCDate() + 1)
     const startMonth = next.toISOString().slice(0, 7)
     if (startMonth === month.value) await load()
-    else await router.replace({ query: { month: startMonth } })
+    else await router.replace({ query: { ...resultQuery.value, month: startMonth } })
     notice.value = '已确认期初空仓。'
   })
 }
@@ -98,6 +101,7 @@ async function confirmRange(): Promise<void> {
       start: coverageStart.value, end: coverageEnd.value, kind: coverageKind.value, revision: data.value!.revision,
     })
     await load()
+    calculationRefresh.value++
     notice.value = `已确认 ${result.confirmed_days} 天的流水覆盖。`
   })
 }
@@ -111,6 +115,7 @@ async function uploadEvidence(): Promise<void> {
     await ledgerRequest('/evidence', content)
     evidence.value = null
     await load()
+    calculationRefresh.value++
     notice.value = '盘后证据已导入并重新计算。'
   })
 }
@@ -127,11 +132,13 @@ async function fillMarketEvidence(): Promise<void> {
           ...range, revision: data.value!.revision,
         })
         backfill.value = { ...result, ...range }
+        calculationRefresh.value++
       } catch (reason) {
         if (reason instanceof LedgerError && reason.status === 409) {
           await load()
           const added = reason.detail?.added
           if (added?.sessions || added?.valuations) {
+            calculationRefresh.value++
             notice.value = `已保存 ${added.sessions} 条交易日历、${added.valuations} 条收盘价。`
           }
         }
@@ -172,6 +179,7 @@ watch([month, () => marketBounds.value?.start, () => marketBounds.value?.end], (
     </header>
     <p v-if="error" class="pnl-message pnl-error" role="alert">{{ error }} <button type="button" class="pnl-button" @click="load">刷新</button></p>
     <p v-if="notice" class="pnl-message" role="status">{{ notice }}</p>
+    <CalculationRange :month="month" :refresh-token="calculationRefresh" />
     <form v-if="data && !data.opening_date" class="pnl-panel pnl-form" @submit.prevent="confirmOpening">
       <h2>设置期初</h2>
       <label>收盘空仓日期<input v-model="openingDate" required type="date" :max="shanghaiDate()" /></label>
@@ -189,15 +197,17 @@ watch([month, () => marketBounds.value?.start, () => marketBounds.value?.end], (
         <span v-for="position in offset" :key="`offset-${position}`" aria-hidden="true" />
         <RouterLink v-for="day in data.days" :key="day.date" class="pnl-day-tile"
           :class="{ 'pnl-closed': day.status === 'closed', 'pnl-today': day.date === shanghaiDate() }"
-          :aria-label="`${day.date} ${day.pnl === null ? statusText[day.status] : currency(day.pnl)}`"
-          :title="day.issues.map(issueLabel).join('，')"
-          :to="{ name: 'trading-pnl-day', params: { date: day.date }, query: { month } }">
+          :aria-label="`${day.date} ${dayPnlLabel(day)}`"
+          :title="dayIssueLabels(day).join('，')"
+          :to="{ name: 'trading-pnl-day', params: { date: day.date }, query: resultQuery }">
           <span>{{ Number(day.date.slice(-2)) }}</span>
-          <span v-if="day.pnl !== null" class="pnl-day-amount"
-            :class="{ 'pnl-positive': Number(day.pnl) > 0, 'pnl-negative': Number(day.pnl) < 0 }">{{ currency(day.pnl) }}</span>
-          <span v-else class="pnl-day-state">{{ statusText[day.status] }}</span>
+          <span v-if="day.status === 'estimated'" class="pnl-day-state">估算</span>
+          <span v-if="dayPnl(day) !== null" class="pnl-day-amount"
+            :class="{ 'pnl-positive': Number(dayPnl(day)) > 0, 'pnl-negative': Number(dayPnl(day)) < 0 }">{{ currency(dayPnl(day)) }}</span>
+          <span v-else-if="day.status !== 'estimated'" class="pnl-day-state">{{ statusText[day.status] }}</span>
         </RouterLink>
       </div>
+      <p v-if="data?.month === month && data.days.some(day => day.status === 'estimated')" class="pnl-muted">估算按已入账记录推算，相关交易流水待确认。</p>
       <p v-if="data?.opening_date" class="pnl-muted">期初 {{ data.opening_date }} 收盘</p>
     </div>
     <section v-if="data?.opening_date" class="pnl-panel">
@@ -226,7 +236,7 @@ watch([month, () => marketBounds.value?.start, () => marketBounds.value?.end], (
           <summary>剩余缺项（{{ remainingByDate.length }} 天）</summary>
           <ul class="pnl-positions">
             <li v-for="[day, issues] in remainingByDate" :key="day">
-              <RouterLink class="pnl-back" :to="{ name: 'trading-pnl-day', params: { date: day }, query: { month } }">{{ day }}</RouterLink>
+              <RouterLink class="pnl-back" :to="{ name: 'trading-pnl-day', params: { date: day }, query: resultQuery }">{{ day }}</RouterLink>
               <span>{{ issues.join('；') }}</span>
             </li>
           </ul>

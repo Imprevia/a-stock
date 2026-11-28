@@ -149,6 +149,23 @@ def confirm_draft(request: Request, identifier: DraftId, data: Confirm):
     return _call(_service(request, write=True).confirm, identifier, data.key, data.revision, [row.model_dump() for row in data.rows])
 
 
+def _calculation(request: Request):
+    service = _request_container(request).commands.trading_pnl_calculation
+    if service is None:
+        raise HTTPException(503, "个人台账需要 PostgreSQL 环境")
+    return service
+
+
+@router.post("/calculations/{batch_id}")
+def calculate_pnl(request: Request, batch_id: DraftId):
+    return _call(_calculation(request).run, batch_id)
+
+
+@router.get("/calculations/{batch_id}")
+def calculation_status(request: Request, batch_id: DraftId):
+    return _call(_calculation(request).status, batch_id)
+
+
 @router.post("/opening")
 def configure_opening(request: Request, data: Opening):
     return _call(_service(request, write=True).opening, data)

@@ -209,8 +209,19 @@ class TradingPnlCommands:
                 repo.set_revision(revision)
             else:
                 revision = state["revision"]
-            result = {"saved": saved, "skipped": skipped, "revision": revision}
-            repo.audit(revision, {"kind": "confirm", "draft_id": identifier, "decisions": audit_decisions})
+            batch_id = identifier if affected else None
+            if batch_id:
+                repo.record_calculation_batch(batch_id, min(affected))
+            imported = [
+                {"id": row["id"], "date": row["date"], "security": trade.security,
+                 "name": trade.name, "side": trade.side, "quantity": trade.filled_quantity,
+                 "price": str(trade.price) if trade.price is not None else None}
+                for row, trade in zip(saved, accepted, strict=True)
+            ]
+            result = {"saved": saved, "skipped": skipped, "revision": revision,
+                      "batch_id": batch_id, "imported": imported}
+            repo.audit(revision, {"kind": "confirm", "draft_id": identifier, "batch_id": batch_id,
+                                  "decisions": audit_decisions})
             repo.record_operation(key, "confirm", fingerprint, result)
             repo.finish_draft(identifier)
             return result

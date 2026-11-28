@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
-import { amount, currency, errorMessage, issueLabel, ledgerRequest, statusLabel, statusText, type LedgerDay, type LedgerRecord, type TradeFields } from '../../trading-pnl'
+import { amount, calculationQuery, currency, dayIssueLabels, dayPnl, dayPnlLabel, errorMessage, ledgerRequest, statusLabel, type LedgerDay, type LedgerRecord, type TradeFields } from '../../trading-pnl'
+import CalculationRange from './CalculationRange.vue'
 import TradeFieldsForm from './TradeFields.vue'
 import './trading-pnl.css'
 
@@ -10,9 +11,12 @@ const route = useRoute()
 const router = useRouter()
 const date = computed(() => String(route.params.date))
 const originMonth = computed(() => typeof route.query.month === 'string' ? route.query.month : date.value.slice(0, 7))
+const resultQuery = computed(() => ({ ...calculationQuery(route.query), month: originMonth.value }))
 const day = ref<LedgerDay | null>(null)
+const total = computed(() => day.value ? dayPnl(day.value) : null)
 const error = ref('')
 const notice = ref('')
+const calculationRefresh = ref(0)
 const correctionDates = ref<string[]>([])
 const loading = ref(false)
 const saving = ref(false)
@@ -71,9 +75,10 @@ async function saveCorrection(): Promise<void> {
       revision: record.revision, trade: fields.value, keep_distinct: keepDistinct.value,
     })
     editing.value = null
-    if (target !== date.value) await router.push({ params: { date: target }, query: { month: originMonth.value } })
+    if (target !== date.value) await router.push({ params: { date: target }, query: resultQuery.value })
     else await load()
     correctionDates.value = result.affected_dates ?? [...new Set([original, target])].sort()
+    calculationRefresh.value++
     notice.value = '更正已入账，请重新核对受影响日期的流水覆盖。'
   })
 }
@@ -84,6 +89,7 @@ async function setCoverage(kind: string): Promise<void> {
     await ledgerRequest('/coverage', { start: date.value, end: date.value, kind, revision: day.value!.revision })
     await load()
     correctionDates.value = correctionDates.value.filter(affected => affected !== date.value)
+    calculationRefresh.value++
     notice.value = '已确认当日流水覆盖。'
   })
 }
@@ -93,7 +99,7 @@ watch(date, () => { day.value = null; editing.value = null; void load() }, { imm
 
 <template>
   <section class="pnl-page" aria-labelledby="pnl-day-title">
-    <RouterLink class="pnl-back" :to="{ name: 'trading-pnl-calendar', query: { month: originMonth } }"><ArrowLeft :size="17" /> 返回盈亏日历</RouterLink>
+    <RouterLink class="pnl-back" :to="{ name: 'trading-pnl-calendar', query: resultQuery }"><ArrowLeft :size="17" /> 返回盈亏日历</RouterLink>
     <header class="pnl-heading">
       <div><h1 id="pnl-day-title">{{ date }} 交易明细</h1><p>当日总盈亏</p></div>
       <RouterLink class="pnl-button pnl-primary" :to="{ name: 'trading-pnl-import', query: { month: originMonth } }">导入交易截图</RouterLink>
@@ -102,27 +108,33 @@ watch(date, () => { day.value = null; editing.value = null; void load() }, { imm
     <p v-if="notice" class="pnl-message" role="status">{{ notice }}</p>
     <nav v-if="correctionDates.length" class="pnl-inline" aria-label="需要重新确认的日期">
       <RouterLink v-for="affected in correctionDates" :key="affected" class="pnl-back"
-        :to="{ name: 'trading-pnl-day', params: { date: affected }, query: { month: originMonth } }">核对 {{ affected }} 流水</RouterLink>
+        :to="{ name: 'trading-pnl-day', params: { date: affected }, query: resultQuery }">核对 {{ affected }} 流水</RouterLink>
     </nav>
+    <CalculationRange :month="originMonth" :date="date" :refresh-token="calculationRefresh" />
     <p v-if="loading" role="status">正在读取交易明细…</p>
     <template v-if="day">
       <section class="pnl-panel">
-        <h2 class="pnl-total" :class="{ 'pnl-positive': Number(day.pnl) > 0, 'pnl-negative': Number(day.pnl) < 0 }">
-          {{ day.pnl === null ? statusText[day.status] : currency(day.pnl) }}
+        <h2 class="pnl-total" :class="{ 'pnl-positive': Number(total) > 0, 'pnl-negative': Number(total) < 0 }">
+          {{ dayPnlLabel(day) }}
         </h2>
+        <p v-if="day.status === 'estimated'" class="pnl-muted">估算按已入账记录推算，相关交易流水待确认。</p>
         <p v-if="day.previous_date" class="pnl-muted">上一交易日 {{ day.previous_date }}</p>
-        <ul v-if="day.issues.length" class="pnl-issues">
-          <li v-for="issue in day.issues" :key="issue">{{ issueLabel(issue) }}</li>
+        <ul v-if="dayIssueLabels(day).length" class="pnl-issues">
+          <li v-for="issue in dayIssueLabels(day)" :key="issue">{{ issue }}</li>
         </ul>
         <RouterLink v-if="day.blocking_coverage_date" class="pnl-back"
-          :to="{ name: 'trading-pnl-day', params: { date: day.blocking_coverage_date }, query: { month: originMonth } }">
+          :to="{ name: 'trading-pnl-day', params: { date: day.blocking_coverage_date }, query: resultQuery }">
           核对 {{ day.blocking_coverage_date }} 流水以重算后续盈亏
+        </RouterLink>
+        <RouterLink v-if="day.blocking_holdings_date && day.blocking_holdings_date < date" class="pnl-back"
+          :to="{ name: 'trading-pnl-day', params: { date: day.blocking_holdings_date }, query: resultQuery }">
+          查看 {{ day.blocking_holdings_date }} 持仓缺项
         </RouterLink>
         <dl v-if="day.components" class="pnl-metrics">
           <div v-for="[key, label] in components" :key="key"><dt>{{ label }}</dt><dd>{{ amount(day.components[key]) }}</dd></div>
         </dl>
         <p v-if="day.coverage" class="pnl-muted">{{ day.coverage === 'no-trades' ? '已确认无成交' : '已确认流水完整' }}</p>
-        <div v-if="day.status === 'insufficient' || day.status === 'ok'" class="pnl-inline">
+        <div v-if="day.status === 'insufficient' || day.status === 'ok' || day.status === 'estimated'" class="pnl-inline">
           <button class="pnl-button" type="button" :disabled="saving || day.coverage === 'complete'" @click="setCoverage('complete')">确认当日流水已录全</button>
           <button class="pnl-button" type="button" :disabled="saving || day.coverage === 'no-trades' || day.trades.some(row => Number(row.filled_quantity) > 0)" @click="setCoverage('no-trades')">确认无成交</button>
         </div>

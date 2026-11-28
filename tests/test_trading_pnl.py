@@ -21,7 +21,8 @@ from sqlalchemy.exc import IntegrityError
 from src.market_environment.application.queries.trading_pnl import LocalSessions, TradingPnlQueries
 from src.market_environment.application.commands.trading_pnl import TradingPnlCommands
 from src.market_environment.application.commands.trading_pnl_backfill import TradingPnlBackfill
-from src.market_environment.application.ports.trading_pnl import PnlHistory, PnlMarketEvidenceError
+from src.market_environment.application.commands.trading_pnl_calculation import TradingPnlCalculation
+from src.market_environment.application.ports.trading_pnl import PnlCorporateAction, PnlCorporateActions, PnlHistory, PnlMarketEvidenceError
 from src.market_environment.domain.analysis.trading_pnl import aggregate_executions, project_holdings, simulated_commission
 from src.market_environment.domain.models.trading_pnl import EvidenceBatch, Trade, ValuationEvidence
 from src.market_environment.infrastructure.persistence.postgres.trading_pnl import trading_pnl_store
@@ -187,7 +188,7 @@ def test_ocr_limits_and_timeout(monkeypatch):
 
 
 @pytest.fixture
-def ledger_db():
+def ledger_db(request):
     from importlib.util import module_from_spec, spec_from_file_location
     from uuid import uuid4
 
@@ -201,13 +202,21 @@ def ledger_db():
     engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
     try:
         create_schema(engine)
-        migration = Path(__file__).resolve().parents[1] / "alembic/versions/0009_trading_pnl.py"
-        spec = spec_from_file_location("test_ledger_migration", migration)
-        assert spec is not None and spec.loader is not None
-        module = module_from_spec(spec)
-        spec.loader.exec_module(module)
+        versions = Path(__file__).resolve().parents[1] / "alembic/versions"
         with engine.begin() as connection, Operations.context(MigrationContext.configure(connection)):
-            module.upgrade()
+            for revision in ("0009_trading_pnl", "0010_pnl_calculation"):
+                spec = spec_from_file_location(revision, versions / f"{revision}.py")
+                assert spec is not None and spec.loader is not None
+                module = module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.upgrade()
+                if revision == "0009_trading_pnl" and getattr(request, "param", False):
+                    connection.execute(text("UPDATE trading_pnl_state SET opening_date='2026-01-20', revision=4"))
+                    connection.execute(text("INSERT INTO trading_pnl_coverage VALUES ('2026-01-21', 'no-trades')"))
+                    evidence = ValuationEvidence.model_validate(valuation("2026-01-21", "102.50", cash="10"))
+                    connection.execute(text("""INSERT INTO trading_pnl_valuations(as_of, security, data)
+                                             VALUES ('2026-01-21', :security, CAST(:data AS jsonb))"""),
+                                       {"security": CODE, "data": evidence.model_dump_json()})
         yield engine
     finally:
         engine.dispose()
@@ -224,17 +233,19 @@ def fake_screenshot(blob: bytes) -> Screenshot:
     return Screenshot(image_digest(blob), b"preview", "image/jpeg", rows, ["2026年01月2笔"])
 
 
-def ledger_client(engine, recognizer=fake_screenshot, source=None):
+def ledger_client(engine, recognizer=fake_screenshot, source=None, settled=date(2026, 11, 27)):
     app = FastAPI()
     app.include_router(router)
     store = trading_pnl_store(engine)
     today = lambda: date(2026, 11, 28)
-    queries = TradingPnlQueries(store, today, lambda: date(2026, 11, 27))
+    queries = TradingPnlQueries(store, today, lambda: settled)
+    backfill_service = TradingPnlBackfill(store, queries, source) if source else None
     app.state.container = SimpleNamespace(
         reads=SimpleNamespace(trading_pnl=queries),
         commands=SimpleNamespace(
             trading_pnl=TradingPnlCommands(store, today, recognizer, image_digest),
-            trading_pnl_backfill=TradingPnlBackfill(store, queries, source) if source else None,
+            trading_pnl_backfill=backfill_service,
+            trading_pnl_calculation=TradingPnlCalculation(backfill_service) if backfill_service else None,
         ),
     )
     return TestClient(app)
@@ -354,6 +365,15 @@ class FixtureMarketEvidence:
         self.prices = {}
         self.calls = []
         self.before_history = lambda: None
+        self.before_actions = lambda: None
+        self.actions = ()
+
+    def corporate_actions(self, security, start, end):
+        self.calls.append(("actions", security, start.isoformat(), end.isoformat()))
+        self.before_actions()
+        return PnlCorporateActions(security, start, end, "Fuyao actions fixture", tuple(
+            action for action in self.actions if start <= action.date <= end
+        ))
 
     def trading_days(self):
         self.calls.append(("calendar",))
@@ -439,6 +459,211 @@ def test_official_fuyao_history_backfills_exact_close_and_keeps_daily_reasons(le
         {"date": missing.isoformat(), "security": CODE, "reason": "fuyao-close-missing"},
     ]
     assert get(client, f"/days/{existing}")["closing"][0]["source"] == "synthetic settlement"
+
+
+@pytest.mark.parametrize(("variant", "expected"), [
+    ("valid", "fuyao-action-entitlement-unverified"),
+    ("empty", "fuyao-action-coverage-unknown"),
+    ("duplicate", "fuyao-action-entitlement-unverified"),
+    ("conflict", "fuyao-conflicting-action"),
+    ("missing", "fuyao-invalid-actions"),
+    ("wrong-security", "fuyao-invalid-actions"),
+    ("wrong-date", "fuyao-invalid-actions"),
+    ("wrong-unit", "fuyao-invalid-actions"),
+])
+def test_fuyao_corporate_action_contract(variant, expected):
+    event_date = date(2015, 7, 17)
+    data = {"thscode": "600519.SH", "ticker": "600519"}
+    row = {"ticker": "600519", "ex_date_ms": 1437062400000,
+           "dividend_per_share": 4.374, "per_share_bonus": 0.1}
+    data["item"] = [row]
+    if variant == "empty":
+        data["item"] = []
+    elif variant == "duplicate":
+        data["item"].append(dict(row))
+    elif variant == "conflict":
+        data["item"].append(dict(row, per_share_bonus=0.2))
+    elif variant == "missing":
+        del data["item"]
+    elif variant == "wrong-security":
+        data["thscode"] = "000001.SZ"
+    elif variant == "wrong-date":
+        row["ex_date_ms"] += 1000
+    elif variant == "wrong-unit":
+        row["dividend_per_share"] = "4.374%"
+
+    def response(url, *, params, **kwargs):
+        assert url.endswith("/api/a-share/corporate-actions/adjustment-factors")
+        assert params == {"thscode": "600519.SH", "from": "2015-07-17", "to": "2015-07-17"}
+        return SimpleNamespace(status_code=200, json=lambda: {"code": 0, "data": data})
+
+    adapter = FuyaoPnlMarketEvidence(
+        FuyaoClient("fixture", session=SimpleNamespace()),
+        FuyaoMarketClient("fixture", session=SimpleNamespace(get=response), max_retries=0),
+    )
+    if expected == "fuyao-invalid-actions":
+        with pytest.raises(PnlMarketEvidenceError, match=expected):
+            adapter.corporate_actions("600519.SH", event_date, event_date)
+        return
+
+    result = adapter.corporate_actions("600519.SH", event_date, event_date)
+    assert result.missing_reason(event_date) == expected
+    if variant in {"valid", "duplicate"}:
+        event, = result.events
+        assert event.dividend_per_share == Decimal("4.374")
+        assert event.per_share_bonus == Decimal("0.1")
+    else:
+        assert not result.events
+
+
+def test_import_calculation_estimates_and_rebuilds_after_action_evidence(ledger_db):
+    second = date(2026, 1, 22)
+    friday = date(2026, 1, 23)
+    saturday = date(2026, 1, 24)
+    market = FixtureMarketEvidence(["2026-01-19", PREVIOUS.isoformat(), DAY.isoformat(), second.isoformat(), friday.isoformat()])
+    market.prices.update({DAY: "98.23", second: "100", friday: "101"})
+    market.actions = (PnlCorporateAction(second, Decimal("0.1"), Decimal(0)),)
+    executable = os.environ.get("TRADING_PNL_TEST_TESSERACT")
+    if executable:
+        ocr = ScreenshotRecognizer(executable, timeout=30)
+        client = ledger_client(ledger_db, lambda blob: ocr(blob) if blob.startswith(b"\x89PNG") else fake_screenshot(blob),
+                               source=market, settled=saturday)
+        screenshot = synthetic_image()
+    else:
+        client = ledger_client(ledger_db, source=market, settled=saturday)
+        screenshot = b"synthetic-calculation-first"
+    post(client, "/opening", {"date": PREVIOUS.isoformat(), "positions": {}})
+    draft = upload(client, screenshot)
+    request = confirmation(draft, count=1)
+    path = f'/drafts/{draft["id"]}/confirm'
+    confirmed = post(client, path, request)
+    assert confirmed == post(client, path, request)
+    assert confirmed["imported"][0]["quantity"] == 100
+    batch = f'/calculations/{confirmed["batch_id"]}'
+    assert client.get(f"/api/trading-pnl{batch}").status_code == 404
+    assert not market.calls
+
+    result = post(client, batch, {})
+    assert (result["status"], result["start"], result["end"]) == ("partial", DAY.isoformat(), friday.isoformat())
+    assert {"date": second.isoformat(), "security": CODE, "reason": "fuyao-action-entitlement-unverified"} in result["missing"]
+    assert get(client, batch) == result
+    before_read = market.calls.copy()
+    first = get(client, f"/days/{DAY}")
+    assert first["status"] == "estimated" and first["pnl"] is None and first["estimated_pnl"] == "3.00"
+    assert get(client, f"/days/{second}")["estimated_pnl"] is None
+    assert not [row for row in get(client, "/months/2026-01")["days"] if row["date"] == second.isoformat() and row["pnl"]]
+    assert market.calls == before_read
+
+    post(client, "/evidence", {"valuations": [valuation(second.isoformat(), None, cash="10"),
+                                                valuation(friday.isoformat(), None)]})
+    post(client, batch, {})
+    detail = get(client, f"/days/{second}")
+    assert detail["status"] == "estimated" and detail["estimated_pnl"] == "187.00"
+    month = get(client, "/months/2026-01")
+    assert next(row for row in month["days"] if row["date"] == second.isoformat())["estimated_pnl"] == detail["estimated_pnl"]
+    cover(client, DAY.isoformat(), detail["revision"], end=friday.isoformat())
+    assert get(client, f"/days/{second}")["pnl"] == "187.00"
+
+    sale = upload(client, b"synthetic-late-sale")
+    change = confirmation(sale, key="synthetic_sale_batch_22")
+    change["rows"][0]["fields"] = trade(date=second, side="sell", amount="10000.00", price="100").model_dump(mode="json")
+    saved_sale = post(client, f'/drafts/{sale["id"]}/confirm', change)
+    market.calls.clear()
+    sale_result = post(client, f'/calculations/{saved_sale["batch_id"]}', {})
+    assert sale_result["start"] == second.isoformat() and sale_result["end"] == friday.isoformat()
+    assert get(client, f"/days/{friday}")["estimated_pnl"] == "0.00"
+    assert not any(call[0] == CODE and call[2] >= friday.isoformat() for call in market.calls)
+    with ledger_db.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM trading_pnl_action_events")).scalar_one() == 1
+
+
+def test_calculation_claims_one_batch_and_fences_concurrent_writes(ledger_db):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    market = FixtureMarketEvidence(["2026-01-19", PREVIOUS.isoformat(), DAY.isoformat()])
+    market.prices[DAY] = "98.23"
+    client = ledger_client(ledger_db, source=market, settled=DAY)
+    post(client, "/opening", {"date": PREVIOUS.isoformat(), "positions": {}})
+    draft = upload(client, b"synthetic-concurrent-calculation")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', confirmation(draft))
+    batch = f'/calculations/{confirmed["batch_id"]}'
+    fetching = Event()
+    resume = Event()
+
+    def before_history():
+        fetching.set()
+        assert resume.wait(10)
+
+    market.before_history = before_history
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        calculation = workers.submit(post, client, batch, {})
+        try:
+            assert fetching.wait(10)
+            assert get(client, batch)["status"] == "running"
+            assert post(client, batch, {})["status"] == "running"
+            post(client, "/evidence", {"valuations": [valuation(DAY.isoformat(), "100")]})
+        finally:
+            resume.set()
+        assert calculation.result(timeout=10)["status"] == "retry"
+    assert sum(call[0] == CODE for call in market.calls) == 1
+    assert post(client, batch, {})["status"] == "complete"
+    assert sum(call[0] == CODE for call in market.calls) == 1
+    assert get(client, f"/days/{DAY}")["estimated_pnl"] == "180.00"
+
+
+@pytest.mark.parametrize("ledger_db", [True], indirect=True)
+def test_calculation_migration_preserves_existing_ledger(ledger_db):
+    client = ledger_client(ledger_db)
+    assert get(client, "/months/2026-01")["opening_date"] == PREVIOUS.isoformat()
+    assert get(client, f"/days/{DAY}")["coverage"] == "no-trades"
+    post(client, "/evidence", {"valuations": [valuation(DAY.isoformat(), None, cash="11")]})
+    with trading_pnl_store(ledger_db)() as repo:
+        evidence = repo.valuations(DAY, DAY)[DAY, CODE]
+        assert evidence.close == Decimal("102.50")
+        assert evidence.cash_adjustment == Decimal("11")
+        assert repo.calculation_horizon() is None
+
+
+def test_calculation_boundaries_use_only_added_rows(ledger_db):
+    market = FixtureMarketEvidence([])
+    client = ledger_client(ledger_db, source=market, settled=date(2026, 11, 26))
+    post(client, "/opening", {"date": PREVIOUS.isoformat(), "positions": {}})
+    first = upload(client, b"all-skipped")
+    skipped = post(client, f'/drafts/{first["id"]}/confirm', confirmation(first, key="all_rows_were_skipped", decision="skip"))
+    assert skipped["batch_id"] is None and skipped["imported"] == []
+    draft = upload(client, b"two-records")
+    request = confirmation(draft)
+    request["rows"][0]["decision"] = "skip"
+    request["rows"][1]["fields"]["date"] = "2026-11-27"
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', request)
+    batch = f'/calculations/{confirmed["batch_id"]}'
+    assert post(client, batch, {}) == {"status": "waiting-settlement", "start": "2026-11-27", "end": None,
+                                       "revision": confirmed["revision"], "missing": []}
+    assert not market.calls
+
+
+def test_calculation_batch_replay_starts_with_earliest_cross_month_addition(ledger_db):
+    def recognize(blob):
+        parsed = fake_screenshot(blob)
+        for trade_date, price in (('2026-02-02', '99.00'), ('2026-03-02', '100.00')):
+            fields = trade(date=trade_date, price=price, amount=Decimal(price) * 100).model_dump(mode="json")
+            parsed.rows.append({"fields": fields, "raw": "跨月样例", "region": [0.2, 0.2]})
+        return parsed
+
+    market = FixtureMarketEvidence([])
+    client = ledger_client(ledger_db, recognize, source=market, settled=date(2026, 1, 30))
+    post(client, "/opening", {"date": PREVIOUS.isoformat(), "positions": {}})
+    before = upload(client, b"cross-month-records")
+    post(client, f'/drafts/{before["id"]}/confirm', confirmation(before, count=1))
+    draft = upload(client, b"cross-month-records")
+    change = confirmation(draft, key="cross_month_new_records")
+    change["rows"][0]["decision"] = "skip"
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', change)
+    assert [item["date"] for item in confirmed["imported"]] == ["2026-02-02", "2026-03-02"]
+    result = post(client, f'/calculations/{confirmed["batch_id"]}', {})
+    assert result["start"] == "2026-02-02" and result["status"] == "waiting-settlement"
+    assert not market.calls
 
 
 def test_fuyao_backfill_persists_calendar_and_recovers_price_in_isolated_postgres(ledger_db):

@@ -1,12 +1,18 @@
-"""Normalize Fuyao trading dates and unadjusted daily stock closes."""
+"""Normalize Fuyao trading dates, unadjusted closes and corporate actions."""
 
 import logging
 from collections import Counter
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from ....application.ports.trading_pnl import PnlHistory, PnlMarketEvidenceError
+from ....application.ports.trading_pnl import (
+    PnlCorporateAction,
+    PnlCorporateActions,
+    PnlHistory,
+    PnlMarketEvidenceError,
+)
 from ....domain.models.trading_pnl import ValuationEvidence
 from .limits_client import MARKET_TIME_ZONE, FuyaoClient, FuyaoContractError, FuyaoError
 from .market import (
@@ -121,3 +127,57 @@ class FuyaoPnlMarketEvidence:
         if invalid_dates:
             _log_history_failure(security, start, end, "fuyao-invalid-history", response.diagnostic)
         return PnlHistory(tuple(value for value in values if counts[value.date] == 1), frozenset(invalid_dates))
+
+    def corporate_actions(self, security: str, start: date, end: date) -> PnlCorporateActions:
+        path = "/api/a-share/corporate-actions/adjustment-factors"
+        try:
+            response = self.market.request(path, params={
+                "thscode": security, "from": start.isoformat(), "to": end.isoformat(),
+            }, requested_date=end)
+        except FuyaoMarketError as exc:
+            reason = _history_failure(exc).replace("history", "actions")
+            raise PnlMarketEvidenceError(reason) from exc
+
+        data = response.data
+        ticker = security.partition(".")[0]
+        items = data.get("item")
+        if data.get("thscode") != security or data.get("ticker") != ticker or not isinstance(items, list):
+            raise PnlMarketEvidenceError("fuyao-invalid-actions")
+
+        events: dict[date, PnlCorporateAction] = {}
+        conflicts: set[date] = set()
+        for row in items:
+            try:
+                event = _corporate_action(row, ticker, start, end)
+            except (KeyError, ValueError, OverflowError, OSError, InvalidOperation) as exc:
+                raise PnlMarketEvidenceError("fuyao-invalid-actions") from exc
+            existing = events.setdefault(event.date, event)
+            if existing != event:
+                conflicts.add(event.date)
+        return PnlCorporateActions(
+            security, start, end, "Fuyao · 个股除复权事件",
+            tuple(events[day] for day in sorted(events.keys() - conflicts)), frozenset(conflicts),
+        )
+
+
+def _corporate_action(row: Any, ticker: str, start: date, end: date) -> PnlCorporateAction:
+    if not isinstance(row, Mapping) or row.get("ticker") != ticker:
+        raise ValueError("invalid corporate action identity")
+    timestamp = row["ex_date_ms"]
+    if type(timestamp) is not int:
+        raise ValueError("invalid corporate action timestamp")
+    day = datetime.fromtimestamp(timestamp / 1000, MARKET_TIME_ZONE).date()
+    if timestamp != _midnight_ms(day) or not start <= day <= end:
+        raise ValueError("invalid corporate action date")
+    dividend = _per_share_number(row["dividend_per_share"])
+    bonus = _per_share_number(row["per_share_bonus"])
+    return PnlCorporateAction(day, dividend, bonus)
+
+
+def _per_share_number(value: Any) -> Decimal:
+    if type(value) not in {int, float, Decimal}:
+        raise ValueError("invalid corporate action amount")
+    result = Decimal(str(value))
+    if not result.is_finite() or result < 0:
+        raise ValueError("invalid corporate action amount")
+    return result

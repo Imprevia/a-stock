@@ -1,12 +1,64 @@
 export type TradeFields = Record<string, string | number | boolean | null>
-export type LedgerStatus = 'ok' | 'closed' | 'setup' | 'before-start' | 'future' | 'insufficient'
+export type LedgerStatus = 'ok' | 'estimated' | 'closed' | 'setup' | 'before-start' | 'future' | 'insufficient'
 export type Decision = 'add' | 'skip' | 'keep-distinct'
 
 export interface DaySummary {
   date: string
   status: LedgerStatus
   pnl: string | null
+  estimated_pnl?: string | null
   issues: string[]
+  blocking_coverage_date?: string | null
+  blocking_holdings_date?: string | null
+  blocking_holdings_issues?: string[]
+}
+
+export interface ImportedTrade {
+  id: number
+  date: string
+  security: string
+  name: string | null
+  side: string
+  quantity: number
+  price: string | null
+}
+
+export interface ImportResult {
+  batch_id: string | null
+  imported: ImportedTrade[]
+  skipped: unknown[]
+}
+
+export interface CalculationResult {
+  status: 'running' | 'complete' | 'partial' | 'waiting-settlement' | 'retry'
+  start: string
+  end: string | null
+  missing: { date: string; security?: string; reason: string }[]
+  revision: number
+}
+
+export function calculationRequest(batch: string, method: 'GET' | 'POST' = 'GET'): Promise<CalculationResult> {
+  return ledgerRequest(`/calculations/${encodeURIComponent(batch)}`, method === 'POST' ? {} : undefined)
+}
+
+export function calculationQuery(query: Record<string, unknown>): { batch?: string; start?: string; end?: string } {
+  const { batch, start, end } = query
+  const isDate = (value: unknown): value is string => typeof value === 'string' && /^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(value)
+  return {
+    ...(typeof batch === 'string' && batch ? { batch } : {}),
+    ...(isDate(start) && isDate(end) && start <= end ? { start, end } : {}),
+  }
+}
+
+export function dayPnl(day: DaySummary): string | null {
+  if (day.status === 'estimated') return day.estimated_pnl ?? null
+  return day.status === 'ok' ? day.pnl : null
+}
+
+export function dayPnlLabel(day: DaySummary): string {
+  const value = dayPnl(day)
+  if (value == null) return statusText[day.status]
+  return day.status === 'estimated' ? `估算 ${currency(value)}` : currency(value)
 }
 
 export interface LedgerMonth {
@@ -36,7 +88,6 @@ export interface Position {
 export type LedgerRecord = TradeFields & { id: number; revision: number }
 
 export interface LedgerDay extends DaySummary {
-  blocking_coverage_date?: string | null
   previous_date: string | null
   opening: Position[]
   closing: Position[]
@@ -116,11 +167,12 @@ export function statusLabel(status: string): string {
 
 export function issueLabel(issue: string): string {
   const [key, first, second] = issue.split(':')
-  return ({
+  const label = ({
     'opening-required': '请先确认期初持仓', 'coverage-unconfirmed': '交易流水待确认',
     'calendar-missing': '交易日历待补', 'prior-holdings-unconfirmed': '上一交易日持仓待核对',
-    'fees-unconfirmed': '费用待核对', 'missing-actions': `${first} 公司行动待核对`,
-    'missing-close': `${first} ${second} 缺收盘价`, 'negative-position': `${first} 持仓数量异常`,
+    'fees-unconfirmed': '费用待核对', 'missing-actions': first ? `${first} 公司行动待核对` : '公司行动待核对',
+    'missing-close': [...[first, second].filter(Boolean), '缺收盘价'].join(' '),
+    'negative-position': first ? `${first} 持仓数量异常` : '持仓数量异常',
     'order-conflict': `委托 ${first} 的成交记录有冲突`,
     'coverage-blocked': `${first} 的交易流水待确认`,
     'calendar-chain-gap': `截至 ${first} 的持仓缺少连续交易日历`,
@@ -134,11 +186,35 @@ export function issueLabel(issue: string): string {
     'fuyao-history-rate-limited': 'Fuyao 日线请求受限，请稍后重试',
     'fuyao-invalid-history': 'Fuyao 日线未通过校验',
     'fuyao-batch-limit': '本轮补齐达到上限，剩余数据可重试',
-  } as Record<string, string>)[key] ?? issue
+    'fuyao-action-coverage-unknown': 'Fuyao 公司行动覆盖待核验',
+    'fuyao-action-entitlement-unverified': '公司行动的实际权益待核验',
+    'fuyao-conflicting-action': 'Fuyao 公司行动记录存在冲突',
+    'fuyao-invalid-actions': 'Fuyao 公司行动未通过校验',
+    'fuyao-actions-unavailable': 'Fuyao 公司行动暂不可用',
+    'fuyao-actions-rejected': 'Fuyao 拒绝公司行动请求',
+    'fuyao-actions-permission': 'Fuyao 公司行动凭据或权限有问题',
+    'fuyao-actions-rate-limited': 'Fuyao 公司行动请求受限，请稍后重试',
+    'fuyao-actions-batch-limit': '本轮已达公司行动查询上限，剩余数据可重试',
+  } as Record<string, string>)[key]
+  if (!label) return issue
+  return first && /^fuyao-.*action/.test(key) ? `${first} ${label}` : label
+}
+
+export function dayIssueLabels(day: DaySummary): string[] {
+  const issues = day.issues.map(issueLabel)
+  if (day.blocking_coverage_date && day.blocking_coverage_date < day.date) {
+    issues.push(issueLabel(`coverage-blocked:${day.blocking_coverage_date}`))
+  }
+  if (day.blocking_holdings_date && day.blocking_holdings_date < day.date) {
+    for (const issue of day.blocking_holdings_issues ?? []) {
+      issues.push(`${day.blocking_holdings_date} · ${issueLabel(issue)}`)
+    }
+  }
+  return [...new Set(issues)]
 }
 
 export const statusText: Record<LedgerStatus, string> = {
-  ok: '已计算', closed: '休市', setup: '待初始化', 'before-start': '起始日前', future: '未到日期', insufficient: '待补证据',
+  ok: '已计算', estimated: '估算', closed: '休市', setup: '待初始化', 'before-start': '起始日前', future: '未到日期', insufficient: '待补证据',
 }
 
 export function errorMessage(error: unknown): string {

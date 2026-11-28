@@ -34,6 +34,7 @@ from ..application.ports import (
 from ..application.queries import V2MarketDataQueries
 from ..application.commands.trading_pnl import TradingPnlCommands
 from ..application.commands.trading_pnl_backfill import TradingPnlBackfill
+from ..application.commands.trading_pnl_calculation import TradingPnlCalculation
 from ..application.queries.trading_pnl import TradingPnlQueries
 from ..domain.models import DATASET_IDS
 from ..infrastructure.collection import (
@@ -126,6 +127,7 @@ class CommandDependencies:
     ths_sectors: Any
     trading_pnl: TradingPnlCommands | None = None
     trading_pnl_backfill: TradingPnlBackfill | None = None
+    trading_pnl_calculation: TradingPnlCalculation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,6 +485,12 @@ def build_container(
         clock=clock,
         trading_pnl=pnl_queries,
     )
+    pnl_backfill = TradingPnlBackfill(
+        pnl_store, pnl_queries, FuyaoPnlMarketEvidence(
+            FuyaoClient(transport_gateway=transport_gateway),
+            FuyaoMarketClient(transport_gateway=transport_gateway),
+        ),
+    ) if pnl_queries else None
     commands = CommandDependencies(
         collection=collection_commands,
         full_collection=full_collection,
@@ -506,12 +514,8 @@ def build_container(
         trading_pnl=TradingPnlCommands(
             pnl_store, today, adapters.screenshot_recognizer or ScreenshotRecognizer(), image_digest
         ) if pnl_store else None,
-        trading_pnl_backfill=TradingPnlBackfill(
-            pnl_store, pnl_queries, FuyaoPnlMarketEvidence(
-                FuyaoClient(transport_gateway=transport_gateway),
-                FuyaoMarketClient(transport_gateway=transport_gateway),
-            ),
-        ) if pnl_queries else None,
+        trading_pnl_backfill=pnl_backfill,
+        trading_pnl_calculation=TradingPnlCalculation(pnl_backfill) if pnl_backfill else None,
     )
     return ApplicationContainer(
         settings=settings,
