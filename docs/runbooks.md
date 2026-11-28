@@ -955,7 +955,7 @@ active/suspended CronJob 或无法确定状态即停止，不提供 mutation/cle
 
 后续更新只需在 1.21 检出审阅后的 clean commit 并重新执行同一命令；如需明确指定版本，可在环境文件设置新的唯一 `IMAGE_TAG`。脚本不使用 `kubectl port-forward` 作为长期入口，也不会删除远端镜像归档。应用回退检出受审 rollback commit，并使用新的不可变 rollback tag 运行同一普通入口；不直接恢复历史 Helm revision。若 stored/live 中存在任一历史 CronJob，必须停止并建立独立遗留资源处置计划。
 
-截至 2026-11-28，A 股看板运行在 TrueNAS k3s `a-stock` release revision 161（应用版本 `31ceee3`，PostgreSQL Alembic `0009_trading_pnl`）。1.21 的 NGINX 将 `gyt.tail0007b1.ts.net` 的 HTTP `80` 虚拟主机反代到 TrueNAS NodePort `192.168.1.20:32001`。两个入口均已通过首页、健康、盈亏日历与月历 API 只读验收。可使用 [Tailscale 看板入口](http://gyt.tail0007b1.ts.net/) 或 [TrueNAS NodePort](http://192.168.1.20:32001/)。发布证据见 [日线修复发布计划](exec-plans/active/deploy-fuyao-pnl-history-fix-20261128.md)。
+截至 2026-11-28 19:09（上海时间），A 股看板运行在 TrueNAS k3s `a-stock` release revision 164（应用版本 `a44cbe5`，PostgreSQL Alembic `0010_pnl_calculation`）。1.21 的 NGINX 将 `gyt.tail0007b1.ts.net` 的 HTTP `80` 虚拟主机反代到 TrueNAS NodePort `192.168.1.20:32001`。两个入口均已通过首页、健康、盈亏日历、导入页、日期明细及计算状态 API 只读验收。可使用 [Tailscale 看板入口](http://gyt.tail0007b1.ts.net/) 或 [TrueNAS NodePort](http://192.168.1.20:32001/)。发布证据见[盘后盈亏计算发布计划](exec-plans/active/deploy-trading-pnl-calculation-20261128.md)。
 
 同一域名的 HTTPS `443` 由 Tailscale Serve 转发到 `127.0.0.1:80`，再由 NGINX 转发到 `127.0.0.1:3080` 上的 DeepSeek Harness Web UI。1.21 的 `443` 局域网监听也走同一后端。旧的 `8443` 入口仅为历史建议，当前没有监听。1.20 的 `6443` 只供集群本机访问，1.21 的 Helm/kubectl 默认经临时 SSH 回环隧道管理。
 

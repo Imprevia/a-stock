@@ -9,6 +9,7 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
+| `deploy-trading-pnl-calculation-20261128` | Codex | completed-with-production-write | 2026-11-28 |
 | `calculate-pnl-after-trade-import` | Codex | 本地完成（11/11，OpenSpec 已归档） | 2026-11-28 |
 | `fix-trading-pnl-fuyao-history` | Codex | completed-with-production-write（7/7，OpenSpec 已归档） | 2026-11-28 |
 | `deploy-fuyao-pnl-history-fix-20261128` | Codex | completed-with-production-write | 2026-11-28 |
