@@ -15,6 +15,7 @@ const reviewed = ref(false)
 const busy = ref(false)
 const error = ref('')
 const result = ref<{ saved: { id: number; date: string }[]; skipped: unknown[] } | null>(null)
+const affectedDates = computed(() => [...new Set(result.value?.saved.map(record => record.date))].sort())
 const imageRatios = ref<Record<string, number>>({})
 const rows = computed(() => draft.value?.images.flatMap(image => image.rows) ?? [])
 const selected = computed(() => rows.value.filter(row => decisions.value[key(row)]))
@@ -123,7 +124,9 @@ function matchLabel(kind: string): string {
     </form>
     <section v-if="result" class="pnl-panel" role="status">
       <h2>入账完成</h2><p>新增 {{ result.saved.length }} 笔，跳过 {{ result.skipped.length }} 笔。</p>
-      <RouterLink v-for="record in result.saved" :key="record.id" class="pnl-back" :to="{ name: 'trading-pnl-day', params: { date: record.date }, query: { month } }">查看 {{ record.date }} 记录 {{ record.id }}</RouterLink>
+      <p v-if="affectedDates.length">请核对并重新确认这些日期的完整流水。</p>
+      <RouterLink v-for="affected in affectedDates" :key="affected" class="pnl-back"
+        :to="{ name: 'trading-pnl-day', params: { date: affected }, query: { month } }">核对 {{ affected }} 流水</RouterLink>
     </section>
     <template v-if="draft">
       <section v-for="(image, index) in draft.images" :key="image.digest" class="pnl-panel">

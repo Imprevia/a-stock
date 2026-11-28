@@ -17,9 +17,20 @@ from .trading_pnl_projection import rebuild
 
 
 class PnlCommandError(ValueError):
-    def __init__(self, message: str, status: int = 422) -> None:
+    def __init__(self, message: str, status: int = 422, *, detail: dict | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.detail = message if detail is None else {"message": message, **detail}
+
+
+def save_evidence(repo: TradingPnlRepository, batch: EvidenceBatch, revision: int, kind: str) -> int:
+    revision += 1
+    first_day = min(row.date for row in (*batch.sessions, *batch.valuations))
+    repo.import_evidence(batch)
+    rebuild(repo, first_day, revision)
+    repo.audit(revision, {"kind": kind, **batch.model_dump(mode="json")})
+    repo.set_revision(revision)
+    return revision
 
 
 def _strong_identity(trade: Trade) -> str | None:
@@ -267,7 +278,7 @@ class TradingPnlCommands:
             rebuild(repo, min(affected), revision)
             repo.audit(revision, {"kind": "correct", "id": identifier, "before": original["data"], "after": trade.model_dump(mode="json")})
             repo.set_revision(revision)
-            return {"revision": revision}
+            return {"revision": revision, "affected_dates": [day.isoformat() for day in sorted(affected)]}
 
     def import_evidence(self, batch: EvidenceBatch) -> dict:
         days = [record.date for record in [*batch.sessions, *batch.valuations]]
@@ -275,9 +286,4 @@ class TradingPnlCommands:
             raise PnlCommandError("证据日期不能晚于今天")
         with self.store(write=True) as repo:
             state = repo.state(lock=True)
-            revision = state["revision"] + 1
-            repo.import_evidence(batch)
-            rebuild(repo, min(days), revision)
-            repo.audit(revision, {"kind": "evidence", **batch.model_dump(mode="json")})
-            repo.set_revision(revision)
-            return {"revision": revision}
+            return {"revision": save_evidence(repo, batch, state["revision"], "evidence")}

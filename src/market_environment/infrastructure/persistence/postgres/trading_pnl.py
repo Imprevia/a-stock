@@ -220,6 +220,10 @@ class PostgresTradingPnl:
         return self._all("SELECT as_of, revision, data FROM trading_pnl_days WHERE as_of BETWEEN :start AND :end ORDER BY as_of",
                          start=start, end=end)
 
+    def first_coverage_gap(self, before: date) -> date | None:
+        return self._one("""SELECT min(as_of) AS day FROM trading_pnl_days WHERE as_of < :before
+                            AND (data->'issues') @> '["coverage-unconfirmed"]'::jsonb""", before=before)["day"]
+
     def latest_day(self, before: date):
         return self._one("SELECT as_of, data FROM trading_pnl_days WHERE as_of < :before ORDER BY as_of DESC LIMIT 1",
                          before=before)

@@ -8,6 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
+from src.market_environment.application.ports.trading_pnl import PnlMarketEvidenceError
+from src.market_environment.infrastructure.providers.fuyao.limits_client import FuyaoClient
+from src.market_environment.infrastructure.providers.fuyao.trading_pnl import FuyaoPnlMarketEvidence
 from src.market_environment.fuyao_market import (
     FuyaoMarketAdapter,
     FuyaoMarketClient,
@@ -81,6 +84,46 @@ def test_missing_key_fails_closed_without_request():
     with pytest.raises(FuyaoMarketConfigurationError):
         FuyaoMarketClient(session=session).request("/fixture")
     assert session.calls == []
+
+
+def test_ledger_market_evidence_requires_unadjusted_exact_shanghai_dates():
+    shanghai = ZoneInfo("Asia/Shanghai")
+    start = date(2026, 1, 21)
+    end = date(2026, 1, 23)
+    def timestamp(day):
+        return int(datetime(day.year, day.month, day.day, tzinfo=shanghai).timestamp() * 1000)
+    days = [date(2026, 1, 20), start, end]
+    raw_calendar = Session([Response({"code": 0, "data": {"item": [
+        {"date": day.strftime("%Y%m%d"), "date_ms": timestamp(day)} for day in days
+    ]}})])
+    header = {"thscode": "603019.SH", "interval": "1d", "adjust": "none"}
+    raw_history = Session([
+        Response({"code": 0, "data": {**header, "item": [
+            {"date_ms": timestamp(days[0]), "close_price": "98.00"},
+            {"date_ms": timestamp(start), "close_price": "98.23"},
+            {"date_ms": timestamp(end), "close_price": "0"},
+        ]}}),
+        Response({"code": 0, "data": {**header, "adjust": "forward", "item": []}}),
+        Response({"code": 0, "data": {**header, "thscode": "000001.SZ", "item": []}}),
+        Response({"code": 0, "data": {**header, "interval": "5m", "item": []}}),
+        Response({"code": 4001, "data": {}}),
+    ])
+    adapter = FuyaoPnlMarketEvidence(
+        FuyaoClient("fixture", session=raw_calendar, sleep=lambda _: None, max_retries=0),
+        client(raw_history, max_retries=0),
+    )
+    assert adapter.trading_days() == tuple(days)
+    values = adapter.closes("603019.SH", start, end)
+    assert [(row.date, str(row.close)) for row in values] == [(start, "98.23")]
+    assert raw_history.calls[0][1]["params"] == {
+        "thscode": "603019.SH", "adjust": "none",
+        "start": timestamp(start), "end": timestamp(end + timedelta(days=1)) - 1,
+    }
+    for _ in range(3):
+        with pytest.raises(PnlMarketEvidenceError, match="fuyao-invalid-history"):
+            adapter.closes("603019.SH", start, end)
+    with pytest.raises(PnlMarketEvidenceError, match="fuyao-history-unavailable"):
+        adapter.closes("603019.SH", start, end)
 
 
 def test_market_clients_share_an_injected_request_gate():

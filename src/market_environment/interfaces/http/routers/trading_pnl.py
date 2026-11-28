@@ -42,11 +42,14 @@ class Confirm(LedgerInput):
     rows: Annotated[list[Decision], Field(min_length=1, max_length=MAX_IMAGES * 120)]
 
 
-class Coverage(LedgerInput):
+class LedgerDateRange(LedgerInput):
     start: LedgerDate
     end: LedgerDate
-    kind: Literal["complete", "no-trades"]
     revision: Annotated[int, Field(ge=0)]
+
+
+class Coverage(LedgerDateRange):
+    kind: Literal["complete", "no-trades"]
 
 
 class Correction(LedgerInput):
@@ -74,7 +77,7 @@ def _call(operation, *args):
     try:
         return operation(*args)
     except PnlCommandError as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exc.detail) from exc
     except ScreenshotError as exc:
         raise HTTPException(422, str(exc)) from exc
     except LedgerUnavailable as exc:
@@ -164,3 +167,11 @@ def correct_trade(request: Request, identifier: Annotated[int, Path(gt=0)], data
 @router.post("/evidence")
 def import_local_evidence(request: Request, data: EvidenceBatch):
     return _call(_service(request, write=True).import_evidence, data)
+
+
+@router.post("/evidence/fuyao")
+def backfill_fuyao_evidence(request: Request, data: LedgerDateRange):
+    service = _request_container(request).commands.trading_pnl_backfill
+    if service is None:
+        raise HTTPException(503, "个人台账需要 PostgreSQL 环境")
+    return _call(service.run, data.start, data.end, data.revision)

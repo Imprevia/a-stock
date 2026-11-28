@@ -1761,3 +1761,5 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 本地历史证据通过月历的「导入本地盘后证据」上传 JSON，也可向 `/api/trading-pnl/evidence` 发送同结构的 JSON。`sessions` 每行提供 `date`、`actual_date`、`is_session`、`source` 和已验证的 `previous_date`。休市行省略上一交易日，非休市行须有精确日及邻接证据。`valuations` 每行提供 `date`、`actual_date`、`security` 和 `source`。原始收盘用 `close` 及 `price_kind: "original-close"`，有依据的停牌结算估值用 `price_kind: "suspended-valuation"`。公司行动已核对才设 `actions_confirmed: true`，`share_delta` 和 `cash_adjustment` 分别记录有证据的股数和应计现金调整。纯公司行动行可以省略收盘字段。应收分红在权利确认时计入，现金到账用于核销应收。单批最多 366 条日历记录和 1,000 条估值记录。
 
 已有行情的 `sector_security_daily_facts.original_close` 在证券、实际日期和质量匹配时优先使用。缺综合历史覆盖时用可核实的本地证据补齐。应用读取日历和明细时不抓取行情。合成截图、固定证据和隔离 PostgreSQL 的验收使用 `python -m pytest tests/test_trading_pnl.py -q`。设置 `TRADING_PNL_TEST_TESSERACT` 指向本地可执行文件，`TRADING_PNL_TEST_FONT` 可指定合成截图使用的中文字体。`MARKET_ENVIRONMENT_TEST_DATABASE_URL` 只指向独立测试数据库。
+
+使用月历的「从 Fuyao 补齐行情」选择期初之后已结算的日期范围，每次最多 366 个自然日。应用使用后端既有 Fuyao 凭据和共享请求预算，按上海日历匹配交易日和不复权收盘价。补齐结果列出已写入的证据与剩余缺项，若台账并发变更，刷新后可重试剩余数据。交易日历上游仅提供近一年，超出范围及缺少公司行动或停牌估值时使用可验证的本地证据。历史成交入账后可从结果打开对应交易日，核对并确认当日流水已录全。

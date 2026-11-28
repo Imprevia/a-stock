@@ -6,7 +6,7 @@ import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from time import monotonic
 from typing import Any
 
@@ -33,6 +33,7 @@ from ..application.ports import (
 )
 from ..application.queries import V2MarketDataQueries
 from ..application.commands.trading_pnl import TradingPnlCommands
+from ..application.commands.trading_pnl_backfill import TradingPnlBackfill
 from ..application.queries.trading_pnl import TradingPnlQueries
 from ..domain.models import DATASET_IDS
 from ..infrastructure.collection import (
@@ -52,6 +53,8 @@ from ..infrastructure.providers.fuyao.market import (
     FuyaoMarketAdapter,
     FuyaoMarketClient,
 )
+from ..infrastructure.providers.fuyao.limits_client import FuyaoClient
+from ..infrastructure.providers.fuyao.trading_pnl import FuyaoPnlMarketEvidence
 from ..infrastructure.providers.fuyao.ths_dump import (
     FuyaoThsDumpReader,
     merge_member_facts,
@@ -122,6 +125,7 @@ class CommandDependencies:
     timezone_preferences: TimezoneCommandAdapter
     ths_sectors: Any
     trading_pnl: TradingPnlCommands | None = None
+    trading_pnl_backfill: TradingPnlBackfill | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +468,12 @@ def build_container(
     if pnl_store is None and isinstance(repository, PostgresRuntimeStore):
         pnl_store = trading_pnl_store(repository.engine)
     today = lambda: _market_now(clock).date()
+
+    def settled_through() -> date:
+        now = _market_now(clock)
+        return now.date() if now.time() >= settings.settlement_time else now.date() - timedelta(days=1)
+
+    pnl_queries = TradingPnlQueries(pnl_store, today, settled_through) if pnl_store else None
     reads = ReadDependencies(
         market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
         v2_market_environment=v2_queries,
@@ -471,7 +481,7 @@ def build_container(
         timezone_preferences=TimezoneQueryAdapter(timezone_repository),
         ths_sectors=ths_queries,
         clock=clock,
-        trading_pnl=TradingPnlQueries(pnl_store, today) if pnl_store else None,
+        trading_pnl=pnl_queries,
     )
     commands = CommandDependencies(
         collection=collection_commands,
@@ -496,6 +506,12 @@ def build_container(
         trading_pnl=TradingPnlCommands(
             pnl_store, today, adapters.screenshot_recognizer or ScreenshotRecognizer(), image_digest
         ) if pnl_store else None,
+        trading_pnl_backfill=TradingPnlBackfill(
+            pnl_store, pnl_queries, FuyaoPnlMarketEvidence(
+                FuyaoClient(transport_gateway=transport_gateway),
+                FuyaoMarketClient(transport_gateway=transport_gateway),
+            ),
+        ) if pnl_queries else None,
     )
     return ApplicationContainer(
         settings=settings,

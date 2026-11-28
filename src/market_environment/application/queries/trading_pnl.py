@@ -42,24 +42,31 @@ def day_range(start: date, end: date):
 
 
 class TradingPnlQueries:
-    def __init__(self, store: TradingPnlStore, today: Callable[[], date]) -> None:
+    def __init__(self, store: TradingPnlStore, today: Callable[[], date],
+                 settled_through: Callable[[], date] | None = None) -> None:
         self.store = store
         self.today = today
+        self.settled_through = settled_through or today
 
     def month(self, year: int, month: int) -> dict:
         start = date(year, month, 1)
         end = start.replace(day=monthrange(year, month)[1])
         with self.store() as repo:
             state = repo.state()
-            calendar = LocalSessions(repo.sessions(start - timedelta(days=32), end + timedelta(days=32)))
-            rows = {row["as_of"]: row["data"] for row in repo.days(start, end)}
-            prices = self._prices(repo, rows, start, end)
-            days = []
-            for day in day_range(start, end):
-                result = self._value(day, state, calendar, rows.get(day), prices)
-                days.append({key: result[key] for key in ("date", "status", "pnl", "issues")})
+            days = self.range_summary(repo, state, start, end)
             return {"month": start.strftime("%Y-%m"), "days": days, "revision": state["revision"],
-                    "opening_date": state["opening_date"], "opening_positions": state["opening_positions"]}
+                    "opening_date": state["opening_date"], "opening_positions": state["opening_positions"],
+                    "settled_through": self.settled_through()}
+
+    def range_summary(self, repo: TradingPnlRepository, state, start: date, end: date) -> list[dict]:
+        calendar = LocalSessions(repo.sessions(start - timedelta(days=32), end + timedelta(days=32)))
+        rows = {row["as_of"]: row["data"] for row in repo.days(start, end)}
+        prices = self._prices(repo, rows, start, end)
+        days = []
+        for day in day_range(start, end):
+            result = self._value(day, state, calendar, rows.get(day), prices)
+            days.append({key: result[key] for key in ("date", "status", "pnl", "issues")})
+        return days
 
     def day(self, day: date, after: int = 0, limit: int = 50) -> dict:
         with self.store() as repo:
@@ -68,6 +75,9 @@ class TradingPnlQueries:
             rows = {row["as_of"]: row["data"] for row in repo.days(day, day)}
             prices = self._prices(repo, rows, day, day)
             result = self._value(day, state, calendar, rows.get(day), prices)
+            result["blocking_coverage_date"] = (
+                repo.first_coverage_gap(day) if "prior-holdings-unconfirmed" in result["issues"] else None
+            )
             records = repo.trades(day, day, limit=limit + 1, after=after)
             result["trades"] = [
                 {**row["data"], "id": row["id"], "revision": row["revision"],
@@ -127,13 +137,23 @@ class TradingPnlQueries:
         return set(projection["opening"] or {}) | {item["security"] for item in projection.get("executions", [])}
 
     @staticmethod
-    def _prices(repo: TradingPnlRepository, rows: dict, start: date, end: date) -> dict:
+    def _valuation_keys(rows: dict) -> set[tuple[date, str]]:
         keys = set()
         for day, projection in rows.items():
             securities = projection["closing"]
             keys.update((day, security) for security in (securities if securities is not None else TradingPnlQueries._valuation_securities(projection)))
             if previous_date := projection["previous_date"]:
                 keys.update((date.fromisoformat(previous_date), security) for security in projection["opening"] or {})
+        return keys
+
+    @classmethod
+    def missing_prices(cls, repo: TradingPnlRepository, start: date, end: date) -> set[tuple[date, str]]:
+        rows = {row["as_of"]: row["data"] for row in repo.days(start, end)}
+        return cls._valuation_keys(rows) - cls._prices(repo, rows, start, end).keys()
+
+    @classmethod
+    def _prices(cls, repo: TradingPnlRepository, rows: dict, start: date, end: date) -> dict:
+        keys = cls._valuation_keys(rows)
         if not keys:
             return {}
         start = min(start, min(day for day, _ in keys))

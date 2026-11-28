@@ -13,6 +13,7 @@ const originMonth = computed(() => typeof route.query.month === 'string' ? route
 const day = ref<LedgerDay | null>(null)
 const error = ref('')
 const notice = ref('')
+const correctionDates = ref<string[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const editing = ref<LedgerRecord | null>(null)
@@ -64,11 +65,15 @@ async function saveCorrection(): Promise<void> {
   if (!editing.value) return
   const record = editing.value
   const target = String(fields.value.date)
+  const original = date.value
   await save(async () => {
-    await ledgerRequest(`/trades/${record.id}/correction`, { revision: record.revision, trade: fields.value, keep_distinct: keepDistinct.value })
+    const result = await ledgerRequest<{ affected_dates?: string[] }>(`/trades/${record.id}/correction`, {
+      revision: record.revision, trade: fields.value, keep_distinct: keepDistinct.value,
+    })
     editing.value = null
     if (target !== date.value) await router.push({ params: { date: target }, query: { month: originMonth.value } })
     else await load()
+    correctionDates.value = result.affected_dates ?? [...new Set([original, target])].sort()
     notice.value = '更正已入账，请重新核对受影响日期的流水覆盖。'
   })
 }
@@ -78,6 +83,7 @@ async function setCoverage(kind: string): Promise<void> {
   await save(async () => {
     await ledgerRequest('/coverage', { start: date.value, end: date.value, kind, revision: day.value!.revision })
     await load()
+    correctionDates.value = correctionDates.value.filter(affected => affected !== date.value)
     notice.value = '已确认当日流水覆盖。'
   })
 }
@@ -94,6 +100,10 @@ watch(date, () => { day.value = null; editing.value = null; void load() }, { imm
     </header>
     <p v-if="error" class="pnl-message pnl-error" role="alert">{{ error }} <button class="pnl-button" type="button" @click="load()">刷新</button></p>
     <p v-if="notice" class="pnl-message" role="status">{{ notice }}</p>
+    <nav v-if="correctionDates.length" class="pnl-inline" aria-label="需要重新确认的日期">
+      <RouterLink v-for="affected in correctionDates" :key="affected" class="pnl-back"
+        :to="{ name: 'trading-pnl-day', params: { date: affected }, query: { month: originMonth } }">核对 {{ affected }} 流水</RouterLink>
+    </nav>
     <p v-if="loading" role="status">正在读取交易明细…</p>
     <template v-if="day">
       <section class="pnl-panel">
@@ -104,6 +114,10 @@ watch(date, () => { day.value = null; editing.value = null; void load() }, { imm
         <ul v-if="day.issues.length" class="pnl-issues">
           <li v-for="issue in day.issues" :key="issue">{{ issueLabel(issue) }}</li>
         </ul>
+        <RouterLink v-if="day.blocking_coverage_date" class="pnl-back"
+          :to="{ name: 'trading-pnl-day', params: { date: day.blocking_coverage_date }, query: { month: originMonth } }">
+          核对 {{ day.blocking_coverage_date }} 流水以重算后续盈亏
+        </RouterLink>
         <dl v-if="day.components" class="pnl-metrics">
           <div v-for="[key, label] in components" :key="key"><dt>{{ label }}</dt><dd>{{ amount(day.components[key]) }}</dd></div>
         </dl>

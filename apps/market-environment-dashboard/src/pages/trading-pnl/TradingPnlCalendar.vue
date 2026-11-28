@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { CalendarDays, ChevronLeft, ChevronRight, Upload } from 'lucide-vue-next'
-import { currency, errorMessage, issueLabel, ledgerRequest, shanghaiDate, statusText, type LedgerMonth } from '../../trading-pnl'
+import { currency, errorMessage, issueLabel, LedgerError, ledgerRequest, shanghaiDate, statusText, type LedgerMonth, type MarketBackfillResult } from '../../trading-pnl'
 import './trading-pnl.css'
 
 const route = useRoute()
@@ -19,10 +19,37 @@ const error = ref('')
 const notice = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const marketStart = ref('')
+const marketEnd = ref('')
+const backfilling = ref(false)
+const backfill = ref<(MarketBackfillResult & { start: string; end: string }) | null>(null)
+const backfillTitle: Record<MarketBackfillResult['status'], string> = {
+  complete: '所选日期的估值证据已齐备', partial: '已补齐部分数据', insufficient: '所选范围仍缺证据',
+}
 const weekdays = ['一', '二', '三', '四', '五', '六', '日']
 const offset = computed(() => (new Date(`${month.value}-01T00:00:00Z`).getUTCDay() + 6) % 7)
 const label = computed(() => month.value.replace('-', ' 年 ') + ' 月')
 let requestNumber = 0
+
+const marketBounds = computed(() => {
+  if (!data.value?.opening_date || data.value.month !== month.value) return null
+  const start = new Date(`${data.value.opening_date}T00:00:00Z`)
+  start.setUTCDate(start.getUTCDate() + 1)
+  return { start: start.toISOString().slice(0, 10), end: data.value.settled_through }
+})
+const remainingByDate = computed(() => {
+  if (!backfill.value) return []
+  const byDate = new Map<string, string[]>()
+  for (const day of backfill.value.remaining) {
+    byDate.set(day.date, day.issues.map(issueLabel))
+  }
+  for (const row of backfill.value.missing_closes) {
+    const issues = byDate.get(row.date) ?? []
+    issues.push(`${row.security} · ${issueLabel(row.reason)}`)
+    byDate.set(row.date, issues)
+  }
+  return [...byDate.entries()].sort(([first], [second]) => first.localeCompare(second))
+})
 
 async function load(): Promise<void> {
   const sequence = ++requestNumber
@@ -88,7 +115,48 @@ async function uploadEvidence(): Promise<void> {
   })
 }
 
+async function fillMarketEvidence(): Promise<void> {
+  if (!data.value || !marketStart.value || !marketEnd.value || saving.value) return
+  const range = { start: marketStart.value, end: marketEnd.value }
+  backfill.value = null
+  backfilling.value = true
+  try {
+    await commit(async () => {
+      try {
+        const result = await ledgerRequest<MarketBackfillResult>('/evidence/fuyao', {
+          ...range, revision: data.value!.revision,
+        })
+        backfill.value = { ...result, ...range }
+      } catch (reason) {
+        if (reason instanceof LedgerError && reason.status === 409) {
+          await load()
+          const added = reason.detail?.added
+          if (added?.sessions || added?.valuations) {
+            notice.value = `已保存 ${added.sessions} 条交易日历、${added.valuations} 条收盘价。`
+          }
+        }
+        throw reason
+      }
+      await load()
+    })
+  } finally {
+    backfilling.value = false
+  }
+}
+
 watch(month, load, { immediate: true })
+watch([month, () => marketBounds.value?.start, () => marketBounds.value?.end], () => {
+  const bounds = marketBounds.value
+  if (!bounds?.end) return
+  const first = `${month.value}-01`
+  const last = new Date(`${first}T00:00:00Z`)
+  last.setUTCMonth(last.getUTCMonth() + 1, 0)
+  const start = first > bounds.start ? first : bounds.start
+  const end = last.toISOString().slice(0, 10)
+  marketEnd.value = end < bounds.end ? end : bounds.end
+  marketStart.value = start <= marketEnd.value ? start : ''
+  if (!marketStart.value) marketEnd.value = ''
+}, { immediate: true })
 </script>
 
 <template>
@@ -141,6 +209,29 @@ watch(month, load, { immediate: true })
         <label>确认内容<select v-model="coverageKind"><option value="complete">期间流水已录全</option><option value="no-trades">期间无成交</option></select></label>
         <button type="submit" class="pnl-button" :disabled="saving">确认覆盖</button>
       </form>
+    </section>
+    <section v-if="marketBounds" class="pnl-panel" aria-labelledby="pnl-fuyao-title">
+      <h2 id="pnl-fuyao-title">从 Fuyao 补齐行情</h2>
+      <form class="pnl-form" aria-labelledby="pnl-fuyao-title" @submit.prevent="fillMarketEvidence">
+        <label>起始日期<input v-model="marketStart" required type="date" :min="marketBounds.start" :max="marketBounds.end" /></label>
+        <label>结束日期<input v-model="marketEnd" required type="date" :min="marketStart || marketBounds.start" :max="marketBounds.end" /></label>
+        <button type="submit" class="pnl-button" :disabled="saving || !marketStart || !marketEnd">
+          {{ backfilling ? '正在补齐…' : '补齐行情' }}
+        </button>
+      </form>
+      <p v-if="backfilling" role="status">正在查询交易日历和收盘价…</p>
+      <template v-if="backfill">
+        <p role="status">{{ backfill.start }} 至 {{ backfill.end }}。{{ backfillTitle[backfill.status] }}。新增 {{ backfill.added.sessions }} 条交易日历、{{ backfill.added.valuations }} 条收盘价。</p>
+        <details v-if="remainingByDate.length" open>
+          <summary>剩余缺项（{{ remainingByDate.length }} 天）</summary>
+          <ul class="pnl-positions">
+            <li v-for="[day, issues] in remainingByDate" :key="day">
+              <RouterLink class="pnl-back" :to="{ name: 'trading-pnl-day', params: { date: day }, query: { month } }">{{ day }}</RouterLink>
+              <span>{{ issues.join('；') }}</span>
+            </li>
+          </ul>
+        </details>
+      </template>
     </section>
     <details class="pnl-panel">
       <summary>导入本地盘后证据</summary>

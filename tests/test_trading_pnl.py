@@ -19,6 +19,8 @@ from sqlalchemy.exc import IntegrityError
 
 from src.market_environment.application.queries.trading_pnl import LocalSessions, TradingPnlQueries
 from src.market_environment.application.commands.trading_pnl import TradingPnlCommands
+from src.market_environment.application.commands.trading_pnl_backfill import TradingPnlBackfill
+from src.market_environment.application.ports.trading_pnl import PnlMarketEvidenceError
 from src.market_environment.domain.analysis.trading_pnl import aggregate_executions, project_holdings, simulated_commission
 from src.market_environment.domain.models.trading_pnl import EvidenceBatch, Trade, ValuationEvidence
 from src.market_environment.infrastructure.persistence.postgres.trading_pnl import trading_pnl_store
@@ -218,14 +220,18 @@ def fake_screenshot(blob: bytes) -> Screenshot:
     return Screenshot(image_digest(blob), b"preview", "image/jpeg", rows, ["2026年01月2笔"])
 
 
-def ledger_client(engine, recognizer=fake_screenshot):
+def ledger_client(engine, recognizer=fake_screenshot, source=None):
     app = FastAPI()
     app.include_router(router)
     store = trading_pnl_store(engine)
     today = lambda: date(2026, 11, 28)
+    queries = TradingPnlQueries(store, today, lambda: date(2026, 11, 27))
     app.state.container = SimpleNamespace(
-        reads=SimpleNamespace(trading_pnl=TradingPnlQueries(store, today)),
-        commands=SimpleNamespace(trading_pnl=TradingPnlCommands(store, today, recognizer, image_digest)),
+        reads=SimpleNamespace(trading_pnl=queries),
+        commands=SimpleNamespace(
+            trading_pnl=TradingPnlCommands(store, today, recognizer, image_digest),
+            trading_pnl_backfill=TradingPnlBackfill(store, queries, source) if source else None,
+        ),
     )
     return TestClient(app)
 
@@ -328,12 +334,155 @@ def test_http_import_value_and_rebuild_with_isolated_postgres(ledger_db):
 
     record = first["trades"][0]
     corrected = trade(date="2026-01-22").model_dump(mode="json")
-    revision = post(client, f'/trades/{record["id"]}/correction', {"revision": record["revision"], "trade": corrected})["revision"]
+    correction = post(client, f'/trades/{record["id"]}/correction', {"revision": record["revision"], "trade": corrected})
+    assert correction["affected_dates"] == ["2026-01-21", "2026-01-22"]
+    revision = correction["revision"]
     assert get(client, "/days/2026-01-21")["coverage"] is None
     assert get(client, "/days/2026-01-22")["coverage"] is None
     cover(client, "2026-01-21", revision, end="2026-01-22")
     assert get(client, "/days/2026-01-21")["pnl"] == "199.00"
     assert get(client, "/days/2026-01-22")["pnl"] == "580.00"
+
+
+class FixtureMarketEvidence:
+    def __init__(self, days):
+        self.days = tuple(date.fromisoformat(day) for day in days)
+        self.prices = {}
+        self.calls = []
+        self.before_history = lambda: None
+
+    def trading_days(self):
+        self.calls.append(("calendar",))
+        return self.days
+
+    def closes(self, security, start, end):
+        self.calls.append((security, start.isoformat(), end.isoformat()))
+        self.before_history()
+        return [ValuationEvidence(
+            date=day, actual_date=day, security=security, close=price, price_kind="original-close", source="Fuyao fixture",
+        ) for day, price in self.prices.items() if start <= day <= end]
+
+
+def backfill(client, start, end=None, *, status=200, revision=None):
+    if revision is None:
+        revision = get(client, f"/days/{start}")["revision"]
+    return post(client, "/evidence/fuyao", {"start": start, "end": end or start, "revision": revision}, status=status)
+
+
+def test_fuyao_backfill_persists_calendar_and_recovers_price_in_isolated_postgres(ledger_db):
+    market = FixtureMarketEvidence(["2026-01-19", "2026-01-20", "2026-01-21", "2026-01-23", "2026-01-26"])
+    client = ledger_client(ledger_db, source=market)
+    post(client, "/opening", {"date": "2026-01-20", "positions": {}})
+    draft = upload(client, b"two-records")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', confirmation(draft))
+    cover(client, "2026-01-21", confirmed["revision"])
+    assert backfill(client, "2026-11-28", status=422)
+    assert backfill(client, "2026-11-29", status=422)
+    assert not market.calls
+    def unavailable():
+        with ledger_db.begin() as conn:
+            conn.execute(text("SELECT revision FROM trading_pnl_state FOR UPDATE NOWAIT"))
+        raise PnlMarketEvidenceError("fuyao-history-unavailable")
+    market.before_history = unavailable
+    first = backfill(client, "2026-01-21", "2026-01-22")
+    assert first["status"] == "partial" and first["added"] == {"sessions": 3, "valuations": 0}
+    assert first["missing_closes"] == [{"date": "2026-01-21", "security": CODE, "reason": "fuyao-history-unavailable"}]
+    assert get(client, "/days/2026-01-22")["status"] == "closed"
+    assert get(client, "/days/2026-01-21")["coverage"] == "complete"
+
+    market.before_history = lambda: None
+    market.prices[DAY] = "98.23"
+    assert backfill(client, "2026-01-21", status=409, revision=confirmed["revision"])["detail"]["revision"] == first["revision"]
+    second = backfill(client, "2026-01-21", "2026-01-22")
+    assert second == {"revision": first["revision"] + 1, "status": "complete", "added": {"sessions": 0, "valuations": 1},
+                      "remaining": [], "missing_closes": []}
+    assert get(client, "/days/2026-01-21")["pnl"] == "25.00"
+    assert get(client, "/days/2026-01-21")["closing"][0]["source"] == "Fuyao fixture"
+    month = get(client, "/months/2026-01")
+    assert next(day for day in month["days"] if day["date"] == "2026-01-21")["pnl"] == "25.00"
+    expected_calls = [("calendar",), (CODE, "2026-01-21", "2026-01-21"), (CODE, "2026-01-21", "2026-01-21")]
+    assert market.calls == expected_calls
+    repeat = backfill(client, "2026-01-21", "2026-01-22")
+    assert repeat["revision"] == second["revision"] and repeat["added"] == {"sessions": 0, "valuations": 0}
+    assert market.calls == expected_calls
+    outside = backfill(client, "2026-02-03")
+    assert outside["status"] == "insufficient"
+    assert outside["remaining"] == [{"date": "2026-02-03", "issues": ["calendar-missing", "fuyao-calendar-coverage"]}]
+
+
+def test_fuyao_backfill_checks_revision_after_network_and_prefers_local_evidence(ledger_db):
+    market = FixtureMarketEvidence(["2026-01-20", "2026-01-21", "2026-01-22"])
+    client = ledger_client(ledger_db, source=market)
+    post(client, "/opening", {"date": "2026-01-20", "positions": {}})
+    draft = upload(client, b"one-record")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', confirmation(draft))
+    cover(client, "2026-01-21", confirmed["revision"])
+    market.prices[DAY] = "99.00"
+    market.before_history = lambda: post(client, "/evidence", {"valuations": [
+        valuation("2026-01-21", "100.00", kind="suspended-valuation"),
+    ]})
+    result = backfill(client, "2026-01-21", status=409)
+    assert result["detail"]["added"] == {"sessions": 2, "valuations": 0}
+    assert get(client, "/days/2026-01-21")["closing"][0]["close"] == "100.00"
+    retry = backfill(client, "2026-01-21")
+    assert retry["status"] == "complete" and retry["added"] == {"sessions": 0, "valuations": 0}
+    assert market.calls == [("calendar",), (CODE, "2026-01-21", "2026-01-21")]
+
+
+def test_fuyao_backfill_selected_range_loads_previous_session_valuation(ledger_db):
+    market = FixtureMarketEvidence(["2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22"])
+    market.prices = {DAY: "98.23", date(2026, 1, 22): "99.23"}
+    client = ledger_client(ledger_db, source=market)
+    post(client, "/opening", {"date": "2026-01-20", "positions": {}})
+    draft = upload(client, b"one-record")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', confirmation(draft))
+    cover(client, "2026-01-21", confirmed["revision"])
+    result = post(client, "/evidence", {"valuations": [valuation("2026-01-22", None)]})
+    cover(client, "2026-01-22", result["revision"], "no-trades")
+    result = backfill(client, "2026-01-22")
+    assert result["status"] == "complete" and result["added"] == {"sessions": 3, "valuations": 2}
+    assert market.calls == [("calendar",), (CODE, "2026-01-21", "2026-01-22")]
+    following = get(client, "/days/2026-01-22")
+    assert following["opening"][0]["close"] == "98.23"
+    assert following["pnl"] == "100.00"
+
+
+@pytest.mark.parametrize("sold,remaining,after_pnl", [(200, 0, "0.00"), (100, 100, "100.00")])
+def test_late_sale_reopens_only_affected_coverage_and_revalues_remaining_holdings(ledger_db, sold, remaining, after_pnl):
+    market = FixtureMarketEvidence(["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-23", "2026-03-24"])
+    market.prices = {date(2026, 3, 18): "100", date(2026, 3, 19): "101",
+                     date(2026, 3, 20): "102", date(2026, 3, 23): "103"}
+    client = ledger_client(ledger_db, source=market)
+    post(client, "/opening", {"date": "2026-03-18", "positions": {CODE: 200}})
+    revision = post(client, "/evidence", {"sessions": [
+        session("2026-03-18"), session("2026-03-19", "2026-03-18"), session("2026-03-20", "2026-03-19"),
+        session("2026-03-23", "2026-03-20"),
+    ], "valuations": [
+        valuation("2026-03-19", None), valuation("2026-03-20", None), valuation("2026-03-23", None),
+    ]})["revision"]
+    cover(client, "2026-03-19", revision, "no-trades", "2026-03-23")
+
+    draft = upload(client, b"late-sale")
+    sale = confirmation(draft)
+    sale["rows"][0]["fields"] = trade(date="2026-03-20", side="sell", filled_quantity=sold,
+                                     price="102", amount=str(sold * 102)).model_dump(mode="json")
+    confirmed = post(client, f'/drafts/{draft["id"]}/confirm', sale)
+    assert confirmed["saved"][0]["date"] == "2026-03-20"
+    assert get(client, "/days/2026-03-19")["coverage"] == "no-trades"
+    assert get(client, "/days/2026-03-20")["coverage"] is None
+    blocked = get(client, "/days/2026-03-23")
+    assert blocked["coverage"] == "no-trades" and blocked["pnl"] is None
+    assert blocked["blocking_coverage_date"] == "2026-03-20"
+
+    cover(client, "2026-03-20", confirmed["revision"])
+    result = backfill(client, "2026-03-19", "2026-03-23")
+    assert result["status"] == "complete"
+    assert market.calls == [(CODE, "2026-03-18", "2026-03-23" if remaining else "2026-03-19")]
+    later = get(client, "/days/2026-03-23")
+    assert sum(row["quantity"] for row in later["closing"]) == remaining
+    assert later["pnl"] == after_pnl
+    assert post(client, f'/drafts/{draft["id"]}/confirm', sale) == confirmed
+    assert get(client, "/days/2026-03-20")["coverage"] == "complete"
 
 
 def test_concurrent_confirmation_stale_review_and_rollback(ledger_db):

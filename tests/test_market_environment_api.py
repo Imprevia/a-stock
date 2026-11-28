@@ -165,6 +165,7 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
         ("/api/trading-pnl/coverage", "post"): ("200", None),
         ("/api/trading-pnl/trades/{identifier}/correction", "post"): ("200", None),
         ("/api/trading-pnl/evidence", "post"): ("200", None),
+        ("/api/trading-pnl/evidence/fuyao", "post"): ("200", None),
     }
 
     assert {
