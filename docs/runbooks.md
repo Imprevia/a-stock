@@ -1750,3 +1750,12 @@ assessment.state=insufficient 时页面显示：分数不足 / 暂无完整证�
 排查第 06 页证据时，先看 `fundamentals.items` 是否有同日 PE/PB、市值、换手率和阶段涨跌幅；再看 `candidatePools.firstToSecond.intraday.rows` 是否有涨停首末时间、开板次数、封单和换手。它们是原始观察，不是财务评分或分钟级交易结论。若 `auction.state=pending`，说明本地未保存 09:15–09:25 序列；若 fundamentals 的 `missingFields` 含利润/成长/现金流/杠杆，不能以 PE/PB 缺口来推断安全。补充这些输入必须走单独批准的数据采集/回填计划，普通 GET 不会自动恢复。
 
 发布或回滚顺序：先发布/回滚前端五视图，再启用/停用 additive workbench resource 与 materializer，最后观察旧 `/active-direction` Top-10 消费者。回滚不得删除 `researchRows`、旧 JSON、数据库历史或任务记录，不新增 CronJob/调度/生产回填。真实 provider smoke、历史重建和生产写入均需另行授权的独立 active plan。
+## 个人交易盈亏日历
+
+个人台账部署在用户自己的本地或可信私有网络。手机和桌面访问同一实例，应用以单用户模式提供读写接口。运行镜像内置 Tesseract `chi_sim`、`eng`。本地开发可用 `tesseract --list-langs` 核对这两种语言和 PATH。为已获授权的数据库执行 `python -m alembic upgrade head`，新修订为 `0009_trading_pnl`。旧库可继续提供市场环境功能，盈亏接口会提示迁移。应用版本回退保留台账及其审计。
+
+打开「盈亏日历」，确认默认的 2026-01-20 收盘空仓后，从 2026-01-21 开始补录。上传已展开月份的 PNG 或 JPEG 截图，每批最多 6 张，每张最多 5 MB 及 120 行。按原图核对后选行提交。疑似重复行可以跳过，或明确标记为另一笔交易。对已确认的月份或交易日单独标记「流水已录全」，没有成交的日期可选择「无成交」。更正交易日期会使涉及的两个日期需要重新确认。截图预览最长保存 24 小时，成功确认后清理未被其他有效草稿引用的图片，运行中的应用每 15 分钟清理已过期的预览和识别原文。
+
+本地历史证据通过月历的「导入本地盘后证据」上传 JSON，也可向 `/api/trading-pnl/evidence` 发送同结构的 JSON。`sessions` 每行提供 `date`、`actual_date`、`is_session`、`source` 和已验证的 `previous_date`。休市行省略上一交易日，非休市行须有精确日及邻接证据。`valuations` 每行提供 `date`、`actual_date`、`security` 和 `source`。原始收盘用 `close` 及 `price_kind: "original-close"`，有依据的停牌结算估值用 `price_kind: "suspended-valuation"`。公司行动已核对才设 `actions_confirmed: true`，`share_delta` 和 `cash_adjustment` 分别记录有证据的股数和应计现金调整。纯公司行动行可以省略收盘字段。应收分红在权利确认时计入，现金到账用于核销应收。单批最多 366 条日历记录和 1,000 条估值记录。
+
+已有行情的 `sector_security_daily_facts.original_close` 在证券、实际日期和质量匹配时优先使用。缺综合历史覆盖时用可核实的本地证据补齐。应用读取日历和明细时不抓取行情。合成截图、固定证据和隔离 PostgreSQL 的验收使用 `python -m pytest tests/test_trading_pnl.py -q`。设置 `TRADING_PNL_TEST_TESSERACT` 指向本地可执行文件，`TRADING_PNL_TEST_FONT` 可指定合成截图使用的中文字体。`MARKET_ENVIRONMENT_TEST_DATABASE_URL` 只指向独立测试数据库。

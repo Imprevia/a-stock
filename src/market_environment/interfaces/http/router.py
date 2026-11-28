@@ -9,6 +9,7 @@ from .routers.market_environment import router as market_environment_router
 from .routers.market_environment_v2 import router as market_environment_v2_router
 from .routers.ths_sectors import router as ths_sectors_router
 from .routers.timezone_preferences import router as timezone_preferences_router
+from .routers.trading_pnl import router as trading_pnl_router
 
 
 api_router = APIRouter()
@@ -19,6 +20,7 @@ api_router.include_router(market_environment_v2_router)
 api_router.include_router(collection_router)
 api_router.include_router(ths_sectors_router)
 api_router.include_router(timezone_preferences_router)
+api_router.include_router(trading_pnl_router)
 
 
 __all__ = ["api_router"]

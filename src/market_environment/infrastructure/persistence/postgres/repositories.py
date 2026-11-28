@@ -234,6 +234,13 @@ class PostgresTradingSessionRepository:
         ).mappings()
         return tuple(self._from_row(row) for row in rows)
 
+    def list_between(self, start: date, end: date) -> Sequence[TradingSessionRecord]:
+        rows = self.connection.execute(
+            text("SELECT * FROM trading_sessions WHERE as_of BETWEEN :start AND :end ORDER BY as_of"),
+            {"start": start, "end": end},
+        ).mappings()
+        return tuple(self._from_row(row) for row in rows)
+
     def put_session(self, session: object) -> TradingSessionRecord:
         if not isinstance(session, TradingSessionRecord):
             raise TypeError("trading session repository requires TradingSessionRecord")

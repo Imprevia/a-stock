@@ -23,7 +23,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates tzdata \
+    && apt-get install --no-install-recommends -y ca-certificates tzdata tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --no-create-home --uid 10001 --user-group app
 

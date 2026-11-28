@@ -32,6 +32,8 @@ from ..application.ports import (
     MarketEnvironmentQueryPort,
 )
 from ..application.queries import V2MarketDataQueries
+from ..application.commands.trading_pnl import TradingPnlCommands
+from ..application.queries.trading_pnl import TradingPnlQueries
 from ..domain.models import DATASET_IDS
 from ..infrastructure.collection import (
     AcquisitionPlanCollector,
@@ -78,6 +80,8 @@ from ..infrastructure.compatibility import (
 )
 from ..infrastructure.execution import BoundedTaskExecutor
 from ..infrastructure.persistence.postgres.runtime_store import PostgresRuntimeStore
+from ..infrastructure.persistence.postgres.trading_pnl import trading_pnl_store
+from ..infrastructure.trading_pnl_ocr import ScreenshotRecognizer, image_digest
 from ..infrastructure.persistence.postgres import PostgresV2MarketDataReadService
 from ..infrastructure.v2_market_data_compat import CompatibilityV2MarketDataReadAdapter
 from ..infrastructure.providers import (
@@ -106,6 +110,7 @@ class ReadDependencies:
     timezone_preferences: TimezoneQueryAdapter
     ths_sectors: Any
     clock: Callable[[], datetime]
+    trading_pnl: TradingPnlQueries | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +121,7 @@ class CommandDependencies:
     breadth_history: BreadthHistoryMaintenanceService
     timezone_preferences: TimezoneCommandAdapter
     ths_sectors: Any
+    trading_pnl: TradingPnlCommands | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +151,8 @@ class ContainerAdapters:
     ths_queries: Any | None = None
     ths_commands: Any | None = None
     v2_queries: Any | None = None
+    trading_pnl_store: Any | None = None
+    screenshot_recognizer: Any | None = None
 
 
 @dataclass(slots=True)
@@ -452,6 +460,10 @@ def build_container(
             else CompatibilityV2MarketDataReadAdapter(repository)
         )
         v2_queries = V2MarketDataQueries(v2_reads)
+    pnl_store = adapters.trading_pnl_store
+    if pnl_store is None and isinstance(repository, PostgresRuntimeStore):
+        pnl_store = trading_pnl_store(repository.engine)
+    today = lambda: _market_now(clock).date()
     reads = ReadDependencies(
         market_environment=RepositoryMarketEnvironmentQueryAdapter(repository),
         v2_market_environment=v2_queries,
@@ -459,6 +471,7 @@ def build_container(
         timezone_preferences=TimezoneQueryAdapter(timezone_repository),
         ths_sectors=ths_queries,
         clock=clock,
+        trading_pnl=TradingPnlQueries(pnl_store, today) if pnl_store else None,
     )
     commands = CommandDependencies(
         collection=collection_commands,
@@ -480,6 +493,9 @@ def build_container(
         ),
         timezone_preferences=TimezoneCommandAdapter(timezone_repository),
         ths_sectors=ths_commands,
+        trading_pnl=TradingPnlCommands(
+            pnl_store, today, adapters.screenshot_recognizer or ScreenshotRecognizer(), image_digest
+        ) if pnl_store else None,
     )
     return ApplicationContainer(
         settings=settings,

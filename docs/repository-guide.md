@@ -1,5 +1,7 @@
 # 仓库指南（repository guide）
 
+盈亏日历的应用命令、只读查询、领域计算、PostgreSQL repository、Alembic 和 Vue 独立路由共同遵循 [个人交易盈亏日历规格](product-specs/trading-pnl-calendar.md)。修改台账、截图处理或估值口径时同步架构、运行手册及 `add-trading-pnl-calendar` active plan。
+
 ## 仓库目的
 
 a-stock：面向盘后研究的 A 股分析与交易规则工程工作区。产品范围见 `docs/product-specs/market-environment-dashboard.md`、`docs/product-specs/trading-rule-engineering.md` 与 `docs/product-specs/trading-knowledge-mcp.md`；市场环境看板设计规范见 `docs/product-specs/market-environment-dashboard-design-guidelines.md`。

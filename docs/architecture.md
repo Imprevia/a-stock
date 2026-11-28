@@ -717,3 +717,8 @@ active-direction 采集在通过既有字段、样本数和成交额非递增校
 跨数据集关联只允许规范证券 identity 与请求日期有效的版本化 sector mapping；原始 provider 标签保留为 observation，无法映射时不得晋级 canonical candidate。QTS-04 规则证据从 trading-rules 注册表接入，当前只输出原始 trace、缺口、否决、确认/失效提示，状态保持 `documented-only` / `needs-backtest`，不在 market-environment 内复制阈值或生成角色/交易信号。
 
 回滚顺序为先回滚前端五视图，再停用工作台 endpoint/materializer；保留 `topStocks`、`researchRows`、旧聚合、PostgreSQL 历史和 task 记录，不删除数据、不执行自动回填。该变更不新增 CronJob、调度或生产写路径。
+## 个人交易盈亏日历
+
+盈亏日历的 Vue 路由和 `/api/trading-pnl` HTTP 资源独立于市场环境章节。读查询复用本地精确交易日和可验证的原始收盘事实，持仓投影及估值计算只使用 PostgreSQL 的本地证据。截图 OCR 经导入命令进入草稿，确认、审计、去重和投影失效同事务持久化。增量 Alembic 建立单用户台账结构，公开市场数据发现页仅描述市场数据资源。
+
+确认命令锁定台账版本，重查图片行、强身份和疑似重复，并在同一事务写流水、保留确认结果及重建最早受影响日期起的持仓投影。命令用日历证据确认相邻交易日。GET 在只读 PostgreSQL 快照中读取持仓和收盘价，月历与日期明细共用估值口径。独立的个人日历补录图层按精确日期合并本地证据。OCR 使用有界的 Tesseract 子进程，截图暂存和清理均在个人台账路径处理。

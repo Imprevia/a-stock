@@ -9,6 +9,7 @@
 
 | 计划 | 负责人 | 状态 | 最后更新 |
 |------|--------|------|----------|
+| `add-trading-pnl-calendar` | Codex | completed-local-only（14/14，OpenSpec 已归档） | 2026-11-28 |
 | `add-test-ratchet-and-commit-gate` | Codex | completed（31/31，OpenSpec 已归档） | 2026-10-27 |
 | `refactor-active-direction-research-workbench` | Codex | evidence-module-repair-complete-with-explicit-source-gaps（34/34） | 2026-10-21 |
 | `restore-v2-limit-pool-membership` | Codex | completed-local-only（17/17；生产恢复未授权） | 2026-10-27 |

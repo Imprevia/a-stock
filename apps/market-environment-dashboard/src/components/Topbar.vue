@@ -21,6 +21,7 @@ const breadcrumbSection = computed(() => {
   if (route.path.startsWith('/dashboard')) return '如何判断市场环境'
   if (route.path.startsWith('/data-collection')) return '数据管理'
   if (route.path.startsWith('/settings')) return '偏好设置'
+  if (route.path.startsWith('/trading-pnl')) return '交易复盘'
   return ''
 })
 
@@ -28,6 +29,9 @@ const breadcrumbLeaf = computed(() => {
   if (route.path.startsWith('/dashboard')) return '01'
   if (route.path.startsWith('/data-collection')) return '数据采集'
   if (route.path.startsWith('/settings')) return '日期与时间'
+  if (route.name === 'trading-pnl-day') return '交易明细'
+  if (route.name === 'trading-pnl-import') return '导入交易截图'
+  if (route.name === 'trading-pnl-calendar') return '盈亏日历'
   return ''
 })
 

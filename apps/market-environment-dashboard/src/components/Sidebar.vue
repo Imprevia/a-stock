@@ -5,7 +5,7 @@
  * backdrop and close button stay inline because they coordinate with
  * the dashboard topbar / viewport.
  */
-import { Activity as ActivityIcon, ChevronRight, Database, Gauge, Settings2, X } from 'lucide-vue-next'
+import { Activity as ActivityIcon, CalendarDays, ChevronRight, Database, Gauge, Settings2, X } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import { useNavigationStore } from '../stores/navigation'
 
@@ -54,6 +54,11 @@ function navigateToSettings(): void {
   void router.push('/settings')
   nav.closeSidebar()
 }
+
+function navigateToTradingPnl(): void {
+  void router.push('/trading-pnl')
+  nav.closeSidebar()
+}
 </script>
 
 <template>
@@ -82,6 +87,10 @@ function navigateToSettings(): void {
           <span>{{ document.title }}</span>
         </button>
       </div>
+      <div class="nav-label management-label">交易复盘</div>
+      <button class="primary-nav" :class="{ active: route.path.startsWith('/trading-pnl') }" type="button" @click="navigateToTradingPnl">
+        <CalendarDays :size="17" /><span>盈亏日历</span><ChevronRight :size="15" />
+      </button>
       <div class="nav-label management-label">数据管理</div>
       <button class="primary-nav" :class="{ active: route.path.startsWith('/data-collection') }" type="button"
         @click="navigateToDataCollection">

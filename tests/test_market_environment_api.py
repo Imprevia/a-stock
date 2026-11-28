@@ -154,6 +154,17 @@ def test_api_route_methods_models_and_success_statuses_are_stable() -> None:
             ("/api/v2/market-environment/{as_of}/active-direction/workbench", "get"): ("200", "V2Envelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/events", "get"): ("200", "V2PaginatedEnvelope_dict_str__Any__"),
         ("/api/v2/market-environment/{as_of}/assessment", "get"): ("200", "V2Envelope_dict_str__Any__"),
+        ("/api/trading-pnl/months/{month}", "get"): ("200", None),
+        ("/api/trading-pnl/days/{day}", "get"): ("200", None),
+        ("/api/trading-pnl/drafts", "post"): ("200", None),
+        ("/api/trading-pnl/drafts/{identifier}", "get"): ("200", None),
+        ("/api/trading-pnl/drafts/{identifier}/images/{digest}", "get"): ("200", None),
+        ("/api/trading-pnl/drafts/{identifier}/preview", "post"): ("200", None),
+        ("/api/trading-pnl/drafts/{identifier}/confirm", "post"): ("200", None),
+        ("/api/trading-pnl/opening", "post"): ("200", None),
+        ("/api/trading-pnl/coverage", "post"): ("200", None),
+        ("/api/trading-pnl/trades/{identifier}/correction", "post"): ("200", None),
+        ("/api/trading-pnl/evidence", "post"): ("200", None),
     }
 
     assert {

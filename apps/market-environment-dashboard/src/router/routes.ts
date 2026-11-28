@@ -99,6 +99,21 @@ export const routes: RouteRecordRaw[] = [
     component: TimezoneSettingsView,
   },
   {
+    path: '/trading-pnl',
+    name: 'trading-pnl-calendar',
+    component: () => import('../pages/trading-pnl/TradingPnlCalendar.vue'),
+  },
+  {
+    path: '/trading-pnl/day/:date',
+    name: 'trading-pnl-day',
+    component: () => import('../pages/trading-pnl/TradingPnlDay.vue'),
+  },
+  {
+    path: '/trading-pnl/import',
+    name: 'trading-pnl-import',
+    component: () => import('../pages/trading-pnl/TradingPnlImport.vue'),
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/dashboard/01',
   },

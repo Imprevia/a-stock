@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +15,9 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from ..snapshot_store import SnapshotIntegrityError
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+from ..domain.models.trading_pnl import LedgerUnavailable
 
 from .container import (
     ApplicationContainer,
@@ -23,6 +28,19 @@ from .settings import MarketEnvironmentSettings
 
 
 ContainerFactory = Callable[[], ApplicationContainer]
+logger = logging.getLogger(__name__)
+
+
+async def _expire_ledger_previews(cleanup: Callable[[], None]) -> None:
+    while True:
+        await asyncio.sleep(900)
+        try:
+            await run_in_threadpool(cleanup)
+        except LedgerUnavailable:
+            # An older schema can still serve the market dashboard.
+            continue
+        except Exception:
+            logger.warning("Personal trading preview cleanup failed")
 
 
 def create_app(
@@ -49,9 +67,14 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.lifespan_started = True
         container = get_app_container(app)
+        ledger = container.commands.trading_pnl
+        cleanup = asyncio.create_task(_expire_ledger_previews(ledger.cleanup_previews)) if ledger else None
         try:
             yield
         finally:
+            if cleanup:
+                cleanup.cancel()
+                await asyncio.gather(cleanup, return_exceptions=True)
             container.close()
             app.state.lifespan_started = False
 
